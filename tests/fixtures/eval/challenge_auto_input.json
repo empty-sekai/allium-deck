@@ -1,0 +1,5 @@
+{
+  "case": "challenge_auto",
+  "deck": [0, 1, 2, 3, 4],
+  "fixture_source": "tests/evaluator_cases.rs::challenge_auto"
+}
