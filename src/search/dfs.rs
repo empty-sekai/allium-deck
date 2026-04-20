@@ -156,6 +156,17 @@ impl SearchState<'_> {
                 if ceiling <= threshold {
                     break; // ceiling 单调不增 → Sound break
                 }
+
+                // Per-candidate continue：用该卡的实际 power/skill 计算更紧的 ceiling
+                let card_power_ub = partial.power + self.pool.power_max(card) + pre.suffix_power_rest;
+                let card_skill = partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest;
+                let card_leader = (partial.max_skill as u32).max(self.pool.skill_max(card) as u32);
+                let tight_ceiling = self.suffix.ceiling(
+                    card_power_ub, bonus_total, card_skill, card_leader,
+                );
+                if tight_ceiling <= threshold {
+                    continue; // 这张卡即使选入也不够 → 跳过但不 break
+                }
             }
 
             unsafe {

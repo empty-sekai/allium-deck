@@ -288,6 +288,10 @@ impl SuffixBound {
             suffix_power: suffix_sum_u32(
                 &self.power_order, &self.power_vals, used.bits(), slots,
             ),
+            suffix_power_rest: suffix_sum_u32(
+                &self.power_order, &self.power_vals, used.bits(),
+                slots.saturating_sub(1),
+            ),
             suffix_bonus: suffix_sum_u16_as_u32(
                 &self.bonus_order, &self.bonus_vals, used.bits(),
                 slots.saturating_sub(1),
@@ -295,6 +299,10 @@ impl SuffixBound {
             extra_bonus_ub: self.extra_bonus_ub,
             skill_ub: suffix_sum_u16_as_u32(
                 &self.skill_order, &self.skill_vals, used.bits(), slots,
+            ),
+            skill_ub_rest: suffix_sum_u16_as_u32(
+                &self.skill_order, &self.skill_vals, used.bits(),
+                slots.saturating_sub(1),
             ),
             best_unused_skill: first_unused_val_u16(
                 &self.skill_order, &self.skill_vals, used.bits(),
@@ -456,12 +464,16 @@ fn suffix_sum_u16_as_u32(
 pub(crate) struct LayerPrecomputed {
     /// 全 slots 的 power suffix sum（松弛上界）。
     pub suffix_power: u32,
+    /// 剩余 slots-1 的 power suffix sum（不含候选卡的 power）。
+    pub suffix_power_rest: u32,
     /// 剩余 slots-1 的 bonus suffix sum（不含候选卡的 bonus，不含 extra）。
     pub suffix_bonus: u32,
     /// WL 等额外 bonus 上界。
     pub extra_bonus_ub: u32,
     /// 全 slots 的 skill suffix sum。
     pub skill_ub: u32,
+    /// 剩余 slots-1 的 skill suffix sum（不含候选卡的 skill）。
+    pub skill_ub_rest: u32,
     /// 未使用角色中最大 skill。
     pub best_unused_skill: u16,
 }
