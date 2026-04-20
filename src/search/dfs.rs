@@ -134,38 +134,38 @@ impl SearchState<'_> {
                 continue;
             }
 
-            // Sound ceiling pruning：根据 target 排序键做 break
+            // Sound ceiling pruning：双层剪枝
             if threshold != 0 {
                 let eb = self.pool.event_bonus(card);
                 let card_bonus = eb.base_bonus as u32 + eb.limited_bonus as u32;
                 let bonus_total = partial.bonus + card_bonus
                     + pre.suffix_bonus + pre.extra_bonus_ub;
-                // bonus 排序条件：Score/Bonus/Mysekai + 有 event
-                // 否则按 power 排序（Power/Skill，或无 event 的 Score）
                 let sorted_by_bonus = self.ctx.event_type.is_some()
                     && !matches!(self.ctx.target, ScoreTarget::Power | ScoreTarget::Skill);
-                let power_ub = if sorted_by_bonus {
-                    partial.power + pre.suffix_power // bonus 排序 → power 用固定上界
+
+                // Layer 1: break — 仅用单调分量（排序键递减 + 层级常量）
+                let break_power = if sorted_by_bonus {
+                    partial.power + pre.suffix_power
                 } else {
-                    partial.power + self.pool.power_max(card) + pre.suffix_power // power 排序 → 单调不增
+                    partial.power + self.pool.power_max(card) + pre.suffix_power_rest
                 };
-                let leader_ub = (partial.max_skill as u32).max(pre.best_unused_skill as u32);
-                let ceiling = self.suffix.ceiling(
-                    power_ub, bonus_total, pre.skill_ub, leader_ub,
+                let layer_leader = (partial.max_skill as u32).max(pre.best_unused_skill as u32);
+                let break_ceiling = self.suffix.ceiling(
+                    break_power, bonus_total, pre.skill_ub, layer_leader,
                 );
-                if ceiling <= threshold {
-                    break; // ceiling 单调不增 → Sound break
+                if break_ceiling <= threshold {
+                    break;
                 }
 
-                // Per-candidate continue：用该卡的实际 power/skill 计算更紧的 ceiling
-                let card_power_ub = partial.power + self.pool.power_max(card) + pre.suffix_power_rest;
-                let card_skill = partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest;
-                let card_leader = (partial.max_skill as u32).max(self.pool.skill_max(card) as u32);
+                // Layer 2: continue — 含候选卡实际 power/skill，更紧但不单调
+                let tight_power = partial.power + self.pool.power_max(card) + pre.suffix_power_rest;
+                let tight_skill = partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest;
+                let tight_leader = (partial.max_skill as u32).max(self.pool.skill_max(card) as u32);
                 let tight_ceiling = self.suffix.ceiling(
-                    card_power_ub, bonus_total, card_skill, card_leader,
+                    tight_power, bonus_total, tight_skill, tight_leader,
                 );
                 if tight_ceiling <= threshold {
-                    continue; // 这张卡即使选入也不够 → 跳过但不 break
+                    continue;
                 }
             }
 
