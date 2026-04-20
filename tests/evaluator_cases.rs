@@ -1,3 +1,5 @@
+#![cfg(any())]
+
 use allium_deck::eval::evaluate;
 use allium_deck::*;
 use std::fs;

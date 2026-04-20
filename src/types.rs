@@ -87,7 +87,7 @@ pub enum DefaultImage {
     SpecialTraining = 1,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PowerDetail {
     pub base: i32,
     pub area_item_bonus: i32,
@@ -95,19 +95,6 @@ pub struct PowerDetail {
     pub fixture_bonus: i32,
     pub gate_bonus: i32,
     pub total: i32,
-}
-
-impl Default for PowerDetail {
-    fn default() -> Self {
-        Self {
-            base: 0,
-            area_item_bonus: 0,
-            character_bonus: 0,
-            fixture_bonus: 0,
-            gate_bonus: 0,
-            total: 0,
-        }
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
@@ -212,7 +199,7 @@ impl Default for PowerLookup {
 /// 这意味着当实际 deck 有 2/3/4 张同组卡时，组分技能效果被低估。
 /// 这是有意的保守估计：搜索层找到的"最优解"不会因为精度偏高而无效。
 /// 如果未来需要精确组分技能，可扩展 skill_key 为 [SkillInfo; 6]（0-5人），
-/// 代价是每张 CardSpec 增加约 4 * UNIT_COUNT * sizeof(SkillInfo)。
+/// 代价是每张候选卡增加约 4 * UNIT_COUNT * sizeof(SkillInfo)。
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkillLookup {
     pub resolved: [[SkillInfo; 2]; UNIT_COUNT],
@@ -226,20 +213,6 @@ impl Default for SkillLookup {
             diff: [SkillInfo::default(); 3],
         }
     }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CardSpec {
-    pub card_id: CardId,
-    pub character_id: i32,
-    pub attr: Attr,
-    pub support_unit: Unit,
-    pub units: [Unit; 3],
-    pub unit_count: u8,
-    pub power: PowerLookup,
-    pub skill: SkillLookup,
-    pub event_bonus: CardEventBonus,
-    pub default_image: DefaultImage,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
@@ -315,16 +288,6 @@ pub struct MusicParams {
     pub tap_count: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CardPool {
-    pub cards: Vec<CardSpec>,
-    pub character_ids: Vec<i32>,
-    pub attrs: Vec<Attr>,
-    pub support_units: Vec<Unit>,
-    pub game_ids: Vec<i32>,
-    pub count: u16,
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeckScore {
     pub card_ids: [CardId; DECK_SIZE],
@@ -353,7 +316,7 @@ pub struct DeckScore {
 
 #[derive(Debug, Clone)]
 pub struct DeckContext<'a> {
-    pub pool: &'a CardPool,
+    pub pool: &'a crate::pool::CardPool,
     pub honor_bonus: i32,
     pub music: MusicParams,
     pub live_type: LiveType,
@@ -389,7 +352,7 @@ pub struct DeckContextParams {
 }
 
 impl<'a> DeckContext<'a> {
-    pub fn new(pool: &'a CardPool, params: DeckContextParams) -> Result<Self, String> {
+    pub fn new(pool: &'a crate::pool::CardPool, params: DeckContextParams) -> Result<Self, String> {
         validate_pool(pool)?;
         validate_params(&params)?;
 
@@ -433,28 +396,13 @@ impl<'a> DeckContext<'a> {
     }
 }
 
-fn validate_pool(pool: &CardPool) -> Result<(), String> {
-    let count = pool.cards.len();
+fn validate_pool(pool: &crate::pool::CardPool) -> Result<(), String> {
+    let count = pool.count();
     if count > u16::MAX as usize {
         return Err("card pool is too large for CardId".to_string());
     }
-    if pool.count as usize != count {
-        return Err("card pool count does not match cards length".to_string());
-    }
-    if pool.character_ids.len() != count
-        || pool.attrs.len() != count
-        || pool.support_units.len() != count
-        || pool.game_ids.len() != count
-    {
-        return Err("card pool SoA lengths do not match cards length".to_string());
-    }
-    for (index, card) in pool.cards.iter().enumerate() {
-        if card.card_id as usize != index {
-            return Err("card_id must be a dense index into CardPool.cards".to_string());
-        }
-        if card.unit_count as usize > card.units.len() {
-            return Err("card unit_count exceeds units array length".to_string());
-        }
+    if count > 512 {
+        return Err("card pool exceeds 512-bit mask capacity".to_string());
     }
     Ok(())
 }
