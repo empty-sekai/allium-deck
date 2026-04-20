@@ -591,6 +591,144 @@ mod tests {
     }
 
     #[test]
+    fn search_dfs_score_noevent_does_not_break_before_higher_skill_same_power_state() {
+        let cards = [
+            TestCard {
+                char_id: 0,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 500,
+                power: 100,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 10,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 100,
+                skill_max: 10,
+            },
+            TestCard {
+                char_id: 0,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 500,
+                power: 100,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 20,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 100,
+                skill_max: 20,
+            },
+            TestCard {
+                char_id: 1,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 501,
+                power: 100,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 100,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 2,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 502,
+                power: 100,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 100,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 3,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 503,
+                power: 100,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 100,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 4,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 504,
+                power: 100,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 100,
+                skill_max: 0,
+            },
+        ];
+        let pool = build_pool(&cards);
+        let mut search_ctx = ctx(ScoreTarget::Score);
+        search_ctx.live_type = LiveType::Multi;
+        search_ctx.skill_scores[1] = [10.0; 6];
+        search_ctx.leader_honor_bonus = vec![0; pool.count()];
+        search_ctx.leader_limit_bonus = vec![0; pool.count()];
+        search_ctx.skill_is_after_training = vec![false; pool.count()];
+        search_ctx.trained_to_special_image = vec![false; pool.count()];
+        let suffix = SuffixBound::build(&pool, &search_ctx);
+        let params = SearchParams {
+            top_k: 1,
+            timeout_ms: 0,
+        };
+
+        let results = dfs_search(&pool, &search_ctx, &suffix, &params);
+        let best = results.first().map(|result| result.score).unwrap_or(0);
+
+        let lower = leaf_evaluate(
+            &pool,
+            &search_ctx,
+            &[
+                crate::pool::CardIdx::new(0),
+                crate::pool::CardIdx::new(2),
+                crate::pool::CardIdx::new(3),
+                crate::pool::CardIdx::new(4),
+                crate::pool::CardIdx::new(5),
+            ],
+        );
+        let higher = leaf_evaluate(
+            &pool,
+            &search_ctx,
+            &[
+                crate::pool::CardIdx::new(1),
+                crate::pool::CardIdx::new(2),
+                crate::pool::CardIdx::new(3),
+                crate::pool::CardIdx::new(4),
+                crate::pool::CardIdx::new(5),
+            ],
+        );
+
+        assert!(higher > lower);
+        assert_eq!(best, higher);
+    }
+
+    #[test]
     fn search_dfs_core_matches_bruteforce_for_three_cards_choose_two() {
         let cards = [
             TestCard {

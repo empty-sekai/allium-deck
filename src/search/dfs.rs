@@ -142,19 +142,26 @@ impl SearchState<'_> {
                     + pre.suffix_bonus + pre.extra_bonus_ub;
                 let sorted_by_bonus = self.ctx.event_type.is_some()
                     && !matches!(self.ctx.target, ScoreTarget::Power | ScoreTarget::Skill);
+                let allow_break = match self.ctx.target {
+                    ScoreTarget::Power | ScoreTarget::Skill => true,
+                    ScoreTarget::Score | ScoreTarget::Bonus => sorted_by_bonus,
+                    ScoreTarget::Mysekai => false,
+                };
 
                 // Layer 1: break — 仅用单调分量（排序键递减 + 层级常量）
-                let break_power = if sorted_by_bonus {
-                    partial.power + pre.suffix_power
-                } else {
-                    partial.power + self.pool.power_max(card) + pre.suffix_power_rest
-                };
-                let layer_leader = (partial.max_skill as u32).max(pre.best_unused_skill as u32);
-                let break_ceiling = self.suffix.ceiling(
-                    break_power, bonus_total, pre.skill_ub, layer_leader,
-                );
-                if break_ceiling <= threshold {
-                    break;
+                if allow_break {
+                    let break_power = if sorted_by_bonus {
+                        partial.power + pre.suffix_power
+                    } else {
+                        partial.power + self.pool.power_max(card) + pre.suffix_power_rest
+                    };
+                    let layer_leader = (partial.max_skill as u32).max(pre.best_unused_skill as u32);
+                    let break_ceiling = self.suffix.ceiling(
+                        break_power, bonus_total, pre.skill_ub, layer_leader,
+                    );
+                    if break_ceiling <= threshold {
+                        break;
+                    }
                 }
 
                 // Layer 2: continue — 含候选卡实际 power/skill，更紧但不单调

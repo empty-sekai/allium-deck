@@ -186,7 +186,7 @@ fn area_item_bonus_dims(
 fn fixture_bonus(
     sum_power: i32,
     character_id: i32,
-    game: &GameData<'_>,
+    bonus_limit: Option<i32>,
     user: &UserProfile,
 ) -> i32 {
     let bonus_rate = user
@@ -195,13 +195,7 @@ fn fixture_bonus(
         .find(|entry| entry.character_id == character_id)
         .map(|entry| entry.total_bonus_rate)
         .unwrap_or(0);
-    let limit = game
-        .event_mysekai_fixture_performance_bonus_limits
-        .iter()
-        .map(|entry| entry.bonus_rate_limit)
-        .max()
-        .unwrap_or(bonus_rate);
-    let clamped = bonus_rate.min(limit);
+    let clamped = bonus_limit.map_or(bonus_rate, |limit| bonus_rate.min(limit));
     ((sum_power as f64) * (clamped as f64) * 0.001_f64).floor() as i32
 }
 
@@ -230,6 +224,7 @@ pub(crate) fn build_power(
     master: &MasterCard,
     game: &GameData<'_>,
     user: &UserProfile,
+    fixture_bonus_limit: Option<i32>,
 ) -> PowerResult {
     let card_units = build_unit_list(master, game);
     let base = base_power_dims(user_card, master, game, user);
@@ -262,7 +257,7 @@ pub(crate) fn build_power(
                 target_unit,
             );
             let area_sum = area_bonus[0] + area_bonus[1] + area_bonus[2];
-            let fixture = fixture_bonus(base_sum, master.character_id, game, user);
+            let fixture = fixture_bonus(base_sum, master.character_id, fixture_bonus_limit, user);
             let gate = gate_bonus(base_sum, &card_units, user);
             let total = base_sum + character_sum + area_sum + fixture + gate;
 
@@ -287,6 +282,28 @@ pub(crate) fn build_power(
     result.power_min = min_value;
     result.power_max = max_value;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture_bonus;
+    use crate::handler::types::UserFixtureBonus;
+    use crate::handler::UserProfile;
+
+    #[test]
+    fn fixture_bonus_only_clamps_when_limit_is_present() {
+        let user = UserProfile {
+            user_mysekai_fixture_bonuses: vec![UserFixtureBonus {
+                character_id: 20,
+                event_id: None,
+                total_bonus_rate: 30,
+            }],
+            ..UserProfile::default()
+        };
+
+        assert_eq!(fixture_bonus(38_792, 20, None, &user), 1_163);
+        assert_eq!(fixture_bonus(38_792, 20, Some(20), &user), 775);
+    }
 }
 
 /// 解析卡的 unit bitmask。

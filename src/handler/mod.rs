@@ -325,6 +325,17 @@ fn compute_honor_bonus(user: &types::UserProfile, game: &types::GameData<'_>) ->
         .sum()
 }
 
+fn resolve_fixture_bonus_limit(
+    game: &types::GameData<'_>,
+    event_ctx: Option<&EventContext>,
+) -> Option<i32> {
+    let event_id = event_ctx?.event_id;
+    game.event_mysekai_fixture_performance_bonus_limits
+        .iter()
+        .find(|entry| entry.event_id == event_id)
+        .map(|entry| entry.bonus_rate_limit)
+}
+
 /// 将 masterdata + userdata 构建为搜索使用的 `CardPool` 与 `SearchContext`。
 pub fn build_card_pool(
     user: &types::UserProfile,
@@ -332,6 +343,7 @@ pub fn build_card_pool(
     params: &types::BuildParams,
 ) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
     let event_ctx = build_event_context(game, params);
+    let fixture_bonus_limit = resolve_fixture_bonus_limit(game, event_ctx.as_ref());
     let music = build_music_params(game, params);
     let configs = merged_configs(params);
     let normalized_cards = normalize_user_cards(user, params);
@@ -359,7 +371,7 @@ pub fn build_card_pool(
             continue;
         };
 
-        let power = build_power(&user_card, &master, game, user);
+        let power = build_power(&user_card, &master, game, user, fixture_bonus_limit);
         let event_bonus = event_ctx
             .as_ref()
             .map(|ctx| build_card_event_bonus(&user_card, &master, game, ctx))
@@ -522,8 +534,8 @@ mod tests {
                 unit: None,
                 attr: None,
                 character_id: None,
-                power_rate: 1,
-                power_all_match_rate: 1,
+                power_rate: 1.0,
+                power_all_match_rate: 1.0,
             },
             types::AreaItemLevel {
                 area_item_id: 2,
@@ -531,8 +543,8 @@ mod tests {
                 unit: None,
                 attr: None,
                 character_id: None,
-                power_rate: 1,
-                power_all_match_rate: 1,
+                power_rate: 1.0,
+                power_all_match_rate: 1.0,
             },
         ];
         let game_units = [types::GameCharacterUnit {
@@ -565,9 +577,113 @@ mod tests {
             ..UserProfile::default()
         };
 
-        let result = build_power(&sample_user_card(1), &cards[0], &game, &user);
+        let result = build_power(&sample_user_card(1), &cards[0], &game, &user, None);
         assert_eq!(result.resolved[1][0].area_item_bonus, 6);
         assert_eq!(result.resolved[1][0].total, 309);
+    }
+
+    #[test]
+    fn handler_build_card_pool_only_clamps_fixture_bonus_for_matching_event() {
+        let cards = [MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        }];
+        let params = [types::CardParameter {
+            card_id: 1,
+            level: 1,
+            param1: 100,
+            param2: 100,
+            param3: 100,
+        }];
+        let skills = [types::Skill {
+            id: 10,
+            level: 1,
+            is_after_training: false,
+        }];
+        let effects = [types::SkillEffect {
+            skill_id: 10,
+            skill_level: 1,
+            effect_type: "score_up".to_string(),
+            value: 100,
+            additional_value: None,
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        }];
+        let units = [types::GameCharacterUnit {
+            game_character_id: 1,
+            unit: "idol".to_string(),
+        }];
+        let events = [types::Event {
+            id: FINAL_CHAPTER_EVENT_ID,
+            event_type: "marathon".to_string(),
+        }];
+        let fixture_limits = [types::EventFixtureBonusLimit {
+            event_id: FINAL_CHAPTER_EVENT_ID,
+            bonus_rate_limit: 20,
+        }];
+        let game = GameData {
+            cards: &cards,
+            card_parameters: &params,
+            card_rarities: &[],
+            card_episodes: &[],
+            master_lessons: &[],
+            skills: &skills,
+            skill_effects: &effects,
+            area_item_levels: &[],
+            game_character_units: &units,
+            character_ranks: &[],
+            card_mysekai_canvas_bonuses: &[],
+            events: &events,
+            event_cards: &[],
+            event_deck_bonuses: &[],
+            event_card_bonus_limits: &[],
+            event_honor_bonuses: &[],
+            world_bloom_different_attribute_bonuses: &[],
+            wb_support_deck_bonuses_wl1: &[],
+            wb_support_deck_bonuses_wl2: &[],
+            wb_support_deck_bonuses_wl3: &[],
+            world_bloom_support_deck_unit_event_limited_bonuses: &[],
+            event_mysekai_fixture_performance_bonus_limits: &fixture_limits,
+            event_skill_score_up_limits: &[],
+            music_metas: &[],
+            music_difficulties: &[],
+            event_rarity_bonus_rates: &[],
+            honors: &[],
+            bonds_honors: &[],
+        };
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1)],
+            user_mysekai_fixture_bonuses: vec![types::UserFixtureBonus {
+                character_id: 1,
+                event_id: None,
+                total_bonus_rate: 30,
+            }],
+            ..UserProfile::default()
+        };
+
+        let (pool, _) = build_card_pool(&user, &game, &BuildParams::default()).unwrap();
+        let idx = pool.card_idx(0).unwrap();
+        assert_eq!(pool.power_max(idx), 309);
+
+        let params = BuildParams {
+            event_id: Some(FINAL_CHAPTER_EVENT_ID),
+            ..BuildParams::default()
+        };
+        let (pool, _) = build_card_pool(&user, &game, &params).unwrap();
+        let idx = pool.card_idx(0).unwrap();
+        assert_eq!(pool.power_max(idx), 306);
     }
 
     #[test]

@@ -49,7 +49,7 @@ pub fn leaf_evaluate(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) 
             let mut best = 0u64;
             let mut mask = prepared.enumerate_mask;
             loop {
-                let permutation = materialize_permutation(deck, ctx, &prepared, mask);
+                let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
                 let encoded = encode_skill_target(permutation.multi_live_score_up);
                 if encoded > best {
                     best = encoded;
@@ -70,7 +70,7 @@ pub fn leaf_evaluate(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) 
             let mut best = 0u64;
             let mut mask = prepared.enumerate_mask;
             loop {
-                let permutation = materialize_permutation(deck, ctx, &prepared, mask);
+                let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
                 let live_score = calc_live_score(power_total, &permutation, ctx);
                 let event_point = if ctx.has_event() {
                     calc_event_point(live_score, total_bonus, ctx)
@@ -96,7 +96,7 @@ pub fn leaf_evaluate(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) 
             let mut best = 0u64;
             let mut mask = prepared.enumerate_mask;
             loop {
-                let permutation = materialize_permutation(deck, ctx, &prepared, mask);
+                let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
                 let live_score = calc_live_score(power_total, &permutation, ctx);
                 let event_point = if ctx.has_event() {
                     calc_event_point(live_score, total_bonus, ctx)
@@ -381,6 +381,7 @@ fn prepare_skills(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) -> 
 
 #[inline(always)]
 fn materialize_permutation(
+    pool: &CardPool,
     deck: &[CardIdx; 5],
     ctx: &SearchContext,
     prepared: &PreparedSkills,
@@ -448,8 +449,8 @@ fn materialize_permutation(
             let right_score = unsafe { skills.get_unchecked(right).score_up };
             if left_score > right_score
                 || (left_score == right_score
-                    && unsafe { deck.get_unchecked(left).raw() }
-                        < unsafe { deck.get_unchecked(right).raw() })
+                    && pool.game_id(unsafe { *deck.get_unchecked(left) })
+                        < pool.game_id(unsafe { *deck.get_unchecked(right) }))
             {
                 best_pos = pos;
             }
@@ -457,7 +458,7 @@ fn materialize_permutation(
         }
         order.swap(0, best_pos);
     } else {
-        sort_tail_by_card_raw(&mut order, deck);
+        sort_tail_by_card_raw(pool, &mut order, deck);
     }
 
     let mut multi_live_score_up = unsafe { skills.get_unchecked(*order.get_unchecked(0)).score_up };
@@ -812,15 +813,15 @@ fn choose_reference_score(
 }
 
 #[inline(always)]
-fn sort_tail_by_card_raw(order: &mut [usize; DECK_SIZE], deck: &[CardIdx; 5]) {
+fn sort_tail_by_card_raw(pool: &CardPool, order: &mut [usize; DECK_SIZE], deck: &[CardIdx; 5]) {
     let mut left = 2usize;
     while left < DECK_SIZE {
         let mut cursor = left;
         while cursor > 1 {
             let prev = unsafe { *order.get_unchecked(cursor - 1) };
             let current = unsafe { *order.get_unchecked(cursor) };
-            if unsafe { deck.get_unchecked(prev).raw() }
-                <= unsafe { deck.get_unchecked(current).raw() }
+            if pool.game_id(unsafe { *deck.get_unchecked(prev) })
+                <= pool.game_id(unsafe { *deck.get_unchecked(current) })
             {
                 break;
             }
