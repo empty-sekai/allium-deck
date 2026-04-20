@@ -300,6 +300,7 @@ fn build_search_context(
         w_bonus: 1.0,
         skill_ub_global,
         card_bonus_count_limit: event_ctx.map(|ctx| ctx.card_bonus_count_limit).unwrap_or(5),
+        honor_bonus: 0,
         leader_honor_bonus: full.iter().map(|card| card.leader_honor_bonus).collect(),
         leader_limit_bonus: full.iter().map(|card| card.leader_limit_bonus).collect(),
         skill_is_after_training: full
@@ -311,6 +312,17 @@ fn build_search_context(
             .map(|card| matches!(card.default_image, DefaultImage::SpecialTraining))
             .collect(),
     }
+}
+
+fn compute_honor_bonus(user: &types::UserProfile, game: &types::GameData<'_>) -> u32 {
+    user.user_honors
+        .iter()
+        .filter_map(|uh| {
+            let honor = game.honors.iter().find(|h| h.id == uh.honor_id)?;
+            let level = honor.levels.iter().find(|lv| lv.level == uh.level)?;
+            Some(level.bonus.max(0) as u32)
+        })
+        .sum()
 }
 
 /// 将 masterdata + userdata 构建为搜索使用的 `CardPool` 与 `SearchContext`。
@@ -410,7 +422,9 @@ pub fn build_card_pool(
     }
 
     let (pool, full) = sort_and_gather(cards, params.target, event_ctx.is_some());
-    let search_ctx = build_search_context(&full, game, params, event_ctx.as_ref(), music.as_ref());
+    let mut search_ctx =
+        build_search_context(&full, game, params, event_ctx.as_ref(), music.as_ref());
+    search_ctx.honor_bonus = compute_honor_bonus(user, game);
     Ok((pool, search_ctx))
 }
 

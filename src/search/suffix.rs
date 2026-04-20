@@ -61,6 +61,7 @@ pub struct SuffixBound {
     multi_teammate_score_up: Option<i32>,
     multi_teammate_power: Option<i32>,
     extra_bonus_ub: u32,
+    honor_bonus: u32,
     power_order: [u8; CHAR_MASK_COUNT],
     power_vals: [u32; CHAR_MASK_COUNT],
     skill_order: [u8; CHAR_MASK_COUNT],
@@ -122,6 +123,7 @@ impl SuffixBound {
             multi_teammate_score_up: ctx.multi_teammate_score_up,
             multi_teammate_power: ctx.multi_teammate_power,
             extra_bonus_ub: ctx.extra_bonus_ub,
+            honor_bonus: ctx.honor_bonus,
             power_order,
             power_vals: power_order.map(|char_id| power_per_char[char_id as usize]),
             skill_order,
@@ -163,6 +165,7 @@ impl SuffixBound {
                         used_chars.bits(),
                         slots_left,
                     ) as u64
+                    + self.honor_bonus as u64
             }
             ScoreTarget::Skill => {
                 let total_skill = partial.skill
@@ -207,7 +210,8 @@ impl SuffixBound {
                         &self.power_vals,
                         used_chars.bits(),
                         slots_left,
-                    );
+                    )
+                    + self.honor_bonus;
                 let total_skill = partial.skill
                     + suffix_sum_u16_as_u32(
                         &self.skill_order,
@@ -232,7 +236,8 @@ impl SuffixBound {
                         &self.power_vals,
                         used_chars.bits(),
                         slots_left,
-                    );
+                    )
+                    + self.honor_bonus;
                 let total_bonus = partial.bonus
                     + suffix_sum_u16_as_u32(
                         &self.bonus_order,
@@ -263,7 +268,8 @@ impl SuffixBound {
                         &self.power_vals,
                         used_chars.bits(),
                         slots_left,
-                    );
+                    )
+                    + self.honor_bonus;
                 let total_bonus = partial.bonus
                     + suffix_sum_u16_as_u32(
                         &self.bonus_order,
@@ -319,6 +325,7 @@ impl SuffixBound {
         skill_ub: u32,
         leader_ub: u32,
     ) -> u64 {
+        let power_ub = power_ub + self.honor_bonus;
         match self.target {
             ScoreTarget::Power => power_ub as u64,
             ScoreTarget::Skill => {

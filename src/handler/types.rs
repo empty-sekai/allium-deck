@@ -360,7 +360,7 @@ pub struct SkillEffect {
 }
 
 /// 区域道具倍率。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AreaItemLevel {
     /// 道具 ID。
     pub area_item_id: i32,
@@ -373,9 +373,9 @@ pub struct AreaItemLevel {
     /// 适用角色。
     pub character_id: Option<i32>,
     /// 综合力倍率。
-    pub power_rate: i32,
+    pub power_rate: f64,
     /// 全匹配综合力倍率。
-    pub power_all_match_rate: i32,
+    pub power_all_match_rate: f64,
 }
 
 /// 角色所属团。
@@ -388,12 +388,12 @@ pub struct GameCharacterUnit {
 }
 
 /// 角色 rank 倍率。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CharacterRank {
     /// rank。
     pub character_rank: i32,
     /// 综合力倍率。
-    pub power_bonus_rate: i32,
+    pub power_bonus_rate: f64,
 }
 
 /// MySekai 画布加成。
@@ -606,11 +606,22 @@ pub struct EventRarityBonusRate {
     pub bonus_rate: i32,
 }
 
+/// 称号等级。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HonorLevel {
+    /// 等级。
+    pub level: i32,
+    /// 综合力加成。
+    pub bonus: i32,
+}
+
 /// 称号主表。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Honor {
     /// 称号 ID。
     pub id: i32,
+    /// 各等级信息。
+    pub levels: Vec<HonorLevel>,
 }
 
 /// 羁绊称号主表。

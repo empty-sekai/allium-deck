@@ -120,7 +120,7 @@ fn character_bonus_dims(
         .filter(|entry| entry.character_rank <= character_rank)
         .max_by_key(|entry| entry.character_rank)
         .map(|entry| entry.power_bonus_rate)
-        .unwrap_or(0);
+        .unwrap_or(0.0);
     [
         floor_mul_rate(base[0], rate),
         floor_mul_rate(base[1], rate),
@@ -140,7 +140,7 @@ fn area_item_bonus_dims(
     target_unit: Unit,
 ) -> [i32; 3] {
     let card_attr = parse_attr_code(&master.attr);
-    let mut acc = [0.0_f32; 3];
+    let mut acc = [0.0_f64; 3];
 
     for user_item in &user.user_area_items {
         for item in game.area_item_levels.iter().filter(|entry| {
@@ -170,9 +170,9 @@ fn area_item_bonus_dims(
             } else {
                 item.power_rate
             };
-            acc[0] += ((power_rate as f32) * 0.01_f32) * base[0] as f32;
-            acc[1] += ((power_rate as f32) * 0.01_f32) * base[1] as f32;
-            acc[2] += ((power_rate as f32) * 0.01_f32) * base[2] as f32;
+            acc[0] += power_rate * 0.01_f64 * base[0] as f64;
+            acc[1] += power_rate * 0.01_f64 * base[1] as f64;
+            acc[2] += power_rate * 0.01_f64 * base[2] as f64;
         }
     }
 
@@ -202,7 +202,7 @@ fn fixture_bonus(
         .max()
         .unwrap_or(bonus_rate);
     let clamped = bonus_rate.min(limit);
-    ((sum_power as f32) * ((clamped as f32) * 0.001_f32)).floor() as i32
+    ((sum_power as f64) * (clamped as f64) * 0.001_f64).floor() as i32
 }
 
 fn gate_bonus(sum_power: i32, card_units: &[Unit], user: &UserProfile) -> i32 {
@@ -220,7 +220,7 @@ fn gate_bonus(sum_power: i32, card_units: &[Unit], user: &UserProfile) -> i32 {
     ((sum_power as f64) * max_rate * 0.01_f64).floor() as i32
 }
 
-fn floor_mul_rate(base: i32, rate: i32) -> i32 {
+fn floor_mul_rate(base: i32, rate: f64) -> i32 {
     (((rate as f32) * 0.01_f32) * (base as f32)).floor() as i32
 }
 

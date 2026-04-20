@@ -40,6 +40,7 @@ pub struct SearchContext {
     pub w_bonus: f64,
     pub skill_ub_global: u32,
     pub card_bonus_count_limit: usize,
+    pub honor_bonus: u32,
     pub leader_honor_bonus: Vec<u16>,
     pub leader_limit_bonus: Vec<u16>,
     pub skill_is_after_training: Vec<bool>,

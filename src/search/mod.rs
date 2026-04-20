@@ -174,6 +174,7 @@ mod tests {
             w_bonus: 1.0,
             skill_ub_global: 0,
             card_bonus_count_limit: DECK_SIZE,
+            honor_bonus: 0,
             leader_honor_bonus: Vec::new(),
             leader_limit_bonus: Vec::new(),
             skill_is_after_training: Vec::new(),

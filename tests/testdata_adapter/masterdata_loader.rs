@@ -5,8 +5,8 @@ use std::path::Path;
 use allium_deck::handler::{
     BondsHonor, CardEpisode, CardMysekaiCanvasBonus, CardParameter, CardRarity, CharacterRank,
     Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
-    EventRarityBonusRate, EventSkillScoreUpLimit, GameCharacterUnit, GameData, Honor, MasterCard,
-    MasterLesson, MusicDifficulty, MusicMeta, Skill, SkillEffect, WBSupportDeckBonus,
+    EventRarityBonusRate, EventSkillScoreUpLimit, GameCharacterUnit, GameData, Honor, HonorLevel,
+    MasterCard, MasterLesson, MusicDifficulty, MusicMeta, Skill, SkillEffect, WBSupportDeckBonus,
     WBSupportDeckUnitEventLimitedBonus, WorldBloomDiffAttrBonus,
 };
 use serde::de::DeserializeOwned;
@@ -143,7 +143,7 @@ impl OwnedGameData {
             .into_iter()
             .map(|rank| CharacterRank {
                 character_rank: rank.character_rank,
-                power_bonus_rate: rank.power1_bonus_rate.round() as i32,
+                power_bonus_rate: rank.power1_bonus_rate,
             })
             .collect(),
             card_mysekai_canvas_bonuses: load_json::<Vec<RawCardMysekaiCanvasBonus>>(
@@ -286,9 +286,19 @@ impl OwnedGameData {
                     })
             })
             .collect(),
-            honors: load_optional_json::<Vec<RawIdOnly>>(&masterdata_dir.join("honors.json"))?
+            honors: load_optional_json::<Vec<RawHonor>>(&masterdata_dir.join("honors.json"))?
                 .into_iter()
-                .map(|entry| Honor { id: entry.id })
+                .map(|entry| Honor {
+                    id: entry.id,
+                    levels: entry
+                        .levels
+                        .into_iter()
+                        .map(|lv| HonorLevel {
+                            level: lv.level,
+                            bonus: lv.bonus,
+                        })
+                        .collect(),
+                })
                 .collect(),
             bonds_honors: load_optional_json::<Vec<RawIdOnly>>(
                 &masterdata_dir.join("bondsHonors.json"),
@@ -386,8 +396,8 @@ fn flatten_area_item_levels(
             unit,
             attr,
             character_id: item.target_game_character_id,
-            power_rate: item.power1_bonus_rate.round() as i32,
-            power_all_match_rate: item.power1_all_match_bonus_rate.round() as i32,
+            power_rate: item.power1_bonus_rate,
+            power_all_match_rate: item.power1_all_match_bonus_rate,
         });
     }
     result
@@ -859,4 +869,20 @@ struct RawEventRarityBonusRate {
 #[derive(Debug, Clone, Deserialize)]
 struct RawIdOnly {
     id: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawHonor {
+    id: i32,
+    #[serde(default)]
+    levels: Vec<RawHonorLevel>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawHonorLevel {
+    level: i32,
+    #[serde(default)]
+    bonus: i32,
 }

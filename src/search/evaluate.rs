@@ -37,7 +37,7 @@ pub fn decode_u18(values: &[u16; 8], high_bits: u32, idx: usize) -> u32 {
 /// 精确计算叶子节点的排序值。
 #[inline(always)]
 pub fn leaf_evaluate(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) -> u64 {
-    let power_total = resolve_power_target(pool, deck);
+    let power_total = resolve_power_target(pool, deck) + ctx.honor_bonus;
     match ctx.target {
         ScoreTarget::Power => power_total as u64,
         ScoreTarget::Mysekai => {
