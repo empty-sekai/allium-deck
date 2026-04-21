@@ -1,12 +1,14 @@
 use std::time::{Duration, Instant};
 
-use crate::pool::{CardIdx, CardPool};
+use crate::pool::{CardIdx, CardPool, MASK_WORDS};
 use crate::types::{ScoreTarget, DECK_SIZE};
 
 use super::context::SearchContext;
 use super::evaluate::{card_proxy_bonus, leaf_evaluate};
 use super::suffix::{PartialDeck, SuffixBound, UsedSet};
 use super::types::{DeckResult, SearchParams};
+
+const MAX_CANDIDATES: usize = MASK_WORDS * 64;
 
 /// 执行精确 DFS/B&B 搜索。
 pub fn dfs_search(
@@ -120,6 +122,101 @@ impl SearchState<'_> {
         // 预计算同层 suffix 分量（一次性，3×27 循环），供循环内廉价 break 使用
         let slots = DECK_SIZE - depth;
         let pre = self.suffix.precompute_layer(&used, slots);
+        let sorted_by_bonus = self.ctx.event_type.is_some()
+            && !matches!(self.ctx.target, ScoreTarget::Power | ScoreTarget::Skill);
+        let allow_break = match self.ctx.target {
+            ScoreTarget::Power | ScoreTarget::Skill => true,
+            ScoreTarget::Score | ScoreTarget::Bonus => sorted_by_bonus,
+            ScoreTarget::Mysekai => false,
+        };
+
+        if !allow_break && threshold != 0 {
+            let mut candidate_indices = [0u16; MAX_CANDIDATES];
+            let mut candidate_ubs = [0u64; MAX_CANDIDATES];
+            let mut suffix_max = [0u64; MAX_CANDIDATES];
+            let mut n_candidates = 0usize;
+
+            let mut dense = start;
+            while dense < self.pool.count() {
+                if self.timed_out() {
+                    return;
+                }
+                let card = CardIdx::new(dense as u16);
+                dense += 1;
+                if fixed_leader.is_some_and(|leader| leader == card) {
+                    continue;
+                }
+
+                let char_id = self.pool.char_id(card);
+                if used.contains(char_id) {
+                    continue;
+                }
+
+                let eb = self.pool.event_bonus(card);
+                let card_bonus = eb.base_bonus as u32 + eb.limited_bonus as u32;
+                let bonus_total =
+                    partial.bonus + card_bonus + pre.suffix_bonus + pre.extra_bonus_ub;
+                let tight_power = partial.power + self.pool.power_max(card) + pre.suffix_power_rest;
+                let tight_skill =
+                    partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest;
+                let tight_leader = (partial.max_skill as u32).max(self.pool.skill_max(card) as u32);
+
+                candidate_indices[n_candidates] = card.raw() as u16;
+                candidate_ubs[n_candidates] =
+                    self.suffix
+                        .ceiling(tight_power, bonus_total, tight_skill, tight_leader);
+                n_candidates += 1;
+            }
+
+            if n_candidates == 0 {
+                return;
+            }
+
+            suffix_max[n_candidates - 1] = candidate_ubs[n_candidates - 1];
+            let mut idx = n_candidates - 1;
+            while idx > 0 {
+                idx -= 1;
+                suffix_max[idx] = suffix_max[idx + 1].max(candidate_ubs[idx]);
+            }
+
+            let mut idx = 0usize;
+            while idx < n_candidates {
+                if self.timed_out() {
+                    return;
+                }
+                if suffix_max[idx] <= threshold {
+                    break;
+                }
+                if candidate_ubs[idx] <= threshold {
+                    idx += 1;
+                    continue;
+                }
+
+                let card = CardIdx::new(candidate_indices[idx]);
+                unsafe {
+                    *deck.get_unchecked_mut(depth) = card;
+                }
+                let char_id = self.pool.char_id(card);
+                let mut next_used = used;
+                next_used.insert(char_id);
+                let next_partial = PartialDeck {
+                    power: partial.power + self.pool.power_max(card),
+                    skill: partial.skill + self.pool.skill_max(card) as u32,
+                    bonus: partial.bonus + card_proxy_bonus(self.pool, self.ctx, card, false),
+                    max_skill: partial.max_skill.max(self.pool.skill_max(card)),
+                };
+                self.recurse(
+                    depth + 1,
+                    usize::from(candidate_indices[idx]) + 1,
+                    deck,
+                    next_used,
+                    next_partial,
+                    fixed_leader,
+                );
+                idx += 1;
+            }
+            return;
+        }
 
         let mut dense = start;
         while dense < self.pool.count() {
@@ -138,15 +235,8 @@ impl SearchState<'_> {
             if threshold != 0 {
                 let eb = self.pool.event_bonus(card);
                 let card_bonus = eb.base_bonus as u32 + eb.limited_bonus as u32;
-                let bonus_total = partial.bonus + card_bonus
-                    + pre.suffix_bonus + pre.extra_bonus_ub;
-                let sorted_by_bonus = self.ctx.event_type.is_some()
-                    && !matches!(self.ctx.target, ScoreTarget::Power | ScoreTarget::Skill);
-                let allow_break = match self.ctx.target {
-                    ScoreTarget::Power | ScoreTarget::Skill => true,
-                    ScoreTarget::Score | ScoreTarget::Bonus => sorted_by_bonus,
-                    ScoreTarget::Mysekai => false,
-                };
+                let bonus_total =
+                    partial.bonus + card_bonus + pre.suffix_bonus + pre.extra_bonus_ub;
 
                 // Layer 1: break — 仅用单调分量（排序键递减 + 层级常量）
                 if allow_break {
@@ -156,9 +246,9 @@ impl SearchState<'_> {
                         partial.power + self.pool.power_max(card) + pre.suffix_power_rest
                     };
                     let layer_leader = (partial.max_skill as u32).max(pre.best_unused_skill as u32);
-                    let break_ceiling = self.suffix.ceiling(
-                        break_power, bonus_total, pre.skill_ub, layer_leader,
-                    );
+                    let break_ceiling =
+                        self.suffix
+                            .ceiling(break_power, bonus_total, pre.skill_ub, layer_leader);
                     if break_ceiling <= threshold {
                         break;
                     }
@@ -166,11 +256,12 @@ impl SearchState<'_> {
 
                 // Layer 2: continue — 含候选卡实际 power/skill，更紧但不单调
                 let tight_power = partial.power + self.pool.power_max(card) + pre.suffix_power_rest;
-                let tight_skill = partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest;
+                let tight_skill =
+                    partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest;
                 let tight_leader = (partial.max_skill as u32).max(self.pool.skill_max(card) as u32);
-                let tight_ceiling = self.suffix.ceiling(
-                    tight_power, bonus_total, tight_skill, tight_leader,
-                );
+                let tight_ceiling =
+                    self.suffix
+                        .ceiling(tight_power, bonus_total, tight_skill, tight_leader);
                 if tight_ceiling <= threshold {
                     continue;
                 }

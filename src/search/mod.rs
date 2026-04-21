@@ -275,6 +275,40 @@ mod tests {
         deck
     }
 
+    fn brute_force_best(pool: &CardPool, search_ctx: &SearchContext) -> u64 {
+        let mut brute = 0u64;
+        let mut a = 0usize;
+        while a < pool.count() {
+            let c0 = crate::pool::CardIdx::new(a as u16);
+            let mut b = a + 1;
+            while b < pool.count() {
+                let c1 = crate::pool::CardIdx::new(b as u16);
+                let mut c = b + 1;
+                while c < pool.count() {
+                    let c2 = crate::pool::CardIdx::new(c as u16);
+                    let mut d = c + 1;
+                    while d < pool.count() {
+                        let c3 = crate::pool::CardIdx::new(d as u16);
+                        let mut e = d + 1;
+                        while e < pool.count() {
+                            let c4 = crate::pool::CardIdx::new(e as u16);
+                            let score = leaf_evaluate(pool, search_ctx, &[c0, c1, c2, c3, c4]);
+                            if score > brute {
+                                brute = score;
+                            }
+                            e += 1;
+                        }
+                        d += 1;
+                    }
+                    c += 1;
+                }
+                b += 1;
+            }
+            a += 1;
+        }
+        brute
+    }
+
     #[test]
     fn search_leaf_evaluate_encodes_targets() {
         let pool = build_pool(&five_unique_cards());
@@ -726,6 +760,226 @@ mod tests {
 
         assert!(higher > lower);
         assert_eq!(best, higher);
+    }
+
+    #[test]
+    fn search_dfs_bonus_noevent_matches_bruteforce_with_suffix_max_break() {
+        let cards = [
+            TestCard {
+                char_id: 0,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 520,
+                power: 100,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 10,
+                limited_bonus: 0,
+                power_max: 100,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 1,
+                attr: 1,
+                unit_mask: 1,
+                game_id: 521,
+                power: 120,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 5,
+                limited_bonus: 0,
+                power_max: 120,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 2,
+                attr: 2,
+                unit_mask: 1,
+                game_id: 522,
+                power: 90,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 40,
+                limited_bonus: 0,
+                power_max: 90,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 3,
+                attr: 3,
+                unit_mask: 1,
+                game_id: 523,
+                power: 110,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 20,
+                limited_bonus: 0,
+                power_max: 110,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 4,
+                attr: 4,
+                unit_mask: 1,
+                game_id: 524,
+                power: 95,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 35,
+                limited_bonus: 0,
+                power_max: 95,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 5,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 525,
+                power: 105,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 15,
+                limited_bonus: 0,
+                power_max: 105,
+                skill_max: 0,
+            },
+        ];
+        let pool = build_pool(&cards);
+        let search_ctx = ctx(ScoreTarget::Bonus);
+        let suffix = SuffixBound::build(&pool, &search_ctx);
+        let params = SearchParams {
+            top_k: 1,
+            timeout_ms: 0,
+        };
+
+        let best = dfs_search(&pool, &search_ctx, &suffix, &params)
+            .first()
+            .map(|result| result.score)
+            .unwrap_or(0);
+
+        assert_eq!(best, brute_force_best(&pool, &search_ctx));
+    }
+
+    #[test]
+    fn search_dfs_mysekai_matches_bruteforce_with_suffix_max_break() {
+        let cards = [
+            TestCard {
+                char_id: 0,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 540,
+                power: 200,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 5,
+                limited_bonus: 0,
+                power_max: 200,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 1,
+                attr: 1,
+                unit_mask: 1,
+                game_id: 541,
+                power: 250,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 10,
+                limited_bonus: 0,
+                power_max: 250,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 2,
+                attr: 2,
+                unit_mask: 1,
+                game_id: 542,
+                power: 240,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 15,
+                limited_bonus: 0,
+                power_max: 240,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 3,
+                attr: 3,
+                unit_mask: 1,
+                game_id: 543,
+                power: 180,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 40,
+                limited_bonus: 0,
+                power_max: 180,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 4,
+                attr: 4,
+                unit_mask: 1,
+                game_id: 544,
+                power: 210,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 30,
+                limited_bonus: 0,
+                power_max: 210,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 5,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 545,
+                power: 260,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 0,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 260,
+                skill_max: 0,
+            },
+        ];
+        let pool = build_pool(&cards);
+        let search_ctx = ctx(ScoreTarget::Mysekai);
+        let suffix = SuffixBound::build(&pool, &search_ctx);
+        let params = SearchParams {
+            top_k: 1,
+            timeout_ms: 0,
+        };
+
+        let best = dfs_search(&pool, &search_ctx, &suffix, &params)
+            .first()
+            .map(|result| result.score)
+            .unwrap_or(0);
+
+        assert_eq!(best, brute_force_best(&pool, &search_ctx));
     }
 
     #[test]
