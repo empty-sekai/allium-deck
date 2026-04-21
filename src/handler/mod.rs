@@ -104,6 +104,21 @@ fn normalize_user_cards(
     cards
 }
 
+const EP_PREFILTER_MIN_POOL: usize = 50;
+
+fn ep_prefilter_keep(card: &CardIntermediate) -> bool {
+    if card.card_rarity_type <= 2 {
+        return false;
+    }
+    if card.card_rarity_type == 3
+        && card.event_bonus.base_bonus == 0
+        && card.event_bonus.limited_bonus == 0
+    {
+        return false;
+    }
+    true
+}
+
 fn keep_card(card: &CardIntermediate, params: &types::BuildParams) -> bool {
     if params.excluded_cards.contains(&card.game_card_id) {
         return false;
@@ -424,6 +439,13 @@ pub fn build_card_pool(
                 cards.push(intermediate);
             }
         }
+    }
+
+    if event_ctx.is_some()
+        && !matches!(params.target, crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill)
+        && cards.len() > EP_PREFILTER_MIN_POOL
+    {
+        cards.retain(ep_prefilter_keep);
     }
 
     if cards.is_empty() {

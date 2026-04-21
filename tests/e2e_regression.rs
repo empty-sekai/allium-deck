@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use allium_deck::handler::{build_card_pool, BuildError};
-use allium_deck::search::search;
+use allium_deck::search::{search, search_instrumented, SearchStats};
 use serde::Serialize;
 use testdata_adapter::input_transform::transform_input;
 use testdata_adapter::legacy_types::{
@@ -360,4 +360,77 @@ fn e2e_score_noev_fast() {
 #[test]
 fn e2e_skill_auto_ev() {
     run_combo(COMBOS[7]).unwrap();
+}
+
+#[test]
+fn measure_ep_pruning_stats() {
+    let ep_combos = ["score_multi_ev", "bonus_multi_ev", "score_multi_fast"];
+    let manifest = manifest().unwrap();
+
+    for combo in &ep_combos {
+        let cases: Vec<_> = manifest
+            .cases
+            .iter()
+            .filter(|c| c.combo == *combo)
+            .collect();
+        let mut total = SearchStats::default();
+        let mut case_count = 0u32;
+        let mut total_pool_size = 0usize;
+        let mut total_elapsed_ms = 0u128;
+
+        for case in &cases {
+            let input: LegacyInput =
+                load_json(&testdata_dir().join(&case.input_path)).unwrap();
+            let (params, user, search_params) = transform_input(&input).unwrap();
+            let user = maybe_trim_user_for_mask(case, &user).unwrap();
+            let game = game_for_region(&params.region).unwrap();
+            if let Ok((pool, ctx)) = build_card_pool(&user, &game.as_ref(), &params) {
+                let t0 = std::time::Instant::now();
+                let (_results, stats) =
+                    search_instrumented(&pool, &ctx, &search_params);
+                let elapsed = t0.elapsed().as_millis();
+                total.leaf_nodes += stats.leaf_nodes;
+                total.ub_prunes += stats.ub_prunes;
+                total.ep_candidates += stats.ep_candidates;
+                total.ep_break_prunes += stats.ep_break_prunes;
+                total.ep_continue_prunes += stats.ep_continue_prunes;
+                total.ep_explored += stats.ep_explored;
+                total.mono_break_prunes += stats.mono_break_prunes;
+                total_pool_size += pool.count();
+                total_elapsed_ms += elapsed;
+                case_count += 1;
+            }
+        }
+
+        let avg_pool = if case_count > 0 {
+            total_pool_size / case_count as usize
+        } else {
+            0
+        };
+        let prune_rate = if total.ep_candidates > 0 {
+            (total.ep_break_prunes + total.ep_continue_prunes) as f64
+                / total.ep_candidates as f64
+                * 100.0
+        } else {
+            0.0
+        };
+        eprintln!(
+            "\n=== {combo} ({case_count} cases, avg pool {avg_pool}, {total_elapsed_ms}ms) ===\n\
+             leaf_nodes:        {}\n\
+             ub_prunes:         {}\n\
+             ep_candidates:     {}\n\
+             ep_break_prunes:   {}\n\
+             ep_continue_prunes:{}\n\
+             ep_explored:       {}\n\
+             mono_break_prunes: {}\n\
+             ep_prune_rate:     {prune_rate:.1}%",
+            total.leaf_nodes,
+            total.ub_prunes,
+            total.ep_candidates,
+            total.ep_break_prunes,
+            total.ep_continue_prunes,
+            total.ep_explored,
+            total.mono_break_prunes,
+        );
+    }
 }

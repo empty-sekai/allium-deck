@@ -7,7 +7,7 @@ pub mod types;
 pub mod warm_start;
 
 pub use context::{SearchContext, SupportDeck};
-pub use dfs::dfs_search;
+pub use dfs::{dfs_search, SearchStats};
 pub use dominance::eliminate_dominated;
 pub use evaluate::{calc_event_point, decode_u18, leaf_evaluate};
 pub use suffix::{PartialDeck, SuffixBound, UsedSet};
@@ -19,24 +19,42 @@ use crate::types::DECK_SIZE;
 
 /// 执行完整搜索流水线：dominance 裁剪、上界构建、热启动、DFS/B&B。
 pub fn search(pool: &CardPool, ctx: &SearchContext, params: &SearchParams) -> Vec<DeckResult> {
+    let (results, _) = search_instrumented(pool, ctx, params);
+    results
+}
+
+/// 带统计信息的搜索。
+pub fn search_instrumented(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
-        return Vec::new();
+        return (Vec::new(), SearchStats::default());
     }
 
     let dominance = eliminate_dominated(pool, ctx);
     let suffix = SuffixBound::build(&dominance.pool, &dominance.ctx);
     let seed = warm_start::warm_start_best(&dominance.pool, &dominance.ctx);
-    let compacted_results =
-        dfs::dfs_search_seeded(&dominance.pool, &dominance.ctx, &suffix, params, seed);
+    let (compacted_results, stats) = dfs::dfs_search_instrumented(
+        &dominance.pool,
+        &dominance.ctx,
+        &suffix,
+        params,
+        seed,
+    );
     let remapped = remap_results(compacted_results, &dominance.original_indices);
-    if matches!(ctx.target, crate::types::ScoreTarget::Bonus) && !ctx.bonus_targets.is_empty() {
+    let results = if matches!(ctx.target, crate::types::ScoreTarget::Bonus)
+        && !ctx.bonus_targets.is_empty()
+    {
         remapped
             .into_iter()
             .filter(|result| result.score != 0)
             .collect()
     } else {
         remapped
-    }
+    };
+    (results, stats)
 }
 
 fn remap_results(
