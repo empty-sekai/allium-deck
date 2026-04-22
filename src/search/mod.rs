@@ -166,6 +166,8 @@ mod tests {
         SearchContext {
             target,
             bonus_targets: Vec::new(),
+            fixed_card_ids: Vec::new(),
+            fixed_character_ids: Vec::new(),
             music_rate_pct: 100,
             boost_rate_pct: 100,
             base_score: 1.0,
@@ -187,17 +189,28 @@ mod tests {
             specific_skill_order: None,
             multi_teammate_score_up: None,
             multi_teammate_power: None,
+            multi_live_score_up_lower_bound: None,
             extra_bonus_ub: 0,
             w_power: 2.0,
             w_bonus: 1.0,
             skill_ub_global: 0,
             card_bonus_count_limit: DECK_SIZE,
             honor_bonus: 0,
+            power_total_cap: None,
             leader_honor_bonus: Vec::new(),
             leader_limit_bonus: Vec::new(),
             skill_is_after_training: Vec::new(),
             trained_to_special_image: Vec::new(),
         }
+    }
+
+    fn ready_ctx(pool: &CardPool, target: ScoreTarget) -> SearchContext {
+        let mut ctx = ctx(target);
+        ctx.leader_honor_bonus = vec![0; pool.count()];
+        ctx.leader_limit_bonus = vec![0; pool.count()];
+        ctx.skill_is_after_training = vec![false; pool.count()];
+        ctx.trained_to_special_image = vec![false; pool.count()];
+        ctx
     }
 
     fn five_unique_cards() -> [TestCard; 5] {
@@ -351,6 +364,89 @@ mod tests {
 
         let score_value = leaf_evaluate(&pool, &search_ctx, &deck);
         assert_eq!(score_value, ((126000u64) << 32) | 126000u64);
+    }
+
+    #[test]
+    fn search_leaf_evaluate_applies_power_cap() {
+        let cards = five_unique_cards().map(|mut card| {
+            card.power = 1000;
+            card.power_max = 1000;
+            card
+        });
+        let pool = build_pool(&cards);
+        let deck = collect_first_five(&pool);
+        let mut search_ctx = ctx(ScoreTarget::Power);
+        search_ctx.power_total_cap = Some(3_500);
+
+        assert_eq!(leaf_evaluate(&pool, &search_ctx, &deck), 3_500);
+    }
+
+    #[test]
+    fn search_fixed_card_constraint_is_respected() {
+        let mut cards = five_unique_cards().to_vec();
+        cards.push(TestCard {
+            char_id: 5,
+            attr: 0,
+            unit_mask: 1,
+            game_id: 150,
+            power: 1,
+            skill: SkillSlot::default(),
+            base_bonus: 0,
+            limited_bonus: 0,
+            power_max: 1,
+            skill_max: 0,
+        });
+        let pool = build_pool(&cards);
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
+        search_ctx.fixed_card_ids = vec![150];
+        let results = search(
+            &pool,
+            &search_ctx,
+            &SearchParams {
+                top_k: 1,
+                timeout_ms: 0,
+            },
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(pool.game_id(results[0].cards[0]), 150);
+    }
+
+    #[test]
+    fn search_fixed_character_constraint_is_respected() {
+        let pool = build_pool(&five_unique_cards());
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
+        search_ctx.fixed_character_ids = vec![1, 3];
+        let results = search(
+            &pool,
+            &search_ctx,
+            &SearchParams {
+                top_k: 1,
+                timeout_ms: 0,
+            },
+        );
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(pool.char_id(results[0].cards[0]), 1);
+        assert_eq!(pool.char_id(results[0].cards[1]), 3);
+    }
+
+    #[test]
+    fn search_multi_score_up_lower_bound_filters_invalid_decks() {
+        let pool = build_pool(&five_unique_cards());
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
+        search_ctx.live_type = LiveType::Multi;
+        search_ctx.multi_live_score_up_lower_bound = Some(1_000.0);
+        let results = search(
+            &pool,
+            &search_ctx,
+            &SearchParams {
+                top_k: 1,
+                timeout_ms: 0,
+            },
+        );
+
+        assert!(results.is_empty());
     }
 
     #[test]

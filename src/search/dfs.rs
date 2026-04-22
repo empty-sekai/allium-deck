@@ -4,7 +4,7 @@ use crate::pool::{CardIdx, CardPool};
 use crate::types::{ScoreTarget, DECK_SIZE};
 
 use super::context::SearchContext;
-use super::evaluate::{card_proxy_bonus, leaf_evaluate};
+use super::evaluate::{card_proxy_bonus, leaf_evaluate_checked};
 use super::suffix::{PartialDeck, SuffixBound, UsedSet};
 use super::types::{DeckResult, SearchParams};
 
@@ -13,6 +13,7 @@ use super::types::{DeckResult, SearchParams};
 pub struct SearchStats {
     pub leaf_nodes: u64,
     pub ub_prunes: u64,
+    pub leader_prunes: u64,
     pub ep_candidates: u64,
     pub ep_break_prunes: u64,
     pub ep_continue_prunes: u64,
@@ -89,6 +90,9 @@ fn dfs_search_seeded_inner(
             if state.timed_out() {
                 break;
             }
+            if !state.slot_matches(0, leader) {
+                continue;
+            }
             deck[0] = leader;
             let mut used = UsedSet::new();
             used.insert(pool.char_id(leader));
@@ -98,6 +102,16 @@ fn dfs_search_seeded_inner(
                 bonus: card_proxy_bonus(pool, ctx, leader, true),
                 max_skill: pool.skill_max(leader),
             };
+            let threshold = state.tracker.threshold();
+            if threshold != 0
+                && state
+                    .suffix
+                    .upper_bound_with_depth(1, &used, &partial)
+                    <= threshold
+            {
+                state.stats.leader_prunes += 1;
+                continue;
+            }
             state.recurse(1, 0, &mut deck, used, partial, Some(leader));
         }
     } else {
@@ -142,8 +156,9 @@ impl SearchState<'_> {
         }
         if depth == DECK_SIZE {
             self.stats.leaf_nodes += 1;
-            let score = leaf_evaluate(self.pool, self.ctx, deck);
-            self.tracker.insert(DeckResult::new(*deck, score));
+            if let Some(score) = leaf_evaluate_checked(self.pool, self.ctx, deck) {
+                self.tracker.insert(DeckResult::new(*deck, score));
+            }
             return;
         }
 
@@ -198,6 +213,9 @@ impl SearchState<'_> {
                 continue;
             }
             let char_id = self.pool.char_id(card);
+            if !self.slot_matches(depth, card) {
+                continue;
+            }
             if used.contains(char_id) {
                 continue;
             }
@@ -270,6 +288,9 @@ impl SearchState<'_> {
                 continue;
             }
             let char_id = self.pool.char_id(card);
+            if !self.slot_matches(depth, card) {
+                continue;
+            }
             if used.contains(char_id) {
                 continue;
             }
@@ -358,6 +379,9 @@ impl SearchState<'_> {
                 continue;
             }
             let char_id = self.pool.char_id(card);
+            if !self.slot_matches(depth, card) {
+                continue;
+            }
             if used.contains(char_id) {
                 continue;
             }
@@ -384,6 +408,21 @@ impl SearchState<'_> {
         }
         self.deadline
             .is_some_and(|deadline| Instant::now() >= deadline)
+    }
+
+    #[inline(always)]
+    fn slot_matches(&self, depth: usize, card: CardIdx) -> bool {
+        if let Some(game_id) = self.ctx.fixed_card_at(depth) {
+            if self.pool.game_id(card) != game_id {
+                return false;
+            }
+        }
+        if let Some(character_id) = self.ctx.fixed_character_at(depth) {
+            if self.pool.char_id(card) != character_id {
+                return false;
+            }
+        }
+        true
     }
 }
 

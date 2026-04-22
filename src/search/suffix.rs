@@ -68,6 +68,7 @@ pub struct SuffixBound {
     multi_teammate_power: Option<i32>,
     extra_bonus_ub: u32,
     honor_bonus: u32,
+    power_total_cap: Option<u32>,
     power_order: [u8; CHAR_MASK_COUNT],
     power_vals: [u32; CHAR_MASK_COUNT],
     skill_order: [u8; CHAR_MASK_COUNT],
@@ -148,6 +149,7 @@ impl SuffixBound {
             multi_teammate_power: ctx.multi_teammate_power,
             extra_bonus_ub: ctx.extra_bonus_ub,
             honor_bonus: ctx.honor_bonus,
+            power_total_cap: ctx.power_total_cap,
             power_order,
             power_vals: power_order.map(|char_id| power_per_char[char_id as usize]),
             skill_order,
@@ -182,14 +184,16 @@ impl SuffixBound {
     ) -> u64 {
         match self.target {
             ScoreTarget::Power => {
-                partial.power as u64
-                    + suffix_sum_u32(
+                self.clamp_power_total(
+                    partial.power
+                        + suffix_sum_u32(
                         &self.power_order,
                         &self.power_vals,
                         used_chars.bits(),
                         slots_left,
-                    ) as u64
-                    + self.honor_bonus as u64
+                    )
+                        + self.honor_bonus,
+                ) as u64
             }
             ScoreTarget::Skill => {
                 let total_skill = partial.skill
@@ -228,14 +232,14 @@ impl SuffixBound {
                     };
                     target_bonus
                 };
-                let total_power = partial.power
+                let total_power = self.clamp_power_total(partial.power
                     + suffix_sum_u32(
                         &self.power_order,
                         &self.power_vals,
                         used_chars.bits(),
                         slots_left,
                     )
-                    + self.honor_bonus;
+                    + self.honor_bonus);
                 let total_skill = partial.skill
                     + suffix_sum_u16_as_u32(
                         &self.skill_order,
@@ -254,14 +258,14 @@ impl SuffixBound {
                     | ((live_score as u32 as u64) & 0x00ff_ffff)
             }
             ScoreTarget::Score => {
-                let total_power = partial.power
+                let total_power = self.clamp_power_total(partial.power
                     + suffix_sum_u32(
                         &self.power_order,
                         &self.power_vals,
                         used_chars.bits(),
                         slots_left,
                     )
-                    + self.honor_bonus;
+                    + self.honor_bonus);
                 let total_bonus = partial.bonus
                     + suffix_sum_u16_as_u32(
                         &self.bonus_order,
@@ -286,14 +290,14 @@ impl SuffixBound {
                 ((event_point as u64) << 32) | (live_score as u32 as u64)
             }
             ScoreTarget::Mysekai => {
-                let total_power = partial.power
+                let total_power = self.clamp_power_total(partial.power
                     + suffix_sum_u32(
                         &self.power_order,
                         &self.power_vals,
                         used_chars.bits(),
                         slots_left,
                     )
-                    + self.honor_bonus;
+                    + self.honor_bonus);
                 let total_bonus = partial.bonus
                     + suffix_sum_u16_as_u32(
                         &self.bonus_order,
@@ -371,7 +375,7 @@ impl SuffixBound {
         skill_ub: u32,
         leader_ub: u32,
     ) -> u64 {
-        let power_ub = power_ub + self.honor_bonus;
+        let power_ub = self.clamp_power_total(power_ub + self.honor_bonus);
         match self.target {
             ScoreTarget::Power => power_ub as u64,
             ScoreTarget::Skill => {
@@ -415,6 +419,11 @@ impl SuffixBound {
             LiveType::Mysekai => 0,
             _ => ((rate_1m * power_total as i64 * 4 + active_1m) / 1_000_000) as i32,
         }
+    }
+
+    #[inline(always)]
+    fn clamp_power_total(&self, power_total: u32) -> u32 {
+        self.power_total_cap.map_or(power_total, |cap| power_total.min(cap))
     }
 
     pub(crate) fn mono_precompute(

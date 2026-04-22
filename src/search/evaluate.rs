@@ -37,40 +37,75 @@ pub fn decode_u18(values: &[u16; 8], high_bits: u32, idx: usize) -> u32 {
 /// 精确计算叶子节点的排序值。
 #[inline(always)]
 pub fn leaf_evaluate(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) -> u64 {
-    let power_total = resolve_power_target(pool, deck) + ctx.honor_bonus;
+    leaf_evaluate_checked(pool, ctx, deck).unwrap_or(0)
+}
+
+/// 精确计算叶子节点排序值；若额外约束不满足则返回 `None`。
+#[inline(always)]
+pub(crate) fn leaf_evaluate_checked(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; 5],
+) -> Option<u64> {
+    let power_total = ctx.clamp_power_total(resolve_power_target(pool, deck) + ctx.honor_bonus);
     match ctx.target {
-        ScoreTarget::Power => power_total as u64,
+        ScoreTarget::Power => {
+            if !has_valid_permutation(pool, ctx, deck) {
+                return None;
+            }
+            Some(power_total as u64)
+        }
         ScoreTarget::Mysekai => {
             let total_bonus = resolve_total_bonus(pool, ctx, deck);
-            calc_mysekai_internal(power_total, total_bonus) as u64
+            if !has_valid_permutation(pool, ctx, deck) {
+                return None;
+            }
+            Some(calc_mysekai_internal(power_total, total_bonus) as u64)
         }
         ScoreTarget::Skill => {
             let prepared = prepare_skills(pool, ctx, deck);
             let mut best = 0u64;
+            let mut found = false;
             let mut mask = prepared.enumerate_mask;
             loop {
                 let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
+                if !permutation_satisfies_lower_bound(ctx, &permutation) {
+                    if mask == 0 {
+                        break;
+                    }
+                    mask = (mask - 1) & prepared.enumerate_mask;
+                    continue;
+                }
                 let encoded = encode_skill_target(permutation.multi_live_score_up);
                 if encoded > best {
                     best = encoded;
                 }
+                found = true;
                 if mask == 0 {
                     break;
                 }
                 mask = (mask - 1) & prepared.enumerate_mask;
             }
-            best
+            found.then_some(best)
         }
         ScoreTarget::Bonus => {
             let total_bonus = resolve_total_bonus(pool, ctx, deck);
             if !ctx.bonus_targets.is_empty() && !ctx.bonus_targets.contains(&total_bonus) {
-                return 0;
+                return None;
             }
             let prepared = prepare_skills(pool, ctx, deck);
             let mut best = 0u64;
+            let mut found = false;
             let mut mask = prepared.enumerate_mask;
             loop {
                 let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
+                if !permutation_satisfies_lower_bound(ctx, &permutation) {
+                    if mask == 0 {
+                        break;
+                    }
+                    mask = (mask - 1) & prepared.enumerate_mask;
+                    continue;
+                }
                 let live_score = calc_live_score(power_total, &permutation, ctx);
                 let event_point = if ctx.has_event() {
                     calc_event_point(live_score, total_bonus, ctx)
@@ -83,20 +118,29 @@ pub fn leaf_evaluate(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) 
                 if encoded > best {
                     best = encoded;
                 }
+                found = true;
                 if mask == 0 {
                     break;
                 }
                 mask = (mask - 1) & prepared.enumerate_mask;
             }
-            best
+            found.then_some(best)
         }
         ScoreTarget::Score => {
             let total_bonus = resolve_total_bonus(pool, ctx, deck);
             let prepared = prepare_skills(pool, ctx, deck);
             let mut best = 0u64;
+            let mut found = false;
             let mut mask = prepared.enumerate_mask;
             loop {
                 let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
+                if !permutation_satisfies_lower_bound(ctx, &permutation) {
+                    if mask == 0 {
+                        break;
+                    }
+                    mask = (mask - 1) & prepared.enumerate_mask;
+                    continue;
+                }
                 let live_score = calc_live_score(power_total, &permutation, ctx);
                 let event_point = if ctx.has_event() {
                     calc_event_point(live_score, total_bonus, ctx)
@@ -107,12 +151,13 @@ pub fn leaf_evaluate(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) 
                 if encoded > best {
                     best = encoded;
                 }
+                found = true;
                 if mask == 0 {
                     break;
                 }
                 mask = (mask - 1) & prepared.enumerate_mask;
             }
-            best
+            found.then_some(best)
         }
     }
 }
@@ -810,6 +855,35 @@ fn choose_reference_score(
             total / reference_len as f64
         }
     }
+}
+
+#[inline(always)]
+fn has_valid_permutation(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) -> bool {
+    if ctx.multi_live_score_up_lower_bound.is_none() {
+        return true;
+    }
+    let prepared = prepare_skills(pool, ctx, deck);
+    let mut mask = prepared.enumerate_mask;
+    loop {
+        let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
+        if permutation_satisfies_lower_bound(ctx, &permutation) {
+            return true;
+        }
+        if mask == 0 {
+            break;
+        }
+        mask = (mask - 1) & prepared.enumerate_mask;
+    }
+    false
+}
+
+#[inline(always)]
+fn permutation_satisfies_lower_bound(
+    ctx: &SearchContext,
+    permutation: &EvaluatedPermutation,
+) -> bool {
+    ctx.multi_live_score_up_lower_bound
+        .is_none_or(|lower_bound| permutation.multi_live_score_up + 1e-9 >= lower_bound)
 }
 
 #[inline(always)]

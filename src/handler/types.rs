@@ -145,6 +145,8 @@ pub struct BuildParams {
     pub multi_teammate_score_up: Option<i32>,
     /// 协力队友综合力。
     pub multi_teammate_power: Option<i32>,
+    /// 协力总 score up 下限。
+    pub multi_live_score_up_lower_bound: Option<f64>,
     /// 排除卡。
     pub excluded_cards: Vec<i32>,
     /// 展示 boost。
@@ -187,6 +189,7 @@ impl Default for BuildParams {
             specific_skill_order: None,
             multi_teammate_score_up: None,
             multi_teammate_power: None,
+            multi_live_score_up_lower_bound: None,
             excluded_cards: Vec::new(),
             boost: None,
             other_score: None,

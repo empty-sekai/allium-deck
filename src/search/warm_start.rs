@@ -2,7 +2,7 @@ use crate::pool::{CardIdx, CardPool};
 use crate::types::{ScoreTarget, DECK_SIZE};
 
 use super::context::SearchContext;
-use super::evaluate::{card_proxy_bonus, leaf_evaluate};
+use super::evaluate::{card_proxy_bonus, leaf_evaluate_checked};
 use super::types::DeckResult;
 
 const FINAL_CHAPTER_WARM_START_LEADERS: usize = 20;
@@ -24,7 +24,7 @@ pub fn warm_start(pool: &CardPool, ctx: &SearchContext) -> u64 {
 pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<DeckResult> {
     let mut best: Option<DeckResult> = None;
     let final_chapter_leaders = if ctx.is_final_chapter {
-        top_final_chapter_leaders(pool)
+        top_final_chapter_leaders(pool, ctx)
     } else {
         [None; FINAL_CHAPTER_WARM_START_LEADERS]
     };
@@ -35,17 +35,15 @@ pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<De
                     continue;
                 };
                 let improved = one_swap_improve(pool, ctx, deck, Some(leader));
-                promote_best(
-                    &mut best,
-                    DeckResult::new(improved, leaf_evaluate(pool, ctx, &improved)),
-                );
+                if let Some(score) = leaf_evaluate_checked(pool, ctx, &improved) {
+                    promote_best(&mut best, DeckResult::new(improved, score));
+                }
             }
         } else if let Some(deck) = greedy_select(pool, ctx, strategy, None) {
             let improved = one_swap_improve(pool, ctx, deck, None);
-            promote_best(
-                &mut best,
-                DeckResult::new(improved, leaf_evaluate(pool, ctx, &improved)),
-            );
+            if let Some(score) = leaf_evaluate_checked(pool, ctx, &improved) {
+                promote_best(&mut best, DeckResult::new(improved, score));
+            }
         }
     }
     best
@@ -53,9 +51,13 @@ pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<De
 
 fn top_final_chapter_leaders(
     pool: &CardPool,
+    ctx: &SearchContext,
 ) -> [Option<CardIdx>; FINAL_CHAPTER_WARM_START_LEADERS] {
     let mut leaders = [None; FINAL_CHAPTER_WARM_START_LEADERS];
     for candidate in pool.indices() {
+        if !slot_matches(pool, ctx, 0, candidate) {
+            continue;
+        }
         let mut pos = 0usize;
         while pos < FINAL_CHAPTER_WARM_START_LEADERS {
             let should_insert = match leaders[pos] {
@@ -109,6 +111,9 @@ fn greedy_select(
             if fixed_leader.is_some_and(|leader| leader == card) {
                 continue;
             }
+            if !slot_matches(pool, ctx, filled, card) {
+                continue;
+            }
             let score = strategy_score(pool, ctx, strategy, card);
             if score > candidate_score
                 || (score == candidate_score
@@ -134,18 +139,27 @@ fn one_swap_improve(
     mut deck: [CardIdx; 5],
     fixed_leader: Option<CardIdx>,
 ) -> [CardIdx; 5] {
-    let mut best_score = leaf_evaluate(pool, ctx, &deck);
+    let Some(mut best_score) = leaf_evaluate_checked(pool, ctx, &deck) else {
+        return deck;
+    };
     let start_slot = if fixed_leader.is_some() { 1 } else { 0 };
 
     loop {
         let mut improved = false;
         let mut slot = start_slot;
         while slot < DECK_SIZE {
+            if ctx.is_fixed_slot(slot) {
+                slot += 1;
+                continue;
+            }
             let original = unsafe { *deck.get_unchecked(slot) };
             let mut best_card = original;
             let mut best_slot_score = best_score;
             for candidate in pool.indices() {
                 if candidate == original || fixed_leader.is_some_and(|leader| leader == candidate) {
+                    continue;
+                }
+                if !slot_matches(pool, ctx, slot, candidate) {
                     continue;
                 }
 
@@ -169,7 +183,12 @@ fn one_swap_improve(
                 unsafe {
                     *deck.get_unchecked_mut(slot) = candidate;
                 }
-                let score = leaf_evaluate(pool, ctx, &deck);
+                let Some(score) = leaf_evaluate_checked(pool, ctx, &deck) else {
+                    unsafe {
+                        *deck.get_unchecked_mut(slot) = original;
+                    }
+                    continue;
+                };
                 if score > best_slot_score {
                     best_slot_score = score;
                     best_card = candidate;
@@ -221,4 +240,19 @@ fn promote_best(best: &mut Option<DeckResult>, candidate: DeckResult) {
     if replace {
         *best = Some(candidate);
     }
+}
+
+#[inline(always)]
+fn slot_matches(pool: &CardPool, ctx: &SearchContext, slot: usize, card: CardIdx) -> bool {
+    if let Some(game_id) = ctx.fixed_card_at(slot) {
+        if pool.game_id(card) != game_id {
+            return false;
+        }
+    }
+    if let Some(character_id) = ctx.fixed_character_at(slot) {
+        if pool.char_id(card) != character_id {
+            return false;
+        }
+    }
+    true
 }

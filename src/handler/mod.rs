@@ -7,6 +7,7 @@ mod skill;
 mod support_bonus;
 pub mod types;
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -34,6 +35,8 @@ pub enum BuildError {
     EmptyPool,
     /// 候选卡超过 512-bit mask 容量。
     TooManyCards(usize),
+    /// 参数非法。
+    InvalidConfig(String),
 }
 
 impl Display for BuildError {
@@ -41,6 +44,7 @@ impl Display for BuildError {
         match self {
             Self::EmptyPool => f.write_str("候选卡池为空"),
             Self::TooManyCards(count) => write!(f, "候选卡数量超过 mask 容量: {count}"),
+            Self::InvalidConfig(reason) => write!(f, "构建参数非法: {reason}"),
         }
     }
 }
@@ -120,37 +124,14 @@ fn ep_prefilter_keep(card: &CardIntermediate) -> bool {
 }
 
 fn keep_card(card: &CardIntermediate, params: &types::BuildParams) -> bool {
+    let is_fixed_card = params.fixed_cards.contains(&card.game_card_id);
     if params.excluded_cards.contains(&card.game_card_id) {
         return false;
     }
 
-    if let Some(unit) = params
-        .unit_filter
-        .as_deref()
-        .and_then(parse_unit_code)
-        .and_then(types::unit_to_pool_index)
-    {
-        let piapro_bit = 1u8 << 5;
-        let wanted = 1u8 << unit;
-        if card.unit_mask_raw & (wanted | piapro_bit) == 0 {
-            return false;
-        }
-    }
-
-    if let Some(attr) = params
-        .attr_filter
-        .as_deref()
-        .and_then(parse_attr_code)
-        .and_then(attr_to_pool_index)
-    {
-        if card.attr != attr {
-            return false;
-        }
-    }
-
-    if params.filter_other_unit {
+    if !is_fixed_card {
         if let Some(unit) = params
-            .event_unit
+            .unit_filter
             .as_deref()
             .and_then(parse_unit_code)
             .and_then(types::unit_to_pool_index)
@@ -159,6 +140,32 @@ fn keep_card(card: &CardIntermediate, params: &types::BuildParams) -> bool {
             let wanted = 1u8 << unit;
             if card.unit_mask_raw & (wanted | piapro_bit) == 0 {
                 return false;
+            }
+        }
+
+        if let Some(attr) = params
+            .attr_filter
+            .as_deref()
+            .and_then(parse_attr_code)
+            .and_then(attr_to_pool_index)
+        {
+            if card.attr != attr {
+                return false;
+            }
+        }
+
+        if params.filter_other_unit {
+            if let Some(unit) = params
+                .event_unit
+                .as_deref()
+                .and_then(parse_unit_code)
+                .and_then(types::unit_to_pool_index)
+            {
+                let piapro_bit = 1u8 << 5;
+                let wanted = 1u8 << unit;
+                if card.unit_mask_raw & (wanted | piapro_bit) == 0 {
+                    return false;
+                }
             }
         }
     }
@@ -178,6 +185,81 @@ fn normalize_boost_rate_pct(boost: Option<i32>) -> u32 {
         Some(value) if value > 0 => value as u32,
         _ => 100,
     }
+}
+
+fn validate_fixed_constraints(
+    params: &types::BuildParams,
+    full: &[CardIntermediate],
+) -> Result<(Vec<u16>, Vec<u8>), BuildError> {
+    if !params.fixed_cards.is_empty() && !params.fixed_characters.is_empty() {
+        return Err(BuildError::InvalidConfig(
+            "fixed_cards 和 fixed_characters 不能同时使用".to_string(),
+        ));
+    }
+    if matches!(
+        params.live_type,
+        crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+    ) && !params.fixed_characters.is_empty()
+    {
+        return Err(BuildError::InvalidConfig(
+            "challenge live 不支持 fixed_characters".to_string(),
+        ));
+    }
+    if params.fixed_cards.len() + params.fixed_characters.len() > crate::types::DECK_SIZE {
+        return Err(BuildError::InvalidConfig(
+            "固定约束数量超过 5".to_string(),
+        ));
+    }
+
+    let mut fixed_card_ids = Vec::with_capacity(params.fixed_cards.len());
+    let mut seen_cards = BTreeSet::new();
+    let mut seen_fixed_chars = BTreeSet::new();
+    for &card_id in &params.fixed_cards {
+        if !(1..=u16::MAX as i32).contains(&card_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed card id 非法: {card_id}"
+            )));
+        }
+        if !seen_cards.insert(card_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed card 重复: {card_id}"
+            )));
+        }
+        let Some(character_id) = full
+            .iter()
+            .find(|card| card.game_card_id == card_id)
+            .map(|card| card.character_id)
+        else {
+            return Err(BuildError::EmptyPool);
+        };
+        if !seen_fixed_chars.insert(character_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed card 角色重复: {character_id}"
+            )));
+        }
+        fixed_card_ids.push(card_id as u16);
+    }
+
+    let mut fixed_character_ids = Vec::with_capacity(params.fixed_characters.len());
+    for &character_id in &params.fixed_characters {
+        if !(1..=26).contains(&character_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed character id 非法: {character_id}"
+            )));
+        }
+        let character_id = character_id as u8;
+        if !seen_fixed_chars.insert(character_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed character 重复: {character_id}"
+            )));
+        }
+        if full.iter().all(|card| card.character_id != character_id) {
+            return Err(BuildError::EmptyPool);
+        }
+        fixed_character_ids.push(character_id);
+    }
+
+    Ok((fixed_card_ids, fixed_character_ids))
 }
 
 fn user_character_rank(user: &types::UserProfile, character_id: i32) -> i32 {
@@ -254,6 +336,8 @@ fn build_search_context(
     params: &types::BuildParams,
     event_ctx: Option<&EventContext>,
     music: Option<&music::MusicParams>,
+    fixed_card_ids: Vec<u16>,
+    fixed_character_ids: Vec<u8>,
 ) -> SearchContext {
     let support_deck = build_support_deck(full, game, event_ctx);
     let support_bonus_top_sum = support_deck
@@ -279,6 +363,8 @@ fn build_search_context(
             .filter(|value| *value > 0)
             .map(|value| value as u32)
             .collect(),
+        fixed_card_ids,
+        fixed_character_ids,
         music_rate_pct: music.map(|music| music.event_rate_pct).unwrap_or(100),
         boost_rate_pct: normalize_boost_rate_pct(params.boost),
         base_score: music.map(|music| music.meta.base_score).unwrap_or(1.0),
@@ -309,6 +395,7 @@ fn build_search_context(
         specific_skill_order: params.specific_skill_order,
         multi_teammate_score_up: params.multi_teammate_score_up,
         multi_teammate_power: params.multi_teammate_power,
+        multi_live_score_up_lower_bound: params.multi_live_score_up_lower_bound,
         extra_bonus_ub: diff_attr_bonus.into_iter().max().unwrap_or(0) as u32
             + support_bonus_top_sum,
         w_power: 1.0,
@@ -316,6 +403,15 @@ fn build_search_context(
         skill_ub_global,
         card_bonus_count_limit: event_ctx.map(|ctx| ctx.card_bonus_count_limit).unwrap_or(5),
         honor_bonus: 0,
+        power_total_cap: event_ctx.and_then(|ctx| {
+            if matches!(ctx.event_type, crate::types::EventType::WorldBloom)
+                && ctx.world_bloom_event_turn == Some(3)
+            {
+                Some(336_000)
+            } else {
+                None
+            }
+        }),
         leader_honor_bonus: full.iter().map(|card| card.leader_honor_bonus).collect(),
         leader_limit_bonus: full.iter().map(|card| card.leader_limit_bonus).collect(),
         skill_is_after_training: full
@@ -357,6 +453,13 @@ pub fn build_card_pool(
     game: &types::GameData<'_>,
     params: &types::BuildParams,
 ) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
+    if params.multi_live_score_up_lower_bound.is_some()
+        && !matches!(params.live_type, crate::types::LiveType::Multi)
+    {
+        return Err(BuildError::InvalidConfig(
+            "multi_live_score_up_lower_bound 仅支持 multi live".to_string(),
+        ));
+    }
     let event_ctx = build_event_context(game, params);
     let fixture_bonus_limit = resolve_fixture_bonus_limit(game, event_ctx.as_ref());
     let music = build_music_params(game, params);
@@ -451,13 +554,21 @@ pub fn build_card_pool(
     if cards.is_empty() {
         return Err(BuildError::EmptyPool);
     }
+    let (fixed_card_ids, fixed_character_ids) = validate_fixed_constraints(params, &cards)?;
     if cards.len() > crate::pool::MASK_WORDS * 64 {
         return Err(BuildError::TooManyCards(cards.len()));
     }
 
     let (pool, full) = sort_and_gather(cards, params.target, event_ctx.is_some());
-    let mut search_ctx =
-        build_search_context(&full, game, params, event_ctx.as_ref(), music.as_ref());
+    let mut search_ctx = build_search_context(
+        &full,
+        game,
+        params,
+        event_ctx.as_ref(),
+        music.as_ref(),
+        fixed_card_ids,
+        fixed_character_ids,
+    );
     search_ctx.honor_bonus = compute_honor_bonus(user, game);
     Ok((pool, search_ctx))
 }

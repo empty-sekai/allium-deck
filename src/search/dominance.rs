@@ -17,7 +17,7 @@ pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceRes
     let keep = if ctx.is_world_bloom || ctx.is_final_chapter {
         vec![true; pool.count()]
     } else {
-        compute_keep_mask(pool)
+        compute_keep_mask(pool, ctx)
     };
     let before = pool.count();
     let after = keep.iter().copied().filter(|keep| *keep).count();
@@ -45,7 +45,7 @@ pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceRes
     }
 }
 
-fn compute_keep_mask(pool: &CardPool) -> Vec<bool> {
+fn compute_keep_mask(pool: &CardPool, ctx: &SearchContext) -> Vec<bool> {
     let mut keep = vec![true; pool.count()];
     let mut char_id = 0u8;
     while (char_id as usize) < 27 {
@@ -64,7 +64,10 @@ fn compute_keep_mask(pool: &CardPool) -> Vec<bool> {
             while right < cards.len() {
                 if left != right {
                     let b = unsafe { *cards.get_unchecked(right) };
-                    if keep[b.raw()] && dominates(pool, a, b) {
+                    if keep[b.raw()]
+                        && !ctx.is_fixed_game_id(pool.game_id(b))
+                        && dominates(pool, a, b)
+                    {
                         keep[b.raw()] = false;
                     }
                 }
