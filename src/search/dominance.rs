@@ -14,7 +14,7 @@ pub struct DominanceResult {
 
 /// 在安全场景下执行逐角色支配裁剪并返回压缩后的卡池。
 pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceResult {
-    let keep = if ctx.is_world_bloom || ctx.is_final_chapter {
+    let keep = if ctx.is_world_bloom {
         vec![true; pool.count()]
     } else {
         compute_keep_mask(pool, ctx)
@@ -45,6 +45,53 @@ pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceRes
     }
 }
 
+/// 仅供终章 member 搜索使用的支配保留位图。
+pub fn compute_member_keep(pool: &CardPool) -> Vec<bool> {
+    compute_keep_mask(
+        pool,
+        &SearchContext {
+            target: crate::types::ScoreTarget::Power,
+            fixed_card_ids: Vec::new(),
+            fixed_character_ids: Vec::new(),
+            music_rate_pct: 100,
+            boost_rate_pct: 100,
+            base_score: 1.0,
+            base_score_auto: 1.0,
+            fever_score: 0.0,
+            skill_scores: [[0.0; 6]; 3],
+            other_score: 0,
+            life: 1000,
+            diff_attr_bonus: [0; 6],
+            support_deck: super::context::SupportDeck::default(),
+            is_world_bloom: false,
+            is_final_chapter: false,
+            enforce_char_uniqueness: true,
+            live_type: crate::types::LiveType::Solo,
+            event_type: None,
+            keep_after_training_state: false,
+            skill_reference_strategy: crate::types::SkillReferenceStrategy::Average,
+            best_skill_as_leader: false,
+            live_skill_order: crate::types::LiveSkillOrder::Average,
+            specific_skill_order: None,
+            multi_teammate_score_up: None,
+            multi_teammate_power: None,
+            multi_live_score_up_lower_bound: None,
+            extra_bonus_ub: 0,
+            w_power: 1.0,
+            w_bonus: 1.0,
+            skill_ub_global: 0,
+            card_bonus_count_limit: crate::types::DECK_SIZE,
+            honor_bonus: 0,
+            power_total_cap: None,
+            leader_honor_bonus: vec![0; pool.count()],
+            leader_limit_bonus: vec![0; pool.count()],
+            final_chapter_member_keep: vec![true; pool.count()],
+            skill_is_after_training: vec![false; pool.count()],
+            trained_to_special_image: vec![false; pool.count()],
+        },
+    )
+}
+
 fn compute_keep_mask(pool: &CardPool, ctx: &SearchContext) -> Vec<bool> {
     let mut keep = vec![true; pool.count()];
     let mut char_id = 0u8;
@@ -66,7 +113,7 @@ fn compute_keep_mask(pool: &CardPool, ctx: &SearchContext) -> Vec<bool> {
                     let b = unsafe { *cards.get_unchecked(right) };
                     if keep[b.raw()]
                         && !ctx.is_fixed_game_id(pool.game_id(b))
-                        && dominates(pool, a, b)
+                        && dominates(pool, ctx, a, b)
                     {
                         keep[b.raw()] = false;
                     }
@@ -80,7 +127,7 @@ fn compute_keep_mask(pool: &CardPool, ctx: &SearchContext) -> Vec<bool> {
     keep
 }
 
-fn dominates(pool: &CardPool, lhs: CardIdx, rhs: CardIdx) -> bool {
+fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -> bool {
     debug_assert_eq!(pool.char_id(lhs), pool.char_id(rhs));
 
     let lhs_values = pool.power_values(lhs);
@@ -103,6 +150,12 @@ fn dominates(pool: &CardPool, lhs: CardIdx, rhs: CardIdx) -> bool {
     let rhs_bonus = pool.event_bonus(rhs);
     if lhs_bonus.base_bonus < rhs_bonus.base_bonus
         || lhs_bonus.limited_bonus < rhs_bonus.limited_bonus
+    {
+        return false;
+    }
+    if ctx.is_final_chapter
+        && (ctx.leader_honor_bonus_at(lhs.raw()) < ctx.leader_honor_bonus_at(rhs.raw())
+            || ctx.leader_limit_bonus_at(lhs.raw()) < ctx.leader_limit_bonus_at(rhs.raw()))
     {
         return false;
     }

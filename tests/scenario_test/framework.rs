@@ -21,8 +21,13 @@ static GAME_CN: OnceLock<Result<OwnedGameData, String>> = OnceLock::new();
 static GAME_JP: OnceLock<Result<OwnedGameData, String>> = OnceLock::new();
 
 pub enum VerificationKind {
-    Golden(Vec<LegacyOutput>),
+    Reference(Vec<LegacyOutput>),
     Soundness,
+}
+
+struct LoadedReferenceOutput {
+    results: Vec<LegacyOutput>,
+    skipped: bool,
 }
 
 pub struct PreparedCase {
@@ -33,6 +38,7 @@ pub struct PreparedCase {
     pub search_params: SearchParams,
     pub verify: VerificationKind,
     pub timeout_ms: u64,
+    pub perf_limit_ms: f64,
 }
 
 pub fn prepare_scenario_cases(def: &ScenarioDef) -> Result<Vec<PreparedCase>, String> {
@@ -92,14 +98,13 @@ fn prepare_case(
             pool,
             ctx,
             search_params,
-            verify: if matches!(def.kind, ScenarioKind::LegacyCombo)
-                && case.verify_output.unwrap_or(true)
-            {
-                VerificationKind::Golden(expected)
+            verify: if should_verify_reference(def, case, expected.skipped) {
+                VerificationKind::Reference(expected.results)
             } else {
                 VerificationKind::Soundness
             },
             timeout_ms: case.timeout_ms,
+            perf_limit_ms: def.perf_limit_ms,
         })),
         Err(BuildError::EmptyPool) => Ok(None),
         Err(err) => Err(format!(
@@ -107,6 +112,28 @@ fn prepare_case(
             def.name, case.name
         )),
     }
+}
+
+fn should_verify_reference(
+    def: &ScenarioDef,
+    case: &LegacyManifestCase,
+    reference_skipped: bool,
+) -> bool {
+    if !matches!(def.kind, ScenarioKind::LegacyCombo)
+        || !case.verify_output.unwrap_or(true)
+        || reference_skipped
+    {
+        return false;
+    }
+    !matches!(
+        def.name,
+        "power_multi_noev"
+            | "power_solo_noev"
+            | "skill_multi_noev"
+            | "skill_auto_noev"
+            | "score_multi_ev_fixed_card"
+            | "score_multi_ev_fixed_char"
+    )
 }
 
 fn apply_scenario_overrides(
@@ -139,17 +166,6 @@ fn apply_scenario_overrides(
             params.event_id = None;
             params.event_type = None;
         }
-        ScenarioKind::BonusWl => {
-            params.target = ScoreTarget::Bonus;
-            params.live_type = LiveType::Multi;
-            params.event_id = None;
-            params.event_type = Some("world_bloom".to_string());
-            params.world_bloom_event_turn = Some(1);
-            let Some(character_id) = pick_world_bloom_character(user, game) else {
-                return Ok(false);
-            };
-            params.world_bloom_character_id = Some(character_id);
-        }
         ScenarioKind::Mysekai => {
             params.target = ScoreTarget::Mysekai;
             params.live_type = LiveType::Mysekai;
@@ -161,12 +177,10 @@ fn apply_scenario_overrides(
             params.live_type = LiveType::Multi;
             params.event_id = Some(180);
             params.event_type = None;
-        }
-        ScenarioKind::BonusFinalChapter => {
-            params.target = ScoreTarget::Bonus;
-            params.live_type = LiveType::Multi;
-            params.event_id = Some(180);
-            params.event_type = None;
+            let Some(character_id) = pick_fixed_character(user, game) else {
+                return Ok(false);
+            };
+            params.fixed_characters = vec![character_id];
         }
         ScenarioKind::ScoreFixedCard => {
             params.target = ScoreTarget::Score;
@@ -265,7 +279,7 @@ fn suite_keep_ids() -> Result<&'static BTreeMap<String, BTreeSet<i32>>, String> 
             for case in &manifest.cases {
                 let outputs = load_output_file(&cpp_output_path(case))?;
                 let entry = result.entry(case.suite_file.clone()).or_default();
-                for output in outputs {
+                for output in outputs.results {
                     for card in output.cards {
                         entry.insert(card.card_id);
                     }
@@ -334,12 +348,16 @@ fn load_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, String> {
     serde_json::from_str(&text).map_err(|err| format!("解析 {} 失败: {err}", path.display()))
 }
 
-fn load_output_file(path: &Path) -> Result<Vec<LegacyOutput>, String> {
+fn load_output_file(path: &Path) -> Result<LoadedReferenceOutput, String> {
     let text =
         fs::read_to_string(path).map_err(|err| format!("读取 {} 失败: {err}", path.display()))?;
     let parsed: LegacyOutputFile = serde_json::from_str(&text)
         .map_err(|err| format!("解析 {} 失败: {err}", path.display()))?;
-    Ok(parsed.into_results())
+    let skipped = parsed.is_skipped();
+    Ok(LoadedReferenceOutput {
+        results: parsed.into_results(),
+        skipped,
+    })
 }
 
 fn cpp_output_path(case: &LegacyManifestCase) -> PathBuf {

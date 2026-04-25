@@ -4,9 +4,10 @@ use crate::pool::{CardIdx, CardPool};
 use crate::types::{ScoreTarget, DECK_SIZE};
 
 use super::context::SearchContext;
-use super::evaluate::{card_proxy_bonus, leaf_evaluate_checked};
+use super::evaluate::leaf_evaluate_checked;
 use super::suffix::{PartialDeck, SuffixBound, UsedSet};
 use super::types::{DeckResult, SearchParams};
+use super::warm_start::sorted_final_chapter_leaders;
 
 /// DFS 搜索统计。
 #[derive(Clone, Debug, Default)]
@@ -86,31 +87,35 @@ fn dfs_search_seeded_inner(
     let mut deck = [CardIdx::new(0); DECK_SIZE];
 
     if ctx.is_final_chapter {
-        for leader in pool.indices() {
+        let leaders = sorted_final_chapter_leaders(pool, ctx)
+            .into_iter()
+            .filter(|leader| state.slot_matches(0, *leader))
+            .collect::<Vec<_>>();
+        for leader in leaders {
             if state.timed_out() {
                 break;
-            }
-            if !state.slot_matches(0, leader) {
-                continue;
             }
             deck[0] = leader;
             let mut used = UsedSet::new();
             used.insert(pool.char_id(leader));
+            let (leader_bonus, leader_limited_inc) = partial_bonus_add(pool, ctx, leader, true, 0);
             let partial = PartialDeck {
                 power: pool.power_max(leader),
                 skill: pool.skill_max(leader) as u32,
-                bonus: card_proxy_bonus(pool, ctx, leader, true),
+                bonus: leader_bonus,
                 max_skill: pool.skill_max(leader),
+                limited_count: leader_limited_inc,
             };
             let threshold = state.tracker.threshold();
-            if threshold != 0
-                && state
+            if threshold != 0 {
+                let leader_global = state.suffix.upper_bound_with_depth(1, &used, &partial);
+                let leader_dense = state
                     .suffix
-                    .upper_bound_with_depth(1, &used, &partial)
-                    <= threshold
-            {
-                state.stats.leader_prunes += 1;
-                continue;
+                    .dense_suffix_ceiling(0, &partial, DECK_SIZE - 1);
+                if leader_global.min(leader_dense) <= threshold {
+                    state.stats.leader_prunes += 1;
+                    continue;
+                }
             }
             state.recurse(1, 0, &mut deck, used, partial, Some(leader));
         }
@@ -164,7 +169,16 @@ impl SearchState<'_> {
 
         let threshold = self.tracker.threshold();
         if threshold != 0 {
-            let upper_bound = self.suffix.upper_bound_with_depth(depth, &used, &partial);
+            let upper_bound =
+                if matches!(self.ctx.target, ScoreTarget::Score) && self.ctx.has_event() {
+                    let global = self.suffix.upper_bound_with_depth(depth, &used, &partial);
+                    let dense =
+                        self.suffix
+                            .dense_suffix_ceiling(start, &partial, DECK_SIZE - depth);
+                    global.min(dense)
+                } else {
+                    self.suffix.upper_bound_with_depth(depth, &used, &partial)
+                };
             if upper_bound <= threshold {
                 self.stats.ub_prunes += 1;
                 return;
@@ -176,13 +190,39 @@ impl SearchState<'_> {
         match self.ctx.target {
             ScoreTarget::Power | ScoreTarget::Skill => {
                 self.recurse_monotonic(
-                    depth, start, deck, used, partial, fixed_leader, slots, threshold,
+                    depth,
+                    start,
+                    deck,
+                    used,
+                    partial,
+                    fixed_leader,
+                    slots,
+                    threshold,
+                );
+            }
+            ScoreTarget::Score if !self.ctx.has_event() => {
+                self.recurse_score_noevent_monotonic(
+                    depth,
+                    start,
+                    deck,
+                    used,
+                    partial,
+                    fixed_leader,
+                    slots,
+                    threshold,
                 );
             }
             _ => {
                 if threshold != 0 {
                     self.recurse_ep(
-                        depth, start, deck, used, partial, fixed_leader, slots, threshold,
+                        depth,
+                        start,
+                        deck,
+                        used,
+                        partial,
+                        fixed_leader,
+                        slots,
+                        threshold,
                     );
                 } else {
                     self.recurse_simple(depth, start, deck, used, partial, fixed_leader);
@@ -191,6 +231,7 @@ impl SearchState<'_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     fn recurse_monotonic(
@@ -216,7 +257,7 @@ impl SearchState<'_> {
             if !self.slot_matches(depth, card) {
                 continue;
             }
-            if used.contains(char_id) {
+            if self.ctx.enforce_char_uniqueness && used.contains(char_id) {
                 continue;
             }
 
@@ -225,12 +266,10 @@ impl SearchState<'_> {
                 let card_bonus = eb.base_bonus as u32 + eb.limited_bonus as u32;
                 let bonus_total =
                     partial.bonus + card_bonus + pre.suffix_bonus + pre.extra_bonus_ub;
-                let tight_power =
-                    partial.power + self.pool.power_max(card) + pre.suffix_power_rest;
+                let tight_power = partial.power + self.pool.power_max(card) + pre.suffix_power_rest;
                 let tight_skill =
                     partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest;
-                let tight_leader =
-                    (partial.max_skill as u32).max(self.pool.skill_max(card) as u32);
+                let tight_leader = (partial.max_skill as u32).max(self.pool.skill_max(card) as u32);
                 let ceil = self
                     .suffix
                     .ceiling(tight_power, bonus_total, tight_skill, tight_leader);
@@ -245,17 +284,113 @@ impl SearchState<'_> {
             }
             let mut next_used = used;
             next_used.insert(char_id);
+            let (card_bonus, limited_inc) =
+                partial_bonus_add(self.pool, self.ctx, card, false, partial.limited_count);
             let next_partial = PartialDeck {
                 power: partial.power + self.pool.power_max(card),
                 skill: partial.skill + self.pool.skill_max(card) as u32,
-                bonus: partial.bonus + card_proxy_bonus(self.pool, self.ctx, card, false),
+                bonus: partial.bonus + card_bonus,
                 max_skill: partial.max_skill.max(self.pool.skill_max(card)),
+                limited_count: partial.limited_count + limited_inc,
             };
-            self.recurse(depth + 1, dense, deck, next_used, next_partial, fixed_leader);
+            self.recurse(
+                depth + 1,
+                dense,
+                deck,
+                next_used,
+                next_partial,
+                fixed_leader,
+            );
         }
     }
 
-    /// Exclusion-aware suffix-max 剪枝：Score/Bonus/Mysekai 专用。
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn recurse_score_noevent_monotonic(
+        &mut self,
+        depth: usize,
+        start: usize,
+        deck: &mut [CardIdx; 5],
+        used: UsedSet,
+        partial: PartialDeck,
+        fixed_leader: Option<CardIdx>,
+        slots: usize,
+        threshold: u64,
+    ) {
+        let pre = self.suffix.precompute_layer_score_noevent(&used, slots);
+        let mut dense = start;
+        while dense < self.pool.count() {
+            if threshold != 0 {
+                let ceil = self
+                    .suffix
+                    .score_noevent_dense_ceiling(dense, &partial, slots);
+                if ceil <= threshold {
+                    self.stats.mono_break_prunes += 1;
+                    break;
+                }
+            }
+            let card = CardIdx::new(dense as u16);
+            dense += 1;
+            if fixed_leader.is_some_and(|leader| leader == card) {
+                continue;
+            }
+            let char_id = self.pool.char_id(card);
+            if !self.slot_matches(depth, card) {
+                continue;
+            }
+            if self.ctx.enforce_char_uniqueness && used.contains(char_id) {
+                continue;
+            }
+
+            if threshold != 0 {
+                let tight_power = partial.power + self.pool.power_max(card) + pre.suffix_power_rest
+                    - pre.power_delta(char_id);
+                let tight_skill =
+                    partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest
+                        - pre.skill_delta(char_id);
+                let remaining_best_skill = if char_id == pre.best_skill_char {
+                    pre.second_best_skill
+                } else {
+                    pre.best_unused_skill
+                };
+                let tight_leader = (partial.max_skill as u32)
+                    .max(self.pool.skill_max(card) as u32)
+                    .max(remaining_best_skill as u32);
+                let ub = self
+                    .suffix
+                    .ceiling(tight_power, 0, tight_skill, tight_leader);
+                if ub <= threshold {
+                    self.stats.ep_continue_prunes += 1;
+                    continue;
+                }
+            }
+
+            unsafe {
+                *deck.get_unchecked_mut(depth) = card;
+            }
+            let mut next_used = used;
+            next_used.insert(char_id);
+            let (card_bonus, limited_inc) =
+                partial_bonus_add(self.pool, self.ctx, card, false, partial.limited_count);
+            let next_partial = PartialDeck {
+                power: partial.power + self.pool.power_max(card),
+                skill: partial.skill + self.pool.skill_max(card) as u32,
+                bonus: partial.bonus + card_bonus,
+                max_skill: partial.max_skill.max(self.pool.skill_max(card)),
+                limited_count: partial.limited_count + limited_inc,
+            };
+            self.recurse(
+                depth + 1,
+                dense,
+                deck,
+                next_used,
+                next_partial,
+                fixed_leader,
+            );
+        }
+    }
+
+    /// Exclusion-aware suffix-max 剪枝：Score/Mysekai 专用。
     /// 单遍扫描：即算 ceiling 即决定 explore/skip，无栈数组。
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
@@ -274,13 +409,19 @@ impl SearchState<'_> {
 
         let mono_state = self.suffix.mono_precompute(&used, &partial, slots);
         let mut mono_min_bonus = mono_state.as_ref().map(|s| s.min_bonus(threshold));
-        let mono_base =
-            partial.bonus + pre.suffix_bonus + pre.extra_bonus_ub;
+        let mono_base = partial.bonus + pre.suffix_bonus + pre.extra_bonus_ub;
 
         let mut dense = start;
         while dense < self.pool.count() {
             if self.timed_out() {
                 return;
+            }
+            if threshold != 0 && matches!(self.ctx.target, ScoreTarget::Score) {
+                let ceil = self.suffix.dense_suffix_ceiling(dense, &partial, slots);
+                if ceil <= threshold {
+                    self.stats.mono_break_prunes += 1;
+                    break;
+                }
             }
             let card = CardIdx::new(dense as u16);
             dense += 1;
@@ -291,7 +432,7 @@ impl SearchState<'_> {
             if !self.slot_matches(depth, card) {
                 continue;
             }
-            if used.contains(char_id) {
+            if self.ctx.enforce_char_uniqueness && used.contains(char_id) {
                 continue;
             }
 
@@ -306,12 +447,13 @@ impl SearchState<'_> {
 
             self.stats.ep_candidates += 1;
 
-            let tight_power = partial.power + self.pool.power_max(card)
-                + pre.suffix_power_rest - pre.power_delta(char_id);
-            let bonus_total = partial.bonus + card_bonus
-                + pre.suffix_bonus - pre.bonus_delta(char_id) + pre.extra_bonus_ub;
-            let tight_skill = partial.skill + self.pool.skill_max(card) as u32
-                + pre.skill_ub_rest - pre.skill_delta(char_id);
+            let tight_power = partial.power + self.pool.power_max(card) + pre.suffix_power_rest
+                - pre.power_delta(char_id);
+            let bonus_total = partial.bonus + card_bonus + pre.suffix_bonus
+                - pre.bonus_delta(char_id)
+                + pre.extra_bonus_ub;
+            let tight_skill = partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest
+                - pre.skill_delta(char_id);
             let remaining_best_skill = if char_id == pre.best_skill_char {
                 pre.second_best_skill
             } else {
@@ -321,9 +463,20 @@ impl SearchState<'_> {
                 .max(self.pool.skill_max(card) as u32)
                 .max(remaining_best_skill as u32);
 
-            let ub = self
+            let mut ub = self
                 .suffix
                 .ceiling(tight_power, bonus_total, tight_skill, tight_leader);
+            let dense_ub = self.suffix.dense_candidate_ceiling(
+                dense,
+                &partial,
+                self.pool.power_max(card),
+                card_bonus,
+                eb.base_bonus as u32,
+                eb.limited_bonus as u32,
+                self.pool.skill_max(card) as u32,
+                slots,
+            );
+            ub = ub.min(dense_ub);
             if ub <= threshold {
                 self.stats.ep_continue_prunes += 1;
                 continue;
@@ -336,11 +489,14 @@ impl SearchState<'_> {
             }
             let mut next_used = used;
             next_used.insert(char_id);
+            let (card_bonus_add, limited_inc) =
+                partial_bonus_add(self.pool, self.ctx, card, false, partial.limited_count);
             let next_partial = PartialDeck {
                 power: partial.power + self.pool.power_max(card),
                 skill: partial.skill + self.pool.skill_max(card) as u32,
-                bonus: partial.bonus + card_proxy_bonus(self.pool, self.ctx, card, false),
+                bonus: partial.bonus + card_bonus_add,
                 max_skill: partial.max_skill.max(self.pool.skill_max(card)),
+                limited_count: partial.limited_count + limited_inc,
             };
             self.recurse(
                 depth + 1,
@@ -382,7 +538,7 @@ impl SearchState<'_> {
             if !self.slot_matches(depth, card) {
                 continue;
             }
-            if used.contains(char_id) {
+            if self.ctx.enforce_char_uniqueness && used.contains(char_id) {
                 continue;
             }
             unsafe {
@@ -390,13 +546,23 @@ impl SearchState<'_> {
             }
             let mut next_used = used;
             next_used.insert(char_id);
+            let (card_bonus, limited_inc) =
+                partial_bonus_add(self.pool, self.ctx, card, false, partial.limited_count);
             let next_partial = PartialDeck {
                 power: partial.power + self.pool.power_max(card),
                 skill: partial.skill + self.pool.skill_max(card) as u32,
-                bonus: partial.bonus + card_proxy_bonus(self.pool, self.ctx, card, false),
+                bonus: partial.bonus + card_bonus,
                 max_skill: partial.max_skill.max(self.pool.skill_max(card)),
+                limited_count: partial.limited_count + limited_inc,
             };
-            self.recurse(depth + 1, dense, deck, next_used, next_partial, fixed_leader);
+            self.recurse(
+                depth + 1,
+                dense,
+                deck,
+                next_used,
+                next_partial,
+                fixed_leader,
+            );
         }
     }
 
@@ -412,6 +578,12 @@ impl SearchState<'_> {
 
     #[inline(always)]
     fn slot_matches(&self, depth: usize, card: CardIdx) -> bool {
+        if self.ctx.is_final_chapter
+            && depth > 0
+            && !self.ctx.final_chapter_member_keep_at(card.raw())
+        {
+            return false;
+        }
         if let Some(game_id) = self.ctx.fixed_card_at(depth) {
             if self.pool.game_id(card) != game_id {
                 return false;
@@ -424,6 +596,30 @@ impl SearchState<'_> {
         }
         true
     }
+}
+
+#[inline(always)]
+fn partial_bonus_add(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    card: CardIdx,
+    is_leader: bool,
+    limited_count: u8,
+) -> (u32, u8) {
+    let eb = pool.event_bonus(card);
+    let mut bonus = eb.base_bonus as u32;
+    let mut limited_inc = 0u8;
+    if !ctx.is_final_chapter || (limited_count as usize) < ctx.card_bonus_count_limit {
+        if eb.limited_bonus > 0 {
+            bonus += eb.limited_bonus as u32;
+            limited_inc = 1;
+        }
+    }
+    if ctx.is_final_chapter && is_leader {
+        bonus += ctx.leader_honor_bonus_at(card.raw());
+        bonus += ctx.leader_limit_bonus_at(card.raw());
+    }
+    (bonus, limited_inc)
 }
 
 struct TopKTracker {
@@ -485,6 +681,7 @@ pub(crate) fn dfs_search_power_len_for_test(
     suffix: &SuffixBound,
     target_len: usize,
     top_k: usize,
+    ctx: &SearchContext,
 ) -> Vec<DeckResult> {
     let mut tracker = TopKTracker::new(top_k);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
@@ -498,6 +695,7 @@ pub(crate) fn dfs_search_power_len_for_test(
         UsedSet::new(),
         PartialDeck::default(),
         &mut tracker,
+        ctx,
     );
     tracker.into_vec()
 }
@@ -513,6 +711,7 @@ fn recurse_power_len_for_test(
     used: UsedSet,
     partial: PartialDeck,
     tracker: &mut TopKTracker,
+    ctx: &SearchContext,
 ) {
     if depth == target_len {
         tracker.insert(DeckResult::new(*deck, partial.power as u64));
@@ -533,7 +732,7 @@ fn recurse_power_len_for_test(
         let card = CardIdx::new(dense as u16);
         dense += 1;
         let char_id = pool.char_id(card);
-        if used.contains(char_id) {
+        if ctx.enforce_char_uniqueness && used.contains(char_id) {
             continue;
         }
 
@@ -555,6 +754,7 @@ fn recurse_power_len_for_test(
                 ..partial
             },
             tracker,
+            ctx,
         );
     }
 }

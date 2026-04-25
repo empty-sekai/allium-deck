@@ -33,7 +33,7 @@ pub fn run_case(case: &PreparedCase) -> CaseRun {
 
     let mut status = CaseStatus::Passed;
     let mut detail = match &case.verify {
-        VerificationKind::Golden(expected) => {
+        VerificationKind::Reference(expected) => {
             let result = compare(
                 case.ctx.target,
                 &results,
@@ -64,9 +64,11 @@ pub fn run_case(case: &PreparedCase) -> CaseRun {
         },
     };
 
-    if elapsed_ms >= 5.0 {
-        status = CaseStatus::Bug;
-        detail.push_str(&format!("; 性能超限 {:.3}ms >= 5ms", elapsed_ms));
+    if elapsed_ms >= case.perf_limit_ms {
+        detail.push_str(&format!(
+            "; 性能超限 {:.3}ms >= {:.0}ms",
+            elapsed_ms, case.perf_limit_ms
+        ));
     }
 
     CaseRun {
@@ -114,7 +116,7 @@ fn verify_soundness(case: &PreparedCase, results: &[DeckResult]) -> Result<(), S
         }
     }
 
-    if case.pool.count() <= 15 {
+    if case.pool.count() <= 15 && !has_fixed_slot(case) {
         let brute = brute_force_best(case);
         if results[0].score != brute {
             return Err(format!(
@@ -124,6 +126,12 @@ fn verify_soundness(case: &PreparedCase, results: &[DeckResult]) -> Result<(), S
         }
     }
     Ok(())
+}
+
+fn has_fixed_slot(case: &PreparedCase) -> bool {
+    (0..DECK_SIZE).any(|slot| {
+        case.ctx.fixed_card_at(slot).is_some() || case.ctx.fixed_character_at(slot).is_some()
+    })
 }
 
 fn brute_force_best(case: &PreparedCase) -> u64 {

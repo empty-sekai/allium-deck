@@ -105,8 +105,6 @@ pub struct BuildParams {
     pub live_type: LiveType,
     /// 搜索目标。
     pub target: ScoreTarget,
-    /// Bonus target 的目标加成列表。
-    pub target_bonus_list: Vec<i32>,
     /// 歌曲 ID。
     pub music_id: Option<i32>,
     /// 歌曲难度。
@@ -169,7 +167,6 @@ impl Default for BuildParams {
             event_type: None,
             live_type: LiveType::Solo,
             target: ScoreTarget::Score,
-            target_bonus_list: Vec::new(),
             music_id: None,
             music_diff: None,
             card_configs: CardConfigSet::default(),

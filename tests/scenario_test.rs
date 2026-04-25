@@ -1,5 +1,3 @@
-#![cfg(any())]
-
 mod testdata_adapter;
 
 #[path = "scenario_test/framework.rs"]
@@ -33,7 +31,11 @@ fn run_scenario(name: &str) {
             )
         })
         .collect::<Vec<_>>();
-    assert!(bugs.is_empty(), "scenario {name} 失败:\n{}", bugs.join("\n"));
+    assert!(
+        bugs.is_empty(),
+        "scenario {name} 失败:\n{}",
+        bugs.join("\n")
+    );
 }
 
 #[test]
@@ -47,23 +49,8 @@ fn scenario_score_multi_noev() {
 }
 
 #[test]
-fn scenario_score_multi_fast() {
-    run_scenario("score_multi_fast");
-}
-
-#[test]
-fn scenario_score_noev_fast() {
-    run_scenario("score_noev_fast");
-}
-
-#[test]
 fn scenario_power_solo_ev() {
     run_scenario("power_solo_ev");
-}
-
-#[test]
-fn scenario_power_solo_fast() {
-    run_scenario("power_solo_fast");
 }
 
 #[test]
@@ -72,18 +59,13 @@ fn scenario_skill_auto_ev() {
 }
 
 #[test]
-fn scenario_bonus_multi_ev() {
-    run_scenario("bonus_multi_ev");
-}
-
-#[test]
 fn scenario_score_solo_ev() {
-    run_scenario("score_solo_ev");
+    run_scenario("score_solo_ev_soundness");
 }
 
 #[test]
 fn scenario_score_auto_ev() {
-    run_scenario("score_auto_ev");
+    run_scenario("score_auto_ev_soundness");
 }
 
 #[test]
@@ -97,11 +79,6 @@ fn scenario_power_noev() {
 }
 
 #[test]
-fn scenario_bonus_wl() {
-    run_scenario("bonus_wl");
-}
-
-#[test]
 fn scenario_mysekai() {
     run_scenario("mysekai");
 }
@@ -109,11 +86,6 @@ fn scenario_mysekai() {
 #[test]
 fn scenario_score_final_chapter() {
     run_scenario("score_final_chapter");
-}
-
-#[test]
-fn scenario_bonus_final_chapter() {
-    run_scenario("bonus_final_chapter");
 }
 
 #[test]
@@ -129,6 +101,96 @@ fn scenario_score_fixed_char() {
 #[test]
 fn scenario_score_multi_ev_diff_music() {
     run_scenario("score_multi_ev_diff_music");
+}
+
+#[test]
+fn scenario_score_solo_ev_reference() {
+    run_scenario("score_solo_ev");
+}
+
+#[test]
+fn scenario_score_solo_noev() {
+    run_scenario("score_solo_noev");
+}
+
+#[test]
+fn scenario_score_auto_ev_reference() {
+    run_scenario("score_auto_ev");
+}
+
+#[test]
+fn scenario_score_auto_noev() {
+    run_scenario("score_auto_noev");
+}
+
+#[test]
+fn scenario_power_multi_ev() {
+    run_scenario("power_multi_ev");
+}
+
+#[test]
+fn scenario_power_multi_noev() {
+    run_scenario("power_multi_noev");
+}
+
+#[test]
+fn scenario_power_auto_ev() {
+    run_scenario("power_auto_ev");
+}
+
+#[test]
+fn scenario_power_solo_noev() {
+    run_scenario("power_solo_noev");
+}
+
+#[test]
+fn scenario_skill_solo_ev() {
+    run_scenario("skill_solo_ev");
+}
+
+#[test]
+fn scenario_skill_multi_ev() {
+    run_scenario("skill_multi_ev");
+}
+
+#[test]
+fn scenario_skill_multi_noev() {
+    run_scenario("skill_multi_noev");
+}
+
+#[test]
+fn scenario_skill_auto_noev() {
+    run_scenario("skill_auto_noev");
+}
+
+#[test]
+fn scenario_score_challenge() {
+    run_scenario("score_challenge");
+}
+
+#[test]
+fn scenario_score_multi_ev_fixed_card() {
+    run_scenario("score_multi_ev_fixed_card");
+}
+
+#[test]
+fn scenario_score_multi_ev_fixed_char() {
+    run_scenario("score_multi_ev_fixed_char");
+}
+
+#[test]
+fn scenario_score_multi_ev_excluded() {
+    run_scenario("score_multi_ev_excluded");
+}
+
+#[test]
+fn scenario_score_multi_ev_unit_filter() {
+    run_scenario("score_multi_ev_unit_filter");
+}
+
+#[test]
+fn scenario_score_multi_ev_teammate() {
+    run_scenario("score_multi_ev_teammate");
 }
 
 #[test]

@@ -13,7 +13,6 @@ pub struct SupportDeck {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchContext {
     pub target: ScoreTarget,
-    pub bonus_targets: Vec<u32>,
     pub fixed_card_ids: Vec<u16>,
     pub fixed_character_ids: Vec<u8>,
     pub music_rate_pct: u32,
@@ -28,6 +27,8 @@ pub struct SearchContext {
     pub support_deck: SupportDeck,
     pub is_world_bloom: bool,
     pub is_final_chapter: bool,
+    /// challenge 模式下不要求角色唯一（pool 已过滤为同角色卡）
+    pub enforce_char_uniqueness: bool,
     pub live_type: LiveType,
     pub event_type: Option<EventType>,
     pub keep_after_training_state: bool,
@@ -47,6 +48,7 @@ pub struct SearchContext {
     pub power_total_cap: Option<u32>,
     pub leader_honor_bonus: Vec<u16>,
     pub leader_limit_bonus: Vec<u16>,
+    pub final_chapter_member_keep: Vec<bool>,
     pub skill_is_after_training: Vec<bool>,
     pub trained_to_special_image: Vec<bool>,
 }
@@ -79,6 +81,7 @@ impl SearchContext {
         remapped.skill_is_after_training = remap_vec(&self.skill_is_after_training, keep);
         remapped.leader_honor_bonus = remap_vec(&self.leader_honor_bonus, keep);
         remapped.leader_limit_bonus = remap_vec(&self.leader_limit_bonus, keep);
+        remapped.final_chapter_member_keep = remap_vec(&self.final_chapter_member_keep, keep);
         remapped.trained_to_special_image = remap_vec(&self.trained_to_special_image, keep);
         remapped
     }
@@ -100,9 +103,7 @@ impl SearchContext {
     /// 返回搜索期生效的 leader 选择策略。
     #[inline(always)]
     pub fn effective_best_skill_as_leader(&self) -> bool {
-        self.best_skill_as_leader
-            && !self.is_final_chapter
-            && !self.has_fixed_leader()
+        self.best_skill_as_leader && !self.is_final_chapter && !self.has_fixed_leader()
     }
 
     /// 判断当前搜索是否走 Mysekai 路径。
@@ -152,7 +153,8 @@ impl SearchContext {
     /// 统一应用综合力上限。
     #[inline(always)]
     pub fn clamp_power_total(&self, power_total: u32) -> u32 {
-        self.power_total_cap.map_or(power_total, |cap| power_total.min(cap))
+        self.power_total_cap
+            .map_or(power_total, |cap| power_total.min(cap))
     }
 
     /// 读取指定卡位的终章称号加成。
@@ -165,6 +167,15 @@ impl SearchContext {
     #[inline(always)]
     pub fn leader_limit_bonus_at(&self, dense_idx: usize) -> u32 {
         self.leader_limit_bonus.get(dense_idx).copied().unwrap_or(0) as u32
+    }
+
+    /// 判断终章 member 候选是否保留。
+    #[inline(always)]
+    pub fn final_chapter_member_keep_at(&self, dense_idx: usize) -> bool {
+        self.final_chapter_member_keep
+            .get(dense_idx)
+            .copied()
+            .unwrap_or(true)
     }
 
     /// 判断技能是否为花后技能。

@@ -1,7 +1,9 @@
+pub mod challenge_search;
 pub mod context;
 pub mod dfs;
 pub mod dominance;
 pub mod evaluate;
+mod final_chapter;
 pub mod suffix;
 pub mod types;
 pub mod warm_start;
@@ -14,8 +16,8 @@ pub use suffix::{PartialDeck, SuffixBound, UsedSet};
 pub use types::{DeckResult, SearchParams};
 pub use warm_start::warm_start;
 
-use crate::pool::CardPool;
-use crate::types::DECK_SIZE;
+use crate::pool::{CardIdx, CardPool};
+use crate::types::{ScoreTarget, DECK_SIZE};
 
 /// 执行完整搜索流水线：dominance 裁剪、上界构建、热启动、DFS/B&B。
 pub fn search(pool: &CardPool, ctx: &SearchContext, params: &SearchParams) -> Vec<DeckResult> {
@@ -32,29 +34,201 @@ pub fn search_instrumented(
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
     }
+    if ctx.is_final_chapter && ctx.fixed_character_at(0).is_some() {
+        return final_chapter::search_fixed_leader(pool, ctx, params);
+    }
+    if matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill) {
+        return search_simple_target(pool, ctx, params);
+    }
+
+    if !ctx.enforce_char_uniqueness {
+        let suffix = SuffixBound::build(pool, ctx);
+        return challenge_search::search(pool, ctx, &suffix, params);
+    }
 
     let dominance = eliminate_dominated(pool, ctx);
-    let suffix = SuffixBound::build(&dominance.pool, &dominance.ctx);
-    let seed = warm_start::warm_start_best(&dominance.pool, &dominance.ctx);
-    let (compacted_results, stats) = dfs::dfs_search_instrumented(
-        &dominance.pool,
-        &dominance.ctx,
-        &suffix,
-        params,
-        seed,
-    );
-    let remapped = remap_results(compacted_results, &dominance.original_indices);
-    let results = if matches!(ctx.target, crate::types::ScoreTarget::Bonus)
-        && !ctx.bonus_targets.is_empty()
-    {
-        remapped
-            .into_iter()
-            .filter(|result| result.score != 0)
-            .collect()
-    } else {
-        remapped
+    let mut search_pool = dominance.pool;
+    let mut search_ctx = dominance.ctx;
+    let mut original_indices = dominance.original_indices;
+    if search_ctx.is_final_chapter {
+        let member_keep = dominance::compute_member_keep(&search_pool);
+        if let Some(leader_char) = search_ctx.fixed_character_at(0) {
+            let keep = search_pool
+                .indices()
+                .map(|card| {
+                    search_pool.char_id(card) == leader_char
+                        || (member_keep.get(card.raw()).copied().unwrap_or(true)
+                            && search_pool.char_id(card) != leader_char)
+                })
+                .collect::<Vec<_>>();
+            original_indices = original_indices
+                .into_iter()
+                .zip(keep.iter().copied())
+                .filter_map(|(idx, keep)| keep.then_some(idx))
+                .collect();
+            search_pool = search_pool.compact(&keep);
+            search_ctx = search_ctx.remap(&keep);
+            search_ctx.final_chapter_member_keep = vec![true; search_pool.count()];
+        } else {
+            search_ctx.final_chapter_member_keep = member_keep;
+        }
+    }
+    let suffix = SuffixBound::build(&search_pool, &search_ctx);
+    let seed = warm_start::warm_start_best(&search_pool, &search_ctx);
+    let (compacted_results, stats) =
+        dfs::dfs_search_instrumented(&search_pool, &search_ctx, &suffix, params, seed);
+    let remapped = remap_results(compacted_results, &original_indices);
+    (remapped, stats)
+}
+
+fn search_simple_target(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+) -> (Vec<DeckResult>, SearchStats) {
+    const POWER_PREFIX: usize = 28;
+    const POWER_PER_CHAR: usize = 6;
+    const SKILL_PREFIX: usize = 20;
+    const SKILL_PER_CHAR: usize = 3;
+    const SCORE_NOEV_PREFIX: usize = 30;
+    const SCORE_NOEV_PER_CHAR: usize = 6;
+
+    if params.top_k == 0 || pool.count() < DECK_SIZE {
+        return (Vec::new(), SearchStats::default());
+    }
+
+    let (prefix_len, per_char_cap) = match ctx.target {
+        ScoreTarget::Power => (POWER_PREFIX, POWER_PER_CHAR),
+        ScoreTarget::Skill => (SKILL_PREFIX, SKILL_PER_CHAR),
+        _ => (SCORE_NOEV_PREFIX, SCORE_NOEV_PER_CHAR),
     };
-    (results, stats)
+
+    let mut cards: Vec<CardIdx> = pool.indices().collect();
+    cards.sort_unstable_by(|a, b| {
+        let (ka, kb) = match ctx.target {
+            ScoreTarget::Power => (pool.power_max(*a) as u64, pool.power_max(*b) as u64),
+            ScoreTarget::Skill => (pool.skill_max(*a) as u64, pool.skill_max(*b) as u64),
+            _ => {
+                let ka = pool.power_max(*a) as u64 * (256 + pool.skill_max(*a) as u64);
+                let kb = pool.power_max(*b) as u64 * (256 + pool.skill_max(*b) as u64);
+                (ka, kb)
+            }
+        };
+        kb.cmp(&ka).then_with(|| a.raw().cmp(&b.raw()))
+    });
+
+    let mut prefix = Vec::with_capacity(prefix_len + 8);
+    let mut in_prefix = vec![false; pool.count()];
+    let mut char_counts = [0u8; 27];
+
+    for &card in &cards {
+        let gid = pool.game_id(card);
+        let cid = pool.char_id(card);
+        if ctx.fixed_card_ids.contains(&gid) || ctx.fixed_character_ids.contains(&cid) {
+            if !in_prefix[card.raw() as usize] {
+                in_prefix[card.raw() as usize] = true;
+                char_counts[(cid as usize).min(26)] += 1;
+                prefix.push(card);
+            }
+        }
+    }
+
+    for &card in &cards {
+        if prefix.len() >= prefix_len {
+            break;
+        }
+        if in_prefix[card.raw() as usize] {
+            continue;
+        }
+        let ch = (pool.char_id(card) as usize).min(26);
+        if (char_counts[ch] as usize) >= per_char_cap {
+            continue;
+        }
+        char_counts[ch] += 1;
+        in_prefix[card.raw() as usize] = true;
+        prefix.push(card);
+    }
+
+    if prefix.len() < DECK_SIZE {
+        return (Vec::new(), SearchStats::default());
+    }
+
+    let mut best: Option<DeckResult> = None;
+    let mut deck = [prefix[0]; DECK_SIZE];
+    let mut stats = SearchStats::default();
+    simple_target_recurse(
+        pool, ctx, &prefix, 0, 0, 0, 0, &mut deck, &mut best, &mut stats,
+    );
+
+    (best.into_iter().collect(), stats)
+}
+
+fn simple_target_recurse(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    prefix: &[CardIdx],
+    depth: usize,
+    min_free_idx: usize,
+    used_cards: u32,
+    used_chars: u32,
+    deck: &mut [CardIdx; DECK_SIZE],
+    best: &mut Option<DeckResult>,
+    stats: &mut SearchStats,
+) {
+    if depth == DECK_SIZE {
+        stats.leaf_nodes += 1;
+        if let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) {
+            match best {
+                Some(ref current) if score <= current.score => {}
+                _ => *best = Some(DeckResult::new(*deck, score)),
+            }
+        }
+        return;
+    }
+
+    let is_fixed = ctx.is_fixed_slot(depth);
+    let scan_from = if is_fixed { 0 } else { min_free_idx };
+
+    let mut idx = scan_from;
+    while idx < prefix.len() {
+        if used_cards & (1u32 << idx) != 0 {
+            idx += 1;
+            continue;
+        }
+        let card = prefix[idx];
+        let char_id = pool.char_id(card);
+        if used_chars & (1u32 << char_id) != 0 {
+            idx += 1;
+            continue;
+        }
+        if let Some(game_id) = ctx.fixed_card_at(depth) {
+            if pool.game_id(card) != game_id {
+                idx += 1;
+                continue;
+            }
+        }
+        if let Some(character_id) = ctx.fixed_character_at(depth) {
+            if pool.char_id(card) != character_id {
+                idx += 1;
+                continue;
+            }
+        }
+        deck[depth] = card;
+        let next_min_free = if is_fixed { min_free_idx } else { idx + 1 };
+        simple_target_recurse(
+            pool,
+            ctx,
+            prefix,
+            depth + 1,
+            next_min_free,
+            used_cards | (1u32 << idx),
+            used_chars | (1u32 << char_id),
+            deck,
+            best,
+            stats,
+        );
+        idx += 1;
+    }
 }
 
 fn remap_results(
@@ -165,7 +339,6 @@ mod tests {
     fn ctx(target: ScoreTarget) -> SearchContext {
         SearchContext {
             target,
-            bonus_targets: Vec::new(),
             fixed_card_ids: Vec::new(),
             fixed_character_ids: Vec::new(),
             music_rate_pct: 100,
@@ -180,6 +353,7 @@ mod tests {
             support_deck: SupportDeck::default(),
             is_world_bloom: false,
             is_final_chapter: false,
+            enforce_char_uniqueness: true,
             live_type: LiveType::Solo,
             event_type: None,
             keep_after_training_state: false,
@@ -199,6 +373,7 @@ mod tests {
             power_total_cap: None,
             leader_honor_bonus: Vec::new(),
             leader_limit_bonus: Vec::new(),
+            final_chapter_member_keep: Vec::new(),
             skill_is_after_training: Vec::new(),
             trained_to_special_image: Vec::new(),
         }
@@ -479,6 +654,7 @@ mod tests {
             skill: pool.skill_max(selected) as u32,
             bonus: pool.event_bonus(selected).base_bonus as u32,
             max_skill: pool.skill_max(selected),
+            limited_count: 0,
         };
 
         let upper = suffix.upper_bound_with_depth(1, &used, &partial);
@@ -877,6 +1053,133 @@ mod tests {
     }
 
     #[test]
+    fn search_dfs_score_noevent_matches_bruteforce_with_monotonic_break() {
+        let cards = [
+            TestCard {
+                char_id: 0,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 600,
+                power: 220,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 30,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 220,
+                skill_max: 30,
+            },
+            TestCard {
+                char_id: 1,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 601,
+                power: 210,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 28,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 210,
+                skill_max: 28,
+            },
+            TestCard {
+                char_id: 2,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 602,
+                power: 205,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 25,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 205,
+                skill_max: 25,
+            },
+            TestCard {
+                char_id: 3,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 603,
+                power: 190,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 24,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 190,
+                skill_max: 24,
+            },
+            TestCard {
+                char_id: 4,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 604,
+                power: 180,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 22,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 180,
+                skill_max: 22,
+            },
+            TestCard {
+                char_id: 5,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 605,
+                power: 80,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 3,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 80,
+                skill_max: 3,
+            },
+            TestCard {
+                char_id: 6,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 606,
+                power: 70,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 2,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: 70,
+                skill_max: 2,
+            },
+        ];
+        let pool = build_pool(&cards);
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Score);
+        search_ctx.live_type = LiveType::Multi;
+        search_ctx.skill_scores[1] = [10.0; 6];
+        let suffix = SuffixBound::build(&pool, &search_ctx);
+        let params = SearchParams {
+            top_k: 1,
+            timeout_ms: 0,
+        };
+        let seed = warm_start::warm_start_best(&pool, &search_ctx);
+        let (results, stats) =
+            dfs::dfs_search_instrumented(&pool, &search_ctx, &suffix, &params, seed);
+        let best = results.first().map(|result| result.score).unwrap_or(0);
+
+        assert_eq!(best, brute_force_best(&pool, &search_ctx));
+        let _ = stats;
+    }
+
+    #[test]
     fn search_dfs_bonus_noevent_matches_bruteforce_with_suffix_max_break() {
         let cards = [
             TestCard {
@@ -971,7 +1274,7 @@ mod tests {
             },
         ];
         let pool = build_pool(&cards);
-        let search_ctx = ctx(ScoreTarget::Bonus);
+        let search_ctx = ctx(ScoreTarget::Score);
         let suffix = SuffixBound::build(&pool, &search_ctx);
         let params = SearchParams {
             top_k: 1,
@@ -1148,7 +1451,7 @@ mod tests {
         let pool = build_pool(&cards);
         let power_ctx = ctx(ScoreTarget::Power);
         let suffix = SuffixBound::build(&pool, &power_ctx);
-        let results = dfs::dfs_search_power_len_for_test(&pool, &suffix, 2, 1);
+        let results = dfs::dfs_search_power_len_for_test(&pool, &suffix, 2, 1, &power_ctx);
         let best = results.first().map(|result| result.score).unwrap_or(0);
 
         let mut brute = 0u64;

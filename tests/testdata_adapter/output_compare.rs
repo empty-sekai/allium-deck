@@ -35,7 +35,7 @@ pub struct CaseSummary {
     pub detail: String,
 }
 
-/// 针对不同 target 比对搜索结果与 C++ golden output。
+/// 针对不同 target 比对搜索结果与 C++ reference_output。
 pub fn compare(
     target: ScoreTarget,
     result: &[DeckResult],
@@ -57,7 +57,7 @@ pub fn compare(
         return CompareResult {
             passed: true,
             category: CompareCategory::Empty,
-            detail: "allium 与 C++ golden 均为空结果".to_string(),
+            detail: "allium 与 C++ reference_output 均为空结果".to_string(),
         };
     }
 
@@ -65,7 +65,7 @@ pub fn compare(
         return CompareResult {
             passed: false,
             category: CompareCategory::Bug,
-            detail: "C++ golden 为空，但 allium 返回了结果".to_string(),
+            detail: "C++ reference_output 为空，但 allium 返回了结果".to_string(),
         };
     }
 
@@ -73,7 +73,7 @@ pub fn compare(
         return CompareResult {
             passed: timeout_ms <= 5_000,
             category: classify_failure(timeout_ms, false),
-            detail: "搜索结果为空，但 golden output 非空".to_string(),
+            detail: "搜索结果为空，但 reference_output 非空".to_string(),
         };
     };
 
@@ -151,24 +151,6 @@ pub fn compare(
                 card_set_matches,
                 "multi_live_score_up",
             )
-        }
-        ScoreTarget::Bonus => {
-            let actual_bonus = precise_event_bonus_rate(actual.cards, pool, ctx);
-            let mut result = compare_at_least_f64(
-                actual_bonus,
-                expected_top.event_bonus_rate,
-                timeout_ms,
-                card_set_matches,
-                "event_bonus_rate",
-            );
-            if !result.passed {
-                result.detail.push_str(&format!(
-                    "; actual_cards={}; expected_cards={}",
-                    format_actual_cards(actual.cards, pool),
-                    format_expected_cards(&expected_top.cards, pool),
-                ));
-            }
-            result
         }
         ScoreTarget::Mysekai => CompareResult {
             passed: false,
@@ -336,38 +318,6 @@ fn format_expected_card_power(expected: &[LegacyOutputCard], pool: &CardPool) ->
         })
         .collect::<Vec<_>>()
         .join(",")
-}
-
-fn precise_event_bonus_rate(deck: [CardIdx; 5], pool: &CardPool, ctx: &SearchContext) -> f64 {
-    let mut attr_set = 0u8;
-    let mut total = 0u32;
-    let mut limited_count = 0usize;
-    let mut deck_game_ids = [0u16; DECK_SIZE];
-    let mut index = 0usize;
-    while index < DECK_SIZE {
-        let card = deck[index];
-        attr_set |= 1u8 << pool.attr(card);
-        deck_game_ids[index] = pool.game_id(card);
-        let bonus = pool.event_bonus(card);
-        total += bonus.base_bonus as u32;
-        if !ctx.is_final_chapter || bonus.limited_bonus == 0 {
-            total += bonus.limited_bonus as u32;
-        } else if limited_count < ctx.card_bonus_count_limit {
-            total += bonus.limited_bonus as u32;
-            limited_count += 1;
-        }
-        if ctx.is_final_chapter && index == 0 {
-            total += ctx.leader_honor_bonus_at(card.raw());
-            total += ctx.leader_limit_bonus_at(card.raw());
-        }
-        index += 1;
-    }
-
-    if ctx.is_world_bloom {
-        total += ctx.diff_attr_bonus[attr_set.count_ones() as usize] as u32;
-        total += precise_support_bonus(ctx, &deck_game_ids);
-    }
-    total as f64
 }
 
 fn precise_support_bonus(ctx: &SearchContext, deck_game_ids: &[u16; 5]) -> u32 {

@@ -41,6 +41,22 @@ pub struct LegacyInput {
     pub event_id: Option<i32>,
     #[serde(default)]
     pub target_bonus_list: Option<Vec<i32>>,
+    #[serde(default)]
+    pub fixed_cards: Option<Vec<i32>>,
+    #[serde(default)]
+    pub fixed_characters: Option<Vec<i32>>,
+    #[serde(default)]
+    pub excluded_cards: Option<Vec<i32>>,
+    #[serde(default)]
+    pub challenge_live_character_id: Option<i32>,
+    #[serde(default)]
+    pub multi_live_teammate_score_up: Option<i32>,
+    #[serde(default)]
+    pub multi_live_teammate_power: Option<i32>,
+    #[serde(default)]
+    pub unit_filter: Option<String>,
+    #[serde(default)]
+    pub attr_filter: Option<String>,
 }
 
 /// 旧引擎 output JSON 的单条结果。
@@ -70,7 +86,7 @@ pub enum LegacyOutputFile {
 }
 
 impl LegacyOutputFile {
-    /// 提取为结果数组；skipped 输出返回空数组。
+    /// 提取为 reference_output 结果数组；skipped 输出返回空数组。
     pub fn into_results(self) -> Vec<LegacyOutput> {
         match self {
             Self::Results(results) => results,
@@ -80,6 +96,11 @@ impl LegacyOutputFile {
                 Vec::new()
             }
         }
+    }
+
+    /// 判断 reference_output 是否为 skipped。
+    pub fn is_skipped(&self) -> bool {
+        matches!(self, Self::Skipped(_))
     }
 }
 
