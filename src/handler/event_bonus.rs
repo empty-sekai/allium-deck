@@ -203,20 +203,36 @@ fn load_custom_bonus(master: &MasterCard, event_ctx: &EventContext) -> i32 {
     }
 }
 
-/// 构建单卡的热路径活动 bonus。
+/// 构建单卡的热路径活动 bonus，同时返回角色/属性轴命中标记。
 pub(crate) fn build_card_event_bonus(
     user_card: &UserCard,
     master: &MasterCard,
     game: &GameData<'_>,
     event_ctx: &EventContext,
-) -> EventBonusHot {
+) -> (EventBonusHot, bool, bool) {
     let base_bonus =
         load_rarity_bonus(user_card, master, event_ctx) + load_custom_bonus(master, event_ctx);
+
+    let custom_char = event_ctx
+        .custom_character_ids
+        .contains(&master.character_id);
+    let custom_attr = event_ctx
+        .custom_attr
+        .is_some_and(|attr| parse_attr_code(&master.attr) == Some(attr));
+
     // 活动 deck bonus：多条规则命中时取最大值（与 C++/TS 一致）。
     let mut deck_bonus = 0i32;
+    let mut deck_char = false;
+    let mut deck_attr = false;
     for rule in &event_ctx.deck_bonuses {
         if card_matches_rule(master, rule, game) {
             deck_bonus = deck_bonus.max(rule.bonus_rate);
+            if rule.character_id.is_some() {
+                deck_char = true;
+            }
+            if rule.attr.is_some() {
+                deck_attr = true;
+            }
         }
     }
     let base_bonus = base_bonus + deck_bonus;
@@ -227,10 +243,14 @@ pub(crate) fn build_card_event_bonus(
         .map(|entry| entry.bonus_rate)
         .unwrap_or(0);
 
-    EventBonusHot {
-        base_bonus: base_bonus.clamp(0, u8::MAX as i32) as u8,
-        limited_bonus: limited_bonus.clamp(0, u8::MAX as i32) as u8,
-    }
+    (
+        EventBonusHot {
+            base_bonus: base_bonus.clamp(0, u8::MAX as i32) as u8,
+            limited_bonus: limited_bonus.clamp(0, u8::MAX as i32) as u8,
+        },
+        custom_char || deck_char,
+        custom_attr || deck_attr,
+    )
 }
 
 /// 构建终章 leader honor bonus。

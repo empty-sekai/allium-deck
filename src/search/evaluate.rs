@@ -88,44 +88,6 @@ pub(crate) fn leaf_evaluate_checked(
             }
             found.then_some(best)
         }
-        ScoreTarget::Bonus => {
-            let total_bonus = resolve_total_bonus(pool, ctx, deck);
-            if !ctx.bonus_targets.is_empty() && !ctx.bonus_targets.contains(&total_bonus) {
-                return None;
-            }
-            let prepared = prepare_skills(pool, ctx, deck);
-            let mut best = 0u64;
-            let mut found = false;
-            let mut mask = prepared.enumerate_mask;
-            loop {
-                let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
-                if !permutation_satisfies_lower_bound(ctx, &permutation) {
-                    if mask == 0 {
-                        break;
-                    }
-                    mask = (mask - 1) & prepared.enumerate_mask;
-                    continue;
-                }
-                let live_score = calc_live_score(power_total, &permutation, ctx);
-                let event_point = if ctx.has_event() {
-                    calc_event_point(live_score, total_bonus, ctx)
-                } else {
-                    live_score
-                };
-                let encoded = ((total_bonus as u64) << 48)
-                    | ((event_point as u32 as u64) << 24)
-                    | ((live_score as u32 as u64) & 0x00ff_ffff);
-                if encoded > best {
-                    best = encoded;
-                }
-                found = true;
-                if mask == 0 {
-                    break;
-                }
-                mask = (mask - 1) & prepared.enumerate_mask;
-            }
-            found.then_some(best)
-        }
         ScoreTarget::Score => {
             let total_bonus = resolve_total_bonus(pool, ctx, deck);
             let prepared = prepare_skills(pool, ctx, deck);

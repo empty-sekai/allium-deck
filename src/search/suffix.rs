@@ -1,7 +1,7 @@
 use std::mem::size_of;
 
 use crate::pool::CardPool;
-use crate::types::{LiveType, ScoreTarget, DECK_SIZE};
+use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, DECK_SIZE};
 
 use super::context::SearchContext;
 use super::evaluate::calc_mysekai_internal;
@@ -44,6 +44,7 @@ pub struct PartialDeck {
     pub skill: u32,
     pub bonus: u32,
     pub max_skill: u8,
+    pub limited_count: u8,
 }
 
 /// 角色感知后缀上界。
@@ -58,6 +59,10 @@ pub struct SuffixBound {
     base_rate_1m: i64,
     /// (skill_rate_sum / 500) × 1_000_000, ceil。
     srs_div500_1m: i64,
+    /// Solo/Auto + Average：前 5 个 rate 的和 × 1_000_000, ceil。
+    avg_sum5_1m: i64,
+    /// Solo/Auto + Average：leader 追加 slot 的 rate × 1_000_000, ceil。
+    avg_leader_rate_1m: i64,
     /// 5 × multi_teammate_score_up（Multi/Cheerful 专用）。
     teammate_su_5x: i64,
     /// Multi: 75_000 (= 0.075 × 1M), 其他: 0。
@@ -66,6 +71,9 @@ pub struct SuffixBound {
     /// Cheerful: 5750 + clamp(life, 500, 1000), 其他: 0。
     life_rate_num: i32,
     multi_teammate_power: Option<i32>,
+    live_skill_order: LiveSkillOrder,
+    is_final_chapter: bool,
+    limited_bonus_cap: usize,
     extra_bonus_ub: u32,
     honor_bonus: u32,
     power_total_cap: Option<u32>,
@@ -75,7 +83,12 @@ pub struct SuffixBound {
     skill_vals: [u16; CHAR_MASK_COUNT],
     bonus_order: [u8; CHAR_MASK_COUNT],
     bonus_vals: [u16; CHAR_MASK_COUNT],
-    bonus_targets: Vec<u32>,
+    dense_bonus_tail: Vec<[u32; DECK_SIZE + 1]>,
+    dense_base_bonus_tail: Vec<[u32; DECK_SIZE + 1]>,
+    dense_limited_bonus_tail: Vec<[u32; DECK_SIZE + 1]>,
+    dense_power_tail: Vec<[u32; DECK_SIZE + 1]>,
+    dense_skill_tail: Vec<[u32; DECK_SIZE + 1]>,
+    dense_leader_tail: Vec<u16>,
 }
 
 const _: () = assert!(size_of::<SuffixBound>() <= 600);
@@ -106,6 +119,14 @@ impl SuffixBound {
         let mut bonus_order = core::array::from_fn(|idx| idx as u8);
         bonus_order
             .sort_unstable_by_key(|&char_id| std::cmp::Reverse(bonus_per_char[char_id as usize]));
+        let (
+            dense_bonus_tail,
+            dense_base_bonus_tail,
+            dense_limited_bonus_tail,
+            dense_power_tail,
+            dense_skill_tail,
+            dense_leader_tail,
+        ) = build_dense_suffix_tails(pool);
 
         let base_rate: f64 = match ctx.effective_live_type() {
             LiveType::Auto | LiveType::ChallengeAuto => ctx.base_score_auto,
@@ -119,6 +140,13 @@ impl SuffixBound {
         }]
         .iter()
         .sum();
+        let active_skill_rates = ctx.skill_scores[match ctx.effective_live_type() {
+            LiveType::Multi | LiveType::Cheerful => 1,
+            LiveType::Auto | LiveType::ChallengeAuto => 2,
+            _ => 0,
+        }];
+        let avg_sum5 = active_skill_rates[..DECK_SIZE].iter().sum::<f64>();
+        let avg_leader_rate = active_skill_rates[DECK_SIZE];
 
         Self {
             target: ctx.target,
@@ -128,14 +156,13 @@ impl SuffixBound {
             boost_rate_pct: ctx.boost_rate_pct,
             base_rate_1m: (base_rate * 1_000_000.0).ceil() as i64,
             srs_div500_1m: (skill_rate_sum / 500.0 * 1_000_000.0).ceil() as i64,
+            avg_sum5_1m: (avg_sum5 * 1_000_000.0).ceil() as i64,
+            avg_leader_rate_1m: (avg_leader_rate * 1_000_000.0).ceil() as i64,
             teammate_su_5x: ctx
                 .multi_teammate_score_up
                 .map(|v| v as i64 * 5)
                 .unwrap_or(0),
-            active_1m_coeff: if matches!(
-                ctx.effective_live_type(),
-                LiveType::Multi
-            ) {
+            active_1m_coeff: if matches!(ctx.effective_live_type(), LiveType::Multi) {
                 75_000
             } else {
                 0
@@ -147,6 +174,9 @@ impl SuffixBound {
                 0
             },
             multi_teammate_power: ctx.multi_teammate_power,
+            live_skill_order: ctx.live_skill_order,
+            is_final_chapter: ctx.is_final_chapter,
+            limited_bonus_cap: ctx.card_bonus_count_limit,
             extra_bonus_ub: ctx.extra_bonus_ub,
             honor_bonus: ctx.honor_bonus,
             power_total_cap: ctx.power_total_cap,
@@ -156,7 +186,12 @@ impl SuffixBound {
             skill_vals: skill_order.map(|char_id| skill_per_char[char_id as usize]),
             bonus_order,
             bonus_vals: bonus_order.map(|char_id| bonus_per_char[char_id as usize]),
-            bonus_targets: ctx.bonus_targets.clone(),
+            dense_bonus_tail,
+            dense_base_bonus_tail,
+            dense_limited_bonus_tail,
+            dense_power_tail,
+            dense_skill_tail,
+            dense_leader_tail,
         }
     }
 
@@ -183,18 +218,16 @@ impl SuffixBound {
         partial: &PartialDeck,
     ) -> u64 {
         match self.target {
-            ScoreTarget::Power => {
-                self.clamp_power_total(
-                    partial.power
-                        + suffix_sum_u32(
+            ScoreTarget::Power => self.clamp_power_total(
+                partial.power
+                    + suffix_sum_u32(
                         &self.power_order,
                         &self.power_vals,
                         used_chars.bits(),
                         slots_left,
                     )
-                        + self.honor_bonus,
-                ) as u64
-            }
+                    + self.honor_bonus,
+            ) as u64,
             ScoreTarget::Skill => {
                 let total_skill = partial.skill
                     + suffix_sum_u16_as_u32(
@@ -203,69 +236,22 @@ impl SuffixBound {
                         used_chars.bits(),
                         slots_left,
                     );
-                let best_unused = first_unused_val_u16(
-                    &self.skill_order, &self.skill_vals, used_chars.bits(),
-                );
+                let best_unused =
+                    first_unused_val_u16(&self.skill_order, &self.skill_vals, used_chars.bits());
                 let leader_ub = (partial.max_skill as u32).max(best_unused as u32);
                 (2 * total_skill + 8 * leader_ub) as u64
             }
-            ScoreTarget::Bonus => {
-                let max_bonus = partial.bonus
-                    + suffix_sum_u16_as_u32(
-                        &self.bonus_order,
-                        &self.bonus_vals,
-                        used_chars.bits(),
-                        slots_left,
-                    )
-                    + self.extra_bonus_ub;
-                let target_bonus = if self.bonus_targets.is_empty() {
-                    max_bonus
-                } else {
-                    let Some(target_bonus) = self
-                        .bonus_targets
-                        .iter()
-                        .copied()
-                        .filter(|target| *target >= partial.bonus && *target <= max_bonus)
-                        .max()
-                    else {
-                        return 0;
-                    };
-                    target_bonus
-                };
-                let total_power = self.clamp_power_total(partial.power
-                    + suffix_sum_u32(
-                        &self.power_order,
-                        &self.power_vals,
-                        used_chars.bits(),
-                        slots_left,
-                    )
-                    + self.honor_bonus);
-                let total_skill = partial.skill
-                    + suffix_sum_u16_as_u32(
-                        &self.skill_order,
-                        &self.skill_vals,
-                        used_chars.bits(),
-                        slots_left,
-                    );
-                let best_unused = first_unused_val_u16(
-                    &self.skill_order, &self.skill_vals, used_chars.bits(),
-                );
-                let leader_ub = (partial.max_skill as u32).max(best_unused as u32);
-                let live_score = self.calc_live_score_bound(total_power, total_skill, leader_ub);
-                let event_point = self.calc_event_point_bound(live_score, target_bonus);
-                ((target_bonus as u64) << 48)
-                    | ((event_point as u32 as u64) << 24)
-                    | ((live_score as u32 as u64) & 0x00ff_ffff)
-            }
             ScoreTarget::Score => {
-                let total_power = self.clamp_power_total(partial.power
-                    + suffix_sum_u32(
-                        &self.power_order,
-                        &self.power_vals,
-                        used_chars.bits(),
-                        slots_left,
-                    )
-                    + self.honor_bonus);
+                let total_power = self.clamp_power_total(
+                    partial.power
+                        + suffix_sum_u32(
+                            &self.power_order,
+                            &self.power_vals,
+                            used_chars.bits(),
+                            slots_left,
+                        )
+                        + self.honor_bonus,
+                );
                 let total_bonus = partial.bonus
                     + suffix_sum_u16_as_u32(
                         &self.bonus_order,
@@ -281,23 +267,24 @@ impl SuffixBound {
                         used_chars.bits(),
                         slots_left,
                     );
-                let best_unused = first_unused_val_u16(
-                    &self.skill_order, &self.skill_vals, used_chars.bits(),
-                );
+                let best_unused =
+                    first_unused_val_u16(&self.skill_order, &self.skill_vals, used_chars.bits());
                 let leader_ub = (partial.max_skill as u32).max(best_unused as u32);
                 let live_score = self.calc_live_score_bound(total_power, total_skill, leader_ub);
                 let event_point = self.calc_event_point_bound(live_score, total_bonus);
                 ((event_point as u64) << 32) | (live_score as u32 as u64)
             }
             ScoreTarget::Mysekai => {
-                let total_power = self.clamp_power_total(partial.power
-                    + suffix_sum_u32(
-                        &self.power_order,
-                        &self.power_vals,
-                        used_chars.bits(),
-                        slots_left,
-                    )
-                    + self.honor_bonus);
+                let total_power = self.clamp_power_total(
+                    partial.power
+                        + suffix_sum_u32(
+                            &self.power_order,
+                            &self.power_vals,
+                            used_chars.bits(),
+                            slots_left,
+                        )
+                        + self.honor_bonus,
+                );
                 let total_bonus = partial.bonus
                     + suffix_sum_u16_as_u32(
                         &self.bonus_order,
@@ -313,46 +300,70 @@ impl SuffixBound {
 
     /// 预计算同层 suffix 分量，供 Power/Skill monotonic break 使用。
     #[inline(always)]
-    pub(crate) fn precompute_layer(
-        &self,
-        used: &UsedSet,
-        slots: usize,
-    ) -> LayerPrecomputed {
+    pub(crate) fn precompute_layer(&self, used: &UsedSet, slots: usize) -> LayerPrecomputed {
         let rest = slots.saturating_sub(1);
         LayerPrecomputed {
             suffix_power_rest: suffix_sum_u32(
-                &self.power_order, &self.power_vals, used.bits(), rest,
+                &self.power_order,
+                &self.power_vals,
+                used.bits(),
+                rest,
             ),
             suffix_bonus: suffix_sum_u16_as_u32(
-                &self.bonus_order, &self.bonus_vals, used.bits(), rest,
+                &self.bonus_order,
+                &self.bonus_vals,
+                used.bits(),
+                rest,
             ),
             extra_bonus_ub: self.extra_bonus_ub,
             skill_ub_rest: suffix_sum_u16_as_u32(
-                &self.skill_order, &self.skill_vals, used.bits(), rest,
+                &self.skill_order,
+                &self.skill_vals,
+                used.bits(),
+                rest,
             ),
+        }
+    }
+
+    /// Score/no-event 专用预计算：只保留 power/skill/leader 所需字段。
+    #[inline(always)]
+    pub(crate) fn precompute_layer_score_noevent(
+        &self,
+        used: &UsedSet,
+        slots: usize,
+    ) -> LayerPrecomputedScoreNoEvent {
+        let rest = slots.saturating_sub(1);
+        let (suffix_power_rest, pwr_set, pwr_excl) =
+            suffix_compact_u32(&self.power_order, &self.power_vals, used.bits(), rest);
+        let (skill_ub_rest, skl_set, skl_excl) =
+            suffix_compact_u16(&self.skill_order, &self.skill_vals, used.bits(), rest);
+        let (best_skill, second_best, best_char) =
+            first_two_unused_skill(&self.skill_order, &self.skill_vals, used.bits());
+        LayerPrecomputedScoreNoEvent {
+            suffix_power_rest,
+            skill_ub_rest,
+            best_unused_skill: best_skill,
+            second_best_skill: second_best,
+            best_skill_char: best_char,
+            pwr_set,
+            skl_set,
+            pwr_excl,
+            skl_excl,
         }
     }
 
     /// EP target 专用预计算：含 per-character exclusion delta。
     #[inline(always)]
-    pub(crate) fn precompute_layer_ep(
-        &self,
-        used: &UsedSet,
-        slots: usize,
-    ) -> LayerPrecomputedEp {
+    pub(crate) fn precompute_layer_ep(&self, used: &UsedSet, slots: usize) -> LayerPrecomputedEp {
         let rest = slots.saturating_sub(1);
-        let (suffix_power_rest, pwr_set, pwr_excl) = suffix_compact_u32(
-            &self.power_order, &self.power_vals, used.bits(), rest,
-        );
-        let (suffix_bonus, bns_set, bns_excl) = suffix_compact_u16(
-            &self.bonus_order, &self.bonus_vals, used.bits(), rest,
-        );
-        let (skill_ub_rest, skl_set, skl_excl) = suffix_compact_u16(
-            &self.skill_order, &self.skill_vals, used.bits(), rest,
-        );
-        let (best_skill, second_best, best_char) = first_two_unused_skill(
-            &self.skill_order, &self.skill_vals, used.bits(),
-        );
+        let (suffix_power_rest, pwr_set, pwr_excl) =
+            suffix_compact_u32(&self.power_order, &self.power_vals, used.bits(), rest);
+        let (suffix_bonus, bns_set, bns_excl) =
+            suffix_compact_u16(&self.bonus_order, &self.bonus_vals, used.bits(), rest);
+        let (skill_ub_rest, skl_set, skl_excl) =
+            suffix_compact_u16(&self.skill_order, &self.skill_vals, used.bits(), rest);
+        let (best_skill, second_best, best_char) =
+            first_two_unused_skill(&self.skill_order, &self.skill_vals, used.bits());
         LayerPrecomputedEp {
             suffix_power_rest,
             suffix_bonus,
@@ -361,8 +372,12 @@ impl SuffixBound {
             best_unused_skill: best_skill,
             second_best_skill: second_best,
             best_skill_char: best_char,
-            pwr_set, bns_set, skl_set,
-            pwr_excl, bns_excl, skl_excl,
+            pwr_set,
+            bns_set,
+            skl_set,
+            pwr_excl,
+            bns_excl,
+            skl_excl,
         }
     }
 
@@ -378,37 +393,33 @@ impl SuffixBound {
         let power_ub = self.clamp_power_total(power_ub + self.honor_bonus);
         match self.target {
             ScoreTarget::Power => power_ub as u64,
-            ScoreTarget::Skill => {
-                (2 * skill_ub + 8 * leader_ub) as u64
-            }
+            ScoreTarget::Skill => (2 * skill_ub + 8 * leader_ub) as u64,
             ScoreTarget::Score => {
                 let live = self.calc_live_score_bound(power_ub, skill_ub, leader_ub);
                 let ep = self.calc_event_point_bound(live, bonus_total);
                 ((ep as u64) << 32) | (live as u32 as u64)
             }
-            ScoreTarget::Bonus => {
-                let live = self.calc_live_score_bound(power_ub, skill_ub, leader_ub);
-                let ep = self.calc_event_point_bound(live, bonus_total);
-                ((bonus_total as u64) << 48)
-                    | ((ep as u32 as u64) << 24)
-                    | ((live as u32 as u64) & 0x00ff_ffff)
-            }
-            ScoreTarget::Mysekai => {
-                calc_mysekai_internal(power_ub, bonus_total) as u64
-            }
+            ScoreTarget::Mysekai => calc_mysekai_internal(power_ub, bonus_total) as u64,
         }
     }
 
     #[inline(always)]
     fn calc_live_score_bound(&self, power_total: u32, skill_total: u32, leader_ub: u32) -> i32 {
-        let max_slot_5x: i64 = match self.effective_live_type {
+        let rate_1m = match self.effective_live_type {
             LiveType::Multi | LiveType::Cheerful => {
-                let self_bound_5x = 4 * leader_ub as i64 + skill_total as i64;
-                self_bound_5x.max(self.teammate_su_5x)
+                let max_slot_5x =
+                    (4 * leader_ub as i64 + skill_total as i64).max(self.teammate_su_5x);
+                self.base_rate_1m + max_slot_5x * self.srs_div500_1m
             }
-            _ => 5 * skill_total as i64,
+            LiveType::Solo | LiveType::Auto
+                if matches!(self.live_skill_order, LiveSkillOrder::Average) =>
+            {
+                self.base_rate_1m
+                    + skill_total as i64 * self.avg_sum5_1m / 500
+                    + leader_ub as i64 * self.avg_leader_rate_1m / 100
+            }
+            _ => self.base_rate_1m + 5 * skill_total as i64 * self.srs_div500_1m,
         };
-        let rate_1m = self.base_rate_1m + max_slot_5x * self.srs_div500_1m;
         let power_sum: i64 = if let Some(tp) = self.multi_teammate_power {
             power_total as i64 + tp as i64 * (DECK_SIZE as i64 - 1)
         } else {
@@ -423,7 +434,156 @@ impl SuffixBound {
 
     #[inline(always)]
     fn clamp_power_total(&self, power_total: u32) -> u32 {
-        self.power_total_cap.map_or(power_total, |cap| power_total.min(cap))
+        self.power_total_cap
+            .map_or(power_total, |cap| power_total.min(cap))
+    }
+
+    /// Score/no-event 的 dense-aware suffix ceiling。
+    #[inline(always)]
+    pub(crate) fn score_noevent_dense_ceiling(
+        &self,
+        dense_start: usize,
+        partial: &PartialDeck,
+        slots: usize,
+    ) -> u64 {
+        let tail_power = self
+            .dense_power_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let tail_skill = self
+            .dense_skill_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let tail_leader = self
+            .dense_leader_tail
+            .get(dense_start)
+            .copied()
+            .unwrap_or(0) as u32;
+        self.ceiling(
+            partial.power + tail_power,
+            0,
+            partial.skill + tail_skill,
+            (partial.max_skill as u32).max(tail_leader),
+        )
+    }
+
+    /// 当前 dense suffix 的 target-aware ceiling。
+    #[inline(always)]
+    pub(crate) fn dense_suffix_ceiling(
+        &self,
+        dense_start: usize,
+        partial: &PartialDeck,
+        slots: usize,
+    ) -> u64 {
+        let tail_bonus = self.dense_bonus_from_start(dense_start, slots, partial.limited_count);
+        let tail_power = self
+            .dense_power_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let tail_skill = self
+            .dense_skill_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let tail_leader = self
+            .dense_leader_tail
+            .get(dense_start)
+            .copied()
+            .unwrap_or(0) as u32;
+        self.ceiling(
+            partial.power + tail_power,
+            partial.bonus + tail_bonus + self.extra_bonus_ub,
+            partial.skill + tail_skill,
+            (partial.max_skill as u32).max(tail_leader),
+        )
+    }
+
+    /// 当前候选 + dense suffix 的廉价 ceiling。
+    #[inline(always)]
+    pub(crate) fn dense_candidate_ceiling(
+        &self,
+        next_start: usize,
+        partial: &PartialDeck,
+        card_power: u32,
+        card_bonus: u32,
+        card_base_bonus: u32,
+        card_limited_bonus: u32,
+        card_skill: u32,
+        slots: usize,
+    ) -> u64 {
+        let rest = slots.saturating_sub(1);
+        let card_bonus = if self.is_final_chapter {
+            card_base_bonus
+                + if partial.limited_count as usize >= self.limited_bonus_cap {
+                    0
+                } else {
+                    card_limited_bonus
+                }
+        } else {
+            card_bonus
+        };
+        let next_limited_count = partial.limited_count.saturating_add(
+            (self.is_final_chapter
+                && card_limited_bonus > 0
+                && (partial.limited_count as usize) < self.limited_bonus_cap) as u8,
+        );
+        let tail_bonus = self.dense_bonus_from_start(next_start, rest, next_limited_count);
+        let tail_power = self
+            .dense_power_tail
+            .get(next_start)
+            .map(|tail| tail[rest])
+            .unwrap_or(0);
+        let tail_skill = self
+            .dense_skill_tail
+            .get(next_start)
+            .map(|tail| tail[rest])
+            .unwrap_or(0);
+        let tail_leader = self.dense_leader_tail.get(next_start).copied().unwrap_or(0) as u32;
+        self.ceiling(
+            partial.power + card_power + tail_power,
+            partial.bonus + card_bonus + tail_bonus + self.extra_bonus_ub,
+            partial.skill + card_skill + tail_skill,
+            (partial.max_skill as u32).max(card_skill).max(tail_leader),
+        )
+    }
+
+    #[inline(always)]
+    pub(crate) fn dense_bonus_from_start(
+        &self,
+        dense_start: usize,
+        slots: usize,
+        limited_count: u8,
+    ) -> u32 {
+        if !self.is_final_chapter {
+            return self
+                .dense_bonus_tail
+                .get(dense_start)
+                .map(|tail| tail[slots])
+                .unwrap_or(0);
+        }
+        let tail_base = self
+            .dense_base_bonus_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let remaining_limit = self
+            .limited_bonus_cap
+            .saturating_sub(limited_count as usize)
+            .min(slots);
+        let tail_limited = self
+            .dense_limited_bonus_tail
+            .get(dense_start)
+            .map(|tail| tail[remaining_limit])
+            .unwrap_or(0);
+        tail_base + tail_limited
+    }
+
+    #[inline(always)]
+    pub(crate) fn extra_bonus_ub(&self) -> u32 {
+        self.extra_bonus_ub
     }
 
     pub(crate) fn mono_precompute(
@@ -437,7 +597,6 @@ impl SuffixBound {
         }
         match self.target {
             ScoreTarget::Score => self.mono_precompute_score(used, partial, slots),
-            ScoreTarget::Bonus => Some(MonoBreakState::Bonus),
             _ => None,
         }
     }
@@ -460,8 +619,11 @@ impl SuffixBound {
             + self.honor_bonus;
         let max_skill = partial.skill
             + suffix_sum_u16_as_u32(&self.skill_order, &self.skill_vals, used.bits(), slots);
-        let max_leader = (partial.max_skill as u32)
-            .max(first_unused_val_u16(&self.skill_order, &self.skill_vals, used.bits()) as u32);
+        let max_leader = (partial.max_skill as u32).max(first_unused_val_u16(
+            &self.skill_order,
+            &self.skill_vals,
+            used.bits(),
+        ) as u32);
         let max_live = self.calc_live_score_bound(max_power, max_skill, max_leader);
 
         let base_score: i64 = match self.effective_live_type {
@@ -502,9 +664,8 @@ impl SuffixBound {
             LiveType::Challenge | LiveType::ChallengeAuto => (100 + live_score / 20_000) * 120,
             LiveType::Solo | LiveType::Auto => {
                 let base_score = (100 + live_score / 20_000) as i64;
-                let inner = base_score * self.music_rate_pct as i64
-                    * (total_bonus as i64 + 100)
-                    / 10_000;
+                let inner =
+                    base_score * self.music_rate_pct as i64 * (total_bonus as i64 + 100) / 10_000;
                 (inner * self.boost_rate_pct as i64 / 100) as i32
             }
             LiveType::Multi => {
@@ -513,11 +674,9 @@ impl SuffixBound {
                 } else {
                     self.other_score as i64
                 };
-                let base_score =
-                    110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
-                let inner = base_score * self.music_rate_pct as i64
-                    * (total_bonus as i64 + 100)
-                    / 10_000;
+                let base_score = 110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
+                let inner =
+                    base_score * self.music_rate_pct as i64 * (total_bonus as i64 + 100) / 10_000;
                 (inner * self.boost_rate_pct as i64 / 100) as i32
             }
             LiveType::Cheerful => {
@@ -526,10 +685,8 @@ impl SuffixBound {
                 } else {
                     self.other_score as i64
                 };
-                let base_score =
-                    110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
-                let inner = (base_score * self.music_rate_pct as i64
-                    * (total_bonus as i64 + 100)
+                let base_score = 110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
+                let inner = (base_score * self.music_rate_pct as i64 * (total_bonus as i64 + 100)
                     / 10_000) as i32;
                 let with_life = inner as i64 * self.life_rate_num as i64 / 5000;
                 (with_life * self.boost_rate_pct as i64 / 100) as i32
@@ -600,6 +757,31 @@ pub(crate) struct LayerPrecomputed {
     pub skill_ub_rest: u32,
 }
 
+/// Score/no-event 专用预计算：紧凑 exclusion delta。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LayerPrecomputedScoreNoEvent {
+    pub suffix_power_rest: u32,
+    pub skill_ub_rest: u32,
+    pub best_unused_skill: u16,
+    pub second_best_skill: u16,
+    pub best_skill_char: u8,
+    pwr_set: u32,
+    skl_set: u32,
+    pwr_excl: [u32; DECK_SIZE],
+    skl_excl: [u32; DECK_SIZE],
+}
+
+impl LayerPrecomputedScoreNoEvent {
+    #[inline(always)]
+    pub(crate) fn power_delta(&self, char_id: u8) -> u32 {
+        compact_excl(self.pwr_set, &self.pwr_excl, char_id)
+    }
+    #[inline(always)]
+    pub(crate) fn skill_delta(&self, char_id: u8) -> u32 {
+        compact_excl(self.skl_set, &self.skl_excl, char_id)
+    }
+}
+
 /// EP target 专用预计算：紧凑 exclusion delta via popcount 索引。
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LayerPrecomputedEp {
@@ -645,15 +827,24 @@ fn compact_excl(set: u32, excl: &[u32; DECK_SIZE], char_id: u8) -> u32 {
 
 /// 两阶段 mono break 预计算状态。
 pub(crate) enum MonoBreakState {
-    Score { bm: i64, boost: i64, is_cheerful: bool, life: i64 },
-    Bonus,
+    Score {
+        bm: i64,
+        boost: i64,
+        is_cheerful: bool,
+        life: i64,
+    },
 }
 
 impl MonoBreakState {
     #[inline(always)]
     pub(crate) fn min_bonus(&self, threshold: u64) -> u32 {
         match self {
-            MonoBreakState::Score { bm, boost, is_cheerful, life } => {
+            MonoBreakState::Score {
+                bm,
+                boost,
+                is_cheerful,
+                life,
+            } => {
                 let threshold_ep = (threshold >> 32) as i64;
                 if threshold_ep <= 0 {
                     return 0;
@@ -667,7 +858,6 @@ impl MonoBreakState {
                 let min_bp100 = (min_inner * 10_000 + bm - 1) / bm;
                 (min_bp100 - 100).max(0) as u32
             }
-            MonoBreakState::Bonus => (threshold >> 48) as u32,
         }
     }
 }
@@ -759,7 +949,11 @@ fn suffix_compact_u32(
     while i < count {
         let c = sel_chars[i];
         let pos = (set & ((1u32 << c) - 1)).count_ones() as usize;
-        raw[pos] = if has_repl { sel_vals[i] - replacement } else { sel_vals[i] };
+        raw[pos] = if has_repl {
+            sel_vals[i] - replacement
+        } else {
+            sel_vals[i]
+        };
         i += 1;
     }
     (sum, set, raw)
@@ -804,8 +998,109 @@ fn suffix_compact_u16(
     while i < count {
         let c = sel_chars[i];
         let pos = (set & ((1u32 << c) - 1)).count_ones() as usize;
-        raw[pos] = if has_repl { sel_vals[i] - replacement } else { sel_vals[i] };
+        raw[pos] = if has_repl {
+            sel_vals[i] - replacement
+        } else {
+            sel_vals[i]
+        };
         i += 1;
     }
     (sum, set, raw)
+}
+
+fn build_dense_suffix_tails(
+    pool: &CardPool,
+) -> (
+    Vec<[u32; DECK_SIZE + 1]>,
+    Vec<[u32; DECK_SIZE + 1]>,
+    Vec<[u32; DECK_SIZE + 1]>,
+    Vec<[u32; DECK_SIZE + 1]>,
+    Vec<[u32; DECK_SIZE + 1]>,
+    Vec<u16>,
+) {
+    let count = pool.count();
+    let mut dense_bonus_tail = vec![[0u32; DECK_SIZE + 1]; count + 1];
+    let mut dense_base_bonus_tail = vec![[0u32; DECK_SIZE + 1]; count + 1];
+    let mut dense_limited_bonus_tail = vec![[0u32; DECK_SIZE + 1]; count + 1];
+    let mut dense_power_tail = vec![[0u32; DECK_SIZE + 1]; count + 1];
+    let mut dense_skill_tail = vec![[0u32; DECK_SIZE + 1]; count + 1];
+    let mut dense_leader_tail = vec![0u16; count + 1];
+    let mut top_bonuses = [0u32; DECK_SIZE];
+    let mut top_base_bonuses = [0u32; DECK_SIZE];
+    let mut top_limited_bonuses = [0u32; DECK_SIZE];
+    let mut top_powers = [0u32; DECK_SIZE];
+    let mut top_skills = [0u16; DECK_SIZE];
+    let mut best_skill = 0u16;
+
+    let mut dense = count;
+    while dense > 0 {
+        dense -= 1;
+        let card = crate::pool::CardIdx::new(dense as u16);
+        let eb = pool.event_bonus(card);
+        insert_topk_u32(
+            &mut top_bonuses,
+            eb.base_bonus as u32 + eb.limited_bonus as u32,
+        );
+        insert_topk_u32(&mut top_base_bonuses, eb.base_bonus as u32);
+        insert_topk_u32(&mut top_limited_bonuses, eb.limited_bonus as u32);
+        insert_topk_u32(&mut top_powers, pool.power_max(card));
+        insert_topk_u16(&mut top_skills, pool.skill_max(card) as u16);
+        best_skill = best_skill.max(pool.skill_max(card) as u16);
+        let mut slot = 0usize;
+        while slot < DECK_SIZE {
+            dense_bonus_tail[dense][slot + 1] = dense_bonus_tail[dense][slot] + top_bonuses[slot];
+            dense_base_bonus_tail[dense][slot + 1] =
+                dense_base_bonus_tail[dense][slot] + top_base_bonuses[slot];
+            dense_limited_bonus_tail[dense][slot + 1] =
+                dense_limited_bonus_tail[dense][slot] + top_limited_bonuses[slot];
+            dense_power_tail[dense][slot + 1] = dense_power_tail[dense][slot] + top_powers[slot];
+            dense_skill_tail[dense][slot + 1] =
+                dense_skill_tail[dense][slot] + top_skills[slot] as u32;
+            slot += 1;
+        }
+        dense_leader_tail[dense] = best_skill;
+    }
+
+    (
+        dense_bonus_tail,
+        dense_base_bonus_tail,
+        dense_limited_bonus_tail,
+        dense_power_tail,
+        dense_skill_tail,
+        dense_leader_tail,
+    )
+}
+
+#[inline(always)]
+fn insert_topk_u32(values: &mut [u32; DECK_SIZE], value: u32) {
+    let mut slot = 0usize;
+    while slot < DECK_SIZE {
+        if value > values[slot] {
+            let mut shift = DECK_SIZE - 1;
+            while shift > slot {
+                values[shift] = values[shift - 1];
+                shift -= 1;
+            }
+            values[slot] = value;
+            break;
+        }
+        slot += 1;
+    }
+}
+
+#[inline(always)]
+fn insert_topk_u16(values: &mut [u16; DECK_SIZE], value: u16) {
+    let mut slot = 0usize;
+    while slot < DECK_SIZE {
+        if value > values[slot] {
+            let mut shift = DECK_SIZE - 1;
+            while shift > slot {
+                values[shift] = values[shift - 1];
+                shift -= 1;
+            }
+            values[slot] = value;
+            break;
+        }
+        slot += 1;
+    }
 }

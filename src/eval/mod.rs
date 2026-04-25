@@ -105,9 +105,7 @@ pub fn evaluate(cards: &[CardId; DECK_SIZE], ctx: &DeckContext<'_>) -> DeckScore
             ScoreTarget::Mysekai => mysekai_internal_point as f64,
             ScoreTarget::Power => power.total as f64 + event_point as f64 / SCORE_MAX,
             ScoreTarget::Skill => permutation.multi_live_score_up + event_point as f64 / SCORE_MAX,
-            ScoreTarget::Score | ScoreTarget::Bonus => {
-                event_point as f64 + live_score as f64 / SCORE_MAX
-            }
+            ScoreTarget::Score => event_point as f64 + live_score as f64 / SCORE_MAX,
         };
         // B 实例 L384-385 与 A 实例裁决：排列比较键和对外 target_value 分离。
         let permutation_value = if ctx.is_mysekai {

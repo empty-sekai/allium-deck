@@ -1,5 +1,5 @@
 use crate::pool::{CardPool, EventBonusHot, PoolBuilder, SkillSlot};
-use crate::types::{DefaultImage, PowerDetail, ScoreTarget, SkillInfo};
+use crate::types::{DefaultImage, LiveType, PowerDetail, ScoreTarget, SkillInfo};
 
 use super::power::PowerResult;
 use super::skill::SkillResult;
@@ -29,6 +29,10 @@ pub(crate) struct CardIntermediate {
     pub skill: SkillResult,
     /// 热路径活动 bonus。
     pub event_bonus: EventBonusHot,
+    /// 是否命中角色 bonus 轴。
+    pub has_char_bonus: bool,
+    /// 是否命中属性 bonus 轴。
+    pub has_attr_bonus: bool,
     /// 终章 leader honor bonus。
     pub leader_honor_bonus: u16,
     /// 终章 leader limit bonus。
@@ -112,6 +116,7 @@ fn compare_cards(
     right: &CardIntermediate,
     target: ScoreTarget,
     has_event: bool,
+    effective_live_type: LiveType,
 ) -> std::cmp::Ordering {
     match target {
         ScoreTarget::Skill => right
@@ -126,6 +131,22 @@ fn compare_cards(
             .cmp(&left.power.power_max)
             .then_with(|| right.power.power_min.cmp(&left.power.power_min))
             .then_with(|| right.game_card_id.cmp(&left.game_card_id)),
+        ScoreTarget::Score
+            if has_event && matches!(effective_live_type, LiveType::Solo | LiveType::Auto) =>
+        {
+            let left_bonus =
+                left.event_bonus.base_bonus as u32 + left.event_bonus.limited_bonus as u32;
+            let right_bonus =
+                right.event_bonus.base_bonus as u32 + right.event_bonus.limited_bonus as u32;
+            let left_key = score_noevent_sort_key(left);
+            let right_key = score_noevent_sort_key(right);
+            right_bonus
+                .cmp(&left_bonus)
+                .then_with(|| right_key.cmp(&left_key))
+                .then_with(|| right.power.power_max.cmp(&left.power.power_max))
+                .then_with(|| right.skill.skill_max.cmp(&left.skill.skill_max))
+                .then_with(|| right.game_card_id.cmp(&left.game_card_id))
+        }
         // 有 event: 按 bonus 降序（ep 乘积结构下 bonus 敏感度更高）
         // 无 event: bonus 不参与 ep → 回退 power 排序
         _ if has_event => {
@@ -133,9 +154,24 @@ fn compare_cards(
                 left.event_bonus.base_bonus as u32 + left.event_bonus.limited_bonus as u32;
             let right_bonus =
                 right.event_bonus.base_bonus as u32 + right.event_bonus.limited_bonus as u32;
+            let left_key = score_noevent_sort_key(left);
+            let right_key = score_noevent_sort_key(right);
             right_bonus
                 .cmp(&left_bonus)
+                .then_with(|| right_key.cmp(&left_key))
                 .then_with(|| right.power.power_max.cmp(&left.power.power_max))
+                .then_with(|| right.skill.skill_max.cmp(&left.skill.skill_max))
+                .then_with(|| right.game_card_id.cmp(&left.game_card_id))
+        }
+        ScoreTarget::Score => {
+            let left_key = score_noevent_sort_key(left);
+            let right_key = score_noevent_sort_key(right);
+            right_key
+                .cmp(&left_key)
+                .then_with(|| right.power.power_max.cmp(&left.power.power_max))
+                .then_with(|| right.skill.skill_max.cmp(&left.skill.skill_max))
+                .then_with(|| right.power.power_min.cmp(&left.power.power_min))
+                .then_with(|| right.skill.skill_min.cmp(&left.skill.skill_min))
                 .then_with(|| right.game_card_id.cmp(&left.game_card_id))
         }
         _ => right
@@ -147,13 +183,19 @@ fn compare_cards(
     }
 }
 
+#[inline(always)]
+fn score_noevent_sort_key(card: &CardIntermediate) -> u64 {
+    card.power.power_max.max(0) as u64 * (256 + card.skill.skill_max as u64)
+}
+
 /// 排序并灌装 `CardPool`。
 pub(crate) fn sort_and_gather(
     mut cards: Vec<CardIntermediate>,
     target: ScoreTarget,
     has_event: bool,
+    effective_live_type: LiveType,
 ) -> (CardPool, Vec<FullPrecisionCard>) {
-    cards.sort_by(|left, right| compare_cards(left, right, target, has_event));
+    cards.sort_by(|left, right| compare_cards(left, right, target, has_event, effective_live_type));
 
     let mut builder = PoolBuilder::new(cards.len() as u16);
     let mut unit_count_idx = 0u8;
@@ -197,7 +239,7 @@ pub(crate) fn sort_and_gather(
                 builder.set_power_max(dense, card.power.power_max.max(0) as u32);
                 builder.set_skill(dense, slot);
             }
-            ScoreTarget::Score | ScoreTarget::Bonus | ScoreTarget::Mysekai => {
+            ScoreTarget::Score | ScoreTarget::Mysekai => {
                 builder.set_power_values(dense, power_values);
                 builder.set_power_lut(dense, power_lut);
                 builder.set_skill(dense, slot);

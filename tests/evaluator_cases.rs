@@ -332,7 +332,7 @@ fn wl_bonus() {
     };
     let ctx = DeckContext::new(
         &pool,
-        params(Some(event), LiveType::Solo, ScoreTarget::Bonus),
+        params(Some(event), LiveType::Solo, ScoreTarget::Score),
     )
     .unwrap();
     let score = evaluate(&[0, 1, 2, 3, 4], &ctx);
@@ -398,7 +398,7 @@ fn wl3_finale() {
     };
     let ctx = DeckContext::new(
         &pool,
-        params(Some(event), LiveType::Solo, ScoreTarget::Bonus),
+        params(Some(event), LiveType::Solo, ScoreTarget::Score),
     )
     .unwrap();
     let score = evaluate(&[0, 1, 2, 3, 4], &ctx);
@@ -491,7 +491,7 @@ fn custom_mixed() {
     };
     let ctx = DeckContext::new(
         &pool,
-        params(Some(event), LiveType::Solo, ScoreTarget::Bonus),
+        params(Some(event), LiveType::Solo, ScoreTarget::Score),
     )
     .unwrap();
     let score = evaluate(&[0, 1, 2, 3, 4], &ctx);

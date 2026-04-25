@@ -13,7 +13,10 @@ pub struct ScenarioSummary {
 }
 
 pub fn summarize(case_runs: &[CaseRun]) -> ScenarioSummary {
-    let mut timings = case_runs.iter().map(|case| case.elapsed_ms).collect::<Vec<_>>();
+    let mut timings = case_runs
+        .iter()
+        .map(|case| case.elapsed_ms)
+        .collect::<Vec<_>>();
     timings.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
     let len = case_runs.len().max(1);
     let total_ms = case_runs.iter().map(|case| case.elapsed_ms).sum::<f64>();

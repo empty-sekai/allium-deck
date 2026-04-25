@@ -15,14 +15,10 @@ use testdata_adapter::legacy_types::{
 use testdata_adapter::masterdata_loader::OwnedGameData;
 use testdata_adapter::output_compare::{compare, CaseSummary, CompareCategory};
 
-const COMBOS: [&str; 8] = [
-    "bonus_multi_ev",
+const COMBOS: [&str; 4] = [
     "power_solo_ev",
-    "power_solo_fast",
     "score_multi_ev",
-    "score_multi_fast",
     "score_multi_noev",
-    "score_noev_fast",
     "skill_auto_ev",
 ];
 
@@ -148,7 +144,7 @@ fn run_case(case: &LegacyManifestCase) -> Result<CaseSummary, String> {
             combo: case.combo.clone(),
             category: CompareCategory::Empty,
             passed: true,
-            detail: "allium 与 C++ golden 均为空结果".to_string(),
+            detail: "allium 与 C++ reference_output 均为空结果".to_string(),
         },
         Err(err) => CaseSummary {
             name: case.name.clone(),
@@ -323,48 +319,28 @@ fn power_solo_smoke() {
 }
 
 #[test]
-fn e2e_bonus_multi_ev() {
+fn e2e_power_solo_ev() {
     run_combo(COMBOS[0]).unwrap();
 }
 
 #[test]
-fn e2e_power_solo_ev() {
+fn e2e_score_multi_ev() {
     run_combo(COMBOS[1]).unwrap();
 }
 
 #[test]
-fn e2e_power_solo_fast() {
+fn e2e_score_multi_noev() {
     run_combo(COMBOS[2]).unwrap();
 }
 
 #[test]
-fn e2e_score_multi_ev() {
+fn e2e_skill_auto_ev() {
     run_combo(COMBOS[3]).unwrap();
 }
 
 #[test]
-fn e2e_score_multi_fast() {
-    run_combo(COMBOS[4]).unwrap();
-}
-
-#[test]
-fn e2e_score_multi_noev() {
-    run_combo(COMBOS[5]).unwrap();
-}
-
-#[test]
-fn e2e_score_noev_fast() {
-    run_combo(COMBOS[6]).unwrap();
-}
-
-#[test]
-fn e2e_skill_auto_ev() {
-    run_combo(COMBOS[7]).unwrap();
-}
-
-#[test]
 fn measure_ep_pruning_stats() {
-    let ep_combos = ["score_multi_ev", "bonus_multi_ev", "score_multi_fast"];
+    let ep_combos = ["score_multi_ev"];
     let manifest = manifest().unwrap();
 
     for combo in &ep_combos {
@@ -379,15 +355,13 @@ fn measure_ep_pruning_stats() {
         let mut total_elapsed_ms = 0u128;
 
         for case in &cases {
-            let input: LegacyInput =
-                load_json(&testdata_dir().join(&case.input_path)).unwrap();
+            let input: LegacyInput = load_json(&testdata_dir().join(&case.input_path)).unwrap();
             let (params, user, search_params) = transform_input(&input).unwrap();
             let user = maybe_trim_user_for_mask(case, &user).unwrap();
             let game = game_for_region(&params.region).unwrap();
             if let Ok((pool, ctx)) = build_card_pool(&user, &game.as_ref(), &params) {
                 let t0 = std::time::Instant::now();
-                let (_results, stats) =
-                    search_instrumented(&pool, &ctx, &search_params);
+                let (_results, stats) = search_instrumented(&pool, &ctx, &search_params);
                 let elapsed = t0.elapsed().as_millis();
                 total.leaf_nodes += stats.leaf_nodes;
                 total.ub_prunes += stats.ub_prunes;
@@ -408,8 +382,7 @@ fn measure_ep_pruning_stats() {
             0
         };
         let prune_rate = if total.ep_candidates > 0 {
-            (total.ep_break_prunes + total.ep_continue_prunes) as f64
-                / total.ep_candidates as f64
+            (total.ep_break_prunes + total.ep_continue_prunes) as f64 / total.ep_candidates as f64
                 * 100.0
         } else {
             0.0
@@ -428,6 +401,217 @@ fn measure_ep_pruning_stats() {
             total.ub_prunes,
             total.ep_candidates,
             total.ep_break_prunes,
+            total.ep_continue_prunes,
+            total.ep_explored,
+            total.mono_break_prunes,
+        );
+    }
+}
+
+#[test]
+fn measure_noevent_pruning_stats() {
+    let noevent_combos = ["score_multi_noev"];
+    let manifest = manifest().unwrap();
+
+    for combo in &noevent_combos {
+        let cases: Vec<_> = manifest
+            .cases
+            .iter()
+            .filter(|c| c.combo == *combo)
+            .collect();
+        let mut total = SearchStats::default();
+        let mut case_count = 0u32;
+        let mut total_pool_size = 0usize;
+        let mut total_elapsed_ms = 0u128;
+
+        for case in &cases {
+            let input: LegacyInput = load_json(&testdata_dir().join(&case.input_path)).unwrap();
+            let (params, user, search_params) = transform_input(&input).unwrap();
+            let user = maybe_trim_user_for_mask(case, &user).unwrap();
+            let game = game_for_region(&params.region).unwrap();
+            if let Ok((pool, ctx)) = build_card_pool(&user, &game.as_ref(), &params) {
+                let t0 = std::time::Instant::now();
+                let (_results, stats) = search_instrumented(&pool, &ctx, &search_params);
+                let elapsed = t0.elapsed().as_millis();
+                total.leaf_nodes += stats.leaf_nodes;
+                total.ub_prunes += stats.ub_prunes;
+                total.ep_candidates += stats.ep_candidates;
+                total.ep_break_prunes += stats.ep_break_prunes;
+                total.ep_continue_prunes += stats.ep_continue_prunes;
+                total.ep_explored += stats.ep_explored;
+                total.mono_break_prunes += stats.mono_break_prunes;
+                total_pool_size += pool.count();
+                total_elapsed_ms += elapsed;
+                case_count += 1;
+            }
+        }
+
+        let avg_pool = if case_count > 0 {
+            total_pool_size / case_count as usize
+        } else {
+            0
+        };
+        let mono_rate = if total.ep_candidates > 0 {
+            total.mono_break_prunes as f64 / total.ep_candidates as f64 * 100.0
+        } else {
+            0.0
+        };
+        eprintln!(
+            "\n=== {combo} ({case_count} cases, avg pool {avg_pool}, {total_elapsed_ms}ms) ===\n\
+             leaf_nodes:        {}\n\
+             ub_prunes:         {}\n\
+             ep_candidates:     {}\n\
+             ep_continue_prunes:{}\n\
+             ep_explored:       {}\n\
+             mono_break_prunes: {}\n\
+             mono_break_rate:   {mono_rate:.1}%",
+            total.leaf_nodes,
+            total.ub_prunes,
+            total.ep_candidates,
+            total.ep_continue_prunes,
+            total.ep_explored,
+            total.mono_break_prunes,
+        );
+    }
+}
+
+#[test]
+fn measure_score_variant_pruning_stats() {
+    let variants = [
+        ("score_solo_ev", allium_deck::LiveType::Solo),
+        ("score_auto_ev", allium_deck::LiveType::Auto),
+    ];
+    let manifest = manifest().unwrap();
+
+    for (label, live_type) in variants {
+        let cases: Vec<_> = manifest
+            .cases
+            .iter()
+            .filter(|c| c.combo == "score_multi_ev")
+            .collect();
+        let mut total = SearchStats::default();
+        let mut case_count = 0u32;
+        let mut total_pool_size = 0usize;
+        let mut total_elapsed_ms = 0u128;
+
+        for case in &cases {
+            let input: LegacyInput = load_json(&testdata_dir().join(&case.input_path)).unwrap();
+            let (mut params, user, search_params) = transform_input(&input).unwrap();
+            params.live_type = live_type;
+            let user = maybe_trim_user_for_mask(case, &user).unwrap();
+            let game = game_for_region(&params.region).unwrap();
+            if let Ok((pool, ctx)) = build_card_pool(&user, &game.as_ref(), &params) {
+                let t0 = std::time::Instant::now();
+                let (_results, stats) = search_instrumented(&pool, &ctx, &search_params);
+                let elapsed = t0.elapsed().as_millis();
+                total.leaf_nodes += stats.leaf_nodes;
+                total.ub_prunes += stats.ub_prunes;
+                total.ep_candidates += stats.ep_candidates;
+                total.ep_break_prunes += stats.ep_break_prunes;
+                total.ep_continue_prunes += stats.ep_continue_prunes;
+                total.ep_explored += stats.ep_explored;
+                total.mono_break_prunes += stats.mono_break_prunes;
+                total_pool_size += pool.count();
+                total_elapsed_ms += elapsed;
+                case_count += 1;
+            }
+        }
+
+        let avg_pool = if case_count > 0 {
+            total_pool_size / case_count as usize
+        } else {
+            0
+        };
+        eprintln!(
+            "\n=== {label} ({case_count} cases, avg pool {avg_pool}, {total_elapsed_ms}ms) ===\n\
+             leaf_nodes:        {}\n\
+             ub_prunes:         {}\n\
+             ep_candidates:     {}\n\
+             ep_continue_prunes:{}\n\
+             ep_explored:       {}\n\
+             mono_break_prunes: {}",
+            total.leaf_nodes,
+            total.ub_prunes,
+            total.ep_candidates,
+            total.ep_continue_prunes,
+            total.ep_explored,
+            total.mono_break_prunes,
+        );
+    }
+}
+
+#[test]
+fn measure_final_chapter_pruning_stats() {
+    let variants = [(
+        "score_final_chapter",
+        "score_multi_ev",
+        allium_deck::ScoreTarget::Score,
+    )];
+    let manifest = manifest().unwrap();
+
+    for (label, combo, target) in variants {
+        let cases: Vec<_> = manifest.cases.iter().filter(|c| c.combo == combo).collect();
+        let mut total = SearchStats::default();
+        let mut case_count = 0u32;
+        let mut total_pool_size = 0usize;
+        let mut total_elapsed_ms = 0u128;
+
+        for case in &cases {
+            let input: LegacyInput = load_json(&testdata_dir().join(&case.input_path)).unwrap();
+            let (mut params, user, search_params) = transform_input(&input).unwrap();
+            params.target = target;
+            params.event_id = Some(180);
+            params.event_type = None;
+            params.fixed_characters = user
+                .user_cards
+                .first()
+                .and_then(|user_card| {
+                    game_for_region(&params.region).ok().and_then(|game| {
+                        game.cards
+                            .iter()
+                            .find(|card| card.id == user_card.card_id)
+                            .map(|card| vec![card.character_id])
+                    })
+                })
+                .unwrap_or_default();
+            let user = maybe_trim_user_for_mask(case, &user).unwrap();
+            let game = game_for_region(&params.region).unwrap();
+            if let Ok((pool, ctx)) = build_card_pool(&user, &game.as_ref(), &params) {
+                let t0 = std::time::Instant::now();
+                let (_results, stats) = search_instrumented(&pool, &ctx, &search_params);
+                let elapsed = t0.elapsed().as_millis();
+                total.leaf_nodes += stats.leaf_nodes;
+                total.ub_prunes += stats.ub_prunes;
+                total.ep_candidates += stats.ep_candidates;
+                total.ep_break_prunes += stats.ep_break_prunes;
+                total.ep_continue_prunes += stats.ep_continue_prunes;
+                total.ep_explored += stats.ep_explored;
+                total.mono_break_prunes += stats.mono_break_prunes;
+                total.leader_prunes += stats.leader_prunes;
+                total_pool_size += pool.count();
+                total_elapsed_ms += elapsed;
+                case_count += 1;
+            }
+        }
+
+        let avg_pool = if case_count > 0 {
+            total_pool_size / case_count as usize
+        } else {
+            0
+        };
+        eprintln!(
+            "\n=== {label} ({case_count} cases, avg pool {avg_pool}, {total_elapsed_ms}ms) ===\n\
+             leaf_nodes:        {}\n\
+             ub_prunes:         {}\n\
+             leader_prunes:     {}\n\
+             ep_candidates:     {}\n\
+             ep_continue_prunes:{}\n\
+             ep_explored:       {}\n\
+             mono_break_prunes: {}",
+            total.leaf_nodes,
+            total.ub_prunes,
+            total.leader_prunes,
+            total.ep_candidates,
             total.ep_continue_prunes,
             total.ep_explored,
             total.mono_break_prunes,
