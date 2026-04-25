@@ -2,6 +2,7 @@
 
 // TASK-010 删除旧 CardSpec/CardPool 后，遗留 eval 层与新池模型不兼容；
 // 该模块在 TASK-011 之前不参与编译。
+pub mod engine;
 #[cfg(any())]
 pub mod eval;
 pub mod handler;
