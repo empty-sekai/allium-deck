@@ -42,3 +42,8 @@ impl Drop for Arena {
         }
     }
 }
+
+// Safety: Arena 拥有独占的堆内存块。PoolBuilder 阶段独占写入，
+// freeze 后 CardPool 只持有不可变引用（只读）。跨线程共享安全。
+unsafe impl Send for Arena {}
+unsafe impl Sync for Arena {}
