@@ -1,0 +1,102 @@
+{
+  "decks": [
+    {
+      "score": 323280,
+      "live_score": 323280,
+      "mysekai_event_point": 0,
+      "total_power": 51253,
+      "base_power": 43440,
+      "area_item_bonus_power": 6079,
+      "character_bonus_power": 1734,
+      "honor_bonus_power": 0,
+      "fixture_bonus_power": 0,
+      "gate_bonus_power": 0,
+      "event_bonus_rate": 0.0,
+      "support_deck_bonus_rate": 0.0,
+      "multi_live_score_up": 142.0,
+      "cards": [
+        {
+          "card_id": 141,
+          "total_power": 25626,
+          "base_power": 21720,
+          "event_bonus_rate": 0.0,
+          "master_rank": 2,
+          "level": 45,
+          "skill_level": 3,
+          "skill_score_up": 120,
+          "skill_life_recovery": 0,
+          "episode1_read": false,
+          "episode2_read": false,
+          "after_training": true,
+          "default_image": "special_training",
+          "has_canvas_bonus": false
+        },
+        {
+          "card_id": 186,
+          "total_power": 25627,
+          "base_power": 21720,
+          "event_bonus_rate": 0.0,
+          "master_rank": 2,
+          "level": 45,
+          "skill_level": 3,
+          "skill_score_up": 110,
+          "skill_life_recovery": 0,
+          "episode1_read": false,
+          "episode2_read": false,
+          "after_training": true,
+          "default_image": "special_training",
+          "has_canvas_bonus": false
+        },
+        {
+          "card_id": 141,
+          "total_power": 25626,
+          "base_power": 21720,
+          "event_bonus_rate": 0.0,
+          "master_rank": 2,
+          "level": 45,
+          "skill_level": 3,
+          "skill_score_up": 120,
+          "skill_life_recovery": 0,
+          "episode1_read": false,
+          "episode2_read": false,
+          "after_training": true,
+          "default_image": "special_training",
+          "has_canvas_bonus": false
+        },
+        {
+          "card_id": 141,
+          "total_power": 25626,
+          "base_power": 21720,
+          "event_bonus_rate": 0.0,
+          "master_rank": 2,
+          "level": 45,
+          "skill_level": 3,
+          "skill_score_up": 120,
+          "skill_life_recovery": 0,
+          "episode1_read": false,
+          "episode2_read": false,
+          "after_training": true,
+          "default_image": "special_training",
+          "has_canvas_bonus": false
+        },
+        {
+          "card_id": 141,
+          "total_power": 25626,
+          "base_power": 21720,
+          "event_bonus_rate": 0.0,
+          "master_rank": 2,
+          "level": 45,
+          "skill_level": 3,
+          "skill_score_up": 120,
+          "skill_life_recovery": 0,
+          "episode1_read": false,
+          "episode2_read": false,
+          "after_training": true,
+          "default_image": "special_training",
+          "has_canvas_bonus": false
+        }
+      ]
+    }
+  ],
+  "_elapsed_ms": 0.5
+}

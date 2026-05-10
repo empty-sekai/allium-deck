@@ -1,0 +1,12 @@
+{
+  "region": "cn",
+  "user_data_str": "{}",
+  "music_id": 1,
+  "music_diff": "master",
+  "live_type": "multi",
+  "algorithm": "dfs",
+  "target": "score",
+  "limit": 10,
+  "timeout_ms": 30000,
+  "skill_order_choose_strategy": "specific"
+}

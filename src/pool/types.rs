@@ -48,11 +48,93 @@ const _: () = assert!(size_of::<SkillSlot>() == 2);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct EventBonusHot {
-    pub base_bonus: u8,
-    pub limited_bonus: u8,
+    /// 活动基础加成，单位为 0.5%。
+    pub base_bonus_x2: u8,
+    /// 当期卡加成，单位为 0.5%。
+    pub limited_bonus_x2: u8,
 }
 
 const _: () = assert!(size_of::<EventBonusHot>() == 2);
+
+impl EventBonusHot {
+    #[inline(always)]
+    pub const fn from_x2(base_bonus_x2: u8, limited_bonus_x2: u8) -> Self {
+        Self {
+            base_bonus_x2,
+            limited_bonus_x2,
+        }
+    }
+
+    #[inline(always)]
+    pub fn from_rates(base_bonus: f64, limited_bonus: f64) -> Self {
+        Self {
+            base_bonus_x2: rate_to_x2(base_bonus),
+            limited_bonus_x2: rate_to_x2(limited_bonus),
+        }
+    }
+
+    #[inline(always)]
+    pub const fn from_whole(base_bonus: u8, limited_bonus: u8) -> Self {
+        Self {
+            base_bonus_x2: base_bonus.saturating_mul(2),
+            limited_bonus_x2: limited_bonus.saturating_mul(2),
+        }
+    }
+
+    #[inline(always)]
+    pub const fn base_x2(self) -> u32 {
+        self.base_bonus_x2 as u32
+    }
+
+    #[inline(always)]
+    pub const fn limited_x2(self) -> u32 {
+        self.limited_bonus_x2 as u32
+    }
+
+    #[inline(always)]
+    pub const fn total_x2(self) -> u32 {
+        self.base_x2() + self.limited_x2()
+    }
+
+    #[inline(always)]
+    pub const fn base_ceil(self) -> u32 {
+        self.base_x2().div_ceil(2)
+    }
+
+    #[inline(always)]
+    pub const fn limited_ceil(self) -> u32 {
+        self.limited_x2().div_ceil(2)
+    }
+
+    #[inline(always)]
+    pub const fn total_ceil(self) -> u32 {
+        self.total_x2().div_ceil(2)
+    }
+
+    #[inline(always)]
+    pub fn base_rate(self) -> f64 {
+        self.base_x2() as f64 * 0.5
+    }
+
+    #[inline(always)]
+    pub fn limited_rate(self) -> f64 {
+        self.limited_x2() as f64 * 0.5
+    }
+
+    #[inline(always)]
+    pub fn total_rate(self) -> f64 {
+        self.total_x2() as f64 * 0.5
+    }
+}
+
+#[inline(always)]
+fn rate_to_x2(value: f64) -> u8 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else {
+        (value * 2.0).round().clamp(0.0, u8::MAX as f64) as u8
+    }
+}
 
 /// 组分技能侧表项。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

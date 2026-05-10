@@ -1,4 +1,4 @@
-pub mod challenge_search;
+﻿pub mod challenge_search;
 pub mod context;
 pub mod dfs;
 pub mod dominance;
@@ -11,9 +11,9 @@ pub mod warm_start;
 pub use context::{SearchContext, SupportDeck};
 pub use dfs::{dfs_search, SearchStats};
 pub use dominance::eliminate_dominated;
-pub use evaluate::{calc_event_point, decode_u18, leaf_evaluate};
+pub use evaluate::{calc_event_point, decode_u18, leaf_evaluate, summarize_deck};
 pub use suffix::{PartialDeck, SuffixBound, UsedSet};
-pub use types::{DeckResult, SearchParams};
+pub use types::{DeckResult, DeckResultSummary, SearchParams};
 pub use warm_start::warm_start;
 
 use crate::pool::{CardIdx, CardPool};
@@ -33,9 +33,6 @@ pub fn search_instrumented(
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
-    }
-    if ctx.is_final_chapter && ctx.fixed_character_at(0).is_some() {
-        return final_chapter::search_fixed_leader(pool, ctx, params);
     }
     if matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill) {
         return search_simple_target(pool, ctx, params);
@@ -72,11 +69,32 @@ pub fn search_instrumented(
         } else {
             search_ctx.final_chapter_member_keep = member_keep;
         }
+        let (compacted_results, stats) = if search_ctx.fixed_character_at(0).is_some() {
+            final_chapter::search_fixed_leader(&search_pool, &search_ctx, params)
+        } else if !search_ctx.has_fixed_leader() {
+            final_chapter::search_auto_leader(&search_pool, &search_ctx, params)
+        } else {
+            let suffix = SuffixBound::build(&search_pool, &search_ctx);
+            let seeds = warm_start::warm_start_best(&search_pool, &search_ctx)
+                .into_iter()
+                .collect();
+            dfs::dfs_search_instrumented_with_seeds(
+                &search_pool,
+                &search_ctx,
+                &suffix,
+                params,
+                seeds,
+            )
+        };
+        let remapped = remap_results(compacted_results, &original_indices);
+        return (remapped, stats);
     }
     let suffix = SuffixBound::build(&search_pool, &search_ctx);
-    let seed = warm_start::warm_start_best(&search_pool, &search_ctx);
+    let seeds = warm_start::warm_start_best(&search_pool, &search_ctx)
+        .into_iter()
+        .collect();
     let (compacted_results, stats) =
-        dfs::dfs_search_instrumented(&search_pool, &search_ctx, &suffix, params, seed);
+        dfs::dfs_search_instrumented_with_seeds(&search_pool, &search_ctx, &suffix, params, seeds);
     let remapped = remap_results(compacted_results, &original_indices);
     (remapped, stats)
 }
@@ -153,14 +171,23 @@ fn search_simple_target(
         return (Vec::new(), SearchStats::default());
     }
 
-    let mut best: Option<DeckResult> = None;
+    let mut tracker = SimpleTopKTracker::new(params.top_k, pool);
     let mut deck = [prefix[0]; DECK_SIZE];
     let mut stats = SearchStats::default();
     simple_target_recurse(
-        pool, ctx, &prefix, 0, 0, 0, 0, &mut deck, &mut best, &mut stats,
+        pool,
+        ctx,
+        &prefix,
+        0,
+        0,
+        0,
+        0,
+        &mut deck,
+        &mut tracker,
+        &mut stats,
     );
 
-    (best.into_iter().collect(), stats)
+    (tracker.into_vec(), stats)
 }
 
 fn simple_target_recurse(
@@ -172,16 +199,13 @@ fn simple_target_recurse(
     used_cards: u32,
     used_chars: u32,
     deck: &mut [CardIdx; DECK_SIZE],
-    best: &mut Option<DeckResult>,
+    tracker: &mut SimpleTopKTracker,
     stats: &mut SearchStats,
 ) {
     if depth == DECK_SIZE {
         stats.leaf_nodes += 1;
         if let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) {
-            match best {
-                Some(ref current) if score <= current.score => {}
-                _ => *best = Some(DeckResult::new(*deck, score)),
-            }
+            tracker.insert(DeckResult::new(*deck, score));
         }
         return;
     }
@@ -224,11 +248,71 @@ fn simple_target_recurse(
             used_cards | (1u32 << idx),
             used_chars | (1u32 << char_id),
             deck,
-            best,
+            tracker,
             stats,
         );
         idx += 1;
     }
+}
+
+struct SimpleTopKTracker {
+    top_k: usize,
+    game_ids: Vec<u16>,
+    results: Vec<DeckResult>,
+}
+
+impl SimpleTopKTracker {
+    fn new(top_k: usize, pool: &CardPool) -> Self {
+        Self {
+            top_k,
+            game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
+            results: Vec::with_capacity(top_k),
+        }
+    }
+
+    fn insert(&mut self, candidate: DeckResult) {
+        if let Some(existing_pos) = self
+            .results
+            .iter()
+            .position(|existing| self.same_game_card_set(existing, &candidate))
+        {
+            if !deck_result_cmp(&candidate, &self.results[existing_pos]).is_lt() {
+                return;
+            }
+            self.results.remove(existing_pos);
+        }
+        let pos = self
+            .results
+            .iter()
+            .position(|existing| deck_result_cmp(&candidate, existing).is_lt())
+            .unwrap_or(self.results.len());
+        self.results.insert(pos, candidate);
+        if self.results.len() > self.top_k {
+            self.results.pop();
+        }
+    }
+
+    fn into_vec(self) -> Vec<DeckResult> {
+        self.results
+    }
+
+    fn same_game_card_set(&self, left: &DeckResult, right: &DeckResult) -> bool {
+        self.game_card_set_key(left) == self.game_card_set_key(right)
+    }
+
+    fn game_card_set_key(&self, result: &DeckResult) -> [u16; 5] {
+        let mut cards = result.cards.map(|card| self.game_ids[card.raw()]);
+        cards.sort_unstable();
+        cards
+    }
+}
+
+#[inline(always)]
+fn deck_result_cmp(left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
+    right
+        .score
+        .cmp(&left.score)
+        .then_with(|| left.cards.cmp(&right.cards))
 }
 
 fn remap_results(
@@ -309,10 +393,7 @@ mod tests {
             builder.set_skill(dense, card.skill);
             builder.set_event_bonus(
                 dense,
-                EventBonusHot {
-                    base_bonus: card.base_bonus,
-                    limited_bonus: card.limited_bonus,
-                },
+                EventBonusHot::from_whole(card.base_bonus, card.limited_bonus),
             );
             builder.set_char_id(dense, card.char_id);
             builder.set_attr(dense, card.attr);
@@ -351,6 +432,7 @@ mod tests {
             life: 1000,
             diff_attr_bonus: [0; 6],
             support_deck: SupportDeck::default(),
+            support_decks_by_character: Vec::new(),
             is_world_bloom: false,
             is_final_chapter: false,
             enforce_char_uniqueness: true,
@@ -652,7 +734,7 @@ mod tests {
         let partial = PartialDeck {
             power: pool.power_max(selected),
             skill: pool.skill_max(selected) as u32,
-            bonus: pool.event_bonus(selected).base_bonus as u32,
+            bonus: pool.event_bonus(selected).base_ceil(),
             max_skill: pool.skill_max(selected),
             limited_count: 0,
         };
@@ -1476,6 +1558,40 @@ mod tests {
     fn search_warm_start_returns_non_zero_incumbent() {
         let pool = build_pool(&five_unique_cards());
         assert!(warm_start(&pool, &ctx(ScoreTarget::Power)) > 0);
+    }
+
+    #[test]
+    fn search_final_chapter_auto_leader_small_pool_returns_result() {
+        let mut cards = five_unique_cards().to_vec();
+        cards.push(TestCard {
+            char_id: 5,
+            attr: 0,
+            unit_mask: 1,
+            game_id: 105,
+            power: 450,
+            skill: SkillSlot {
+                skill_type: 0,
+                value: 45,
+            },
+            base_bonus: 10,
+            limited_bonus: 0,
+            power_max: 450,
+            skill_max: 45,
+        });
+        let pool = build_pool(&cards);
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Score);
+        search_ctx.is_final_chapter = true;
+        search_ctx.live_type = LiveType::Multi;
+        search_ctx.live_skill_order = LiveSkillOrder::Average;
+        search_ctx.best_skill_as_leader = false;
+        let params = SearchParams {
+            top_k: 1,
+            timeout_ms: 0,
+        };
+
+        let results = search(&pool, &search_ctx, &params);
+        assert_eq!(results.len(), 1);
+        assert!(!search_ctx.has_fixed_leader());
     }
 
     #[test]

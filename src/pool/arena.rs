@@ -8,6 +8,11 @@ pub(crate) struct Arena {
     layout: Layout,
 }
 
+// Arena 拥有整块分配内存；freeze 成 CardPool 后只通过共享引用读取列数据。
+// PoolBuilder 构建阶段独占持有 Arena，可变写入不会跨线程共享。
+unsafe impl Send for Arena {}
+unsafe impl Sync for Arena {}
+
 impl Arena {
     pub(crate) fn new(size: usize) -> Self {
         assert!(size > 0, "arena size must be greater than zero");
@@ -42,8 +47,3 @@ impl Drop for Arena {
         }
     }
 }
-
-// Safety: Arena 拥有独占的堆内存块。PoolBuilder 阶段独占写入，
-// freeze 后 CardPool 只持有不可变引用（只读）。跨线程共享安全。
-unsafe impl Send for Arena {}
-unsafe impl Sync for Arena {}

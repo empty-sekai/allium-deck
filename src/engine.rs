@@ -8,7 +8,7 @@ use crate::handler::{
     EventRarityBonusRate, EventSkillScoreUpLimit, GameCharacterUnit, GameData, Honor, HonorLevel,
     MasterCard, MasterLesson, MusicDifficulty, MusicMeta, Skill, SkillEffect, UserAreaItem,
     UserCard, UserChallengeDeck, UserDeck, UserFixtureBonus, UserGateBonus, UserHonor, UserProfile,
-    UserWBSupportDeck, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus,
+    UserWBSupportDeck, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus, WorldBloom,
     WorldBloomDiffAttrBonus,
 };
 use crate::search::{DeckResult, SearchParams};
@@ -402,6 +402,7 @@ pub struct OwnedGameData {
     pub event_card_bonus_limits: Vec<EventCardBonusLimit>,
     pub event_honor_bonuses: Vec<EventHonorBonus>,
     pub world_bloom_different_attribute_bonuses: Vec<WorldBloomDiffAttrBonus>,
+    pub world_blooms: Vec<WorldBloom>,
     pub wb_support_deck_bonuses_wl1: Vec<WBSupportDeckBonus>,
     pub wb_support_deck_bonuses_wl2: Vec<WBSupportDeckBonus>,
     pub wb_support_deck_bonuses_wl3: Vec<WBSupportDeckBonus>,
@@ -589,12 +590,28 @@ impl OwnedGameData {
                 bonus_rate: entry.bonus_rate.round() as i32,
             })
             .collect(),
-            wb_support_deck_bonuses_wl1: Vec::<WBSupportDeckBonus>::new(),
-            wb_support_deck_bonuses_wl2: Vec::<WBSupportDeckBonus>::new(),
-            wb_support_deck_bonuses_wl3: Vec::<WBSupportDeckBonus>::new(),
-            world_bloom_support_deck_unit_event_limited_bonuses: Vec::<
-                WBSupportDeckUnitEventLimitedBonus,
-            >::new(),
+            world_blooms: load_optional_json::<Vec<RawWorldBloom>>(
+                &masterdata_dir.join("worldBlooms.json"),
+            )?
+            .into_iter()
+            .map(|entry| WorldBloom {
+                event_id: entry.event_id,
+                game_character_id: entry.game_character_id,
+                chapter_no: entry.chapter_no,
+            })
+            .collect(),
+            wb_support_deck_bonuses_wl1: load_optional_json::<Vec<WBSupportDeckBonus>>(
+                &masterdata_dir.join("worldBloomSupportDeckBonusesWL1.json"),
+            )?,
+            wb_support_deck_bonuses_wl2: load_optional_json::<Vec<WBSupportDeckBonus>>(
+                &masterdata_dir.join("worldBloomSupportDeckBonusesWL2.json"),
+            )?,
+            wb_support_deck_bonuses_wl3: load_wl3_support_bonuses(masterdata_dir)?,
+            world_bloom_support_deck_unit_event_limited_bonuses: load_optional_json::<
+                Vec<WBSupportDeckUnitEventLimitedBonus>,
+            >(
+                &masterdata_dir.join("worldBloomSupportDeckUnitEventLimitedBonuses.json"),
+            )?,
             event_mysekai_fixture_performance_bonus_limits: load_optional_json::<
                 Vec<RawEventFixtureBonusLimit>,
             >(
@@ -652,7 +669,7 @@ impl OwnedGameData {
                         event_id,
                         card_rarity_type: rarity_type_to_index(&entry.card_rarity_type),
                         master_rank: entry.master_rank,
-                        bonus_rate: entry.bonus_rate.round() as i32,
+                        bonus_rate_x2: rate_to_x2_i32(entry.bonus_rate),
                     })
             })
             .collect(),
@@ -699,6 +716,7 @@ impl OwnedGameData {
             event_card_bonus_limits: &self.event_card_bonus_limits,
             event_honor_bonuses: &self.event_honor_bonuses,
             world_bloom_different_attribute_bonuses: &self.world_bloom_different_attribute_bonuses,
+            world_blooms: &self.world_blooms,
             wb_support_deck_bonuses_wl1: &self.wb_support_deck_bonuses_wl1,
             wb_support_deck_bonuses_wl2: &self.wb_support_deck_bonuses_wl2,
             wb_support_deck_bonuses_wl3: &self.wb_support_deck_bonuses_wl3,
@@ -966,6 +984,18 @@ fn load_optional_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T, S
     load_json(path)
 }
 
+fn load_wl3_support_bonuses(masterdata_dir: &Path) -> Result<Vec<WBSupportDeckBonus>, String> {
+    let exact = load_optional_json::<Vec<WBSupportDeckBonus>>(
+        &masterdata_dir.join("worldBloomSupportDeckBonusesWL3.json"),
+    )?;
+    if !exact.is_empty() {
+        return Ok(exact);
+    }
+    load_optional_json::<Vec<WBSupportDeckBonus>>(
+        &masterdata_dir.join("worldBloomSupportDeckBonuses.json"),
+    )
+}
+
 fn normalize_unit_string(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
@@ -1199,6 +1229,15 @@ struct RawWorldBloomDiffAttrBonus {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RawWorldBloom {
+    event_id: i32,
+    #[serde(default)]
+    game_character_id: Option<i32>,
+    chapter_no: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawEventFixtureBonusLimit {
     event_id: i32,
     bonus_rate_limit: i32,
@@ -1232,6 +1271,14 @@ struct RawEventRarityBonusRate {
     card_rarity_type: String,
     master_rank: i32,
     bonus_rate: f64,
+}
+
+fn rate_to_x2_i32(value: f64) -> i32 {
+    if !value.is_finite() || value <= 0.0 {
+        0
+    } else {
+        (value * 2.0).round().clamp(0.0, i32::MAX as f64) as i32
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -72,9 +72,13 @@ pub struct SuffixBound {
     life_rate_num: i32,
     multi_teammate_power: Option<i32>,
     live_skill_order: LiveSkillOrder,
+    is_world_bloom: bool,
     is_final_chapter: bool,
     limited_bonus_cap: usize,
     extra_bonus_ub: u32,
+    diff_attr_bonus: [u16; 6],
+    support_cards: Vec<(u16, f64)>,
+    support_count: usize,
     honor_bonus: u32,
     power_total_cap: Option<u32>,
     power_order: [u8; CHAR_MASK_COUNT],
@@ -105,8 +109,7 @@ impl SuffixBound {
             debug_assert!(ch < CHAR_MASK_COUNT);
             power_per_char[ch] = power_per_char[ch].max(pool.power_max(card));
             skill_per_char[ch] = skill_per_char[ch].max(pool.skill_max(card) as u16);
-            let bonus = pool.event_bonus(card).base_bonus as u16
-                + pool.event_bonus(card).limited_bonus as u16;
+            let bonus = pool.event_bonus(card).total_ceil() as u16;
             bonus_per_char[ch] = bonus_per_char[ch].max(bonus);
         }
 
@@ -175,9 +178,13 @@ impl SuffixBound {
             },
             multi_teammate_power: ctx.multi_teammate_power,
             live_skill_order: ctx.live_skill_order,
+            is_world_bloom: ctx.is_world_bloom,
             is_final_chapter: ctx.is_final_chapter,
             limited_bonus_cap: ctx.card_bonus_count_limit,
             extra_bonus_ub: ctx.extra_bonus_ub,
+            diff_attr_bonus: ctx.diff_attr_bonus,
+            support_cards: ctx.support_deck.cards.clone(),
+            support_count: ctx.support_deck.count as usize,
             honor_bonus: ctx.honor_bonus,
             power_total_cap: ctx.power_total_cap,
             power_order,
@@ -293,7 +300,7 @@ impl SuffixBound {
                         slots_left,
                     )
                     + self.extra_bonus_ub;
-                calc_mysekai_internal(total_power, total_bonus) as u64
+                calc_mysekai_internal(total_power, total_bonus as f64) as u64
             }
         }
     }
@@ -399,7 +406,7 @@ impl SuffixBound {
                 let ep = self.calc_event_point_bound(live, bonus_total);
                 ((ep as u64) << 32) | (live as u32 as u64)
             }
-            ScoreTarget::Mysekai => calc_mysekai_internal(power_ub, bonus_total) as u64,
+            ScoreTarget::Mysekai => calc_mysekai_internal(power_ub, bonus_total as f64) as u64,
         }
     }
 
@@ -501,6 +508,38 @@ impl SuffixBound {
         )
     }
 
+    #[inline(always)]
+    pub(crate) fn dense_suffix_ceiling_with_extra(
+        &self,
+        dense_start: usize,
+        partial: &PartialDeck,
+        slots: usize,
+        extra_bonus_ub: u32,
+    ) -> u64 {
+        let tail_bonus = self.dense_bonus_from_start(dense_start, slots, partial.limited_count);
+        let tail_power = self
+            .dense_power_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let tail_skill = self
+            .dense_skill_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let tail_leader = self
+            .dense_leader_tail
+            .get(dense_start)
+            .copied()
+            .unwrap_or(0) as u32;
+        self.ceiling(
+            partial.power + tail_power,
+            partial.bonus + tail_bonus + extra_bonus_ub,
+            partial.skill + tail_skill,
+            (partial.max_skill as u32).max(tail_leader),
+        )
+    }
+
     /// 当前候选 + dense suffix 的廉价 ceiling。
     #[inline(always)]
     pub(crate) fn dense_candidate_ceiling(
@@ -550,6 +589,56 @@ impl SuffixBound {
         )
     }
 
+    /// 当前候选 + dense suffix 的 ceiling，调用方传入更紧的额外 bonus 上界。
+    #[inline(always)]
+    pub(crate) fn dense_candidate_ceiling_with_extra(
+        &self,
+        next_start: usize,
+        partial: &PartialDeck,
+        card_power: u32,
+        card_bonus: u32,
+        card_base_bonus: u32,
+        card_limited_bonus: u32,
+        card_skill: u32,
+        slots: usize,
+        extra_bonus_ub: u32,
+    ) -> u64 {
+        let rest = slots.saturating_sub(1);
+        let card_bonus = if self.is_final_chapter {
+            card_base_bonus
+                + if partial.limited_count as usize >= self.limited_bonus_cap {
+                    0
+                } else {
+                    card_limited_bonus
+                }
+        } else {
+            card_bonus
+        };
+        let next_limited_count = partial.limited_count.saturating_add(
+            (self.is_final_chapter
+                && card_limited_bonus > 0
+                && (partial.limited_count as usize) < self.limited_bonus_cap) as u8,
+        );
+        let tail_bonus = self.dense_bonus_from_start(next_start, rest, next_limited_count);
+        let tail_power = self
+            .dense_power_tail
+            .get(next_start)
+            .map(|tail| tail[rest])
+            .unwrap_or(0);
+        let tail_skill = self
+            .dense_skill_tail
+            .get(next_start)
+            .map(|tail| tail[rest])
+            .unwrap_or(0);
+        let tail_leader = self.dense_leader_tail.get(next_start).copied().unwrap_or(0) as u32;
+        self.ceiling(
+            partial.power + card_power + tail_power,
+            partial.bonus + card_bonus + tail_bonus + extra_bonus_ub,
+            partial.skill + card_skill + tail_skill,
+            (partial.max_skill as u32).max(card_skill).max(tail_leader),
+        )
+    }
+
     #[inline(always)]
     pub(crate) fn dense_bonus_from_start(
         &self,
@@ -582,8 +671,115 @@ impl SuffixBound {
     }
 
     #[inline(always)]
-    pub(crate) fn extra_bonus_ub(&self) -> u32 {
-        self.extra_bonus_ub
+    pub(crate) fn world_bloom_extra_bonus_bound_for_candidate_parts(
+        &self,
+        attr_set: u8,
+        selected: &[u16; DECK_SIZE],
+        selected_len: usize,
+        candidate_game_id: u16,
+        rest: usize,
+    ) -> u32 {
+        if !self.is_world_bloom {
+            return self.extra_bonus_ub;
+        }
+
+        let current_attrs = attr_set.count_ones() as usize;
+        let max_attrs = (current_attrs + rest).min(DECK_SIZE);
+        let mut diff_ub = 0u32;
+        let mut count = current_attrs;
+        while count <= max_attrs {
+            diff_ub = diff_ub.max(self.diff_attr_bonus[count] as u32);
+            count += 1;
+        }
+
+        let support_sum =
+            self.support_sum_excluding_candidate(selected, selected_len, candidate_game_id);
+
+        diff_ub + support_sum.ceil() as u32
+    }
+
+    #[inline(always)]
+    pub(crate) fn world_bloom_extra_bonus_bound_from_parts(
+        &self,
+        attr_set: u8,
+        selected: &[u16; DECK_SIZE],
+        selected_len: usize,
+        rest: usize,
+    ) -> u32 {
+        if !self.is_world_bloom {
+            return self.extra_bonus_ub;
+        }
+
+        let current_attrs = attr_set.count_ones() as usize;
+        let max_attrs = (current_attrs + rest).min(DECK_SIZE);
+        let mut diff_ub = 0u32;
+        let mut count = current_attrs;
+        while count <= max_attrs {
+            diff_ub = diff_ub.max(self.diff_attr_bonus[count] as u32);
+            count += 1;
+        }
+
+        let support_sum = self.support_sum_excluding(selected, selected_len);
+
+        diff_ub + support_sum.ceil() as u32
+    }
+
+    #[inline(always)]
+    fn support_sum_excluding(&self, selected: &[u16; DECK_SIZE], selected_len: usize) -> f64 {
+        let mut support_sum = 0.0_f64;
+        let mut picked = 0usize;
+        let mut idx = 0usize;
+        while idx < self.support_cards.len() {
+            if picked >= self.support_count {
+                break;
+            }
+            let (game_id, bonus) = unsafe { *self.support_cards.get_unchecked(idx) };
+            if selected[0] == game_id
+                || (selected_len > 1 && selected[1] == game_id)
+                || (selected_len > 2 && selected[2] == game_id)
+                || (selected_len > 3 && selected[3] == game_id)
+                || (selected_len > 4 && selected[4] == game_id)
+            {
+                idx += 1;
+                continue;
+            }
+            support_sum += bonus;
+            picked += 1;
+            idx += 1;
+        }
+        support_sum
+    }
+
+    #[inline(always)]
+    fn support_sum_excluding_candidate(
+        &self,
+        selected: &[u16; DECK_SIZE],
+        selected_len: usize,
+        candidate_game_id: u16,
+    ) -> f64 {
+        let mut support_sum = 0.0_f64;
+        let mut picked = 0usize;
+        let mut idx = 0usize;
+        while idx < self.support_cards.len() {
+            if picked >= self.support_count {
+                break;
+            }
+            let (game_id, bonus) = unsafe { *self.support_cards.get_unchecked(idx) };
+            if game_id == candidate_game_id
+                || selected[0] == game_id
+                || (selected_len > 1 && selected[1] == game_id)
+                || (selected_len > 2 && selected[2] == game_id)
+                || (selected_len > 3 && selected[3] == game_id)
+                || (selected_len > 4 && selected[4] == game_id)
+            {
+                idx += 1;
+                continue;
+            }
+            support_sum += bonus;
+            picked += 1;
+            idx += 1;
+        }
+        support_sum
     }
 
     pub(crate) fn mono_precompute(
@@ -1025,11 +1221,11 @@ fn build_dense_suffix_tails(
     let mut dense_power_tail = vec![[0u32; DECK_SIZE + 1]; count + 1];
     let mut dense_skill_tail = vec![[0u32; DECK_SIZE + 1]; count + 1];
     let mut dense_leader_tail = vec![0u16; count + 1];
-    let mut top_bonuses = [0u32; DECK_SIZE];
-    let mut top_base_bonuses = [0u32; DECK_SIZE];
-    let mut top_limited_bonuses = [0u32; DECK_SIZE];
-    let mut top_powers = [0u32; DECK_SIZE];
-    let mut top_skills = [0u16; DECK_SIZE];
+    let mut best_bonus_by_char = [0u32; CHAR_MASK_COUNT];
+    let mut best_base_by_char = [0u32; CHAR_MASK_COUNT];
+    let mut best_limited_by_char = [0u32; CHAR_MASK_COUNT];
+    let mut best_power_by_char = [0u32; CHAR_MASK_COUNT];
+    let mut best_skill_by_char = [0u16; CHAR_MASK_COUNT];
     let mut best_skill = 0u16;
 
     let mut dense = count;
@@ -1037,15 +1233,28 @@ fn build_dense_suffix_tails(
         dense -= 1;
         let card = crate::pool::CardIdx::new(dense as u16);
         let eb = pool.event_bonus(card);
-        insert_topk_u32(
-            &mut top_bonuses,
-            eb.base_bonus as u32 + eb.limited_bonus as u32,
-        );
-        insert_topk_u32(&mut top_base_bonuses, eb.base_bonus as u32);
-        insert_topk_u32(&mut top_limited_bonuses, eb.limited_bonus as u32);
-        insert_topk_u32(&mut top_powers, pool.power_max(card));
-        insert_topk_u16(&mut top_skills, pool.skill_max(card) as u16);
+        let char_id = pool.char_id(card) as usize;
+        best_bonus_by_char[char_id] = best_bonus_by_char[char_id].max(eb.total_ceil());
+        best_base_by_char[char_id] = best_base_by_char[char_id].max(eb.base_ceil());
+        best_limited_by_char[char_id] = best_limited_by_char[char_id].max(eb.limited_ceil());
+        best_power_by_char[char_id] = best_power_by_char[char_id].max(pool.power_max(card));
+        best_skill_by_char[char_id] = best_skill_by_char[char_id].max(pool.skill_max(card) as u16);
         best_skill = best_skill.max(pool.skill_max(card) as u16);
+
+        let mut top_bonuses = [0u32; DECK_SIZE];
+        let mut top_base_bonuses = [0u32; DECK_SIZE];
+        let mut top_limited_bonuses = [0u32; DECK_SIZE];
+        let mut top_powers = [0u32; DECK_SIZE];
+        let mut top_skills = [0u16; DECK_SIZE];
+        let mut ch = 0usize;
+        while ch < CHAR_MASK_COUNT {
+            insert_topk_u32(&mut top_bonuses, best_bonus_by_char[ch]);
+            insert_topk_u32(&mut top_base_bonuses, best_base_by_char[ch]);
+            insert_topk_u32(&mut top_limited_bonuses, best_limited_by_char[ch]);
+            insert_topk_u32(&mut top_powers, best_power_by_char[ch]);
+            insert_topk_u16(&mut top_skills, best_skill_by_char[ch]);
+            ch += 1;
+        }
         let mut slot = 0usize;
         while slot < DECK_SIZE {
             dense_bonus_tail[dense][slot + 1] = dense_bonus_tail[dense][slot] + top_bonuses[slot];

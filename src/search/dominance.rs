@@ -63,6 +63,7 @@ pub fn compute_member_keep(pool: &CardPool) -> Vec<bool> {
             life: 1000,
             diff_attr_bonus: [0; 6],
             support_deck: super::context::SupportDeck::default(),
+            support_decks_by_character: Vec::new(),
             is_world_bloom: false,
             is_final_chapter: false,
             enforce_char_uniqueness: true,
@@ -148,8 +149,7 @@ fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -
 
     let lhs_bonus = pool.event_bonus(lhs);
     let rhs_bonus = pool.event_bonus(rhs);
-    if lhs_bonus.base_bonus < rhs_bonus.base_bonus
-        || lhs_bonus.limited_bonus < rhs_bonus.limited_bonus
+    if lhs_bonus.base_x2() < rhs_bonus.base_x2() || lhs_bonus.limited_x2() < rhs_bonus.limited_x2()
     {
         return false;
     }

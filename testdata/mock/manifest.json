@@ -1,0 +1,1242 @@
+{
+  "cases": [
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_score_multi_1_input.json",
+      "name": "event_score_multi_1",
+      "output_path": "event_score_multi_1_output.json",
+      "tags": [
+        "event",
+        "score",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_score_multi_2_input.json",
+      "name": "event_score_multi_2",
+      "output_path": "event_score_multi_2_output.json",
+      "tags": [
+        "event",
+        "score",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_score_multi_3_input.json",
+      "name": "event_score_multi_3",
+      "output_path": "event_score_multi_3_output.json",
+      "tags": [
+        "event",
+        "score",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_score_solo_1_input.json",
+      "name": "event_score_solo_1",
+      "output_path": "event_score_solo_1_output.json",
+      "tags": [
+        "event",
+        "score",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_score_solo_2_input.json",
+      "name": "event_score_solo_2",
+      "output_path": "event_score_solo_2_output.json",
+      "tags": [
+        "event",
+        "score",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_score_solo_3_input.json",
+      "name": "event_score_solo_3",
+      "output_path": "event_score_solo_3_output.json",
+      "tags": [
+        "event",
+        "score",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_score_auto_1_input.json",
+      "name": "event_score_auto_1",
+      "output_path": "event_score_auto_1_output.json",
+      "tags": [
+        "event",
+        "score",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_score_auto_2_input.json",
+      "name": "event_score_auto_2",
+      "output_path": "event_score_auto_2_output.json",
+      "tags": [
+        "event",
+        "score",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_score_auto_3_input.json",
+      "name": "event_score_auto_3",
+      "output_path": "event_score_auto_3_output.json",
+      "tags": [
+        "event",
+        "score",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_power_multi_1_input.json",
+      "name": "event_power_multi_1",
+      "output_path": "event_power_multi_1_output.json",
+      "tags": [
+        "event",
+        "power",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_power_multi_2_input.json",
+      "name": "event_power_multi_2",
+      "output_path": "event_power_multi_2_output.json",
+      "tags": [
+        "event",
+        "power",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_power_multi_3_input.json",
+      "name": "event_power_multi_3",
+      "output_path": "event_power_multi_3_output.json",
+      "tags": [
+        "event",
+        "power",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_power_solo_1_input.json",
+      "name": "event_power_solo_1",
+      "output_path": "event_power_solo_1_output.json",
+      "tags": [
+        "event",
+        "power",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_power_solo_2_input.json",
+      "name": "event_power_solo_2",
+      "output_path": "event_power_solo_2_output.json",
+      "tags": [
+        "event",
+        "power",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_power_solo_3_input.json",
+      "name": "event_power_solo_3",
+      "output_path": "event_power_solo_3_output.json",
+      "tags": [
+        "event",
+        "power",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_power_auto_1_input.json",
+      "name": "event_power_auto_1",
+      "output_path": "event_power_auto_1_output.json",
+      "tags": [
+        "event",
+        "power",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_power_auto_2_input.json",
+      "name": "event_power_auto_2",
+      "output_path": "event_power_auto_2_output.json",
+      "tags": [
+        "event",
+        "power",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_power_auto_3_input.json",
+      "name": "event_power_auto_3",
+      "output_path": "event_power_auto_3_output.json",
+      "tags": [
+        "event",
+        "power",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_skill_multi_1_input.json",
+      "name": "event_skill_multi_1",
+      "output_path": "event_skill_multi_1_output.json",
+      "tags": [
+        "event",
+        "skill",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_skill_multi_2_input.json",
+      "name": "event_skill_multi_2",
+      "output_path": "event_skill_multi_2_output.json",
+      "tags": [
+        "event",
+        "skill",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_skill_multi_3_input.json",
+      "name": "event_skill_multi_3",
+      "output_path": "event_skill_multi_3_output.json",
+      "tags": [
+        "event",
+        "skill",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_skill_solo_1_input.json",
+      "name": "event_skill_solo_1",
+      "output_path": "event_skill_solo_1_output.json",
+      "tags": [
+        "event",
+        "skill",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_skill_solo_2_input.json",
+      "name": "event_skill_solo_2",
+      "output_path": "event_skill_solo_2_output.json",
+      "tags": [
+        "event",
+        "skill",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_skill_solo_3_input.json",
+      "name": "event_skill_solo_3",
+      "output_path": "event_skill_solo_3_output.json",
+      "tags": [
+        "event",
+        "skill",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_skill_auto_1_input.json",
+      "name": "event_skill_auto_1",
+      "output_path": "event_skill_auto_1_output.json",
+      "tags": [
+        "event",
+        "skill",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_skill_auto_2_input.json",
+      "name": "event_skill_auto_2",
+      "output_path": "event_skill_auto_2_output.json",
+      "tags": [
+        "event",
+        "skill",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "event_skill_auto_3_input.json",
+      "name": "event_skill_auto_3",
+      "output_path": "event_skill_auto_3_output.json",
+      "tags": [
+        "event",
+        "skill",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "bonus_multi_1_input.json",
+      "name": "bonus_multi_1",
+      "output_path": "bonus_multi_1_output.json",
+      "tags": [
+        "bonus",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "bonus_multi_2_input.json",
+      "name": "bonus_multi_2",
+      "output_path": "bonus_multi_2_output.json",
+      "tags": [
+        "bonus",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "bonus_multi_3_input.json",
+      "name": "bonus_multi_3",
+      "output_path": "bonus_multi_3_output.json",
+      "tags": [
+        "bonus",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "bonus_solo_1_input.json",
+      "name": "bonus_solo_1",
+      "output_path": "bonus_solo_1_output.json",
+      "tags": [
+        "bonus",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "bonus_solo_2_input.json",
+      "name": "bonus_solo_2",
+      "output_path": "bonus_solo_2_output.json",
+      "tags": [
+        "bonus",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "bonus_solo_3_input.json",
+      "name": "bonus_solo_3",
+      "output_path": "bonus_solo_3_output.json",
+      "tags": [
+        "bonus",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "bonus_auto_1_input.json",
+      "name": "bonus_auto_1",
+      "output_path": "bonus_auto_1_output.json",
+      "tags": [
+        "bonus",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "bonus_auto_2_input.json",
+      "name": "bonus_auto_2",
+      "output_path": "bonus_auto_2_output.json",
+      "tags": [
+        "bonus",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "bonus_auto_3_input.json",
+      "name": "bonus_auto_3",
+      "output_path": "bonus_auto_3_output.json",
+      "tags": [
+        "bonus",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "bonus_challenge_1_input.json",
+      "name": "bonus_challenge_1",
+      "note": "当前 C++ 引擎对 challenge + bonus 返回错误，golden 记录现状",
+      "output_path": "bonus_challenge_1_output.json",
+      "tags": [
+        "bonus",
+        "challenge"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "bonus_challenge_2_input.json",
+      "name": "bonus_challenge_2",
+      "note": "当前 C++ 引擎对 challenge + bonus 返回错误，golden 记录现状",
+      "output_path": "bonus_challenge_2_output.json",
+      "tags": [
+        "bonus",
+        "challenge"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "bonus_challenge_3_input.json",
+      "name": "bonus_challenge_3",
+      "note": "当前 C++ 引擎对 challenge + bonus 返回错误，golden 记录现状",
+      "output_path": "bonus_challenge_3_output.json",
+      "tags": [
+        "bonus",
+        "challenge"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "wl_bonus_multi_1_input.json",
+      "name": "wl_bonus_multi_1",
+      "output_path": "wl_bonus_multi_1_output.json",
+      "tags": [
+        "wl_bonus",
+        "multi"
+      ],
+      "note": "C++ 引擎实际返回错误: 推荐计算失败: recommend: World bloom chapter not found for eventId: 112, characterId: 5"
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "wl_bonus_multi_2_input.json",
+      "name": "wl_bonus_multi_2",
+      "output_path": "wl_bonus_multi_2_output.json",
+      "tags": [
+        "wl_bonus",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "wl_bonus_multi_3_input.json",
+      "name": "wl_bonus_multi_3",
+      "output_path": "wl_bonus_multi_3_output.json",
+      "tags": [
+        "wl_bonus",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "wl_bonus_solo_1_input.json",
+      "name": "wl_bonus_solo_1",
+      "output_path": "wl_bonus_solo_1_output.json",
+      "tags": [
+        "wl_bonus",
+        "solo"
+      ],
+      "note": "C++ 引擎实际返回错误: 推荐计算失败: recommend: World bloom chapter not found for eventId: 112, characterId: 5"
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "wl_bonus_solo_2_input.json",
+      "name": "wl_bonus_solo_2",
+      "output_path": "wl_bonus_solo_2_output.json",
+      "tags": [
+        "wl_bonus",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "wl_bonus_solo_3_input.json",
+      "name": "wl_bonus_solo_3",
+      "output_path": "wl_bonus_solo_3_output.json",
+      "tags": [
+        "wl_bonus",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "wl_bonus_auto_1_input.json",
+      "name": "wl_bonus_auto_1",
+      "output_path": "wl_bonus_auto_1_output.json",
+      "tags": [
+        "wl_bonus",
+        "auto"
+      ],
+      "note": "C++ 引擎实际返回错误: 推荐计算失败: recommend: World bloom chapter not found for eventId: 112, characterId: 5"
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "wl_bonus_auto_2_input.json",
+      "name": "wl_bonus_auto_2",
+      "output_path": "wl_bonus_auto_2_output.json",
+      "tags": [
+        "wl_bonus",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "wl_bonus_auto_3_input.json",
+      "name": "wl_bonus_auto_3",
+      "output_path": "wl_bonus_auto_3_output.json",
+      "tags": [
+        "wl_bonus",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "wl_bonus_challenge_1_input.json",
+      "name": "wl_bonus_challenge_1",
+      "note": "当前 C++ 引擎对 challenge + wl_bonus 返回错误，golden 记录现状",
+      "output_path": "wl_bonus_challenge_1_output.json",
+      "tags": [
+        "wl_bonus",
+        "challenge"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "wl_bonus_challenge_2_input.json",
+      "name": "wl_bonus_challenge_2",
+      "note": "当前 C++ 引擎对 challenge + wl_bonus 返回错误，golden 记录现状",
+      "output_path": "wl_bonus_challenge_2_output.json",
+      "tags": [
+        "wl_bonus",
+        "challenge"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "wl_bonus_challenge_3_input.json",
+      "name": "wl_bonus_challenge_3",
+      "note": "当前 C++ 引擎对 challenge + wl_bonus 返回错误，golden 记录现状",
+      "output_path": "wl_bonus_challenge_3_output.json",
+      "tags": [
+        "wl_bonus",
+        "challenge"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "challenge_score_1_input.json",
+      "name": "challenge_score_1",
+      "output_path": "challenge_score_1_output.json",
+      "tags": [
+        "challenge",
+        "score"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "challenge_score_2_input.json",
+      "name": "challenge_score_2",
+      "output_path": "challenge_score_2_output.json",
+      "tags": [
+        "challenge",
+        "score"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "challenge_score_3_input.json",
+      "name": "challenge_score_3",
+      "output_path": "challenge_score_3_output.json",
+      "tags": [
+        "challenge",
+        "score"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_power_1_input.json",
+      "name": "challenge_power_1",
+      "output_path": "challenge_power_1_output.json",
+      "tags": [
+        "challenge",
+        "power"
+      ],
+      "note": "C++ 引擎实际返回错误: 推荐计算失败: recommend: Cannot recommend any deck in 3 cards"
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_power_2_input.json",
+      "name": "challenge_power_2",
+      "output_path": "challenge_power_2_output.json",
+      "tags": [
+        "challenge",
+        "power"
+      ],
+      "note": "C++ 引擎实际返回错误: 推荐计算失败: recommend: Cannot recommend any deck in 2 cards"
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "challenge_power_3_input.json",
+      "name": "challenge_power_3",
+      "output_path": "challenge_power_3_output.json",
+      "tags": [
+        "challenge",
+        "power"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "challenge_skill_1_input.json",
+      "name": "challenge_skill_1",
+      "output_path": "challenge_skill_1_output.json",
+      "tags": [
+        "challenge",
+        "skill"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "challenge_skill_2_input.json",
+      "name": "challenge_skill_2",
+      "output_path": "challenge_skill_2_output.json",
+      "tags": [
+        "challenge",
+        "skill"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "challenge_skill_3_input.json",
+      "name": "challenge_skill_3",
+      "output_path": "challenge_skill_3_output.json",
+      "tags": [
+        "challenge",
+        "skill"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_all_score_1_input.json",
+      "name": "challenge_all_score_1",
+      "note": "当前 C++ core 强制要求 challenge_live_character_id，本用例记录现状错误输出",
+      "output_path": "challenge_all_score_1_output.json",
+      "tags": [
+        "challenge_all",
+        "score"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_all_score_2_input.json",
+      "name": "challenge_all_score_2",
+      "note": "当前 C++ core 强制要求 challenge_live_character_id，本用例记录现状错误输出",
+      "output_path": "challenge_all_score_2_output.json",
+      "tags": [
+        "challenge_all",
+        "score"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_all_score_3_input.json",
+      "name": "challenge_all_score_3",
+      "note": "当前 C++ core 强制要求 challenge_live_character_id，本用例记录现状错误输出",
+      "output_path": "challenge_all_score_3_output.json",
+      "tags": [
+        "challenge_all",
+        "score"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_all_power_1_input.json",
+      "name": "challenge_all_power_1",
+      "note": "当前 C++ core 强制要求 challenge_live_character_id，本用例记录现状错误输出",
+      "output_path": "challenge_all_power_1_output.json",
+      "tags": [
+        "challenge_all",
+        "power"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_all_power_2_input.json",
+      "name": "challenge_all_power_2",
+      "note": "当前 C++ core 强制要求 challenge_live_character_id，本用例记录现状错误输出",
+      "output_path": "challenge_all_power_2_output.json",
+      "tags": [
+        "challenge_all",
+        "power"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_all_power_3_input.json",
+      "name": "challenge_all_power_3",
+      "note": "当前 C++ core 强制要求 challenge_live_character_id，本用例记录现状错误输出",
+      "output_path": "challenge_all_power_3_output.json",
+      "tags": [
+        "challenge_all",
+        "power"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_all_skill_1_input.json",
+      "name": "challenge_all_skill_1",
+      "note": "当前 C++ core 强制要求 challenge_live_character_id，本用例记录现状错误输出",
+      "output_path": "challenge_all_skill_1_output.json",
+      "tags": [
+        "challenge_all",
+        "skill"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_all_skill_2_input.json",
+      "name": "challenge_all_skill_2",
+      "note": "当前 C++ core 强制要求 challenge_live_character_id，本用例记录现状错误输出",
+      "output_path": "challenge_all_skill_2_output.json",
+      "tags": [
+        "challenge_all",
+        "skill"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "challenge_all_skill_3_input.json",
+      "name": "challenge_all_skill_3",
+      "note": "当前 C++ core 强制要求 challenge_live_character_id，本用例记录现状错误输出",
+      "output_path": "challenge_all_skill_3_output.json",
+      "tags": [
+        "challenge_all",
+        "skill"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "mysekai_score_1_input.json",
+      "name": "mysekai_score_1",
+      "output_path": "mysekai_score_1_output.json",
+      "tags": [
+        "mysekai",
+        "score"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "mysekai_score_2_input.json",
+      "name": "mysekai_score_2",
+      "output_path": "mysekai_score_2_output.json",
+      "tags": [
+        "mysekai",
+        "score"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "mysekai_score_3_input.json",
+      "name": "mysekai_score_3",
+      "output_path": "mysekai_score_3_output.json",
+      "tags": [
+        "mysekai",
+        "score"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "mysekai_power_1_input.json",
+      "name": "mysekai_power_1",
+      "output_path": "mysekai_power_1_output.json",
+      "tags": [
+        "mysekai",
+        "power"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "mysekai_power_2_input.json",
+      "name": "mysekai_power_2",
+      "output_path": "mysekai_power_2_output.json",
+      "tags": [
+        "mysekai",
+        "power"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "mysekai_power_3_input.json",
+      "name": "mysekai_power_3",
+      "output_path": "mysekai_power_3_output.json",
+      "tags": [
+        "mysekai",
+        "power"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "mysekai_skill_1_input.json",
+      "name": "mysekai_skill_1",
+      "output_path": "mysekai_skill_1_output.json",
+      "tags": [
+        "mysekai",
+        "skill"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "mysekai_skill_2_input.json",
+      "name": "mysekai_skill_2",
+      "output_path": "mysekai_skill_2_output.json",
+      "tags": [
+        "mysekai",
+        "skill"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "mysekai_skill_3_input.json",
+      "name": "mysekai_skill_3",
+      "output_path": "mysekai_skill_3_output.json",
+      "tags": [
+        "mysekai",
+        "skill"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "unit_attr_score_multi_1_input.json",
+      "name": "unit_attr_score_multi_1",
+      "output_path": "unit_attr_score_multi_1_output.json",
+      "tags": [
+        "unit_attr",
+        "score",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "unit_attr_power_solo_2_input.json",
+      "name": "unit_attr_power_solo_2",
+      "output_path": "unit_attr_power_solo_2_output.json",
+      "tags": [
+        "unit_attr",
+        "power",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "unit_attr_skill_auto_3_input.json",
+      "name": "unit_attr_skill_auto_3",
+      "output_path": "unit_attr_skill_auto_3_output.json",
+      "tags": [
+        "unit_attr",
+        "skill",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "unit_attr_score_multi_4_input.json",
+      "name": "unit_attr_score_multi_4",
+      "output_path": "unit_attr_score_multi_4_output.json",
+      "tags": [
+        "unit_attr",
+        "score",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "unit_attr_power_solo_5_input.json",
+      "name": "unit_attr_power_solo_5",
+      "output_path": "unit_attr_power_solo_5_output.json",
+      "tags": [
+        "unit_attr",
+        "power",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "unit_attr_skill_auto_6_input.json",
+      "name": "unit_attr_skill_auto_6",
+      "output_path": "unit_attr_skill_auto_6_output.json",
+      "tags": [
+        "unit_attr",
+        "skill",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "unit_attr_score_multi_7_input.json",
+      "name": "unit_attr_score_multi_7",
+      "output_path": "unit_attr_score_multi_7_output.json",
+      "tags": [
+        "unit_attr",
+        "score",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "unit_attr_power_solo_8_input.json",
+      "name": "unit_attr_power_solo_8",
+      "output_path": "unit_attr_power_solo_8_output.json",
+      "tags": [
+        "unit_attr",
+        "power",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "unit_attr_skill_auto_9_input.json",
+      "name": "unit_attr_skill_auto_9",
+      "output_path": "unit_attr_skill_auto_9_output.json",
+      "tags": [
+        "unit_attr",
+        "skill",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "no_event_score_multi_1_input.json",
+      "name": "no_event_score_multi_1",
+      "output_path": "no_event_score_multi_1_output.json",
+      "tags": [
+        "no_event",
+        "score",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "no_event_power_solo_2_input.json",
+      "name": "no_event_power_solo_2",
+      "output_path": "no_event_power_solo_2_output.json",
+      "tags": [
+        "no_event",
+        "power",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "no_event_skill_auto_3_input.json",
+      "name": "no_event_skill_auto_3",
+      "output_path": "no_event_skill_auto_3_output.json",
+      "tags": [
+        "no_event",
+        "skill",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "no_event_score_multi_4_input.json",
+      "name": "no_event_score_multi_4",
+      "output_path": "no_event_score_multi_4_output.json",
+      "tags": [
+        "no_event",
+        "score",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "no_event_power_solo_5_input.json",
+      "name": "no_event_power_solo_5",
+      "output_path": "no_event_power_solo_5_output.json",
+      "tags": [
+        "no_event",
+        "power",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "no_event_skill_auto_6_input.json",
+      "name": "no_event_skill_auto_6",
+      "output_path": "no_event_skill_auto_6_output.json",
+      "tags": [
+        "no_event",
+        "skill",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "no_event_score_multi_7_input.json",
+      "name": "no_event_score_multi_7",
+      "output_path": "no_event_score_multi_7_output.json",
+      "tags": [
+        "no_event",
+        "score",
+        "multi"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "no_event_power_solo_8_input.json",
+      "name": "no_event_power_solo_8",
+      "output_path": "no_event_power_solo_8_output.json",
+      "tags": [
+        "no_event",
+        "power",
+        "solo"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "no_event_skill_auto_9_input.json",
+      "name": "no_event_skill_auto_9",
+      "output_path": "no_event_skill_auto_9_output.json",
+      "tags": [
+        "no_event",
+        "skill",
+        "auto"
+      ]
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "fixed_cards_3_input.json",
+      "name": "fixed_cards_3",
+      "output_path": "fixed_cards_3_output.json",
+      "tags": [
+        "special",
+        "fixed_cards"
+      ],
+      "note": "C++ 引擎实际返回错误: 推荐计算失败: recommend: Fixed cards have duplicate characters"
+    },
+    {
+      "compare_mode": "error_exact",
+      "expected_outcome": "error",
+      "input_path": "fixed_cards_5_input.json",
+      "name": "fixed_cards_5",
+      "output_path": "fixed_cards_5_output.json",
+      "tags": [
+        "special",
+        "fixed_cards"
+      ],
+      "note": "C++ 引擎实际返回错误: 推荐计算失败: recommend: Fixed cards have duplicate characters"
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "fixed_chars_2_input.json",
+      "name": "fixed_chars_2",
+      "output_path": "fixed_chars_2_output.json",
+      "tags": [
+        "special",
+        "fixed_characters"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "single_card_config_input.json",
+      "name": "single_card_config",
+      "output_path": "single_card_config_output.json",
+      "tags": [
+        "special",
+        "single_card_config"
+      ]
+    },
+    {
+      "compare_mode": "semantic",
+      "expected_outcome": "success",
+      "input_path": "ga_only_input.json",
+      "name": "ga_only",
+      "note": "GA 用固定 seed 生成；验证阶段建议做语义比对",
+      "output_path": "ga_only_output.json",
+      "tags": [
+        "special",
+        "ga"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "dfs_only_input.json",
+      "name": "dfs_only",
+      "output_path": "dfs_only_output.json",
+      "tags": [
+        "special",
+        "dfs"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "limit_1_input.json",
+      "name": "limit_1",
+      "output_path": "limit_1_output.json",
+      "tags": [
+        "special",
+        "limit"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "limit_10_input.json",
+      "name": "limit_10",
+      "output_path": "limit_10_output.json",
+      "tags": [
+        "special",
+        "limit"
+      ]
+    },
+    {
+      "compare_mode": "semantic",
+      "expected_outcome": "success",
+      "input_path": "timeout_500ms_input.json",
+      "name": "timeout_500ms",
+      "note": "超短超时受容器性能影响，建议语义比对",
+      "output_path": "timeout_500ms_output.json",
+      "tags": [
+        "special",
+        "timeout"
+      ]
+    },
+    {
+      "compare_mode": "exact",
+      "expected_outcome": "success",
+      "input_path": "competitive_preset_input.json",
+      "name": "competitive_preset",
+      "note": "直接 FFI 不支持 handler-side preset，这里用显式稀有度配置等价模拟",
+      "output_path": "competitive_preset_output.json",
+      "tags": [
+        "special",
+        "competitive_preset"
+      ]
+    }
+  ],
+  "generated_at": "1775831853",
+  "version": 1
+}

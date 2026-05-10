@@ -65,6 +65,19 @@ fn load_skill_limit(table: &[EventSkillScoreUpLimit], event_id: i32) -> Option<u
         .map(|entry| entry.score_up_limit.max(0) as u32)
 }
 
+fn resolve_skill_limit(game: &GameData<'_>, params: &BuildParams, event_id: i32) -> Option<u32> {
+    if event_id == FINAL_CHAPTER_EVENT_ID
+        && !matches!(
+            params.live_type,
+            crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+        )
+    {
+        // C++ moe base-deck-recommend.cpp hard-caps Final Chapter live skills at 140.
+        return Some(140);
+    }
+    load_skill_limit(game.event_skill_score_up_limits, event_id)
+}
+
 fn load_support_deck_count(turn: Option<i32>, event_type: EventType) -> u8 {
     if !matches!(event_type, EventType::WorldBloom) {
         return 0;
@@ -73,8 +86,29 @@ fn load_support_deck_count(turn: Option<i32>, event_type: EventType) -> u8 {
         Some(1) => 12,
         Some(2) => 20,
         Some(3) => 25,
-        _ => 0,
+        _ => 25,
     }
+}
+
+fn resolve_world_bloom_event_turn(game: &GameData<'_>, params: &BuildParams) -> Option<i32> {
+    if params.world_bloom_event_turn.is_some() {
+        return params.world_bloom_event_turn;
+    }
+    let event_id = params.event_id?;
+    if event_id > 1000 {
+        return Some((event_id / 100_000) % 10 + 1);
+    }
+    if event_id == FINAL_CHAPTER_EVENT_ID {
+        return Some(2);
+    }
+    if game
+        .world_blooms
+        .iter()
+        .any(|entry| entry.event_id == event_id)
+    {
+        return Some(if event_id <= 140 { 1 } else { 2 });
+    }
+    None
 }
 
 fn custom_character_ids(game: &GameData<'_>, unit_code: Option<&str>) -> Vec<i32> {
@@ -101,6 +135,11 @@ pub(crate) fn build_event_context(
         }
     })?;
     let event_id = params.event_id.unwrap_or_default();
+    let world_bloom_event_turn = if matches!(event_type, EventType::WorldBloom) {
+        resolve_world_bloom_event_turn(game, params)
+    } else {
+        params.world_bloom_event_turn
+    };
 
     Some(EventContext {
         event_id,
@@ -129,16 +168,16 @@ pub(crate) fn build_event_context(
             .filter(|entry| entry.event_id == event_id)
             .cloned()
             .collect(),
-        skill_score_up_limit: load_skill_limit(game.event_skill_score_up_limits, event_id),
+        skill_score_up_limit: resolve_skill_limit(game, params, event_id),
         card_bonus_count_limit: load_card_bonus_limit(game.event_card_bonus_limits, event_id),
         diff_attr_bonus: if matches!(event_type, EventType::WorldBloom) {
             load_diff_attr_bonus(game.world_bloom_different_attribute_bonuses)
         } else {
             [0; 6]
         },
-        support_deck_count: load_support_deck_count(params.world_bloom_event_turn, event_type),
+        support_deck_count: load_support_deck_count(world_bloom_event_turn, event_type),
         world_bloom_character_id: params.world_bloom_character_id,
-        world_bloom_event_turn: params.world_bloom_event_turn,
+        world_bloom_event_turn,
         custom_character_ids: custom_character_ids(game, params.event_unit.as_deref()),
         custom_attr: params.event_attr.as_deref().and_then(parse_attr_code),
     })
@@ -173,18 +212,22 @@ fn card_matches_rule(master: &MasterCard, rule: &EventDeckBonus, game: &GameData
     character_ok && attr_ok && unit_ok
 }
 
-fn load_rarity_bonus(user_card: &UserCard, master: &MasterCard, event_ctx: &EventContext) -> i32 {
+fn load_rarity_bonus_x2(
+    user_card: &UserCard,
+    master: &MasterCard,
+    event_ctx: &EventContext,
+) -> i32 {
     event_ctx
         .rarity_bonuses
         .iter()
         .filter(|entry| entry.card_rarity_type == master.card_rarity_type)
         .filter(|entry| entry.master_rank <= user_card.master_rank)
         .max_by_key(|entry| entry.master_rank)
-        .map(|entry| entry.bonus_rate)
+        .map(|entry| entry.bonus_rate_x2)
         .unwrap_or(0)
 }
 
-fn load_custom_bonus(master: &MasterCard, event_ctx: &EventContext) -> i32 {
+fn load_custom_bonus_x2(master: &MasterCard, event_ctx: &EventContext) -> i32 {
     if event_ctx.custom_character_ids.is_empty() && event_ctx.custom_attr.is_none() {
         return 0;
     }
@@ -195,9 +238,9 @@ fn load_custom_bonus(master: &MasterCard, event_ctx: &EventContext) -> i32 {
         .custom_attr
         .is_some_and(|attr| parse_attr_code(&master.attr) == Some(attr));
     if char_match && attr_match {
-        50
+        100
     } else if char_match || attr_match {
-        25
+        50
     } else {
         0
     }
@@ -210,8 +253,8 @@ pub(crate) fn build_card_event_bonus(
     game: &GameData<'_>,
     event_ctx: &EventContext,
 ) -> (EventBonusHot, bool, bool) {
-    let base_bonus =
-        load_rarity_bonus(user_card, master, event_ctx) + load_custom_bonus(master, event_ctx);
+    let base_bonus_x2 = load_rarity_bonus_x2(user_card, master, event_ctx)
+        + load_custom_bonus_x2(master, event_ctx);
 
     let custom_char = event_ctx
         .custom_character_ids
@@ -221,12 +264,12 @@ pub(crate) fn build_card_event_bonus(
         .is_some_and(|attr| parse_attr_code(&master.attr) == Some(attr));
 
     // 活动 deck bonus：多条规则命中时取最大值（与 C++/TS 一致）。
-    let mut deck_bonus = 0i32;
+    let mut deck_bonus_x2 = 0i32;
     let mut deck_char = false;
     let mut deck_attr = false;
     for rule in &event_ctx.deck_bonuses {
         if card_matches_rule(master, rule, game) {
-            deck_bonus = deck_bonus.max(rule.bonus_rate);
+            deck_bonus_x2 = deck_bonus_x2.max(rule.bonus_rate.saturating_mul(2));
             if rule.character_id.is_some() {
                 deck_char = true;
             }
@@ -235,19 +278,19 @@ pub(crate) fn build_card_event_bonus(
             }
         }
     }
-    let base_bonus = base_bonus + deck_bonus;
-    let limited_bonus = event_ctx
+    let base_bonus_x2 = base_bonus_x2 + deck_bonus_x2;
+    let limited_bonus_x2 = event_ctx
         .event_cards
         .iter()
         .find(|entry| entry.card_id == master.id)
-        .map(|entry| entry.bonus_rate)
+        .map(|entry| entry.bonus_rate.saturating_mul(2))
         .unwrap_or(0);
 
     (
-        EventBonusHot {
-            base_bonus: base_bonus.clamp(0, u8::MAX as i32) as u8,
-            limited_bonus: limited_bonus.clamp(0, u8::MAX as i32) as u8,
-        },
+        EventBonusHot::from_x2(
+            base_bonus_x2.clamp(0, u8::MAX as i32) as u8,
+            limited_bonus_x2.clamp(0, u8::MAX as i32) as u8,
+        ),
         custom_char || deck_char,
         custom_attr || deck_attr,
     )

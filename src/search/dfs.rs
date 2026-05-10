@@ -39,7 +39,8 @@ pub(crate) fn dfs_search_seeded(
     params: &SearchParams,
     seed: Option<DeckResult>,
 ) -> Vec<DeckResult> {
-    let (results, _) = dfs_search_seeded_inner(pool, ctx, suffix, params, seed);
+    let seeds = seed.into_iter().collect::<Vec<_>>();
+    let (results, _) = dfs_search_seeded_inner(pool, ctx, suffix, params, seeds);
     results
 }
 
@@ -50,7 +51,18 @@ pub fn dfs_search_instrumented(
     params: &SearchParams,
     seed: Option<DeckResult>,
 ) -> (Vec<DeckResult>, SearchStats) {
-    dfs_search_seeded_inner(pool, ctx, suffix, params, seed)
+    let seeds = seed.into_iter().collect::<Vec<_>>();
+    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds)
+}
+
+pub(crate) fn dfs_search_instrumented_with_seeds(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+    params: &SearchParams,
+    seeds: Vec<DeckResult>,
+) -> (Vec<DeckResult>, SearchStats) {
+    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds)
 }
 
 fn dfs_search_seeded_inner(
@@ -58,7 +70,7 @@ fn dfs_search_seeded_inner(
     ctx: &SearchContext,
     suffix: &SuffixBound,
     params: &SearchParams,
-    seed: Option<DeckResult>,
+    seeds: Vec<DeckResult>,
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
@@ -70,8 +82,8 @@ fn dfs_search_seeded_inner(
         Some(Instant::now() + Duration::from_millis(params.timeout_ms))
     };
 
-    let mut tracker = TopKTracker::new(params.top_k);
-    if let Some(seed_result) = seed {
+    let mut tracker = TopKTracker::new(params.top_k, pool);
+    for seed_result in seeds {
         tracker.insert(seed_result);
     }
 
@@ -263,7 +275,7 @@ impl SearchState<'_> {
 
             if threshold != 0 {
                 let eb = self.pool.event_bonus(card);
-                let card_bonus = eb.base_bonus as u32 + eb.limited_bonus as u32;
+                let card_bonus = eb.total_ceil();
                 let bonus_total =
                     partial.bonus + card_bonus + pre.suffix_bonus + pre.extra_bonus_ub;
                 let tight_power = partial.power + self.pool.power_max(card) + pre.suffix_power_rest;
@@ -410,6 +422,31 @@ impl SearchState<'_> {
         let mono_state = self.suffix.mono_precompute(&used, &partial, slots);
         let mut mono_min_bonus = mono_state.as_ref().map(|s| s.min_bonus(threshold));
         let mono_base = partial.bonus + pre.suffix_bonus + pre.extra_bonus_ub;
+        let world_bloom_parts = self.ctx.is_world_bloom.then(|| {
+            let mut attr_set = 0u8;
+            let mut selected = [0u16; DECK_SIZE];
+            let mut selected_len = 0usize;
+            let mut pos = 0usize;
+            while pos < depth {
+                let card = deck[pos];
+                attr_set |= 1u8 << self.pool.attr(card);
+                selected[selected_len] = self.pool.game_id(card);
+                selected_len += 1;
+                pos += 1;
+            }
+            (attr_set, selected, selected_len)
+        });
+        let partial_extra_bonus_ub =
+            world_bloom_parts
+                .as_ref()
+                .map(|(attr_set, selected, selected_len)| {
+                    self.suffix.world_bloom_extra_bonus_bound_from_parts(
+                        *attr_set,
+                        selected,
+                        *selected_len,
+                        slots,
+                    )
+                });
 
         let mut dense = start;
         while dense < self.pool.count() {
@@ -417,7 +454,16 @@ impl SearchState<'_> {
                 return;
             }
             if threshold != 0 && matches!(self.ctx.target, ScoreTarget::Score) {
-                let ceil = self.suffix.dense_suffix_ceiling(dense, &partial, slots);
+                let ceil = if let Some(extra_bonus_ub) = partial_extra_bonus_ub {
+                    self.suffix.dense_suffix_ceiling_with_extra(
+                        dense,
+                        &partial,
+                        slots,
+                        extra_bonus_ub,
+                    )
+                } else {
+                    self.suffix.dense_suffix_ceiling(dense, &partial, slots)
+                };
                 if ceil <= threshold {
                     self.stats.mono_break_prunes += 1;
                     break;
@@ -437,7 +483,12 @@ impl SearchState<'_> {
             }
 
             let eb = self.pool.event_bonus(card);
-            let card_bonus = eb.base_bonus as u32 + eb.limited_bonus as u32;
+            let card_bonus = eb.total_ceil();
+            let card_base_bonus = eb.base_ceil();
+            let card_limited_bonus = eb.limited_ceil();
+            let card_power = self.pool.power_max(card);
+            let card_skill = self.pool.skill_max(card);
+            let card_skill_u32 = card_skill as u32;
 
             if let Some(min_bt) = mono_min_bonus {
                 if card_bonus + mono_base < min_bt {
@@ -447,39 +498,74 @@ impl SearchState<'_> {
 
             self.stats.ep_candidates += 1;
 
-            let tight_power = partial.power + self.pool.power_max(card) + pre.suffix_power_rest
-                - pre.power_delta(char_id);
-            let bonus_total = partial.bonus + card_bonus + pre.suffix_bonus
+            let tight_power =
+                partial.power + card_power + pre.suffix_power_rest - pre.power_delta(char_id);
+            let bonus_total_global = partial.bonus + card_bonus + pre.suffix_bonus
                 - pre.bonus_delta(char_id)
                 + pre.extra_bonus_ub;
-            let tight_skill = partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest
-                - pre.skill_delta(char_id);
+            let tight_skill =
+                partial.skill + card_skill_u32 + pre.skill_ub_rest - pre.skill_delta(char_id);
             let remaining_best_skill = if char_id == pre.best_skill_char {
                 pre.second_best_skill
             } else {
                 pre.best_unused_skill
             };
             let tight_leader = (partial.max_skill as u32)
-                .max(self.pool.skill_max(card) as u32)
+                .max(card_skill_u32)
                 .max(remaining_best_skill as u32);
 
-            let mut ub = self
-                .suffix
-                .ceiling(tight_power, bonus_total, tight_skill, tight_leader);
-            let dense_ub = self.suffix.dense_candidate_ceiling(
+            let mut ub =
+                self.suffix
+                    .ceiling(tight_power, bonus_total_global, tight_skill, tight_leader);
+            let dense_ub_global = self.suffix.dense_candidate_ceiling(
                 dense,
                 &partial,
-                self.pool.power_max(card),
+                card_power,
                 card_bonus,
-                eb.base_bonus as u32,
-                eb.limited_bonus as u32,
-                self.pool.skill_max(card) as u32,
+                card_base_bonus,
+                card_limited_bonus,
+                card_skill_u32,
                 slots,
             );
-            ub = ub.min(dense_ub);
+            ub = ub.min(dense_ub_global);
             if ub <= threshold {
                 self.stats.ep_continue_prunes += 1;
                 continue;
+            }
+
+            if let Some((selected_attr_set, selected, selected_len)) = world_bloom_parts {
+                let card_attr_bit = 1u8 << self.pool.attr(card);
+                let card_game_id = self.pool.game_id(card);
+                let extra_bonus_ub = self
+                    .suffix
+                    .world_bloom_extra_bonus_bound_for_candidate_parts(
+                        selected_attr_set | card_attr_bit,
+                        &selected,
+                        selected_len,
+                        card_game_id,
+                        slots.saturating_sub(1),
+                    );
+                let bonus_total = partial.bonus + card_bonus + pre.suffix_bonus
+                    - pre.bonus_delta(char_id)
+                    + extra_bonus_ub;
+                let refined = self
+                    .suffix
+                    .ceiling(tight_power, bonus_total, tight_skill, tight_leader)
+                    .min(self.suffix.dense_candidate_ceiling_with_extra(
+                        dense,
+                        &partial,
+                        card_power,
+                        card_bonus,
+                        card_base_bonus,
+                        card_limited_bonus,
+                        card_skill_u32,
+                        slots,
+                        extra_bonus_ub,
+                    ));
+                if refined <= threshold {
+                    self.stats.ep_continue_prunes += 1;
+                    continue;
+                }
             }
 
             self.stats.ep_explored += 1;
@@ -492,10 +578,10 @@ impl SearchState<'_> {
             let (card_bonus_add, limited_inc) =
                 partial_bonus_add(self.pool, self.ctx, card, false, partial.limited_count);
             let next_partial = PartialDeck {
-                power: partial.power + self.pool.power_max(card),
-                skill: partial.skill + self.pool.skill_max(card) as u32,
+                power: partial.power + card_power,
+                skill: partial.skill + card_skill_u32,
                 bonus: partial.bonus + card_bonus_add,
-                max_skill: partial.max_skill.max(self.pool.skill_max(card)),
+                max_skill: partial.max_skill.max(card_skill),
                 limited_count: partial.limited_count + limited_inc,
             };
             self.recurse(
@@ -607,11 +693,11 @@ fn partial_bonus_add(
     limited_count: u8,
 ) -> (u32, u8) {
     let eb = pool.event_bonus(card);
-    let mut bonus = eb.base_bonus as u32;
+    let mut bonus = eb.base_ceil();
     let mut limited_inc = 0u8;
     if !ctx.is_final_chapter || (limited_count as usize) < ctx.card_bonus_count_limit {
-        if eb.limited_bonus > 0 {
-            bonus += eb.limited_bonus as u32;
+        if eb.limited_x2() > 0 {
+            bonus += eb.limited_ceil();
             limited_inc = 1;
         }
     }
@@ -624,13 +710,15 @@ fn partial_bonus_add(
 
 struct TopKTracker {
     top_k: usize,
+    game_ids: Vec<u16>,
     results: Vec<DeckResult>,
 }
 
 impl TopKTracker {
-    fn new(top_k: usize) -> Self {
+    fn new(top_k: usize, pool: &CardPool) -> Self {
         Self {
             top_k,
+            game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
             results: Vec::with_capacity(top_k),
         }
     }
@@ -644,12 +732,15 @@ impl TopKTracker {
     }
 
     fn insert(&mut self, candidate: DeckResult) {
-        if self
+        if let Some(existing_pos) = self
             .results
             .iter()
-            .any(|existing| existing.cards == candidate.cards)
+            .position(|existing| self.same_game_card_set(existing, &candidate))
         {
-            return;
+            if !deck_result_cmp(&candidate, &self.results[existing_pos]).is_lt() {
+                return;
+            }
+            self.results.remove(existing_pos);
         }
         let pos = self
             .results
@@ -664,6 +755,16 @@ impl TopKTracker {
 
     fn into_vec(self) -> Vec<DeckResult> {
         self.results
+    }
+
+    fn same_game_card_set(&self, left: &DeckResult, right: &DeckResult) -> bool {
+        self.game_card_set_key(left) == self.game_card_set_key(right)
+    }
+
+    fn game_card_set_key(&self, result: &DeckResult) -> [u16; 5] {
+        let mut cards = result.cards.map(|card| self.game_ids[card.raw()]);
+        cards.sort_unstable();
+        cards
     }
 }
 
@@ -683,7 +784,7 @@ pub(crate) fn dfs_search_power_len_for_test(
     top_k: usize,
     ctx: &SearchContext,
 ) -> Vec<DeckResult> {
-    let mut tracker = TopKTracker::new(top_k);
+    let mut tracker = TopKTracker::new(top_k, pool);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     recurse_power_len_for_test(
         pool,

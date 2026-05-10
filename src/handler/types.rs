@@ -42,6 +42,8 @@ pub struct GameData<'a> {
     pub event_honor_bonuses: &'a [EventHonorBonus],
     /// World Bloom 异色加成表。
     pub world_bloom_different_attribute_bonuses: &'a [WorldBloomDiffAttrBonus],
+    /// World Bloom 章节表。
+    pub world_blooms: &'a [WorldBloom],
     /// WL1 支援 deck bonus 表。
     pub wb_support_deck_bonuses_wl1: &'a [WBSupportDeckBonus],
     /// WL2 支援 deck bonus 表。
@@ -477,6 +479,17 @@ pub struct WorldBloomDiffAttrBonus {
     pub bonus_rate: i32,
 }
 
+/// World Bloom 章节。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorldBloom {
+    /// 活动 ID。
+    pub event_id: i32,
+    /// 章节角色 ID；终章可能为空。
+    pub game_character_id: Option<i32>,
+    /// 章节序号。
+    pub chapter_no: i32,
+}
+
 /// World Bloom 支援角色类型 bonus。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
@@ -602,8 +615,8 @@ pub struct EventRarityBonusRate {
     pub card_rarity_type: i32,
     /// master rank 上界。
     pub master_rank: i32,
-    /// bonus。
-    pub bonus_rate: i32,
+    /// bonus，单位为 0.5%。
+    pub bonus_rate_x2: i32,
 }
 
 /// 称号等级。

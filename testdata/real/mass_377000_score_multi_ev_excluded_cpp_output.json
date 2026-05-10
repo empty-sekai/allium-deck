@@ -1,0 +1,6 @@
+{
+  "status": "skipped",
+  "error": "C++ reference 不支持字段: excluded_cards",
+  "decks": [],
+  "_elapsed_ms": 4.6
+}

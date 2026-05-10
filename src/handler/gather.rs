@@ -134,10 +134,8 @@ fn compare_cards(
         ScoreTarget::Score
             if has_event && matches!(effective_live_type, LiveType::Solo | LiveType::Auto) =>
         {
-            let left_bonus =
-                left.event_bonus.base_bonus as u32 + left.event_bonus.limited_bonus as u32;
-            let right_bonus =
-                right.event_bonus.base_bonus as u32 + right.event_bonus.limited_bonus as u32;
+            let left_bonus = left.event_bonus.total_x2();
+            let right_bonus = right.event_bonus.total_x2();
             let left_key = score_noevent_sort_key(left);
             let right_key = score_noevent_sort_key(right);
             right_bonus
@@ -150,10 +148,8 @@ fn compare_cards(
         // 有 event: 按 bonus 降序（ep 乘积结构下 bonus 敏感度更高）
         // 无 event: bonus 不参与 ep → 回退 power 排序
         _ if has_event => {
-            let left_bonus =
-                left.event_bonus.base_bonus as u32 + left.event_bonus.limited_bonus as u32;
-            let right_bonus =
-                right.event_bonus.base_bonus as u32 + right.event_bonus.limited_bonus as u32;
+            let left_bonus = left.event_bonus.total_x2();
+            let right_bonus = right.event_bonus.total_x2();
             let left_key = score_noevent_sort_key(left);
             let right_key = score_noevent_sort_key(right);
             right_bonus
@@ -230,33 +226,13 @@ pub(crate) fn sort_and_gather(
             };
         }
 
-        match target {
-            ScoreTarget::Power => {
-                builder.set_power_values(dense, power_values);
-                builder.set_power_lut(dense, power_lut);
-            }
-            ScoreTarget::Skill => {
-                builder.set_power_max(dense, card.power.power_max.max(0) as u32);
-                builder.set_skill(dense, slot);
-            }
-            ScoreTarget::Score | ScoreTarget::Mysekai => {
-                builder.set_power_values(dense, power_values);
-                builder.set_power_lut(dense, power_lut);
-                builder.set_skill(dense, slot);
-                builder.set_event_bonus(dense, card.event_bonus);
-            }
-        }
-
-        if !matches!(target, ScoreTarget::Skill) {
-            builder.set_power_max(dense, card.power.power_max.max(0) as u32);
-        }
-        if !matches!(target, ScoreTarget::Power) {
-            builder.set_skill_min(dense, card.skill.skill_min);
-            builder.set_skill_max(dense, card.skill.skill_max);
-        }
-        if matches!(target, ScoreTarget::Power | ScoreTarget::Skill) {
-            builder.set_event_bonus(dense, EventBonusHot::default());
-        }
+        builder.set_power_values(dense, power_values);
+        builder.set_power_lut(dense, power_lut);
+        builder.set_power_max(dense, card.power.power_max.max(0) as u32);
+        builder.set_skill(dense, slot);
+        builder.set_skill_min(dense, card.skill.skill_min);
+        builder.set_skill_max(dense, card.skill.skill_max);
+        builder.set_event_bonus(dense, card.event_bonus);
 
         builder.set_char_id(dense, card.character_id);
         builder.set_attr(dense, card.attr);

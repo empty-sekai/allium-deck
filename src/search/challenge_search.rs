@@ -28,9 +28,21 @@ pub fn search(
 
     // 按 score 降序、相同 score 按 deck 字典序稳定排序
     results.sort_unstable_by(|a, b| b.score.cmp(&a.score).then_with(|| a.cards.cmp(&b.cards)));
-    results.truncate(params.top_k);
+    let mut unique = Vec::with_capacity(params.top_k);
+    for result in results {
+        if unique
+            .iter()
+            .any(|existing: &DeckResult| existing.same_game_card_set(&result, pool))
+        {
+            continue;
+        }
+        unique.push(result);
+        if unique.len() >= params.top_k {
+            break;
+        }
+    }
 
-    (results, stats)
+    (unique, stats)
 }
 
 fn challenge_recurse(

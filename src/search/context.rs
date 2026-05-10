@@ -3,9 +3,9 @@ use crate::types::{
 };
 
 /// 预排序支援卡组。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SupportDeck {
-    pub cards: Vec<(u16, u16)>,
+    pub cards: Vec<(u16, f64)>,
     pub count: u8,
 }
 
@@ -25,6 +25,7 @@ pub struct SearchContext {
     pub life: i32,
     pub diff_attr_bonus: [u16; 6],
     pub support_deck: SupportDeck,
+    pub support_decks_by_character: Vec<SupportDeck>,
     pub is_world_bloom: bool,
     pub is_final_chapter: bool,
     /// challenge 模式下不要求角色唯一（pool 已过滤为同角色卡）
@@ -84,6 +85,21 @@ impl SearchContext {
         remapped.final_chapter_member_keep = remap_vec(&self.final_chapter_member_keep, keep);
         remapped.trained_to_special_image = remap_vec(&self.trained_to_special_image, keep);
         remapped
+    }
+
+    /// 返回当前 deck leader 对应的支援卡组。
+    #[inline(always)]
+    pub fn support_deck_for_leader(&self, leader_character_id: u8) -> &SupportDeck {
+        if self.is_final_chapter {
+            if let Some(deck) = self
+                .support_decks_by_character
+                .get(leader_character_id as usize)
+                .filter(|deck| deck.count > 0)
+            {
+                return deck;
+            }
+        }
+        &self.support_deck
     }
 
     /// 返回搜索期生效的 live 类型。

@@ -2,6 +2,7 @@ use crate::pool::{CardIdx, CardPool, DiffSkill, RefSkill, SkillSlot, UnitCountSk
 use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy, DECK_SIZE};
 
 use super::context::SearchContext;
+use super::types::DeckResultSummary;
 
 const SKILL_SCALE: f64 = 10.0;
 
@@ -38,6 +39,67 @@ pub fn decode_u18(values: &[u16; 8], high_bits: u32, idx: usize) -> u32 {
 #[inline(always)]
 pub fn leaf_evaluate(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) -> u64 {
     leaf_evaluate_checked(pool, ctx, deck).unwrap_or(0)
+}
+
+/// 汇总单个搜索结果的展示指标。
+pub fn summarize_deck(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; 5],
+) -> Option<DeckResultSummary> {
+    let card_power_total = resolve_card_power_totals(pool, deck);
+    let total_power = ctx.clamp_power_total(
+        card_power_total
+            .iter()
+            .map(|value| (*value).max(0) as u32)
+            .sum::<u32>()
+            + ctx.honor_bonus,
+    );
+    let total_bonus = resolve_total_bonus(pool, ctx, deck);
+    let prepared = prepare_skills(pool, ctx, deck);
+
+    let mut best: Option<DeckResultSummary> = None;
+    let mut best_key = u64::MIN;
+    let mut mask = prepared.enumerate_mask;
+    loop {
+        let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
+        if permutation_satisfies_lower_bound(ctx, &permutation) {
+            let live_score = if ctx.is_mysekai() {
+                0
+            } else {
+                calc_live_score(total_power, &permutation, ctx)
+            };
+            let event_point = if ctx.is_mysekai() {
+                None
+            } else if ctx.has_event() {
+                Some(calc_event_point(live_score, total_bonus, ctx))
+            } else {
+                None
+            };
+            let key = summarize_key(ctx, total_power, live_score, event_point, &permutation);
+            if best.is_none() || key > best_key {
+                best_key = key;
+                best = Some(build_summary(
+                    pool,
+                    ctx,
+                    deck,
+                    &card_power_total,
+                    total_power,
+                    total_bonus,
+                    live_score,
+                    event_point,
+                    &permutation,
+                ));
+            }
+        }
+
+        if mask == 0 {
+            break;
+        }
+        mask = (mask - 1) & prepared.enumerate_mask;
+    }
+
+    best
 }
 
 /// 精确计算叶子节点排序值；若额外约束不满足则返回 `None`。
@@ -125,6 +187,117 @@ pub(crate) fn leaf_evaluate_checked(
 }
 
 #[inline(always)]
+fn summarize_key(
+    ctx: &SearchContext,
+    total_power: u32,
+    live_score: i32,
+    event_point: Option<i32>,
+    permutation: &EvaluatedPermutation,
+) -> u64 {
+    match ctx.target {
+        ScoreTarget::Power => ((total_power as u64) << 32) | (live_score.max(0) as u32 as u64),
+        ScoreTarget::Skill => encode_skill_target(permutation.multi_live_score_up),
+        ScoreTarget::Mysekai => total_power as u64,
+        ScoreTarget::Score => {
+            ((event_point.unwrap_or(live_score).max(0) as u64) << 32)
+                | (live_score.max(0) as u32 as u64)
+        }
+    }
+}
+
+fn build_summary(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; 5],
+    card_power_total: &[i32; 5],
+    total_power: u32,
+    total_bonus: f64,
+    live_score: i32,
+    event_point: Option<i32>,
+    permutation: &EvaluatedPermutation,
+) -> DeckResultSummary {
+    let mut ordered_cards = [deck[0]; DECK_SIZE];
+    let mut ordered_event_bonus = [0.0; DECK_SIZE];
+    let mut ordered_skill_score_up = [0.0; DECK_SIZE];
+    let mut ordered_power_total = [0; DECK_SIZE];
+    let mut pos = 0usize;
+    while pos < DECK_SIZE {
+        let source = permutation.order[pos];
+        let card = deck[source];
+        ordered_cards[pos] = card;
+        ordered_event_bonus[pos] = card_event_bonus_for_display(pool, ctx, card, pos == 0);
+        ordered_skill_score_up[pos] = permutation.skills[source].score_up;
+        ordered_power_total[pos] = card_power_total[source];
+        pos += 1;
+    }
+
+    DeckResultSummary {
+        ordered_cards,
+        card_event_bonus_rates: ordered_event_bonus,
+        card_skill_score_up: ordered_skill_score_up,
+        card_power_total: ordered_power_total,
+        total_power: total_power.min(i32::MAX as u32) as i32,
+        live_score,
+        event_point,
+        multi_live_score_up: permutation.multi_live_score_up,
+        event_bonus_total: (ctx.has_event() || total_bonus > 0.0).then_some(total_bonus),
+    }
+}
+
+fn resolve_card_power_totals(pool: &CardPool, deck: &[CardIdx; 5]) -> [i32; 5] {
+    let mut attr_counts = [0u8; 6];
+    let mut unit_counts = [0u8; 6];
+    let mut pos = 0usize;
+    while pos < DECK_SIZE {
+        let card = unsafe { *deck.get_unchecked(pos) };
+        let attr = pool.attr(card) as usize;
+        debug_assert!(attr < attr_counts.len());
+        unsafe {
+            *attr_counts.get_unchecked_mut(attr) += 1;
+        }
+        let unit_mask = pool.unit_mask_raw(card);
+        let mut unit = 0usize;
+        while unit < 6 {
+            if unit_mask & (1u8 << unit) != 0 {
+                unsafe {
+                    *unit_counts.get_unchecked_mut(unit) += 1;
+                }
+            }
+            unit += 1;
+        }
+        pos += 1;
+    }
+
+    let mut totals = [0; DECK_SIZE];
+    pos = 0;
+    while pos < DECK_SIZE {
+        let card = unsafe { *deck.get_unchecked(pos) };
+        let attr = pool.attr(card) as usize;
+        let attr_member = unsafe { *attr_counts.get_unchecked(attr) };
+        totals[pos] =
+            resolve_card_power(pool, card, &unit_counts, attr_member).min(i32::MAX as u32) as i32;
+        pos += 1;
+    }
+    totals
+}
+
+#[inline(always)]
+fn card_event_bonus_for_display(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    card: CardIdx,
+    is_leader: bool,
+) -> f64 {
+    let bonus = pool.event_bonus(card);
+    let mut total = bonus.total_rate();
+    if ctx.is_final_chapter && is_leader {
+        total += ctx.leader_honor_bonus_at(card.raw()) as f64;
+        total += ctx.leader_limit_bonus_at(card.raw()) as f64;
+    }
+    total
+}
+
+#[inline(always)]
 pub(crate) fn resolve_power_target(pool: &CardPool, deck: &[CardIdx; 5]) -> u32 {
     let mut attr_counts = [0u8; 6];
     let mut unit_counts = [0u8; 6];
@@ -162,13 +335,13 @@ pub(crate) fn resolve_power_target(pool: &CardPool, deck: &[CardIdx; 5]) -> u32 
 }
 
 #[inline(always)]
-pub fn calc_event_point(live_score: i32, total_bonus: u32, ctx: &SearchContext) -> i32 {
+pub fn calc_event_point(live_score: i32, total_bonus: f64, ctx: &SearchContext) -> i32 {
     if !ctx.has_event() {
         return live_score;
     }
 
     let music_rate = ctx.music_rate_pct as f64 / 100.0;
-    let deck_rate = total_bonus as f64 / 100.0 + 1.0;
+    let deck_rate = total_bonus / 100.0 + 1.0;
     let boost_rate = ctx.boost_rate_pct as f64 / 100.0;
 
     match ctx.effective_live_type() {
@@ -250,9 +423,9 @@ fn calc_live_score(
 }
 
 #[inline(always)]
-pub(crate) fn calc_mysekai_internal(power_total: u32, total_bonus: u32) -> u32 {
+pub(crate) fn calc_mysekai_internal(power_total: u32, total_bonus: f64) -> u32 {
     let power_bonus_x10 = 10 + (power_total as u64 * 10) / 450_000;
-    ((power_bonus_x10 * (100 + total_bonus as u64) * 500) / 1000) as u32
+    ((power_bonus_x10 as f64 * (100.0 + total_bonus) * 500.0) / 1000.0) as u32
 }
 
 #[inline(always)]
@@ -260,10 +433,10 @@ pub(crate) fn resolve_total_bonus(
     pool: &CardPool,
     ctx: &SearchContext,
     deck: &[CardIdx; 5],
-) -> u32 {
+) -> f64 {
     let mut attr_set = 0u8;
     let mut game_ids = [0u16; DECK_SIZE];
-    let mut total = 0u32;
+    let mut total = 0.0_f64;
     let mut limited_count = 0usize;
     let mut pos = 0usize;
     while pos < DECK_SIZE {
@@ -274,24 +447,24 @@ pub(crate) fn resolve_total_bonus(
         }
 
         let bonus = pool.event_bonus(card);
-        total += bonus.base_bonus as u32;
-        if !ctx.is_final_chapter || bonus.limited_bonus == 0 {
-            total += bonus.limited_bonus as u32;
+        total += bonus.base_rate();
+        if !ctx.is_final_chapter || bonus.limited_x2() == 0 {
+            total += bonus.limited_rate();
         } else if limited_count < ctx.card_bonus_count_limit {
-            total += bonus.limited_bonus as u32;
+            total += bonus.limited_rate();
             limited_count += 1;
         }
 
         if ctx.is_final_chapter && pos == 0 {
-            total += ctx.leader_honor_bonus_at(card.raw());
-            total += ctx.leader_limit_bonus_at(card.raw());
+            total += ctx.leader_honor_bonus_at(card.raw()) as f64;
+            total += ctx.leader_limit_bonus_at(card.raw()) as f64;
         }
         pos += 1;
     }
 
     if ctx.is_world_bloom {
-        total += ctx.diff_attr_bonus[attr_set.count_ones() as usize] as u32;
-        total += calc_support_bonus(ctx, &game_ids);
+        total += ctx.diff_attr_bonus[attr_set.count_ones() as usize] as f64;
+        total += calc_support_bonus(pool, ctx, deck, &game_ids);
     }
     total
 }
@@ -303,8 +476,7 @@ pub(crate) fn card_proxy_bonus(
     card: CardIdx,
     is_leader: bool,
 ) -> u32 {
-    let mut total =
-        pool.event_bonus(card).base_bonus as u32 + pool.event_bonus(card).limited_bonus as u32;
+    let mut total = pool.event_bonus(card).total_ceil();
     if ctx.is_final_chapter && is_leader {
         total += ctx.leader_honor_bonus_at(card.raw());
         total += ctx.leader_limit_bonus_at(card.raw());
@@ -339,8 +511,8 @@ fn prepare_skills(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) -> 
             }
             2 => {
                 primary.score_up = pool.skill_min(card) as f64;
-                secondary.score_up =
-                    resolve_diff_skill(pool.special().diff(), slot, diff_count) as f64;
+                secondary.score_up = resolve_diff_skill(pool.special().diff(), slot, diff_count)
+                    .min(pool.skill_max(card) as u32) as f64;
             }
             3 => {
                 let base = pool.skill_min(card) as f64;
@@ -869,11 +1041,17 @@ fn sort_tail_by_card_raw(pool: &CardPool, order: &mut [usize; DECK_SIZE], deck: 
 }
 
 #[inline(always)]
-fn calc_support_bonus(ctx: &SearchContext, deck_game_ids: &[u16; 5]) -> u32 {
-    let mut total = 0u32;
+fn calc_support_bonus(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; 5],
+    deck_game_ids: &[u16; 5],
+) -> f64 {
+    let mut total = 0.0_f64;
     let mut picked = 0u8;
-    for &(game_id, bonus) in &ctx.support_deck.cards {
-        if picked >= ctx.support_deck.count {
+    let support_deck = ctx.support_deck_for_leader(pool.char_id(deck[0]));
+    for &(game_id, bonus) in &support_deck.cards {
+        if picked >= support_deck.count {
             break;
         }
         let mut found = false;
@@ -888,7 +1066,7 @@ fn calc_support_bonus(ctx: &SearchContext, deck_game_ids: &[u16; 5]) -> u32 {
         if found {
             continue;
         }
-        total += bonus as u32;
+        total += bonus;
         picked += 1;
     }
     total
