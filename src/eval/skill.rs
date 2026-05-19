@@ -97,7 +97,9 @@ pub(crate) fn prepare_skills(
 
         if keep_after_training_state {
             if !matches!(card.default_image, DefaultImage::SpecialTraining) && s2_after_training {
-                s2 = s1;
+                if s1.score_up > 0.0 {
+                    s2 = s1;
+                }
             }
         } else if need_enumerate && s1_skill_id != 0 {
             enumerate_mask |= 1 << card_index;

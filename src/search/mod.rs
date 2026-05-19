@@ -196,7 +196,7 @@ fn simple_target_recurse(
     prefix: &[CardIdx],
     depth: usize,
     min_free_idx: usize,
-    used_cards: u32,
+    used_cards: u64,
     used_chars: u32,
     deck: &mut [CardIdx; DECK_SIZE],
     tracker: &mut SimpleTopKTracker,
@@ -215,15 +215,19 @@ fn simple_target_recurse(
 
     let mut idx = scan_from;
     while idx < prefix.len() {
-        if used_cards & (1u32 << idx) != 0 {
+        if used_cards & (1u64 << idx) != 0 {
             idx += 1;
             continue;
         }
         let card = prefix[idx];
         let char_id = pool.char_id(card);
+        let fixed_char_at_depth = ctx.fixed_character_at(depth);
         if used_chars & (1u32 << char_id) != 0 {
-            idx += 1;
-            continue;
+            // 固定角色槽位允许同一角色的另一张卡入队
+            if fixed_char_at_depth != Some(char_id) {
+                idx += 1;
+                continue;
+            }
         }
         if let Some(game_id) = ctx.fixed_card_at(depth) {
             if pool.game_id(card) != game_id {
@@ -231,8 +235,8 @@ fn simple_target_recurse(
                 continue;
             }
         }
-        if let Some(character_id) = ctx.fixed_character_at(depth) {
-            if pool.char_id(card) != character_id {
+        if let Some(character_id) = fixed_char_at_depth {
+            if char_id != character_id {
                 idx += 1;
                 continue;
             }
@@ -245,7 +249,7 @@ fn simple_target_recurse(
             prefix,
             depth + 1,
             next_min_free,
-            used_cards | (1u32 << idx),
+            used_cards | (1u64 << idx),
             used_chars | (1u32 << char_id),
             deck,
             tracker,

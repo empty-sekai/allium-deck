@@ -338,11 +338,6 @@ fn validate_fixed_constraints(
     params: &types::BuildParams,
     full: &[CardIntermediate],
 ) -> Result<(Vec<u16>, Vec<u8>), BuildError> {
-    if !params.fixed_cards.is_empty() && !params.fixed_characters.is_empty() {
-        return Err(BuildError::InvalidConfig(
-            "fixed_cards 和 fixed_characters 不能同时使用".to_string(),
-        ));
-    }
     if matches!(
         params.live_type,
         crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
@@ -358,7 +353,7 @@ fn validate_fixed_constraints(
 
     let mut fixed_card_ids = Vec::with_capacity(params.fixed_cards.len());
     let mut seen_cards = BTreeSet::new();
-    let mut seen_fixed_chars = BTreeSet::new();
+    let mut seen_chars = BTreeSet::new();
     for &card_id in &params.fixed_cards {
         if !(1..=u16::MAX as i32).contains(&card_id) {
             return Err(BuildError::InvalidConfig(format!(
@@ -377,7 +372,7 @@ fn validate_fixed_constraints(
         else {
             return Err(BuildError::EmptyPool);
         };
-        if !seen_fixed_chars.insert(character_id) {
+        if !seen_chars.insert(character_id) {
             return Err(BuildError::InvalidConfig(format!(
                 "fixed card 角色重复: {character_id}"
             )));
@@ -393,9 +388,9 @@ fn validate_fixed_constraints(
             )));
         }
         let character_id = character_id as u8;
-        if !seen_fixed_chars.insert(character_id) {
+        if !seen_chars.insert(character_id) {
             return Err(BuildError::InvalidConfig(format!(
-                "fixed character 重复: {character_id}"
+                "fixed character 角色重复: {character_id}"
             )));
         }
         if full.iter().all(|card| card.character_id != character_id) {
