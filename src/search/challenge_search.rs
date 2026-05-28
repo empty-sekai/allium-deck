@@ -2,6 +2,7 @@ use crate::pool::{CardIdx, CardPool};
 use crate::types::DECK_SIZE;
 
 use super::context::SearchContext;
+use super::dfs::TopKTracker;
 use super::evaluate::leaf_evaluate_checked;
 use super::suffix::SuffixBound;
 use super::types::{DeckResult, SearchParams};
@@ -20,29 +21,13 @@ pub fn search(
         return (Vec::new(), super::SearchStats::default());
     }
 
-    let mut results = Vec::with_capacity(params.top_k);
+    let mut tracker = TopKTracker::new(params.top_k, pool);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     let mut stats = super::SearchStats::default();
 
-    challenge_recurse(pool, ctx, suffix, 0, 0, &mut deck, &mut results, &mut stats);
+    challenge_recurse(pool, ctx, suffix, 0, 0, &mut deck, &mut tracker, &mut stats);
 
-    // 按 score 降序、相同 score 按 deck 字典序稳定排序
-    results.sort_unstable_by(|a, b| b.score.cmp(&a.score).then_with(|| a.cards.cmp(&b.cards)));
-    let mut unique = Vec::with_capacity(params.top_k);
-    for result in results {
-        if unique
-            .iter()
-            .any(|existing: &DeckResult| existing.same_game_card_set(&result, pool))
-        {
-            continue;
-        }
-        unique.push(result);
-        if unique.len() >= params.top_k {
-            break;
-        }
-    }
-
-    (unique, stats)
+    (tracker.into_vec(), stats)
 }
 
 fn challenge_recurse(
@@ -52,13 +37,15 @@ fn challenge_recurse(
     depth: usize,
     start: usize,
     deck: &mut [CardIdx; DECK_SIZE],
-    results: &mut Vec<DeckResult>,
+    tracker: &mut TopKTracker,
     stats: &mut super::SearchStats,
 ) {
     if depth == DECK_SIZE {
         stats.leaf_nodes += 1;
         if let Some(score) = leaf_evaluate_checked(pool, ctx, deck) {
-            results.push(DeckResult::new(*deck, score));
+            if score > tracker.threshold() {
+                tracker.insert(DeckResult::new(*deck, score));
+            }
         }
         return;
     }
@@ -80,7 +67,7 @@ fn challenge_recurse(
         }
 
         deck[depth] = card;
-        challenge_recurse(pool, ctx, suffix, depth + 1, dense, deck, results, stats);
+        challenge_recurse(pool, ctx, suffix, depth + 1, dense, deck, tracker, stats);
     }
 }
 

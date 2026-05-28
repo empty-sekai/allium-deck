@@ -708,14 +708,14 @@ fn partial_bonus_add(
     (bonus, limited_inc)
 }
 
-struct TopKTracker {
+pub(super) struct TopKTracker {
     top_k: usize,
     game_ids: Vec<u16>,
     results: Vec<DeckResult>,
 }
 
 impl TopKTracker {
-    fn new(top_k: usize, pool: &CardPool) -> Self {
+    pub(super) fn new(top_k: usize, pool: &CardPool) -> Self {
         Self {
             top_k,
             game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
@@ -723,7 +723,7 @@ impl TopKTracker {
         }
     }
 
-    fn threshold(&self) -> u64 {
+    pub(super) fn threshold(&self) -> u64 {
         if self.results.len() < self.top_k {
             0
         } else {
@@ -731,7 +731,7 @@ impl TopKTracker {
         }
     }
 
-    fn insert(&mut self, candidate: DeckResult) {
+    pub(super) fn insert(&mut self, candidate: DeckResult) {
         if let Some(existing_pos) = self
             .results
             .iter()
@@ -753,15 +753,15 @@ impl TopKTracker {
         }
     }
 
-    fn into_vec(self) -> Vec<DeckResult> {
+    pub(super) fn into_vec(self) -> Vec<DeckResult> {
         self.results
     }
 
-    fn same_game_card_set(&self, left: &DeckResult, right: &DeckResult) -> bool {
+    pub(super) fn same_game_card_set(&self, left: &DeckResult, right: &DeckResult) -> bool {
         self.game_card_set_key(left) == self.game_card_set_key(right)
     }
 
-    fn game_card_set_key(&self, result: &DeckResult) -> [u16; 5] {
+    pub(super) fn game_card_set_key(&self, result: &DeckResult) -> [u16; 5] {
         let mut cards = result.cards.map(|card| self.game_ids[card.raw()]);
         cards.sort_unstable();
         cards
@@ -769,7 +769,7 @@ impl TopKTracker {
 }
 
 #[inline(always)]
-fn deck_result_cmp(left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
+pub(super) fn deck_result_cmp(left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
     right
         .score
         .cmp(&left.score)
