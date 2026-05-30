@@ -111,6 +111,20 @@ fn resolve_world_bloom_event_turn(game: &GameData<'_>, params: &BuildParams) -> 
     None
 }
 
+fn resolve_world_bloom_character_id(
+    game: &GameData<'_>,
+    params: &BuildParams,
+) -> Option<i32> {
+    if params.world_bloom_character_id.is_some() {
+        return params.world_bloom_character_id;
+    }
+    let event_id = params.event_id?;
+    game.world_blooms
+        .iter()
+        .find(|entry| entry.event_id == event_id)
+        .and_then(|entry| entry.game_character_id)
+}
+
 fn custom_character_ids(game: &GameData<'_>, unit_code: Option<&str>) -> Vec<i32> {
     let Some(unit) = unit_code.and_then(parse_unit_code) else {
         return Vec::new();
@@ -176,7 +190,7 @@ pub(crate) fn build_event_context(
             [0; 6]
         },
         support_deck_count: load_support_deck_count(world_bloom_event_turn, event_type),
-        world_bloom_character_id: params.world_bloom_character_id,
+        world_bloom_character_id: resolve_world_bloom_character_id(game, params),
         world_bloom_event_turn,
         custom_character_ids: custom_character_ids(game, params.event_unit.as_deref()),
         custom_attr: params.event_attr.as_deref().and_then(parse_attr_code),
