@@ -693,6 +693,30 @@ mod tests {
     }
 
     #[test]
+    fn search_fixed_card_and_character_can_combine() {
+        // 放开 fixed_cards ⊕ fixed_characters 互斥后：两者同时非空应被接受，
+        // 引擎按「卡在前、角色在后」前缀填槽——槽0=固定卡(队长)，槽1=固定角色。
+        let pool = build_pool(&five_unique_cards());
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
+        search_ctx.fixed_card_ids = vec![102]; // game_id 102 = char 2（见 five_unique_cards）
+        search_ctx.fixed_character_ids = vec![4];
+        let results = search(
+            &pool,
+            &search_ctx,
+            &SearchParams {
+                top_k: 1,
+                timeout_ms: 0,
+            },
+        );
+
+        assert_eq!(results.len(), 1);
+        // 槽0 = 固定卡 102（队长）
+        assert_eq!(pool.game_id(results[0].cards[0]), 102);
+        // 槽1 = 固定角色 4
+        assert_eq!(pool.char_id(results[0].cards[1]), 4);
+    }
+
+    #[test]
     fn search_multi_score_up_lower_bound_filters_invalid_decks() {
         let pool = build_pool(&five_unique_cards());
         let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
