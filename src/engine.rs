@@ -234,7 +234,10 @@ fn user_wb_support_deck_from_value(value: &Value) -> Option<UserWBSupportDeck> {
     })
 }
 
-fn parse_build_params_json(input: &str) -> Result<crate::handler::BuildParams, serde_json::Error> {
+/// 将 camelCase params JSON 解析为内部 `BuildParams`（standalone CLI / 开源入口共用）。
+pub fn parse_build_params_json(
+    input: &str,
+) -> Result<crate::handler::BuildParams, serde_json::Error> {
     let value = serde_json::from_str::<Value>(input)?;
     let mut params = crate::handler::BuildParams::default();
     if let Some(region) = string_field(&value, "region") {
@@ -297,7 +300,76 @@ fn parse_build_params_json(input: &str) -> Result<crate::handler::BuildParams, s
         string_field(&value, "unitFilter").or_else(|| string_field(&value, "unit_filter"));
     params.attr_filter =
         string_field(&value, "attrFilter").or_else(|| string_field(&value, "attr_filter"));
+    params.card_configs = parse_card_config_set(&value);
+    params.single_card_configs = parse_single_card_configs(&value);
     Ok(params)
+}
+
+/// 解析稀有度默认卡配置集合（满级/满技能/满破/剧情/画布/禁用）。
+///
+/// 同时接受 camelCase（`rarity4Config.levelMax`）与 snake_case（`rarity_4_config.level_max`）。
+fn parse_card_config_set(value: &Value) -> crate::handler::CardConfigSet {
+    crate::handler::CardConfigSet {
+        rarity_1_config: parse_card_rarity_config(value, "rarity1Config", "rarity_1_config"),
+        rarity_2_config: parse_card_rarity_config(value, "rarity2Config", "rarity_2_config"),
+        rarity_3_config: parse_card_rarity_config(value, "rarity3Config", "rarity_3_config"),
+        rarity_4_config: parse_card_rarity_config(value, "rarity4Config", "rarity_4_config"),
+        rarity_birthday_config: parse_card_rarity_config(
+            value,
+            "rarityBirthdayConfig",
+            "rarity_birthday_config",
+        ),
+        single_card_configs: Vec::new(),
+    }
+}
+
+/// 解析单卡覆盖配置数组。
+fn parse_single_card_configs(value: &Value) -> Vec<crate::handler::SingleCardConfig> {
+    let entries = value
+        .get("singleCardConfigs")
+        .or_else(|| value.get("single_card_configs"));
+    let Some(entries) = entries.and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let card_id = i32_field(entry, "cardId").or_else(|| i32_field(entry, "card_id"))?;
+            let config = entry
+                .get("config")
+                .map(card_rarity_config_from_value)
+                .unwrap_or_else(|| card_rarity_config_from_value(entry));
+            Some(crate::handler::SingleCardConfig { card_id, config })
+        })
+        .collect()
+}
+
+fn parse_card_rarity_config(
+    value: &Value,
+    camel_key: &str,
+    snake_key: &str,
+) -> crate::handler::CardRarityConfig {
+    value
+        .get(camel_key)
+        .or_else(|| value.get(snake_key))
+        .map(card_rarity_config_from_value)
+        .unwrap_or_default()
+}
+
+fn card_rarity_config_from_value(value: &Value) -> crate::handler::CardRarityConfig {
+    let flag = |camel: &str, snake: &str| {
+        bool_field(value, camel)
+            .or_else(|| bool_field(value, snake))
+            .unwrap_or(false)
+    };
+    crate::handler::CardRarityConfig {
+        disable: flag("disable", "disable"),
+        level_max: flag("levelMax", "level_max"),
+        skill_max: flag("skillMax", "skill_max"),
+        episode_read: flag("episodeRead", "episode_read"),
+        master_max: flag("masterMax", "master_max"),
+        canvas: flag("canvas", "canvas"),
+    }
 }
 
 fn array(value: &Value, key: &str) -> Vec<Value> {
@@ -600,11 +672,15 @@ impl OwnedGameData {
                 chapter_no: entry.chapter_no,
             })
             .collect(),
-            wb_support_deck_bonuses_wl1: load_optional_json::<Vec<WBSupportDeckBonus>>(
-                &masterdata_dir.join("worldBloomSupportDeckBonusesWL1.json"),
+            wb_support_deck_bonuses_wl1: load_wl_support_bonuses(
+                masterdata_dir,
+                "worldBloomSupportDeckBonusesWL1.json",
+                EMBEDDED_WL1_SUPPORT_BONUSES,
             )?,
-            wb_support_deck_bonuses_wl2: load_optional_json::<Vec<WBSupportDeckBonus>>(
-                &masterdata_dir.join("worldBloomSupportDeckBonusesWL2.json"),
+            wb_support_deck_bonuses_wl2: load_wl_support_bonuses(
+                masterdata_dir,
+                "worldBloomSupportDeckBonusesWL2.json",
+                EMBEDDED_WL2_SUPPORT_BONUSES,
             )?,
             wb_support_deck_bonuses_wl3: load_wl3_support_bonuses(masterdata_dir)?,
             world_bloom_support_deck_unit_event_limited_bonuses: load_optional_json::<
@@ -984,6 +1060,29 @@ fn load_optional_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T, S
     load_json(path)
 }
 
+/// WL 支援加成表是仓库静态数据（moe 把它们放在 `data/`，不随游戏 masterdata 更新）。
+/// 这里随 crate 内嵌一份，masterdata 目录缺文件时兜底，保证 WL 支援加成不为 0。
+const EMBEDDED_WL1_SUPPORT_BONUSES: &str =
+    include_str!("../data/worldBloomSupportDeckBonusesWL1.json");
+const EMBEDDED_WL2_SUPPORT_BONUSES: &str =
+    include_str!("../data/worldBloomSupportDeckBonusesWL2.json");
+const EMBEDDED_WL3_SUPPORT_BONUSES: &str =
+    include_str!("../data/worldBloomSupportDeckBonusesWL3.json");
+
+/// 加载某一轮 WL 支援加成表：优先用 masterdata 目录里的文件，缺失则用内嵌静态副本。
+fn load_wl_support_bonuses(
+    masterdata_dir: &Path,
+    file_name: &str,
+    embedded: &str,
+) -> Result<Vec<WBSupportDeckBonus>, String> {
+    let from_disk = load_optional_json::<Vec<WBSupportDeckBonus>>(&masterdata_dir.join(file_name))?;
+    if !from_disk.is_empty() {
+        return Ok(from_disk);
+    }
+    serde_json::from_str(embedded)
+        .map_err(|err| format!("解析内嵌 {file_name} 失败: {err}"))
+}
+
 fn load_wl3_support_bonuses(masterdata_dir: &Path) -> Result<Vec<WBSupportDeckBonus>, String> {
     let exact = load_optional_json::<Vec<WBSupportDeckBonus>>(
         &masterdata_dir.join("worldBloomSupportDeckBonusesWL3.json"),
@@ -991,9 +1090,14 @@ fn load_wl3_support_bonuses(masterdata_dir: &Path) -> Result<Vec<WBSupportDeckBo
     if !exact.is_empty() {
         return Ok(exact);
     }
-    load_optional_json::<Vec<WBSupportDeckBonus>>(
+    let legacy = load_optional_json::<Vec<WBSupportDeckBonus>>(
         &masterdata_dir.join("worldBloomSupportDeckBonuses.json"),
-    )
+    )?;
+    if !legacy.is_empty() {
+        return Ok(legacy);
+    }
+    serde_json::from_str(EMBEDDED_WL3_SUPPORT_BONUSES)
+        .map_err(|err| format!("解析内嵌 WL3 支援表失败: {err}"))
 }
 
 fn normalize_unit_string(value: Option<&str>) -> Option<String> {
@@ -1300,4 +1404,93 @@ struct RawHonorLevel {
     level: i32,
     #[serde(default)]
     bonus: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_build_params_reads_camel_case_card_configs() {
+        // P2 回归：之前 parse_build_params_json 完全不读 card_configs，
+        // 满级/满技能/满破/剧情/画布开关被静默丢弃。
+        let json = r#"{
+            "region":"cn","liveType":"solo","target":"power",
+            "rarity4Config":{"levelMax":true,"skillMax":true,"masterMax":true,
+                             "episodeRead":true,"canvas":true},
+            "rarity3Config":{"disable":true}
+        }"#;
+        let params = parse_build_params_json(json).expect("parse");
+        let r4 = &params.card_configs.rarity_4_config;
+        assert!(r4.level_max && r4.skill_max && r4.master_max && r4.episode_read && r4.canvas);
+        assert!(params.card_configs.rarity_3_config.disable);
+        // 未提供的稀有度保持默认 false。
+        assert!(!params.card_configs.rarity_1_config.level_max);
+    }
+
+    #[test]
+    fn parse_build_params_accepts_snake_case_card_configs() {
+        let json = r#"{"rarity_4_config":{"level_max":true,"master_max":true}}"#;
+        let params = parse_build_params_json(json).expect("parse");
+        assert!(params.card_configs.rarity_4_config.level_max);
+        assert!(params.card_configs.rarity_4_config.master_max);
+        assert!(!params.card_configs.rarity_4_config.skill_max);
+    }
+
+    #[test]
+    fn parse_build_params_reads_single_card_configs() {
+        // 支持 {cardId, config:{...}} 与扁平 {cardId, levelMax:...} 两种形态。
+        let json = r#"{"singleCardConfigs":[
+            {"cardId":123,"config":{"levelMax":true}},
+            {"cardId":456,"skillMax":true}
+        ]}"#;
+        let params = parse_build_params_json(json).expect("parse");
+        assert_eq!(params.single_card_configs.len(), 2);
+        assert_eq!(params.single_card_configs[0].card_id, 123);
+        assert!(params.single_card_configs[0].config.level_max);
+        assert_eq!(params.single_card_configs[1].card_id, 456);
+        assert!(params.single_card_configs[1].config.skill_max);
+    }
+
+    #[test]
+    fn parse_build_params_defaults_card_configs_empty_when_absent() {
+        let params = parse_build_params_json(r#"{"region":"cn"}"#).expect("parse");
+        assert!(!params.card_configs.rarity_4_config.level_max);
+        assert!(params.single_card_configs.is_empty());
+    }
+
+    #[test]
+    fn embedded_wl_support_bonus_tables_are_present_and_parse() {
+        // P1 回归：WL 支援加成表过去从未被加载（masterdata 目录无此文件 → 静默空 → 支援 bonus 恒 0）。
+        // 现随 crate 内嵌，必须能解析且非空，否则 WL 组卡的 support_deck_bonus 会再次塌成 0。
+        for (name, embedded) in [
+            ("WL1", EMBEDDED_WL1_SUPPORT_BONUSES),
+            ("WL2", EMBEDDED_WL2_SUPPORT_BONUSES),
+            ("WL3", EMBEDDED_WL3_SUPPORT_BONUSES),
+        ] {
+            let parsed: Vec<crate::handler::WBSupportDeckBonus> =
+                serde_json::from_str(embedded).unwrap_or_else(|e| panic!("内嵌 {name} 解析失败: {e}"));
+            assert!(!parsed.is_empty(), "内嵌 {name} 支援表为空");
+            // 至少有一档稀有度带非零角色加成，确认字段映射正确（camelCase）。
+            let has_nonzero = parsed.iter().any(|row| {
+                row.world_bloom_support_deck_character_bonuses
+                    .iter()
+                    .any(|b| b.bonus_rate > 0.0)
+            });
+            assert!(has_nonzero, "内嵌 {name} 无任何非零角色加成，字段映射可能错误");
+        }
+    }
+
+    #[test]
+    fn load_wl_support_bonuses_falls_back_to_embedded_when_file_absent() {
+        // masterdata 目录缺文件时，必须回退到内嵌副本而非返回空。
+        let empty_dir = std::env::temp_dir();
+        let wl1 = load_wl_support_bonuses(
+            &empty_dir,
+            "definitely_nonexistent_wl1_xyz.json",
+            EMBEDDED_WL1_SUPPORT_BONUSES,
+        )
+        .expect("load");
+        assert!(!wl1.is_empty(), "缺文件时应回退到内嵌 WL1 表");
+    }
 }

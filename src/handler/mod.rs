@@ -1,6 +1,7 @@
 mod card_config;
 mod event_bonus;
 mod gather;
+mod index;
 mod music;
 mod power;
 mod skill;
@@ -645,15 +646,12 @@ pub fn build_card_pool(
     let music = build_music_params(game, params);
     let configs = merged_configs(params);
     let normalized_cards = normalize_user_cards(user, params);
+    let indexes = index::PoolIndexes::build(game);
     let mut cards = Vec::new();
     let mut support_cards = Vec::new();
 
     for original_user_card in normalized_cards {
-        let Some(master) = game
-            .cards
-            .iter()
-            .find(|card| card.id == original_user_card.card_id)
-        else {
+        let Some(master) = indexes.card(original_user_card.card_id) else {
             continue;
         };
         let master = enrich_master(master, game);
@@ -670,7 +668,7 @@ pub fn build_card_pool(
             continue;
         };
 
-        let power = build_power(&user_card, &master, game, user, fixture_bonus_limit);
+        let power = build_power(&user_card, &master, game, user, &indexes, fixture_bonus_limit);
         let (event_bonus, has_char_bonus, has_attr_bonus) = event_ctx
             .as_ref()
             .map(|ctx| build_card_event_bonus(&user_card, &master, game, ctx))
@@ -690,6 +688,7 @@ pub fn build_card_pool(
                 &user_card,
                 &master,
                 game,
+                &indexes,
                 character_rank,
                 event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
                 skill_state,
@@ -951,7 +950,8 @@ mod tests {
             ..UserProfile::default()
         };
 
-        let result = build_power(&sample_user_card(1), &cards[0], &game, &user, None);
+        let idx = index::PoolIndexes::build(&game);
+        let result = build_power(&sample_user_card(1), &cards[0], &game, &user, &idx, None);
         assert_eq!(result.resolved[1][0].area_item_bonus, 6);
         assert_eq!(result.resolved[1][0].total, 309);
     }
@@ -1181,10 +1181,12 @@ mod tests {
             skill_effects: &normal_effects,
             ..empty_game
         };
+        let idx = index::PoolIndexes::build(&game);
         let normal = build_skill(
             &sample_user_card(1),
             &cards[0],
             &game,
+            &idx,
             0,
             Some(140),
             SkillState::BeforeTraining,
@@ -1223,10 +1225,12 @@ mod tests {
             skill_effects: &unit_count_effects,
             ..empty_game
         };
+        let idx = index::PoolIndexes::build(&game);
         let unit_count = build_skill(
             &sample_user_card(1),
             &cards[0],
             &game,
+            &idx,
             0,
             None,
             SkillState::BeforeTraining,
@@ -1261,10 +1265,12 @@ mod tests {
             skill_effects: &diff_effects,
             ..empty_game
         };
+        let idx = index::PoolIndexes::build(&game);
         let diff = build_skill(
             &sample_user_card(1),
             &cards[0],
             &game,
+            &idx,
             0,
             None,
             SkillState::BeforeTraining,
@@ -1303,10 +1309,12 @@ mod tests {
             skill_effects: &ref_effects,
             ..empty_game
         };
+        let idx = index::PoolIndexes::build(&game);
         let ref_skill = build_skill(
             &sample_user_card(1),
             &cards[0],
             &game,
+            &idx,
             0,
             Some(140),
             SkillState::BeforeTraining,

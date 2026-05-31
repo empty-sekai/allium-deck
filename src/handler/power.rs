@@ -1,5 +1,6 @@
 use crate::types::{PowerDetail, Unit};
 
+use super::index::PoolIndexes;
 use super::types::{
     is_after_training, parse_attr_code, parse_unit_code, pool_index_to_unit, unit_to_pool_index,
     GameData, MasterCard, UserCard, UserProfile,
@@ -42,14 +43,14 @@ fn build_unit_list(master: &MasterCard, game: &GameData<'_>) -> Vec<Unit> {
 fn base_power_dims(
     user_card: &UserCard,
     master: &MasterCard,
-    game: &GameData<'_>,
     user: &UserProfile,
+    idx: &PoolIndexes<'_>,
 ) -> [i32; 3] {
     let level = user_card.level.max(1);
-    let mut base = game
-        .card_parameters
+    let mut base = idx
+        .card_parameters(master.id)
         .iter()
-        .filter(|entry| entry.card_id == master.id && entry.level <= level)
+        .filter(|entry| entry.level <= level)
         .max_by_key(|entry| entry.level)
         .map(|entry| [entry.param1, entry.param2, entry.param3])
         .unwrap_or([0; 3]);
@@ -60,11 +61,7 @@ fn base_power_dims(
         base[2] += master.special_training_power3_bonus_fixed;
     }
 
-    for episode in game
-        .card_episodes
-        .iter()
-        .filter(|entry| entry.card_id == master.id)
-    {
+    for episode in idx.card_episodes(master.id) {
         if user_card.episodes_read.contains(&episode.episode_no) {
             base[0] += episode.power1_bonus_fixed;
             base[1] += episode.power2_bonus_fixed;
@@ -72,11 +69,7 @@ fn base_power_dims(
         }
     }
 
-    for lesson in game
-        .master_lessons
-        .iter()
-        .filter(|entry| entry.card_rarity_type == master.card_rarity_type)
-    {
+    for lesson in idx.master_lessons(master.card_rarity_type) {
         if lesson.master_rank <= user_card.master_rank {
             base[0] += lesson.power1_bonus_fixed;
             base[1] += lesson.power2_bonus_fixed;
@@ -88,11 +81,7 @@ fn base_power_dims(
         .has_canvas_bonus_override
         .unwrap_or_else(|| user.user_mysekai_canvas_bonus_cards.contains(&master.id));
     if has_canvas_bonus {
-        if let Some(canvas) = game
-            .card_mysekai_canvas_bonuses
-            .iter()
-            .find(|entry| entry.card_rarity_type == master.card_rarity_type)
-        {
+        if let Some(canvas) = idx.canvas_bonus(master.card_rarity_type) {
             base[0] += canvas.power1_bonus_fixed;
             base[1] += canvas.power2_bonus_fixed;
             base[2] += canvas.power3_bonus_fixed;
@@ -131,7 +120,7 @@ fn character_bonus_dims(
 #[allow(clippy::too_many_arguments)]
 fn area_item_bonus_dims(
     master: &MasterCard,
-    game: &GameData<'_>,
+    idx: &PoolIndexes<'_>,
     user: &UserProfile,
     card_units: &[Unit],
     base: [i32; 3],
@@ -143,9 +132,7 @@ fn area_item_bonus_dims(
     let mut acc = [0.0_f64; 3];
 
     for user_item in &user.user_area_items {
-        for item in game.area_item_levels.iter().filter(|entry| {
-            entry.area_item_id == user_item.area_item_id && entry.level == user_item.level
-        }) {
+        for item in idx.area_items(user_item.area_item_id, user_item.level) {
             let unit_ok = match item.unit.as_deref().and_then(parse_unit_code) {
                 Some(unit) => unit == target_unit && card_units.contains(&unit),
                 None => true,
@@ -224,10 +211,11 @@ pub(crate) fn build_power(
     master: &MasterCard,
     game: &GameData<'_>,
     user: &UserProfile,
+    idx: &PoolIndexes<'_>,
     fixture_bonus_limit: Option<i32>,
 ) -> PowerResult {
     let card_units = build_unit_list(master, game);
-    let base = base_power_dims(user_card, master, game, user);
+    let base = base_power_dims(user_card, master, user, idx);
     let character_bonus = character_bonus_dims(master, game, user, base);
     let base_sum = base[0] + base[1] + base[2];
     let character_sum = character_bonus[0] + character_bonus[1] + character_bonus[2];
@@ -248,7 +236,7 @@ pub(crate) fn build_power(
             let same_attr = member_key % 2 == 1;
             let area_bonus = area_item_bonus_dims(
                 master,
-                game,
+                idx,
                 user,
                 &card_units,
                 base,

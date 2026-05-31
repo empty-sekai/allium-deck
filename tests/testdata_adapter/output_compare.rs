@@ -253,8 +253,8 @@ fn format_actual_cards(actual: [CardIdx; 5], pool: &CardPool) -> String {
             format!(
                 "{}({}+{})",
                 pool.game_id(card),
-                bonus.base_bonus,
-                bonus.limited_bonus
+                bonus.base_ceil(),
+                bonus.limited_ceil()
             )
         })
         .collect::<Vec<_>>()
@@ -270,7 +270,7 @@ fn format_expected_cards(expected: &[LegacyOutputCard], pool: &CardPool) -> Stri
                     let bonus = pool.event_bonus(idx);
                     format!(
                         "{}({}+{})",
-                        card.card_id, bonus.base_bonus, bonus.limited_bonus
+                        card.card_id, bonus.base_ceil(), bonus.limited_ceil()
                     )
                 }
                 None => format!("{}(missing)", card.card_id),

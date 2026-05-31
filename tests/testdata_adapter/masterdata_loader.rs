@@ -7,7 +7,7 @@ use allium_deck::handler::{
     Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
     EventRarityBonusRate, EventSkillScoreUpLimit, GameCharacterUnit, GameData, Honor, HonorLevel,
     MasterCard, MasterLesson, MusicDifficulty, MusicMeta, Skill, SkillEffect, WBSupportDeckBonus,
-    WBSupportDeckUnitEventLimitedBonus, WorldBloomDiffAttrBonus,
+    WBSupportDeckUnitEventLimitedBonus, WorldBloom, WorldBloomDiffAttrBonus,
 };
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -32,6 +32,7 @@ pub struct OwnedGameData {
     pub event_card_bonus_limits: Vec<EventCardBonusLimit>,
     pub event_honor_bonuses: Vec<EventHonorBonus>,
     pub world_bloom_different_attribute_bonuses: Vec<WorldBloomDiffAttrBonus>,
+    pub world_blooms: Vec<WorldBloom>,
     pub wb_support_deck_bonuses_wl1: Vec<WBSupportDeckBonus>,
     pub wb_support_deck_bonuses_wl2: Vec<WBSupportDeckBonus>,
     pub wb_support_deck_bonuses_wl3: Vec<WBSupportDeckBonus>,
@@ -219,6 +220,8 @@ impl OwnedGameData {
                 bonus_rate: entry.bonus_rate.round() as i32,
             })
             .collect(),
+            // WL 章节表：e2e 现有 combo 不涉及 WL，置空保持原行为（P1 接入真实数据时再补）。
+            world_blooms: Vec::<WorldBloom>::new(),
             wb_support_deck_bonuses_wl1: Vec::<WBSupportDeckBonus>::new(),
             wb_support_deck_bonuses_wl2: Vec::<WBSupportDeckBonus>::new(),
             wb_support_deck_bonuses_wl3: Vec::<WBSupportDeckBonus>::new(),
@@ -282,7 +285,7 @@ impl OwnedGameData {
                         event_id,
                         card_rarity_type: rarity_type_to_index(&entry.card_rarity_type),
                         master_rank: entry.master_rank,
-                        bonus_rate: entry.bonus_rate.round() as i32,
+                        bonus_rate_x2: (entry.bonus_rate * 2.0).round() as i32,
                     })
             })
             .collect(),
@@ -329,6 +332,7 @@ impl OwnedGameData {
             event_card_bonus_limits: &self.event_card_bonus_limits,
             event_honor_bonuses: &self.event_honor_bonuses,
             world_bloom_different_attribute_bonuses: &self.world_bloom_different_attribute_bonuses,
+            world_blooms: &self.world_blooms,
             wb_support_deck_bonuses_wl1: &self.wb_support_deck_bonuses_wl1,
             wb_support_deck_bonuses_wl2: &self.wb_support_deck_bonuses_wl2,
             wb_support_deck_bonuses_wl3: &self.wb_support_deck_bonuses_wl3,

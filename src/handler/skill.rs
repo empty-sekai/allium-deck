@@ -1,6 +1,7 @@
 use crate::pool::{DiffSkill, RefSkill, SkillSlot, UnitCountSkill};
 use crate::types::SkillInfo;
 
+use super::index::PoolIndexes;
 use super::types::{parse_unit_code, unit_to_pool_index, GameData, MasterCard, UserCard};
 
 /// 技能预计算结果。
@@ -41,10 +42,13 @@ fn clamp_score(value: i32, limit: Option<u32>) -> u8 {
 }
 
 /// 构建单卡技能预计算结果。
+///
+/// `_game` 保留以兼容既有调用方；技能/效果查表已走 `idx` 索引（P3）。
 pub(crate) fn build_skill(
     user_card: &UserCard,
     master: &MasterCard,
-    game: &GameData<'_>,
+    _game: &GameData<'_>,
+    idx: &PoolIndexes<'_>,
     character_rank: i32,
     skill_limit: Option<u32>,
     skill_state: SkillState,
@@ -53,18 +57,15 @@ pub(crate) fn build_skill(
         SkillState::AfterTraining => master.special_training_skill_id.unwrap_or(master.skill_id),
         SkillState::BeforeTraining => master.skill_id,
     };
-    let skill = game
-        .skills
-        .iter()
-        .find(|entry| entry.id == skill_id && entry.level == user_card.skill_level);
+    let skill = idx.skill(skill_id, user_card.skill_level);
     let Some(skill) = skill else {
         return SkillResult::default();
     };
 
-    let effects = game
-        .skill_effects
+    let effects = idx
+        .skill_effects(skill_id, skill.level)
         .iter()
-        .filter(|effect| effect.skill_id == skill_id && effect.skill_level == skill.level);
+        .copied();
 
     let mut base_score_up = 0i32;
     let mut life_recovery = 0i32;
