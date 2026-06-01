@@ -812,6 +812,41 @@ pub fn build_card_pool(
     Ok((pool, search_ctx))
 }
 
+/// 返回应用养成配置（preset / 单卡覆盖）后的用户卡列表，养成口径与 `build_card_pool` 完全同源。
+///
+/// 渲染层需要展示「评分实际使用的养成值」（满级/满技能/满破/已读剧情/画布），而非玩家原始
+/// 卡况；否则开养成开关（甚至默认 preset 就假设满级）时分数变了、卡面显示却没变。
+/// 复用建池的 `normalize_user_cards` + `enrich_master` + `apply_card_config`，保证渲染显示与
+/// 评分养成值零漂移。被 `config.disable` 过滤掉的卡不出现（与池一致；这类卡也进不了结果）。
+/// 只建一张轻量 card-by-id 索引，不做 power/skill 计算，开销远小于一次完整建池。
+pub fn cultivated_user_cards(
+    user: &types::UserProfile,
+    game: &types::GameData<'_>,
+    params: &types::BuildParams,
+) -> Vec<types::UserCard> {
+    let configs = merged_configs(params);
+    let normalized_cards = normalize_user_cards(user, params);
+    let mut card_by_id =
+        std::collections::HashMap::<i32, &types::MasterCard>::with_capacity(game.cards.len());
+    for card in game.cards {
+        card_by_id.entry(card.id).or_insert(card);
+    }
+
+    let mut cultivated = Vec::with_capacity(normalized_cards.len());
+    for original_user_card in normalized_cards {
+        let Some(master) = card_by_id.get(&original_user_card.card_id).copied() else {
+            continue;
+        };
+        let master = enrich_master(master, game);
+        let mut user_card = original_user_card.clone();
+        if !apply_card_config(&mut user_card, &master, &configs) {
+            continue;
+        }
+        cultivated.push(user_card);
+    }
+    cultivated
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,6 +1477,89 @@ mod tests {
         assert_eq!(user_card.level, 60);
         assert_eq!(user_card.skill_level, 4);
         assert_eq!(user_card.master_rank, 5);
+    }
+
+    #[test]
+    fn handler_cultivated_user_cards_matches_pool_cultivation() {
+        // 渲染层养成卡况必须与建池同源：满级开关后 level 抬到 max，disable 的卡被剔除。
+        let cards = [
+            MasterCard {
+                id: 1,
+                character_id: 1,
+                attr: "cool".to_string(),
+                card_rarity_type: 4,
+                skill_id: 10,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(60),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+            MasterCard {
+                id: 2,
+                character_id: 2,
+                attr: "cute".to_string(),
+                card_rarity_type: 1,
+                skill_id: 11,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(20),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+        ];
+        let game = sample_game(&cards, &[], &[], &[], &[], &[], &[], &[], &[]);
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1), sample_user_card(2)],
+            ..UserProfile::default()
+        };
+
+        // rarity_4 满级，rarity_1 禁用 → 卡1 level=60、卡2 被剔除。
+        let mut params = BuildParams::default();
+        params.card_configs.rarity_4_config.level_max = true;
+        params.card_configs.rarity_1_config.disable = true;
+
+        let cultivated = cultivated_user_cards(&user, &game, &params);
+        assert_eq!(cultivated.len(), 1, "disabled 稀有度应被剔除");
+        assert_eq!(cultivated[0].card_id, 1);
+        assert_eq!(cultivated[0].level, 60, "满级开关应把 level 抬到 max_level");
+    }
+
+    #[test]
+    fn handler_cultivated_user_cards_canvas_sets_override() {
+        // 画布开关应在养成卡况里置 has_canvas_bonus_override，渲染据此显示画布。
+        let cards = [MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        }];
+        let game = sample_game(&cards, &[], &[], &[], &[], &[], &[], &[], &[]);
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1)],
+            ..UserProfile::default()
+        };
+        let mut params = BuildParams::default();
+        params.card_configs.rarity_4_config.canvas = true;
+
+        let cultivated = cultivated_user_cards(&user, &game, &params);
+        assert_eq!(cultivated.len(), 1);
+        assert_eq!(cultivated[0].has_canvas_bonus_override, Some(true));
     }
 
     #[test]
