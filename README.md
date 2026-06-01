@@ -94,6 +94,54 @@ cargo build --release
 
 - 单元测试：散落各模块 `#[cfg(test)]`（pool / search / handler）。
 - 端到端回归：`tests/e2e_regression.rs` 读 manifest 驱动，将搜索结果与参考输出逐项比对。数据路径可由环境变量覆盖（`ALLIUM_TESTDATA` / `ALLIUM_MASTERDATA_CN` / `ALLIUM_MASTERDATA_JP` / `ALLIUM_MUSIC_METAS`）。
+- 搜索结果正确性由以下测试用例用**暴力枚举**验证：
+  - `search_dfs_matches_bruteforce_for_best_deck`
+  - `search_dfs_bonus_noevent_matches_bruteforce_with_suffix_max_break`
+  - `search_dfs_mysekai_matches_bruteforce_with_suffix_max_break`
+  - `search_suffix_bound_is_sound_and_zero_pool_is_zero`
+  - `search_dominance_preserves_best_score`
+
+## Soundness
+
+每个剪枝机制经代码审计和暴力枚举测试验证。
+
+**支配剪枝（`dominance.rs`）——Sound ✅**
+
+只比较**同一角色**内的两张卡（`pool.char_id(a) == pool.char_id(b)`）。淘汰 B 的前提是 A 在以下所有维度上 ≥ B：
+
+- 8 种编队组合的综合力（逐槽 u18 解码后比较）
+- 技能（同类型才可比；Score Up 比数值，Unit Count 比同 unit 的各人数加成，Diff 比 base 和 increment，Ref 比 rate 和 max）
+- 活动加成（base 和 limited 分别比较）
+- 属性相同（否则对 diff-attr 奖励的贡献不同，不能断言 B 无害）
+- Unit mask 是超集（rhs_mask ⊆ lhs_mask，避免丢失候选编队）
+
+替换安全：把 B 换成 A，在任何目标下分数不降。World Bloom 活动下支配剪枝**完全关闭**，因为 diff-attr 和支援卡组的交叉约束无法在单卡层面保证单调性。
+
+**后缀上界（`suffix.rs`）——Sound ✅**
+
+上界计算的核心是**角色感知聚合**：按 power / skill / bonus 三个维度分别对 27 个角色取单卡最大值，然后取未使用角色中 top-N 求和。因为每角色至多选一张卡，任何实际编队的各维度总和都不可能超过所在维度的 top-N 角色最大值的和。三个维度的 top-N 可能取到不同角色，这是保守高估，不会漏解。
+
+在此基础上做了多层收紧：
+
+- **Exclusion delta**：当选了一张卡后，将该角色从 suffix 中排除，重新降级到下一个可用角色。获取 ex-lusion delta 时完全绕过分支，用 compact bit index + popcount 直接定位。
+- **Dense suffix tail**：从 SoA 右端向左扫描，根据实际出现的角色单调收窄。随 DFS 位置推进，`ceiling(i+1) ≤ ceiling(i)`，一旦跌到阈值以下可以安全 break 整层。
+- **World Bloom extra bound**：在 support deck 和 diff-attr 上限上加额外一层 ceiling，取各维度最紧值。
+- **叶子评估**（`evaluate.rs`）使用实际的同组人数 `unit_counts[unit].clamp(1, 5)` 查表，1-5 人效果为精确值，非近似。
+
+**Power / Skill 路径——不保证最优 ❌**
+
+`search_instrumented`（`mod.rs:37-38`）对 Power 和 Skill 目标不走完整 B&B，而是取排序后前缀（Power 28 张每角色 ≤6，Skill 20 张每角色 ≤3）内枚举。前缀外的卡被直接丢弃，没有上界证明能安全裁剪——纯粹的性能取舍。
+
+实际风险很低：Power / Skill 是纯加性目标，没有跨卡技能协同，每角色的最优卡就是 power_max / skill_max 最高的那张。一个角色有 4 张以上技能卡、且最优解必须用第 4 张的情况极端罕见。但这不是形式化保证。
+
+**小结**
+
+| 目标 | 算法 | Sound | 说明 |
+| --- | --- | --- | --- |
+| Score / Mysekai | 完整 B&B | ✅ | 支配剪枝 + 角色感知后缀上界 + 多层收紧 |
+| 终章 | 角色分组 + B&B | ✅ | leader × member 两段 DFS |
+| Challenge | 暴力枚举 | ✅ | 无剪枝，仅 game_id 去重 |
+| Power / Skill | 前缀 DFS | ❌ | 28/20 张限制，每角色 6/3 上限 |
 
 ## 许可证
 
