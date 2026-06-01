@@ -88,19 +88,33 @@ fn merged_configs(params: &types::BuildParams) -> types::CardConfigSet {
 fn normalize_user_cards(
     user: &types::UserProfile,
     params: &types::BuildParams,
+    game: &types::GameData<'_>,
 ) -> Vec<types::UserCard> {
     let mut cards = user.user_cards.clone();
     for &card_id in &params.fixed_cards {
         if cards.iter().any(|card| card.card_id == card_id) {
             continue;
         }
+        // 虚拟固定卡代表「假设我满配持有这张卡」。能否特训取决于 master 是否有花后技能；
+        // 旧逻辑写死 none/original，导致可特训的固定卡渲染成花前、且 build_power 漏掉
+        // special_training 固定 power 加成。这里按 master.special_training_skill_id 判定。
+        let can_train = game
+            .cards
+            .iter()
+            .find(|card| card.id == card_id)
+            .is_some_and(|card| card.special_training_skill_id.is_some());
+        let (special_training_status, default_image) = if can_train {
+            ("done".to_string(), "special_training".to_string())
+        } else {
+            ("none".to_string(), "original".to_string())
+        };
         cards.push(types::UserCard {
             card_id,
             level: 1,
             skill_level: 1,
             master_rank: 0,
-            special_training_status: "none".to_string(),
-            default_image: "original".to_string(),
+            special_training_status,
+            default_image,
             episodes_read: Vec::new(),
             is_virtual: true,
             has_canvas_bonus_override: None,
@@ -114,6 +128,11 @@ const PER_CHAR_KEEP: usize = 6;
 const FINAL_CHAPTER_PER_CHAR_KEEP: usize = 16;
 const GENERAL_TRIM_THRESHOLD: usize = 400;
 const GENERAL_PER_CHAR_KEEP: usize = 10;
+/// WL 池硬上限。WL 跳过 dominance 剪枝（见 search/dominance.rs），而 per_character_trim 的
+/// 「bonus≥60 全留」旁路在顶配下几乎让所有卡过线 → DFS 组合空间爆炸（170 顶配 5ms→12s）。
+/// 这是与剪枝无关的兜底安全网：仅当 WL 池超过该上限时按质量截断。设计意图本就是每角色 ~6 张
+/// （PER_CHAR_KEEP×27≈162），故取 160 量级，正常请求池远小于它、不受影响。
+const WL_POOL_HARD_CAP: usize = 160;
 
 fn ep_prefilter_keep(
     card: &CardIntermediate,
@@ -186,6 +205,44 @@ fn per_character_trim(
         let ch = (card.character_id as usize).min(26);
         if (counts[ch] as usize) < per_char_keep {
             counts[ch] += 1;
+            true
+        } else {
+            false
+        }
+    });
+}
+
+/// WL 池兜底硬截断：超过 `WL_POOL_HARD_CAP` 时按质量保留 top-N，固定卡/固定角色永不裁。
+///
+/// WL 跳过 dominance 剪枝，顶配下 `per_character_trim` 的「bonus≥60 全留」旁路会让池规模失控，
+/// DFS 组合空间随之爆炸。此函数是与正确性无关的性能安全网：只在池已经过大时生效，按
+/// `event_bonus → power×skill` 的同一质量序截断，确保最强候选一定保留，不影响小池正常请求。
+fn world_bloom_pool_hard_cap(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
+    if cards.len() <= WL_POOL_HARD_CAP {
+        return;
+    }
+    cards.sort_by(|a, b| {
+        let a_bonus = a.event_bonus.total_x2();
+        let b_bonus = b.event_bonus.total_x2();
+        let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
+        let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
+        b_bonus
+            .cmp(&a_bonus)
+            .then_with(|| b.card_rarity_type.cmp(&a.card_rarity_type))
+            .then_with(|| b_key.cmp(&a_key))
+            .then_with(|| a.game_card_id.cmp(&b.game_card_id))
+    });
+    let mut kept = 0usize;
+    cards.retain(|card| {
+        if params.fixed_cards.contains(&card.game_card_id)
+            || params
+                .fixed_characters
+                .contains(&(card.character_id as i32))
+        {
+            return true;
+        }
+        if kept < WL_POOL_HARD_CAP {
+            kept += 1;
             true
         } else {
             false
@@ -645,7 +702,7 @@ pub fn build_card_pool(
     let fixture_bonus_limit = resolve_fixture_bonus_limit(game, event_ctx.as_ref());
     let music = build_music_params(game, params);
     let configs = merged_configs(params);
-    let normalized_cards = normalize_user_cards(user, params);
+    let normalized_cards = normalize_user_cards(user, params, game);
     let indexes = index::PoolIndexes::build(game);
     let mut cards = Vec::new();
     let mut support_cards = Vec::new();
@@ -752,6 +809,12 @@ pub fn build_card_pool(
                 PER_CHAR_KEEP
             };
             per_character_trim(&mut cards, params, keep);
+            // WL 跳过 dominance 剪枝，且 per_character_trim 的「bonus≥60 全留」旁路在顶配下
+            // 几乎放行所有卡 → DFS 爆炸。仅 WL 加一道与剪枝无关的池硬上限兜底（final chapter
+            // 仍走 dominance 剪枝，不需要）。
+            if is_world_bloom {
+                world_bloom_pool_hard_cap(&mut cards, params);
+            }
         } else {
             per_character_trim(&mut cards, params, PER_CHAR_KEEP);
         }
@@ -825,7 +888,7 @@ pub fn cultivated_user_cards(
     params: &types::BuildParams,
 ) -> Vec<types::UserCard> {
     let configs = merged_configs(params);
-    let normalized_cards = normalize_user_cards(user, params);
+    let normalized_cards = normalize_user_cards(user, params, game);
     let mut card_by_id =
         std::collections::HashMap::<i32, &types::MasterCard>::with_capacity(game.cards.len());
     for card in game.cards {
@@ -1560,6 +1623,66 @@ mod tests {
         let cultivated = cultivated_user_cards(&user, &game, &params);
         assert_eq!(cultivated.len(), 1);
         assert_eq!(cultivated[0].has_canvas_bonus_override, Some(true));
+    }
+
+    #[test]
+    fn handler_virtual_fixed_card_training_state_follows_master() {
+        // 虚拟固定卡（用户未持有）的训练态应按 master.special_training_skill_id 判定：
+        // 可特训卡 → done/special_training（否则渲染成花前、且漏掉特训固定 power 加成）；
+        // 不可特训卡 → none/original。
+        let cards = [
+            MasterCard {
+                id: 1,
+                character_id: 1,
+                attr: "cool".to_string(),
+                card_rarity_type: 4,
+                skill_id: 10,
+                special_training_skill_id: Some(11),
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(60),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+            MasterCard {
+                id: 2,
+                character_id: 2,
+                attr: "cute".to_string(),
+                card_rarity_type: 1,
+                skill_id: 20,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(20),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+        ];
+        let game = sample_game(&cards, &[], &[], &[], &[], &[], &[], &[], &[]);
+        // 用户一张都没有；两张都作为固定卡注入虚拟卡。
+        let user = UserProfile::default();
+        let params = BuildParams {
+            fixed_cards: vec![1, 2],
+            ..BuildParams::default()
+        };
+
+        let normalized = normalize_user_cards(&user, &params, &game);
+        let trainable = normalized
+            .iter()
+            .find(|card| card.card_id == 1)
+            .expect("可特训固定卡应存在");
+        assert_eq!(trainable.special_training_status, "done");
+        assert_eq!(trainable.default_image, "special_training");
+        let untrainable = normalized
+            .iter()
+            .find(|card| card.card_id == 2)
+            .expect("不可特训固定卡应存在");
+        assert_eq!(untrainable.special_training_status, "none");
+        assert_eq!(untrainable.default_image, "original");
     }
 
     #[test]
