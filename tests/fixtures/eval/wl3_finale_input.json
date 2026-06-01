@@ -1,0 +1,5 @@
+{
+  "case": "wl3_finale",
+  "deck": [0, 1, 2, 3, 4],
+  "fixture_source": "tests/evaluator_cases.rs::wl3_finale"
+}

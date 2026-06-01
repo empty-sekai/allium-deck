@@ -1,0 +1,5 @@
+{
+  "case": "custom_mixed",
+  "deck": [0, 1, 2, 3, 4],
+  "fixture_source": "tests/evaluator_cases.rs::custom_mixed"
+}

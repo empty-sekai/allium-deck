@@ -1,0 +1,2218 @@
+mod card_config;
+mod event_bonus;
+mod gather;
+mod index;
+mod music;
+mod power;
+mod skill;
+mod support_bonus;
+pub mod types;
+
+use std::collections::BTreeSet;
+use std::error::Error;
+use std::fmt::{Display, Formatter};
+
+use crate::search::{SearchContext, SupportDeck};
+use crate::types::{DefaultImage, FINAL_CHAPTER_EVENT_ID};
+
+use card_config::apply_card_config;
+use event_bonus::{
+    build_card_event_bonus, build_event_context, build_leader_honor_bonus,
+    build_leader_limit_bonus, EventContext,
+};
+use gather::{sort_and_gather, CardIntermediate, FullPrecisionCard};
+use music::build_music_params;
+use power::{build_power, resolve_unit_mask};
+use skill::{build_skill, SkillState};
+use support_bonus::calc_wb_support_bonus;
+use types::{attr_to_pool_index, default_image_kind, parse_attr_code, parse_unit_code};
+
+pub use types::*;
+
+/// handler 构建阶段的错误。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildError {
+    /// 过滤后无候选卡。
+    EmptyPool,
+    /// 候选卡超过 512-bit mask 容量。
+    TooManyCards(usize),
+    /// 参数非法。
+    InvalidConfig(String),
+}
+
+impl Display for BuildError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyPool => f.write_str("候选卡池为空"),
+            Self::TooManyCards(count) => write!(f, "候选卡数量超过 mask 容量: {count}"),
+            Self::InvalidConfig(reason) => write!(f, "构建参数非法: {reason}"),
+        }
+    }
+}
+
+impl Error for BuildError {}
+
+fn enrich_master(master: &types::MasterCard, game: &types::GameData<'_>) -> types::MasterCard {
+    let mut master = master.clone();
+    if master.max_level.is_none() || master.max_skill_level.is_none() {
+        if let Some(rarity) = game
+            .card_rarities
+            .iter()
+            .find(|entry| entry.card_rarity_type == master.card_rarity_type)
+        {
+            master.max_level.get_or_insert(rarity.max_level);
+            master.max_skill_level.get_or_insert(rarity.max_skill_level);
+        }
+    }
+    if master.max_master_rank.is_none() {
+        let max_master_rank = game
+            .master_lessons
+            .iter()
+            .filter(|entry| entry.card_rarity_type == master.card_rarity_type)
+            .map(|entry| entry.master_rank)
+            .max()
+            .unwrap_or(0);
+        master.max_master_rank = Some(max_master_rank);
+    }
+    master
+}
+
+fn merged_configs(params: &types::BuildParams) -> types::CardConfigSet {
+    let mut configs = params.card_configs.clone();
+    configs
+        .single_card_configs
+        .extend(params.single_card_configs.iter().cloned());
+    configs
+}
+
+fn normalize_user_cards(
+    user: &types::UserProfile,
+    params: &types::BuildParams,
+    game: &types::GameData<'_>,
+) -> Vec<types::UserCard> {
+    let mut cards = user.user_cards.clone();
+    for &card_id in &params.fixed_cards {
+        if cards.iter().any(|card| card.card_id == card_id) {
+            continue;
+        }
+        // 虚拟固定卡代表「假设我满配持有这张卡」。能否特训取决于 master 是否有花后技能；
+        // 旧逻辑写死 none/original，导致可特训的固定卡渲染成花前、且 build_power 漏掉
+        // special_training 固定 power 加成。这里按 master.special_training_skill_id 判定。
+        let can_train = game
+            .cards
+            .iter()
+            .find(|card| card.id == card_id)
+            .is_some_and(|card| card.special_training_skill_id.is_some());
+        let (special_training_status, default_image) = if can_train {
+            ("done".to_string(), "special_training".to_string())
+        } else {
+            ("none".to_string(), "original".to_string())
+        };
+        cards.push(types::UserCard {
+            card_id,
+            level: 1,
+            skill_level: 1,
+            master_rank: 0,
+            special_training_status,
+            default_image,
+            episodes_read: Vec::new(),
+            is_virtual: true,
+            has_canvas_bonus_override: None,
+        });
+    }
+    cards
+}
+
+const EP_PREFILTER_MIN_POOL: usize = 50;
+const PER_CHAR_KEEP: usize = 6;
+const FINAL_CHAPTER_PER_CHAR_KEEP: usize = 16;
+const GENERAL_TRIM_THRESHOLD: usize = 400;
+const GENERAL_PER_CHAR_KEEP: usize = 10;
+/// WL 池硬上限。WL 跳过 dominance 剪枝（见 search/dominance.rs），而 per_character_trim 的
+/// 「bonus≥60 全留」旁路在顶配下几乎让所有卡过线 → DFS 组合空间爆炸（170 顶配 5ms→12s）。
+/// 这是与剪枝无关的兜底安全网：仅当 WL 池超过该上限时按质量截断。设计意图本就是每角色 ~6 张
+/// （PER_CHAR_KEEP×27≈162），故取 160 量级，正常请求池远小于它、不受影响。
+const WL_POOL_HARD_CAP: usize = 160;
+
+fn ep_prefilter_keep(
+    card: &CardIntermediate,
+    is_world_bloom: bool,
+    is_final_chapter: bool,
+) -> bool {
+    // World Bloom / Final Chapter 跳过普通活动的双轴过滤，需要保留足够角色与属性覆盖。
+    if is_world_bloom || is_final_chapter {
+        return card.card_rarity_type >= 3 || card.event_bonus.total_x2() > 0;
+    }
+    // 4星+无条件保留
+    if card.card_rarity_type >= 4 {
+        return true;
+    }
+    // 3星：有 bonus + 双轴命中才保留
+    if card.card_rarity_type == 3 {
+        if card.event_bonus.total_x2() == 0 {
+            return false;
+        }
+        return card.has_char_bonus && card.has_attr_bonus;
+    }
+    // 1-2星：有 bonus 且双轴同时命中才保留
+    if card.event_bonus.total_x2() == 0 {
+        return false;
+    }
+    card.has_char_bonus && card.has_attr_bonus
+}
+
+fn per_character_trim(
+    cards: &mut Vec<CardIntermediate>,
+    params: &types::BuildParams,
+    per_char_keep: usize,
+) {
+    if cards.len() <= EP_PREFILTER_MIN_POOL {
+        return;
+    }
+    cards.sort_by(|a, b| {
+        let a_bonus = a.event_bonus.total_x2();
+        let b_bonus = b.event_bonus.total_x2();
+        // 4星无bonus给虚拟bonus=1，排在有bonus卡之后但优于低星
+        let a_effective_bonus = if a_bonus == 0 && a.card_rarity_type >= 4 {
+            1
+        } else {
+            a_bonus
+        };
+        let b_effective_bonus = if b_bonus == 0 && b.card_rarity_type >= 4 {
+            1
+        } else {
+            b_bonus
+        };
+        let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
+        let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
+        b_effective_bonus
+            .cmp(&a_effective_bonus)
+            .then_with(|| b.card_rarity_type.cmp(&a.card_rarity_type))
+            .then_with(|| b_key.cmp(&a_key))
+    });
+    let mut counts = [0u8; 27];
+    cards.retain(|card| {
+        if params.fixed_cards.contains(&card.game_card_id)
+            || params
+                .fixed_characters
+                .contains(&(card.character_id as i32))
+        {
+            return true;
+        }
+        if card.event_bonus.total_x2() >= 60 {
+            return true;
+        }
+        let ch = (card.character_id as usize).min(26);
+        if (counts[ch] as usize) < per_char_keep {
+            counts[ch] += 1;
+            true
+        } else {
+            false
+        }
+    });
+}
+
+/// WL 池兜底硬截断：超过 `WL_POOL_HARD_CAP` 时按质量保留 top-N，固定卡/固定角色永不裁。
+///
+/// WL 跳过 dominance 剪枝，顶配下 `per_character_trim` 的「bonus≥60 全留」旁路会让池规模失控，
+/// DFS 组合空间随之爆炸。此函数是与正确性无关的性能安全网：只在池已经过大时生效，按
+/// `event_bonus → power×skill` 的同一质量序截断，确保最强候选一定保留，不影响小池正常请求。
+fn world_bloom_pool_hard_cap(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
+    if cards.len() <= WL_POOL_HARD_CAP {
+        return;
+    }
+    cards.sort_by(|a, b| {
+        let a_bonus = a.event_bonus.total_x2();
+        let b_bonus = b.event_bonus.total_x2();
+        let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
+        let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
+        b_bonus
+            .cmp(&a_bonus)
+            .then_with(|| b.card_rarity_type.cmp(&a.card_rarity_type))
+            .then_with(|| b_key.cmp(&a_key))
+            .then_with(|| a.game_card_id.cmp(&b.game_card_id))
+    });
+    let mut kept = 0usize;
+    cards.retain(|card| {
+        if params.fixed_cards.contains(&card.game_card_id)
+            || params
+                .fixed_characters
+                .contains(&(card.character_id as i32))
+        {
+            return true;
+        }
+        if kept < WL_POOL_HARD_CAP {
+            kept += 1;
+            true
+        } else {
+            false
+        }
+    });
+}
+
+fn ep_prefilter_keep_with_params(
+    card: &CardIntermediate,
+    params: &types::BuildParams,
+    is_world_bloom: bool,
+    is_final_chapter: bool,
+) -> bool {
+    if params.fixed_cards.contains(&card.game_card_id)
+        || params
+            .fixed_characters
+            .contains(&(card.character_id as i32))
+    {
+        return true;
+    }
+    ep_prefilter_keep(card, is_world_bloom, is_final_chapter)
+}
+
+fn general_per_character_trim(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
+    cards.sort_by(|a, b| {
+        let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
+        let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
+        b_key.cmp(&a_key)
+    });
+    let mut counts = [0u8; 27];
+    cards.retain(|card| {
+        if params.fixed_cards.contains(&card.game_card_id) {
+            return true;
+        }
+        let ch = (card.character_id as usize).min(26);
+        if (counts[ch] as usize) < GENERAL_PER_CHAR_KEEP {
+            counts[ch] += 1;
+            true
+        } else {
+            false
+        }
+    });
+}
+
+fn target_per_character_trim(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
+    cards.sort_by(|a, b| {
+        let (a_key, b_key) = match params.target {
+            crate::types::ScoreTarget::Power => (
+                a.power.power_max.max(0) as u64,
+                b.power.power_max.max(0) as u64,
+            ),
+            crate::types::ScoreTarget::Skill => {
+                (a.skill.skill_max as u64, b.skill.skill_max as u64)
+            }
+            _ => {
+                let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
+                let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
+                (a_key, b_key)
+            }
+        };
+        b_key
+            .cmp(&a_key)
+            .then_with(|| b.card_rarity_type.cmp(&a.card_rarity_type))
+            .then_with(|| a.game_card_id.cmp(&b.game_card_id))
+    });
+
+    let mut counts = [0u8; 27];
+    cards.retain(|card| {
+        if params.fixed_cards.contains(&card.game_card_id)
+            || params
+                .fixed_characters
+                .contains(&(card.character_id as i32))
+        {
+            return true;
+        }
+        let ch = (card.character_id as usize).min(26);
+        if (counts[ch] as usize) < GENERAL_PER_CHAR_KEEP {
+            counts[ch] += 1;
+            true
+        } else {
+            false
+        }
+    });
+}
+
+fn keep_card(card: &CardIntermediate, params: &types::BuildParams) -> bool {
+    let is_fixed_card = params.fixed_cards.contains(&card.game_card_id);
+    if params.excluded_cards.contains(&card.game_card_id) {
+        return false;
+    }
+
+    if !is_fixed_card {
+        if let Some(unit) = params
+            .unit_filter
+            .as_deref()
+            .and_then(parse_unit_code)
+            .and_then(types::unit_to_pool_index)
+        {
+            let piapro_bit = 1u8 << 5;
+            let wanted = 1u8 << unit;
+            if card.unit_mask_raw & (wanted | piapro_bit) == 0 {
+                return false;
+            }
+        }
+
+        if let Some(attr) = params
+            .attr_filter
+            .as_deref()
+            .and_then(parse_attr_code)
+            .and_then(attr_to_pool_index)
+        {
+            if card.attr != attr {
+                return false;
+            }
+        }
+
+        if params.filter_other_unit {
+            if let Some(unit) = params
+                .event_unit
+                .as_deref()
+                .and_then(parse_unit_code)
+                .and_then(types::unit_to_pool_index)
+            {
+                let piapro_bit = 1u8 << 5;
+                let wanted = 1u8 << unit;
+                if card.unit_mask_raw & (wanted | piapro_bit) == 0 {
+                    return false;
+                }
+            }
+        }
+    }
+
+    if let Some(challenge_char_id) = params.challenge_live_character_id {
+        if card.character_id != challenge_char_id as u8 {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn normalize_boost_rate_pct(boost: Option<i32>) -> u32 {
+    match boost {
+        Some(value) if value > 0 && value <= 20 => (value * 100) as u32,
+        Some(value) if value > 0 => value as u32,
+        _ => 100,
+    }
+}
+
+fn validate_fixed_constraints(
+    params: &types::BuildParams,
+    full: &[CardIntermediate],
+) -> Result<(Vec<u16>, Vec<u8>), BuildError> {
+    if matches!(
+        params.live_type,
+        crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+    ) && !params.fixed_characters.is_empty()
+    {
+        return Err(BuildError::InvalidConfig(
+            "challenge live 不支持 fixed_characters".to_string(),
+        ));
+    }
+    if params.fixed_cards.len() + params.fixed_characters.len() > crate::types::DECK_SIZE {
+        return Err(BuildError::InvalidConfig("固定约束数量超过 5".to_string()));
+    }
+
+    let mut fixed_card_ids = Vec::with_capacity(params.fixed_cards.len());
+    let mut seen_cards = BTreeSet::new();
+    let mut seen_chars = BTreeSet::new();
+    for &card_id in &params.fixed_cards {
+        if !(1..=u16::MAX as i32).contains(&card_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed card id 非法: {card_id}"
+            )));
+        }
+        if !seen_cards.insert(card_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed card 重复: {card_id}"
+            )));
+        }
+        let Some(character_id) = full
+            .iter()
+            .find(|card| card.game_card_id == card_id)
+            .map(|card| card.character_id)
+        else {
+            return Err(BuildError::EmptyPool);
+        };
+        if !seen_chars.insert(character_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed card 角色重复: {character_id}"
+            )));
+        }
+        fixed_card_ids.push(card_id as u16);
+    }
+
+    let mut fixed_character_ids = Vec::with_capacity(params.fixed_characters.len());
+    for &character_id in &params.fixed_characters {
+        if !(1..=26).contains(&character_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed character id 非法: {character_id}"
+            )));
+        }
+        let character_id = character_id as u8;
+        if !seen_chars.insert(character_id) {
+            return Err(BuildError::InvalidConfig(format!(
+                "fixed character 角色重复: {character_id}"
+            )));
+        }
+        if full.iter().all(|card| card.character_id != character_id) {
+            return Err(BuildError::EmptyPool);
+        }
+        fixed_character_ids.push(character_id);
+    }
+
+    Ok((fixed_card_ids, fixed_character_ids))
+}
+
+fn user_character_rank(user: &types::UserProfile, character_id: i32) -> i32 {
+    user.user_characters
+        .iter()
+        .find(|entry| entry.character_id == character_id)
+        .map(|entry| entry.character_rank)
+        .unwrap_or(0)
+}
+
+fn skill_states_for_card(
+    user_card: &types::UserCard,
+    master: &types::MasterCard,
+    params: &types::BuildParams,
+) -> Vec<SkillState> {
+    if master.special_training_skill_id.is_none() {
+        return vec![SkillState::BeforeTraining];
+    }
+    if params.keep_after_training_state {
+        if matches!(
+            default_image_kind(&user_card.default_image),
+            DefaultImage::SpecialTraining
+        ) {
+            vec![SkillState::AfterTraining]
+        } else {
+            vec![SkillState::BeforeTraining]
+        }
+    } else {
+        vec![SkillState::AfterTraining, SkillState::BeforeTraining]
+    }
+}
+
+fn build_support_deck(
+    full: &[CardIntermediate],
+    game: &types::GameData<'_>,
+    event_ctx: Option<&EventContext>,
+    special_character_id: Option<i32>,
+) -> SupportDeck {
+    let Some(event_ctx) = event_ctx else {
+        return SupportDeck::default();
+    };
+    if event_ctx.support_deck_count == 0 {
+        return SupportDeck::default();
+    }
+    let special_character_id = special_character_id.or(event_ctx.world_bloom_character_id);
+
+    let mut cards: Vec<(u16, f64)> = Vec::with_capacity(full.len());
+    for card in full {
+        let bonus = calc_wb_support_bonus(
+            game,
+            event_ctx.event_id,
+            event_ctx.world_bloom_event_turn,
+            special_character_id,
+            card.game_card_id.max(0).min(u16::MAX as i32) as u16,
+            card.card_rarity_type,
+            card.character_id,
+            card.unit_mask_raw,
+            card.master_rank,
+            card.skill_level,
+        );
+        if let Some((_, existing_bonus)) = cards
+            .iter_mut()
+            .find(|(game_card_id, _)| *game_card_id as i32 == card.game_card_id)
+        {
+            *existing_bonus = existing_bonus.max(bonus);
+        } else {
+            cards.push((card.game_card_id.max(0).min(u16::MAX as i32) as u16, bonus));
+        }
+    }
+    cards.sort_by(|left, right| right.1.total_cmp(&left.1));
+
+    SupportDeck {
+        cards,
+        count: event_ctx.support_deck_count,
+    }
+}
+
+fn build_final_chapter_support_decks(
+    full: &[CardIntermediate],
+    game: &types::GameData<'_>,
+    event_ctx: Option<&EventContext>,
+) -> Vec<SupportDeck> {
+    let mut decks = vec![SupportDeck::default(); 27];
+    let Some(event_ctx) = event_ctx else {
+        return decks;
+    };
+    if event_ctx.event_id != FINAL_CHAPTER_EVENT_ID {
+        return decks;
+    }
+    for character_id in 1..=26 {
+        decks[character_id as usize] =
+            build_support_deck(full, game, Some(event_ctx), Some(character_id));
+    }
+    decks
+}
+
+fn build_search_context(
+    full: &[FullPrecisionCard],
+    support_cards: &[CardIntermediate],
+    game: &types::GameData<'_>,
+    params: &types::BuildParams,
+    event_ctx: Option<&EventContext>,
+    music: Option<&music::MusicParams>,
+    fixed_card_ids: Vec<u16>,
+    fixed_character_ids: Vec<u8>,
+) -> SearchContext {
+    let support_deck = build_support_deck(support_cards, game, event_ctx, None);
+    let support_decks_by_character =
+        build_final_chapter_support_decks(support_cards, game, event_ctx);
+    let support_bonus_top_sum = support_deck
+        .cards
+        .iter()
+        .take(support_deck.count as usize)
+        .map(|(_, bonus)| *bonus)
+        .sum::<f64>();
+    let support_bonus_top_sum_by_character = support_decks_by_character
+        .iter()
+        .map(|deck| {
+            deck.cards
+                .iter()
+                .take(deck.count as usize)
+                .map(|(_, bonus)| *bonus)
+                .sum::<f64>()
+        })
+        .fold(0.0_f64, f64::max)
+        .ceil() as u32;
+    let diff_attr_bonus = event_ctx.map(|ctx| ctx.diff_attr_bonus).unwrap_or([0; 6]);
+    let mut skill_values = full
+        .iter()
+        .map(|card| card.skill_max_exact as u32)
+        .collect::<Vec<_>>();
+    skill_values.sort_unstable_by(|left, right| right.cmp(left));
+    let skill_ub_global = skill_values.into_iter().take(5).sum::<u32>();
+
+    SearchContext {
+        target: params.target,
+        fixed_card_ids,
+        fixed_character_ids,
+        music_rate_pct: music.map(|music| music.event_rate_pct).unwrap_or(100),
+        boost_rate_pct: normalize_boost_rate_pct(params.boost),
+        base_score: music.map(|music| music.meta.base_score).unwrap_or(1.0),
+        base_score_auto: music.map(|music| music.meta.base_score_auto).unwrap_or(1.0),
+        fever_score: music.map(|music| music.meta.fever_score).unwrap_or(0.0),
+        skill_scores: music
+            .map(|music| {
+                [
+                    music.meta.solo_skill_scores,
+                    music.meta.multi_skill_scores,
+                    music.meta.auto_skill_scores,
+                ]
+            })
+            .unwrap_or([[0.0; 6]; 3]),
+        other_score: params.other_score.unwrap_or(0),
+        life: params.life.unwrap_or(1000),
+        diff_attr_bonus,
+        support_deck,
+        support_decks_by_character,
+        is_world_bloom: event_ctx
+            .is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom)),
+        is_final_chapter: event_ctx.is_some_and(|ctx| ctx.event_id == FINAL_CHAPTER_EVENT_ID),
+        enforce_char_uniqueness: !matches!(
+            params.live_type,
+            crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+        ),
+        live_type: params.live_type,
+        event_type: event_ctx.map(|ctx| ctx.event_type),
+        keep_after_training_state: params.keep_after_training_state,
+        skill_reference_strategy: params.skill_reference_strategy,
+        best_skill_as_leader: params.best_skill_as_leader,
+        live_skill_order: params.live_skill_order,
+        specific_skill_order: params.specific_skill_order,
+        multi_teammate_score_up: params.multi_teammate_score_up,
+        multi_teammate_power: params.multi_teammate_power,
+        multi_live_score_up_lower_bound: params.multi_live_score_up_lower_bound,
+        extra_bonus_ub: diff_attr_bonus.into_iter().max().unwrap_or(0) as u32
+            + support_bonus_top_sum.ceil() as u32
+            + support_bonus_top_sum_by_character,
+        w_power: 1.0,
+        w_bonus: 1.0,
+        skill_ub_global,
+        card_bonus_count_limit: event_ctx.map(|ctx| ctx.card_bonus_count_limit).unwrap_or(5),
+        honor_bonus: 0,
+        power_total_cap: event_ctx.and_then(|ctx| {
+            if matches!(ctx.event_type, crate::types::EventType::WorldBloom)
+                && ctx.world_bloom_event_turn == Some(3)
+            {
+                Some(336_000)
+            } else {
+                None
+            }
+        }),
+        leader_honor_bonus: full.iter().map(|card| card.leader_honor_bonus).collect(),
+        leader_limit_bonus: full.iter().map(|card| card.leader_limit_bonus).collect(),
+        final_chapter_member_keep: vec![true; full.len()],
+        skill_is_after_training: full
+            .iter()
+            .map(|card| card.skill.is_after_training)
+            .collect(),
+        trained_to_special_image: full
+            .iter()
+            .map(|card| matches!(card.default_image, DefaultImage::SpecialTraining))
+            .collect(),
+    }
+}
+
+fn compute_honor_bonus(user: &types::UserProfile, game: &types::GameData<'_>) -> u32 {
+    user.user_honors
+        .iter()
+        .filter_map(|uh| {
+            let honor = game.honors.iter().find(|h| h.id == uh.honor_id)?;
+            let level = honor.levels.iter().find(|lv| lv.level == uh.level)?;
+            Some(level.bonus.max(0) as u32)
+        })
+        .sum()
+}
+
+fn resolve_fixture_bonus_limit(
+    game: &types::GameData<'_>,
+    event_ctx: Option<&EventContext>,
+) -> Option<i32> {
+    let event_id = event_ctx?.event_id;
+    game.event_mysekai_fixture_performance_bonus_limits
+        .iter()
+        .find(|entry| entry.event_id == event_id)
+        .map(|entry| entry.bonus_rate_limit)
+}
+
+/// 将 masterdata + userdata 构建为搜索使用的 `CardPool` 与 `SearchContext`。
+pub fn build_card_pool(
+    user: &types::UserProfile,
+    game: &types::GameData<'_>,
+    params: &types::BuildParams,
+) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
+    if params.multi_live_score_up_lower_bound.is_some()
+        && !matches!(params.live_type, crate::types::LiveType::Multi)
+    {
+        return Err(BuildError::InvalidConfig(
+            "multi_live_score_up_lower_bound 仅支持 multi live".to_string(),
+        ));
+    }
+    let event_ctx = build_event_context(game, params);
+    let fixture_bonus_limit = resolve_fixture_bonus_limit(game, event_ctx.as_ref());
+    let music = build_music_params(game, params);
+    let configs = merged_configs(params);
+    let normalized_cards = normalize_user_cards(user, params, game);
+    let indexes = index::PoolIndexes::build(game);
+    let mut cards = Vec::new();
+    let mut support_cards = Vec::new();
+
+    for original_user_card in normalized_cards {
+        let Some(master) = indexes.card(original_user_card.card_id) else {
+            continue;
+        };
+        let master = enrich_master(master, game);
+        let mut user_card = original_user_card.clone();
+        if !apply_card_config(&mut user_card, &master, &configs) {
+            continue;
+        }
+
+        let unit_mask_raw = resolve_unit_mask(&master, game);
+        if unit_mask_raw == 0 {
+            continue;
+        }
+        let Some(attr) = parse_attr_code(&master.attr).and_then(attr_to_pool_index) else {
+            continue;
+        };
+
+        let power = build_power(&user_card, &master, game, user, &indexes, fixture_bonus_limit);
+        let (event_bonus, has_char_bonus, has_attr_bonus) = event_ctx
+            .as_ref()
+            .map(|ctx| build_card_event_bonus(&user_card, &master, game, ctx))
+            .unwrap_or((Default::default(), false, false));
+        let leader_honor_bonus = event_ctx
+            .as_ref()
+            .map(|ctx| build_leader_honor_bonus(user, &master, ctx))
+            .unwrap_or(0);
+        let leader_limit_bonus = event_ctx
+            .as_ref()
+            .map(|ctx| build_leader_limit_bonus(&master, ctx))
+            .unwrap_or(0);
+        let character_rank = user_character_rank(user, master.character_id);
+
+        for skill_state in skill_states_for_card(&user_card, &master, params) {
+            let skill = build_skill(
+                &user_card,
+                &master,
+                game,
+                &indexes,
+                character_rank,
+                event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
+                skill_state,
+            );
+            let default_image = match skill_state {
+                SkillState::BeforeTraining => DefaultImage::Original,
+                SkillState::AfterTraining => DefaultImage::SpecialTraining,
+            };
+
+            let ep_sort_key =
+                i64::from(power.power_max) + i64::from(event_bonus.total_ceil() as i32) * 1_000;
+            let intermediate = CardIntermediate {
+                game_card_id: master.id,
+                card_rarity_type: master.card_rarity_type,
+                character_id: master.character_id.clamp(0, u8::MAX as i32) as u8,
+                attr,
+                unit_mask_raw,
+                default_image,
+                master_rank: user_card.master_rank,
+                skill_level: user_card.skill_level,
+                power: power.clone(),
+                skill,
+                event_bonus,
+                has_char_bonus,
+                has_attr_bonus,
+                leader_honor_bonus,
+                leader_limit_bonus,
+                ep_sort_key,
+            };
+
+            support_cards.push(intermediate.clone());
+            if keep_card(&intermediate, params) {
+                cards.push(intermediate);
+            }
+        }
+    }
+
+    let is_world_bloom = event_ctx
+        .as_ref()
+        .is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom));
+    let is_final_chapter = event_ctx
+        .as_ref()
+        .is_some_and(|ctx| ctx.event_id == FINAL_CHAPTER_EVENT_ID);
+    if event_ctx.is_some()
+        && !matches!(
+            params.target,
+            crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
+        )
+        && cards.len() > EP_PREFILTER_MIN_POOL
+        && cards
+            .iter()
+            .any(|card| ep_prefilter_keep(card, is_world_bloom, is_final_chapter))
+    {
+        cards.retain(|card| {
+            ep_prefilter_keep_with_params(card, params, is_world_bloom, is_final_chapter)
+        });
+        if is_world_bloom || is_final_chapter {
+            let keep = if is_final_chapter {
+                FINAL_CHAPTER_PER_CHAR_KEEP
+            } else {
+                PER_CHAR_KEEP
+            };
+            per_character_trim(&mut cards, params, keep);
+            // WL 跳过 dominance 剪枝，且 per_character_trim 的「bonus≥60 全留」旁路在顶配下
+            // 几乎放行所有卡 → DFS 爆炸。仅 WL 加一道与剪枝无关的池硬上限兜底（final chapter
+            // 仍走 dominance 剪枝，不需要）。
+            if is_world_bloom {
+                world_bloom_pool_hard_cap(&mut cards, params);
+            }
+        } else {
+            per_character_trim(&mut cards, params, PER_CHAR_KEEP);
+        }
+    }
+
+    if !matches!(
+        params.target,
+        crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
+    ) && !is_final_chapter
+        && !is_world_bloom
+        && cards.len() > GENERAL_TRIM_THRESHOLD
+    {
+        general_per_character_trim(&mut cards, params);
+    }
+
+    if matches!(
+        params.target,
+        crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
+    ) && cards.len() > crate::pool::MASK_WORDS * 64
+    {
+        target_per_character_trim(&mut cards, params);
+    }
+
+    if cards.is_empty() {
+        return Err(BuildError::EmptyPool);
+    }
+    let (fixed_card_ids, fixed_character_ids) = validate_fixed_constraints(params, &cards)?;
+    if cards.len() > crate::pool::MASK_WORDS * 64 {
+        return Err(BuildError::TooManyCards(cards.len()));
+    }
+
+    let effective_live_type = if matches!(params.live_type, crate::types::LiveType::Multi)
+        && event_ctx
+            .as_ref()
+            .is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::CheerfulCarnival))
+    {
+        crate::types::LiveType::Cheerful
+    } else {
+        params.live_type
+    };
+    let (pool, full) = sort_and_gather(
+        cards,
+        params.target,
+        event_ctx.is_some(),
+        effective_live_type,
+    );
+    let mut search_ctx = build_search_context(
+        &full,
+        &support_cards,
+        game,
+        params,
+        event_ctx.as_ref(),
+        music.as_ref(),
+        fixed_card_ids,
+        fixed_character_ids,
+    );
+    search_ctx.honor_bonus = compute_honor_bonus(user, game);
+    Ok((pool, search_ctx))
+}
+
+/// 返回应用养成配置（preset / 单卡覆盖）后的用户卡列表，养成口径与 `build_card_pool` 完全同源。
+///
+/// 渲染层需要展示「评分实际使用的养成值」（满级/满技能/满破/已读剧情/画布），而非玩家原始
+/// 卡况；否则开养成开关（甚至默认 preset 就假设满级）时分数变了、卡面显示却没变。
+/// 复用建池的 `normalize_user_cards` + `enrich_master` + `apply_card_config`，保证渲染显示与
+/// 评分养成值零漂移。被 `config.disable` 过滤掉的卡不出现（与池一致；这类卡也进不了结果）。
+/// 只建一张轻量 card-by-id 索引，不做 power/skill 计算，开销远小于一次完整建池。
+pub fn cultivated_user_cards(
+    user: &types::UserProfile,
+    game: &types::GameData<'_>,
+    params: &types::BuildParams,
+) -> Vec<types::UserCard> {
+    let configs = merged_configs(params);
+    let normalized_cards = normalize_user_cards(user, params, game);
+    let mut card_by_id =
+        std::collections::HashMap::<i32, &types::MasterCard>::with_capacity(game.cards.len());
+    for card in game.cards {
+        card_by_id.entry(card.id).or_insert(card);
+    }
+
+    let mut cultivated = Vec::with_capacity(normalized_cards.len());
+    for original_user_card in normalized_cards {
+        let Some(master) = card_by_id.get(&original_user_card.card_id).copied() else {
+            continue;
+        };
+        let master = enrich_master(master, game);
+        let mut user_card = original_user_card.clone();
+        if !apply_card_config(&mut user_card, &master, &configs) {
+            continue;
+        }
+        cultivated.push(user_card);
+    }
+    cultivated
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pool::{EventBonusHot, SkillSlot};
+    use crate::types::{LiveType, ScoreTarget, SkillReferenceStrategy};
+
+    fn sample_game<'a>(
+        cards: &'a [MasterCard],
+        params: &'a [types::CardParameter],
+        rarities: &'a [types::CardRarity],
+        episodes: &'a [types::CardEpisode],
+        lessons: &'a [types::MasterLesson],
+        skills: &'a [types::Skill],
+        effects: &'a [types::SkillEffect],
+        area_items: &'a [types::AreaItemLevel],
+        units: &'a [types::GameCharacterUnit],
+    ) -> GameData<'a> {
+        GameData {
+            cards,
+            card_parameters: params,
+            card_rarities: rarities,
+            card_episodes: episodes,
+            master_lessons: lessons,
+            skills,
+            skill_effects: effects,
+            area_item_levels: area_items,
+            game_character_units: units,
+            character_ranks: &[],
+            card_mysekai_canvas_bonuses: &[],
+            events: &[],
+            event_cards: &[],
+            event_deck_bonuses: &[],
+            event_card_bonus_limits: &[],
+            event_honor_bonuses: &[],
+            world_bloom_different_attribute_bonuses: &[],
+            world_blooms: &[],
+            wb_support_deck_bonuses_wl1: &[],
+            wb_support_deck_bonuses_wl2: &[],
+            wb_support_deck_bonuses_wl3: &[],
+            world_bloom_support_deck_unit_event_limited_bonuses: &[],
+            event_mysekai_fixture_performance_bonus_limits: &[],
+            event_skill_score_up_limits: &[],
+            music_metas: &[],
+            music_difficulties: &[],
+            event_rarity_bonus_rates: &[],
+            honors: &[],
+            bonds_honors: &[],
+        }
+    }
+
+    fn sample_user_card(card_id: i32) -> UserCard {
+        UserCard {
+            card_id,
+            level: 1,
+            skill_level: 1,
+            master_rank: 0,
+            special_training_status: "none".to_string(),
+            default_image: "original".to_string(),
+            episodes_read: Vec::new(),
+            is_virtual: false,
+            has_canvas_bonus_override: None,
+        }
+    }
+
+    #[test]
+    fn handler_build_power_uses_f32_item_accumulation() {
+        let cards = [MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        }];
+        let params = [types::CardParameter {
+            card_id: 1,
+            level: 1,
+            param1: 101,
+            param2: 101,
+            param3: 101,
+        }];
+        let area_items = [
+            types::AreaItemLevel {
+                area_item_id: 1,
+                level: 1,
+                unit: None,
+                attr: None,
+                character_id: None,
+                power_rate: 1.0,
+                power_all_match_rate: 1.0,
+            },
+            types::AreaItemLevel {
+                area_item_id: 2,
+                level: 1,
+                unit: None,
+                attr: None,
+                character_id: None,
+                power_rate: 1.0,
+                power_all_match_rate: 1.0,
+            },
+        ];
+        let game_units = [types::GameCharacterUnit {
+            game_character_id: 1,
+            unit: "idol".to_string(),
+        }];
+        let game = sample_game(
+            &cards,
+            &params,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &area_items,
+            &game_units,
+        );
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1)],
+            user_area_items: vec![
+                types::UserAreaItem {
+                    area_item_id: 1,
+                    level: 1,
+                },
+                types::UserAreaItem {
+                    area_item_id: 2,
+                    level: 1,
+                },
+            ],
+            ..UserProfile::default()
+        };
+
+        let idx = index::PoolIndexes::build(&game);
+        let result = build_power(&sample_user_card(1), &cards[0], &game, &user, &idx, None);
+        assert_eq!(result.resolved[1][0].area_item_bonus, 6);
+        assert_eq!(result.resolved[1][0].total, 309);
+    }
+
+    #[test]
+    fn handler_build_card_pool_only_clamps_fixture_bonus_for_matching_event() {
+        let cards = [MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        }];
+        let params = [types::CardParameter {
+            card_id: 1,
+            level: 1,
+            param1: 100,
+            param2: 100,
+            param3: 100,
+        }];
+        let skills = [types::Skill {
+            id: 10,
+            level: 1,
+            is_after_training: false,
+        }];
+        let effects = [types::SkillEffect {
+            skill_id: 10,
+            skill_level: 1,
+            effect_type: "score_up".to_string(),
+            value: 100,
+            additional_value: None,
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        }];
+        let units = [types::GameCharacterUnit {
+            game_character_id: 1,
+            unit: "idol".to_string(),
+        }];
+        let events = [types::Event {
+            id: FINAL_CHAPTER_EVENT_ID,
+            event_type: "marathon".to_string(),
+        }];
+        let fixture_limits = [types::EventFixtureBonusLimit {
+            event_id: FINAL_CHAPTER_EVENT_ID,
+            bonus_rate_limit: 20,
+        }];
+        let game = GameData {
+            cards: &cards,
+            card_parameters: &params,
+            card_rarities: &[],
+            card_episodes: &[],
+            master_lessons: &[],
+            skills: &skills,
+            skill_effects: &effects,
+            area_item_levels: &[],
+            game_character_units: &units,
+            character_ranks: &[],
+            card_mysekai_canvas_bonuses: &[],
+            events: &events,
+            event_cards: &[],
+            event_deck_bonuses: &[],
+            event_card_bonus_limits: &[],
+            event_honor_bonuses: &[],
+            world_bloom_different_attribute_bonuses: &[],
+            world_blooms: &[],
+            wb_support_deck_bonuses_wl1: &[],
+            wb_support_deck_bonuses_wl2: &[],
+            wb_support_deck_bonuses_wl3: &[],
+            world_bloom_support_deck_unit_event_limited_bonuses: &[],
+            event_mysekai_fixture_performance_bonus_limits: &fixture_limits,
+            event_skill_score_up_limits: &[],
+            music_metas: &[],
+            music_difficulties: &[],
+            event_rarity_bonus_rates: &[],
+            honors: &[],
+            bonds_honors: &[],
+        };
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1)],
+            user_mysekai_fixture_bonuses: vec![types::UserFixtureBonus {
+                character_id: 1,
+                event_id: None,
+                total_bonus_rate: 30,
+            }],
+            ..UserProfile::default()
+        };
+
+        let (pool, _) = build_card_pool(&user, &game, &BuildParams::default()).unwrap();
+        let idx = pool.card_idx(0).unwrap();
+        assert_eq!(pool.power_max(idx), 309);
+
+        let params = BuildParams {
+            event_id: Some(FINAL_CHAPTER_EVENT_ID),
+            fixed_characters: vec![1],
+            ..BuildParams::default()
+        };
+        let (pool, _) = build_card_pool(&user, &game, &params).unwrap();
+        let idx = pool.card_idx(0).unwrap();
+        assert_eq!(pool.power_max(idx), 306);
+    }
+
+    #[test]
+    fn handler_final_chapter_allows_auto_leader_without_fixed_character() {
+        let cards = [MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        }];
+        let params = [types::CardParameter {
+            card_id: 1,
+            level: 1,
+            param1: 100,
+            param2: 100,
+            param3: 100,
+        }];
+        let skills = [types::Skill {
+            id: 10,
+            level: 1,
+            is_after_training: false,
+        }];
+        let effects = [types::SkillEffect {
+            skill_id: 10,
+            skill_level: 1,
+            effect_type: "score_up".to_string(),
+            value: 100,
+            additional_value: None,
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        }];
+        let units = [types::GameCharacterUnit {
+            game_character_id: 1,
+            unit: "idol".to_string(),
+        }];
+        let events = [types::Event {
+            id: FINAL_CHAPTER_EVENT_ID,
+            event_type: "marathon".to_string(),
+        }];
+        let game = sample_game(
+            &cards,
+            &params,
+            &[],
+            &[],
+            &[],
+            &skills,
+            &effects,
+            &[],
+            &units,
+        );
+        let game = GameData {
+            events: &events,
+            ..game
+        };
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1)],
+            ..UserProfile::default()
+        };
+        let params = BuildParams {
+            event_id: Some(FINAL_CHAPTER_EVENT_ID),
+            ..BuildParams::default()
+        };
+
+        let (_, ctx) = build_card_pool(&user, &game, &params)
+            .expect("终章无固定队长应允许进入自动 leader 搜索路径");
+        assert!(ctx.is_final_chapter);
+        assert!(!ctx.has_fixed_leader());
+    }
+
+    #[test]
+    fn handler_build_skill_covers_normal_unit_count_diff_and_ref() {
+        let cards = [MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        }];
+        let game_units = [types::GameCharacterUnit {
+            game_character_id: 1,
+            unit: "idol".to_string(),
+        }];
+        let skills = [types::Skill {
+            id: 10,
+            level: 1,
+            is_after_training: false,
+        }];
+        let empty_game = sample_game(&cards, &[], &[], &[], &[], &skills, &[], &[], &game_units);
+
+        let normal_effects = [types::SkillEffect {
+            skill_id: 10,
+            skill_level: 1,
+            effect_type: "score_up".to_string(),
+            value: 120,
+            additional_value: None,
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        }];
+        let game = GameData {
+            skill_effects: &normal_effects,
+            ..empty_game
+        };
+        let idx = index::PoolIndexes::build(&game);
+        let normal = build_skill(
+            &sample_user_card(1),
+            &cards[0],
+            &game,
+            &idx,
+            0,
+            Some(140),
+            SkillState::BeforeTraining,
+        );
+        assert_eq!(
+            normal.slot,
+            SkillSlot {
+                skill_type: 0,
+                value: 120
+            }
+        );
+
+        let unit_count_effects = [
+            types::SkillEffect {
+                skill_id: 10,
+                skill_level: 1,
+                effect_type: "score_up_unit_count".to_string(),
+                value: 10,
+                additional_value: None,
+                unit_member_count: Some(1),
+                unit: Some("idol".to_string()),
+                activate_character_rank: None,
+            },
+            types::SkillEffect {
+                skill_id: 10,
+                skill_level: 1,
+                effect_type: "score_up_unit_count".to_string(),
+                value: 50,
+                additional_value: None,
+                unit_member_count: Some(5),
+                unit: Some("idol".to_string()),
+                activate_character_rank: None,
+            },
+        ];
+        let game = GameData {
+            skill_effects: &unit_count_effects,
+            ..empty_game
+        };
+        let idx = index::PoolIndexes::build(&game);
+        let unit_count = build_skill(
+            &sample_user_card(1),
+            &cards[0],
+            &game,
+            &idx,
+            0,
+            None,
+            SkillState::BeforeTraining,
+        );
+        assert_eq!(unit_count.slot.skill_type, 1);
+        assert_eq!(
+            unit_count
+                .unit_count
+                .as_ref()
+                .map(|entry| entry.score_up[0]),
+            Some(10)
+        );
+        assert_eq!(
+            unit_count
+                .unit_count
+                .as_ref()
+                .map(|entry| entry.score_up[4]),
+            Some(50)
+        );
+
+        let diff_effects = [types::SkillEffect {
+            skill_id: 10,
+            skill_level: 1,
+            effect_type: "score_up_diff".to_string(),
+            value: 20,
+            additional_value: Some(5),
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        }];
+        let game = GameData {
+            skill_effects: &diff_effects,
+            ..empty_game
+        };
+        let idx = index::PoolIndexes::build(&game);
+        let diff = build_skill(
+            &sample_user_card(1),
+            &cards[0],
+            &game,
+            &idx,
+            0,
+            None,
+            SkillState::BeforeTraining,
+        );
+        assert_eq!(
+            diff.diff,
+            Some(crate::pool::DiffSkill {
+                base: 20,
+                increment: 5
+            })
+        );
+
+        let ref_effects = [
+            types::SkillEffect {
+                skill_id: 10,
+                skill_level: 1,
+                effect_type: "score_up".to_string(),
+                value: 100,
+                additional_value: None,
+                unit_member_count: None,
+                unit: None,
+                activate_character_rank: None,
+            },
+            types::SkillEffect {
+                skill_id: 10,
+                skill_level: 1,
+                effect_type: "score_up_reference".to_string(),
+                value: 20,
+                additional_value: Some(60),
+                unit_member_count: None,
+                unit: None,
+                activate_character_rank: None,
+            },
+        ];
+        let game = GameData {
+            skill_effects: &ref_effects,
+            ..empty_game
+        };
+        let idx = index::PoolIndexes::build(&game);
+        let ref_skill = build_skill(
+            &sample_user_card(1),
+            &cards[0],
+            &game,
+            &idx,
+            0,
+            Some(140),
+            SkillState::BeforeTraining,
+        );
+        assert_eq!(
+            ref_skill.ref_skill,
+            Some(crate::pool::RefSkill { rate: 20, max: 40 })
+        );
+        assert_eq!(ref_skill.skill_max, 140);
+    }
+
+    #[test]
+    fn handler_build_card_pool_splits_bfes_dual_skill_cards() {
+        let cards = [MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            skill_id: 10,
+            special_training_skill_id: Some(11),
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        }];
+        let skills = [
+            types::Skill {
+                id: 10,
+                level: 1,
+                is_after_training: false,
+            },
+            types::Skill {
+                id: 11,
+                level: 1,
+                is_after_training: true,
+            },
+        ];
+        let effects = [
+            types::SkillEffect {
+                skill_id: 10,
+                skill_level: 1,
+                effect_type: "score_up".to_string(),
+                value: 80,
+                additional_value: None,
+                unit_member_count: None,
+                unit: None,
+                activate_character_rank: None,
+            },
+            types::SkillEffect {
+                skill_id: 11,
+                skill_level: 1,
+                effect_type: "score_up".to_string(),
+                value: 120,
+                additional_value: None,
+                unit_member_count: None,
+                unit: None,
+                activate_character_rank: None,
+            },
+        ];
+        let units = [types::GameCharacterUnit {
+            game_character_id: 1,
+            unit: "idol".to_string(),
+        }];
+        let game = sample_game(&cards, &[], &[], &[], &[], &skills, &effects, &[], &units);
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1)],
+            ..UserProfile::default()
+        };
+        let params = BuildParams {
+            target: ScoreTarget::Skill,
+            ..BuildParams::default()
+        };
+
+        let (pool, _) =
+            build_card_pool(&user, &game, &params).expect("dual-skill pool should build");
+        assert_eq!(pool.count(), 2);
+        assert_eq!(
+            pool.skill_max(pool.card_idx(0).expect("after skill entry")),
+            120
+        );
+        assert_eq!(
+            pool.skill_max(pool.card_idx(1).expect("before skill entry")),
+            80
+        );
+    }
+
+    #[test]
+    fn handler_apply_card_config_supports_override_and_disable() {
+        let master = MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        };
+        let mut user_card = sample_user_card(1);
+        let mut configs = CardConfigSet::default();
+        configs.rarity_4_config.level_max = true;
+        configs.single_card_configs.push(types::SingleCardConfig {
+            card_id: 1,
+            config: types::CardRarityConfig {
+                disable: true,
+                ..types::CardRarityConfig::default()
+            },
+        });
+        assert!(!apply_card_config(&mut user_card, &master, &configs));
+
+        let mut user_card = sample_user_card(1);
+        let mut configs = CardConfigSet::default();
+        configs.rarity_4_config.level_max = true;
+        configs.rarity_4_config.skill_max = true;
+        configs.rarity_4_config.master_max = true;
+        assert!(apply_card_config(&mut user_card, &master, &configs));
+        assert_eq!(user_card.level, 60);
+        assert_eq!(user_card.skill_level, 4);
+        assert_eq!(user_card.master_rank, 5);
+    }
+
+    #[test]
+    fn handler_cultivated_user_cards_matches_pool_cultivation() {
+        // 渲染层养成卡况必须与建池同源：满级开关后 level 抬到 max，disable 的卡被剔除。
+        let cards = [
+            MasterCard {
+                id: 1,
+                character_id: 1,
+                attr: "cool".to_string(),
+                card_rarity_type: 4,
+                skill_id: 10,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(60),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+            MasterCard {
+                id: 2,
+                character_id: 2,
+                attr: "cute".to_string(),
+                card_rarity_type: 1,
+                skill_id: 11,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(20),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+        ];
+        let game = sample_game(&cards, &[], &[], &[], &[], &[], &[], &[], &[]);
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1), sample_user_card(2)],
+            ..UserProfile::default()
+        };
+
+        // rarity_4 满级，rarity_1 禁用 → 卡1 level=60、卡2 被剔除。
+        let mut params = BuildParams::default();
+        params.card_configs.rarity_4_config.level_max = true;
+        params.card_configs.rarity_1_config.disable = true;
+
+        let cultivated = cultivated_user_cards(&user, &game, &params);
+        assert_eq!(cultivated.len(), 1, "disabled 稀有度应被剔除");
+        assert_eq!(cultivated[0].card_id, 1);
+        assert_eq!(cultivated[0].level, 60, "满级开关应把 level 抬到 max_level");
+    }
+
+    #[test]
+    fn handler_cultivated_user_cards_canvas_sets_override() {
+        // 画布开关应在养成卡况里置 has_canvas_bonus_override，渲染据此显示画布。
+        let cards = [MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        }];
+        let game = sample_game(&cards, &[], &[], &[], &[], &[], &[], &[], &[]);
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1)],
+            ..UserProfile::default()
+        };
+        let mut params = BuildParams::default();
+        params.card_configs.rarity_4_config.canvas = true;
+
+        let cultivated = cultivated_user_cards(&user, &game, &params);
+        assert_eq!(cultivated.len(), 1);
+        assert_eq!(cultivated[0].has_canvas_bonus_override, Some(true));
+    }
+
+    #[test]
+    fn handler_virtual_fixed_card_training_state_follows_master() {
+        // 虚拟固定卡（用户未持有）的训练态应按 master.special_training_skill_id 判定：
+        // 可特训卡 → done/special_training（否则渲染成花前、且漏掉特训固定 power 加成）；
+        // 不可特训卡 → none/original。
+        let cards = [
+            MasterCard {
+                id: 1,
+                character_id: 1,
+                attr: "cool".to_string(),
+                card_rarity_type: 4,
+                skill_id: 10,
+                special_training_skill_id: Some(11),
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(60),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+            MasterCard {
+                id: 2,
+                character_id: 2,
+                attr: "cute".to_string(),
+                card_rarity_type: 1,
+                skill_id: 20,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(20),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+        ];
+        let game = sample_game(&cards, &[], &[], &[], &[], &[], &[], &[], &[]);
+        // 用户一张都没有；两张都作为固定卡注入虚拟卡。
+        let user = UserProfile::default();
+        let params = BuildParams {
+            fixed_cards: vec![1, 2],
+            ..BuildParams::default()
+        };
+
+        let normalized = normalize_user_cards(&user, &params, &game);
+        let trainable = normalized
+            .iter()
+            .find(|card| card.card_id == 1)
+            .expect("可特训固定卡应存在");
+        assert_eq!(trainable.special_training_status, "done");
+        assert_eq!(trainable.default_image, "special_training");
+        let untrainable = normalized
+            .iter()
+            .find(|card| card.card_id == 2)
+            .expect("不可特训固定卡应存在");
+        assert_eq!(untrainable.special_training_status, "none");
+        assert_eq!(untrainable.default_image, "original");
+    }
+
+    #[test]
+    fn handler_sort_and_gather_reindexes_dense_order() {
+        let card = |game_card_id: i32, power_max: i32| CardIntermediate {
+            game_card_id,
+            card_rarity_type: 4,
+            character_id: game_card_id as u8,
+            attr: 0,
+            unit_mask_raw: 1,
+            default_image: crate::types::DefaultImage::Original,
+            master_rank: 0,
+            skill_level: 1,
+            has_char_bonus: false,
+            has_attr_bonus: false,
+            power: power::PowerResult {
+                resolved: [[crate::types::PowerDetail::default(); 4]; 6],
+                power_min: power_max - 10,
+                power_max,
+            },
+            skill: skill::SkillResult {
+                slot: SkillSlot::default(),
+                unit_count: None,
+                diff: None,
+                ref_skill: None,
+                skill_min: 1,
+                skill_max: 2,
+                full: crate::types::SkillInfo::default(),
+            },
+            event_bonus: EventBonusHot::from_whole(1, 1),
+            leader_honor_bonus: 0,
+            leader_limit_bonus: 0,
+            ep_sort_key: power_max as i64,
+        };
+        let (pool, _) = sort_and_gather(
+            vec![card(1, 100), card(3, 300), card(2, 200)],
+            ScoreTarget::Power,
+            false,
+            LiveType::Solo,
+        );
+        assert_eq!(pool.count(), 3);
+        assert_eq!(pool.game_id(pool.card_idx(0).unwrap()), 3);
+        assert_eq!(pool.game_id(pool.card_idx(1).unwrap()), 2);
+        assert_eq!(pool.game_id(pool.card_idx(2).unwrap()), 1);
+    }
+
+    #[test]
+    fn handler_build_card_pool_end_to_end_minimal() {
+        let cards = [
+            MasterCard {
+                id: 1,
+                character_id: 1,
+                attr: "cool".to_string(),
+                card_rarity_type: 4,
+                skill_id: 10,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(60),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+            MasterCard {
+                id: 2,
+                character_id: 2,
+                attr: "cute".to_string(),
+                card_rarity_type: 4,
+                skill_id: 11,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(60),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+            MasterCard {
+                id: 3,
+                character_id: 3,
+                attr: "happy".to_string(),
+                card_rarity_type: 4,
+                skill_id: 12,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(60),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+        ];
+        let params_table = [
+            types::CardParameter {
+                card_id: 1,
+                level: 1,
+                param1: 100,
+                param2: 100,
+                param3: 100,
+            },
+            types::CardParameter {
+                card_id: 2,
+                level: 1,
+                param1: 110,
+                param2: 110,
+                param3: 110,
+            },
+            types::CardParameter {
+                card_id: 3,
+                level: 1,
+                param1: 120,
+                param2: 120,
+                param3: 120,
+            },
+        ];
+        let rarities = [types::CardRarity {
+            card_rarity_type: 4,
+            max_level: 60,
+            max_skill_level: 4,
+        }];
+        let skills = [
+            types::Skill {
+                id: 10,
+                level: 1,
+                is_after_training: false,
+            },
+            types::Skill {
+                id: 11,
+                level: 1,
+                is_after_training: false,
+            },
+            types::Skill {
+                id: 12,
+                level: 1,
+                is_after_training: false,
+            },
+        ];
+        let effects = [
+            types::SkillEffect {
+                skill_id: 10,
+                skill_level: 1,
+                effect_type: "score_up".to_string(),
+                value: 100,
+                additional_value: None,
+                unit_member_count: None,
+                unit: None,
+                activate_character_rank: None,
+            },
+            types::SkillEffect {
+                skill_id: 11,
+                skill_level: 1,
+                effect_type: "score_up".to_string(),
+                value: 110,
+                additional_value: None,
+                unit_member_count: None,
+                unit: None,
+                activate_character_rank: None,
+            },
+            types::SkillEffect {
+                skill_id: 12,
+                skill_level: 1,
+                effect_type: "score_up".to_string(),
+                value: 120,
+                additional_value: None,
+                unit_member_count: None,
+                unit: None,
+                activate_character_rank: None,
+            },
+        ];
+        let units = [
+            types::GameCharacterUnit {
+                game_character_id: 1,
+                unit: "idol".to_string(),
+            },
+            types::GameCharacterUnit {
+                game_character_id: 2,
+                unit: "street".to_string(),
+            },
+            types::GameCharacterUnit {
+                game_character_id: 3,
+                unit: "themepark".to_string(),
+            },
+        ];
+        let music = [types::MusicMeta {
+            music_id: 99,
+            event_rate_solo: 100,
+            event_rate_multi: 110,
+            event_rate_auto: 90,
+            base_score: 1.0,
+            base_score_auto: 1.0,
+            fever_score: 0.0,
+            solo_skill_scores: [0.0; 6],
+            multi_skill_scores: [0.0; 6],
+            auto_skill_scores: [0.0; 6],
+            music_time: 100.0,
+            tap_count: 500,
+        }];
+        let game = GameData {
+            cards: &cards,
+            card_parameters: &params_table,
+            card_rarities: &rarities,
+            card_episodes: &[],
+            master_lessons: &[],
+            skills: &skills,
+            skill_effects: &effects,
+            area_item_levels: &[],
+            game_character_units: &units,
+            character_ranks: &[],
+            card_mysekai_canvas_bonuses: &[],
+            events: &[],
+            event_cards: &[],
+            event_deck_bonuses: &[],
+            event_card_bonus_limits: &[],
+            event_honor_bonuses: &[],
+            world_bloom_different_attribute_bonuses: &[],
+            world_blooms: &[],
+            wb_support_deck_bonuses_wl1: &[],
+            wb_support_deck_bonuses_wl2: &[],
+            wb_support_deck_bonuses_wl3: &[],
+            world_bloom_support_deck_unit_event_limited_bonuses: &[],
+            event_mysekai_fixture_performance_bonus_limits: &[],
+            event_skill_score_up_limits: &[],
+            music_metas: &music,
+            music_difficulties: &[],
+            event_rarity_bonus_rates: &[],
+            honors: &[],
+            bonds_honors: &[],
+        };
+        let user = UserProfile {
+            user_cards: vec![
+                sample_user_card(1),
+                sample_user_card(2),
+                sample_user_card(3),
+            ],
+            ..UserProfile::default()
+        };
+        let params = BuildParams {
+            music_id: Some(99),
+            live_type: LiveType::Solo,
+            target: ScoreTarget::Score,
+            skill_reference_strategy: SkillReferenceStrategy::Average,
+            ..BuildParams::default()
+        };
+
+        let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+        assert_eq!(pool.count(), 3);
+        assert_eq!(ctx.music_rate_pct, 100);
+        assert_eq!(ctx.target, ScoreTarget::Score);
+        assert_eq!(ctx.leader_honor_bonus.len(), 3);
+    }
+
+    fn make_card(
+        game_card_id: i32,
+        character_id: u8,
+        power_max: i32,
+        skill_max: u8,
+    ) -> CardIntermediate {
+        CardIntermediate {
+            game_card_id,
+            card_rarity_type: 4,
+            character_id,
+            attr: (character_id % 5) as u8,
+            unit_mask_raw: 1u8 << (character_id % 6),
+            default_image: crate::types::DefaultImage::Original,
+            master_rank: 0,
+            skill_level: 1,
+            power: power::PowerResult {
+                resolved: [[crate::types::PowerDetail::default(); 4]; 6],
+                power_min: power_max - 10,
+                power_max,
+            },
+            skill: skill::SkillResult {
+                slot: SkillSlot::default(),
+                unit_count: None,
+                diff: None,
+                ref_skill: None,
+                skill_min: 1,
+                skill_max,
+                full: crate::types::SkillInfo::default(),
+            },
+            event_bonus: EventBonusHot::from_whole(0, 0),
+            has_char_bonus: false,
+            has_attr_bonus: false,
+            leader_honor_bonus: 0,
+            leader_limit_bonus: 0,
+            ep_sort_key: power_max as i64,
+        }
+    }
+
+    #[test]
+    fn handler_target_trim_power_keeps_top_per_character() {
+        // 530 卡：26 角色各 ~20 张，power_max 从高到低排列
+        let mut cards = Vec::new();
+        for ch in 0..26u8 {
+            for i in 0..21i32 {
+                cards.push(make_card(
+                    (ch as i32) * 100 + i,
+                    ch,
+                    30000 - i * 100, // 第一张最高
+                    20,
+                ));
+            }
+        }
+        // 530 卡 < 512 容量
+        assert!(cards.len() > 512);
+
+        let params = BuildParams {
+            target: ScoreTarget::Power,
+            ..BuildParams::default()
+        };
+        target_per_character_trim(&mut cards, &params);
+
+        // 每角色最多 10 张
+        let mut chars_seen = [0u8; 27];
+        for card in &cards {
+            let ch = card.character_id as usize;
+            chars_seen[ch] += 1;
+        }
+        for (ch, &count) in chars_seen.iter().enumerate() {
+            assert!(
+                count <= GENERAL_PER_CHAR_KEEP as u8,
+                "角色 {ch} 有 {count} 张卡，超过上限"
+            );
+        }
+        // 总计 ≤ 260，远小于 512
+        assert!(cards.len() <= 260, "裁剪后仍有 {} 张", cards.len());
+
+        // 每角色的最高 power 卡应被保留
+        for ch in 0..26u8 {
+            let best_id = (ch as i32) * 100; // 该角色第一张（最高 power）
+            assert!(
+                cards.iter().any(|c| c.game_card_id == best_id),
+                "角色 {ch} 最高 power 卡 {best_id} 未被保留"
+            );
+        }
+    }
+
+    #[test]
+    fn handler_target_trim_skill_keeps_top_per_character() {
+        let mut cards = Vec::new();
+        for ch in 0..26u8 {
+            for i in 0..21i32 {
+                cards.push(make_card(
+                    (ch as i32) * 100 + i,
+                    ch,
+                    30000,
+                    100 - i as u8, // 第一张最高 skill
+                ));
+            }
+        }
+        assert!(cards.len() > 512);
+
+        let params = BuildParams {
+            target: ScoreTarget::Skill,
+            ..BuildParams::default()
+        };
+        target_per_character_trim(&mut cards, &params);
+
+        let mut chars_seen = [0u8; 27];
+        for card in &cards {
+            let ch = card.character_id as usize;
+            chars_seen[ch] += 1;
+        }
+        for (ch, &count) in chars_seen.iter().enumerate() {
+            assert!(
+                count <= GENERAL_PER_CHAR_KEEP as u8,
+                "角色 {ch} 有 {count} 张卡，超过上限"
+            );
+        }
+        assert!(cards.len() <= 260, "裁剪后仍有 {} 张", cards.len());
+
+        for ch in 0..26u8 {
+            let best_id = (ch as i32) * 100;
+            assert!(
+                cards.iter().any(|c| c.game_card_id == best_id),
+                "角色 {ch} 最高 skill 卡 {best_id} 未被保留"
+            );
+        }
+    }
+
+    #[test]
+    fn handler_target_trim_preserves_fixed_cards_and_characters() {
+        let mut cards = Vec::new();
+        for ch in 0..26u8 {
+            for i in 0..21i32 {
+                cards.push(make_card((ch as i32) * 100 + i, ch, 30000 - i * 100, 20));
+            }
+        }
+
+        // fixed_card: 角色 5 的第 20 张卡（power 较低）
+        let fixed_card_id: i32 = 5 * 100 + 20;
+        let params = BuildParams {
+            target: ScoreTarget::Power,
+            fixed_cards: vec![fixed_card_id],
+            ..BuildParams::default()
+        };
+        target_per_character_trim(&mut cards, &params);
+
+        assert!(
+            cards.iter().any(|c| c.game_card_id == fixed_card_id),
+            "fixed_card 未被保留"
+        );
+
+        // 再测 fixed_characters
+        let mut cards2 = Vec::new();
+        for ch in 0..26u8 {
+            for i in 0..21i32 {
+                cards2.push(make_card((ch as i32) * 100 + i, ch, 30000 - i * 100, 20));
+            }
+        }
+        let params2 = BuildParams {
+            target: ScoreTarget::Power,
+            fixed_characters: vec![3],
+            ..BuildParams::default()
+        };
+        target_per_character_trim(&mut cards2, &params2);
+
+        // 角色 3 的所有卡应被保留（21 张 > 10）
+        let role3_count = cards2.iter().filter(|c| c.character_id == 3).count();
+        assert_eq!(role3_count, 21, "fixed_character=3 的卡未全部保留");
+    }
+
+    #[test]
+    fn handler_build_power_large_pool_does_not_error() {
+        // 模拟大账号：26 角色各 25 张卡 = 650 张 > 512
+        let mut master_cards = Vec::new();
+        let mut card_params = Vec::new();
+        let mut skills = Vec::new();
+        let mut effects = Vec::new();
+        let mut units = Vec::new();
+        let mut user_cards = Vec::new();
+
+        for ch in 1i32..=26i32 {
+            for i in 0i32..25i32 {
+                let card_id = ch * 100 + i;
+                master_cards.push(MasterCard {
+                    id: card_id,
+                    character_id: ch,
+                    attr: "cool".to_string(),
+                    card_rarity_type: 4,
+                    skill_id: card_id as i32 * 10,
+                    special_training_skill_id: None,
+                    special_training_power1_bonus_fixed: 0,
+                    special_training_power2_bonus_fixed: 0,
+                    special_training_power3_bonus_fixed: 0,
+                    support_unit: None,
+                    max_level: Some(60),
+                    max_skill_level: Some(4),
+                    max_master_rank: Some(5),
+                });
+                card_params.push(types::CardParameter {
+                    card_id,
+                    level: 1,
+                    param1: 100 + i,
+                    param2: 100,
+                    param3: 100,
+                });
+                skills.push(types::Skill {
+                    id: card_id * 10,
+                    level: 1,
+                    is_after_training: false,
+                });
+                effects.push(types::SkillEffect {
+                    skill_id: card_id * 10,
+                    skill_level: 1,
+                    effect_type: "score_up".to_string(),
+                    value: 100,
+                    additional_value: None,
+                    unit_member_count: None,
+                    unit: None,
+                    activate_character_rank: None,
+                });
+                units.push(types::GameCharacterUnit {
+                    game_character_id: ch,
+                    unit: "idol".to_string(),
+                });
+                user_cards.push(sample_user_card(card_id));
+            }
+        }
+        let rarities = [types::CardRarity {
+            card_rarity_type: 4,
+            max_level: 60,
+            max_skill_level: 4,
+        }];
+        let game = GameData {
+            cards: &master_cards,
+            card_parameters: &card_params,
+            card_rarities: &rarities,
+            card_episodes: &[],
+            master_lessons: &[],
+            skills: &skills,
+            skill_effects: &effects,
+            area_item_levels: &[],
+            game_character_units: &units,
+            character_ranks: &[],
+            card_mysekai_canvas_bonuses: &[],
+            events: &[],
+            event_cards: &[],
+            event_deck_bonuses: &[],
+            event_card_bonus_limits: &[],
+            event_honor_bonuses: &[],
+            world_bloom_different_attribute_bonuses: &[],
+            world_blooms: &[],
+            wb_support_deck_bonuses_wl1: &[],
+            wb_support_deck_bonuses_wl2: &[],
+            wb_support_deck_bonuses_wl3: &[],
+            world_bloom_support_deck_unit_event_limited_bonuses: &[],
+            event_mysekai_fixture_performance_bonus_limits: &[],
+            event_skill_score_up_limits: &[],
+            music_metas: &[],
+            music_difficulties: &[],
+            event_rarity_bonus_rates: &[],
+            honors: &[],
+            bonds_honors: &[],
+        };
+        let user = UserProfile {
+            user_cards,
+            ..UserProfile::default()
+        };
+        let params = BuildParams {
+            target: ScoreTarget::Power,
+            ..BuildParams::default()
+        };
+
+        let result = build_card_pool(&user, &game, &params);
+        assert!(result.is_ok(), "大卡池 Power 构建应成功，实际: {result:?}");
+        let (pool, _) = result.unwrap();
+        assert!(pool.count() <= 512, "池子大小应 ≤ 512");
+    }
+}

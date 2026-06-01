@@ -1,0 +1,54 @@
+{
+  "card_ids": [
+    0,
+    1,
+    2,
+    3,
+    4
+  ],
+  "card_event_bonus_rates": [
+    10.0,
+    10.0,
+    10.0,
+    10.0,
+    10.0
+  ],
+  "card_skill_score_up": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "card_skill_life_recovery": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "card_power_total": [
+    1000,
+    1000,
+    1000,
+    1000,
+    1000
+  ],
+  "total_power": 5000,
+  "base_power": 5000,
+  "area_item_bonus_power": 0,
+  "character_bonus_power": 0,
+  "honor_bonus_power": 0,
+  "fixture_bonus_power": 0,
+  "gate_bonus_power": 0,
+  "event_bonus_rate": 54.0,
+  "support_deck_bonus_rate": 12.0,
+  "diff_attr_bonus_rate": 4.0,
+  "multi_live_score_up": 0.0,
+  "live_score": 20000,
+  "event_point": 167,
+  "mysekai_event_point": 0,
+  "mysekai_internal_point": 0,
+  "target_value": 167.002,
+  "chosen_mask": 0
+}

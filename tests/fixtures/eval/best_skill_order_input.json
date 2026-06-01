@@ -1,0 +1,7 @@
+{
+  "case": "best_skill_order",
+  "deck": [0, 1, 2, 3, 4],
+  "fixture_source": "tests/evaluator_cases.rs::best_skill_order",
+  "card_skill_score_up": [10, 20, 30, 40, 50],
+  "skill_scores_solo": [1, 2, 3, 4, 5, 0]
+}
