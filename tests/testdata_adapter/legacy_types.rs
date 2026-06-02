@@ -76,12 +76,12 @@ pub struct LegacyOutputCard {
     pub card_id: i32,
 }
 
-/// output 文件可能是旧结果数组、C++ decks 包装对象，也可能是 skipped 对象。
+/// output 文件可能是旧结果数组、decks 包装对象，也可能是 skipped 对象。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum LegacyOutputFile {
     Results(Vec<LegacyOutput>),
-    CppResults(CppOutputFile),
+    WrappedResults(ReferenceOutputFile),
     Skipped(LegacySkippedOutput),
 }
 
@@ -90,7 +90,7 @@ impl LegacyOutputFile {
     pub fn into_results(self) -> Vec<LegacyOutput> {
         match self {
             Self::Results(results) => results,
-            Self::CppResults(results) => results.decks,
+            Self::WrappedResults(results) => results.decks,
             Self::Skipped(skipped) => {
                 let _ = (&skipped.error, &skipped.status);
                 Vec::new()
@@ -104,9 +104,9 @@ impl LegacyOutputFile {
     }
 }
 
-/// C++ 原版 `result.to_dict()` 输出的文件包装。
+/// 参照输出 `{ "decks": [...] }` 形式的文件包装。
 #[derive(Debug, Clone, Deserialize)]
-pub struct CppOutputFile {
+pub struct ReferenceOutputFile {
     #[serde(default)]
     pub decks: Vec<LegacyOutput>,
 }

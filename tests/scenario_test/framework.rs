@@ -82,7 +82,7 @@ fn prepare_case(
     index: usize,
 ) -> Result<Option<PreparedCase>, String> {
     let input: LegacyInput = load_json(&testdata_dir().join(&case.input_path))?;
-    let expected = load_output_file(&cpp_output_path(case))?;
+    let expected = load_output_file(&reference_output_path(case))?;
     let (mut params, user, search_params) = transform_input(&input)?;
     let user = maybe_trim_user_for_mask(case, &user)?;
     let game = game_for_region(&params.region)?;
@@ -277,7 +277,7 @@ fn suite_keep_ids() -> Result<&'static BTreeMap<String, BTreeSet<i32>>, String> 
             let manifest = manifest()?;
             let mut result = BTreeMap::<String, BTreeSet<i32>>::new();
             for case in &manifest.cases {
-                let outputs = load_output_file(&cpp_output_path(case))?;
+                let outputs = load_output_file(&reference_output_path(case))?;
                 let entry = result.entry(case.suite_file.clone()).or_default();
                 for output in outputs.results {
                     for card in output.cards {
@@ -360,13 +360,13 @@ fn load_output_file(path: &Path) -> Result<LoadedReferenceOutput, String> {
     })
 }
 
-fn cpp_output_path(case: &LegacyManifestCase) -> PathBuf {
-    let cpp_name = case
+fn reference_output_path(case: &LegacyManifestCase) -> PathBuf {
+    let reference_name = case
         .output_path
         .strip_suffix("_output.json")
-        .map(|prefix| format!("{prefix}_cpp_output.json"))
+        .map(|prefix| format!("{prefix}_reference.json"))
         .unwrap_or_else(|| case.output_path.clone());
-    testdata_dir().join(cpp_name)
+    testdata_dir().join(reference_name)
 }
 
 fn testdata_dir() -> PathBuf {
