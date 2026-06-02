@@ -66,6 +66,7 @@ pub fn compute_member_keep(pool: &CardPool) -> Vec<bool> {
             is_world_bloom: false,
             is_final_chapter: false,
             enforce_char_uniqueness: true,
+            minimize: false,
             live_type: crate::types::LiveType::Solo,
             event_type: None,
             keep_after_training_state: false,

@@ -122,6 +122,7 @@ fn search_simple_target(
     };
 
     let mut cards: Vec<CardIdx> = pool.indices().collect();
+    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
     cards.sort_unstable_by(|a, b| {
         let (ka, kb) = match ctx.target {
             ScoreTarget::Power => (pool.power_max(*a) as u64, pool.power_max(*b) as u64),
@@ -132,7 +133,13 @@ fn search_simple_target(
                 (ka, kb)
             }
         };
-        kb.cmp(&ka).then_with(|| a.raw().cmp(&b.raw()))
+        // minimize 时按质量升序取最弱前缀；否则降序取最强。
+        let ordering = if minimize {
+            ka.cmp(&kb)
+        } else {
+            kb.cmp(&ka)
+        };
+        ordering.then_with(|| a.raw().cmp(&b.raw()))
     });
 
     let mut prefix = Vec::with_capacity(prefix_len + 8);
@@ -171,7 +178,7 @@ fn search_simple_target(
         return (Vec::new(), SearchStats::default());
     }
 
-    let mut tracker = SimpleTopKTracker::new(params.top_k, pool);
+    let mut tracker = SimpleTopKTracker::new(params.top_k, minimize, pool);
     let mut deck = [prefix[0]; DECK_SIZE];
     let mut stats = SearchStats::default();
     simple_target_recurse(
@@ -261,16 +268,29 @@ fn simple_target_recurse(
 
 struct SimpleTopKTracker {
     top_k: usize,
+    minimize: bool,
     game_ids: Vec<u16>,
     results: Vec<DeckResult>,
 }
 
 impl SimpleTopKTracker {
-    fn new(top_k: usize, pool: &CardPool) -> Self {
+    fn new(top_k: usize, minimize: bool, pool: &CardPool) -> Self {
         Self {
             top_k,
+            minimize,
             game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
             results: Vec::with_capacity(top_k),
+        }
+    }
+
+    /// candidate 是否比 incumbent 更优。minimize 时「更优」= 分数更小。
+    #[inline(always)]
+    fn is_better(&self, candidate: &DeckResult, incumbent: &DeckResult) -> bool {
+        let cmp = deck_result_cmp(candidate, incumbent);
+        if self.minimize {
+            cmp.is_gt()
+        } else {
+            cmp.is_lt()
         }
     }
 
@@ -280,7 +300,7 @@ impl SimpleTopKTracker {
             .iter()
             .position(|existing| self.same_game_card_set(existing, &candidate))
         {
-            if !deck_result_cmp(&candidate, &self.results[existing_pos]).is_lt() {
+            if !self.is_better(&candidate, &self.results[existing_pos]) {
                 return;
             }
             self.results.remove(existing_pos);
@@ -288,7 +308,7 @@ impl SimpleTopKTracker {
         let pos = self
             .results
             .iter()
-            .position(|existing| deck_result_cmp(&candidate, existing).is_lt())
+            .position(|existing| self.is_better(&candidate, existing))
             .unwrap_or(self.results.len());
         self.results.insert(pos, candidate);
         if self.results.len() > self.top_k {
@@ -440,6 +460,7 @@ mod tests {
             is_world_bloom: false,
             is_final_chapter: false,
             enforce_char_uniqueness: true,
+            minimize: false,
             live_type: LiveType::Solo,
             event_type: None,
             keep_after_training_state: false,
@@ -732,6 +753,100 @@ mod tests {
         );
 
         assert!(results.is_empty());
+    }
+
+    /// 暴力枚举 5 角色互异的最小 power deck（与 minimize 搜索对照）。
+    fn brute_force_worst_power(pool: &CardPool, search_ctx: &SearchContext) -> u64 {
+        let mut worst = u64::MAX;
+        let n = pool.count();
+        let idx = |i: usize| crate::pool::CardIdx::new(i as u16);
+        for a in 0..n {
+            for b in (a + 1)..n {
+                for c in (b + 1)..n {
+                    for d in (c + 1)..n {
+                        for e in (d + 1)..n {
+                            let deck = [idx(a), idx(b), idx(c), idx(d), idx(e)];
+                            // 5 角色互异约束（与 enforce_char_uniqueness 一致）。
+                            let mut chars = deck.map(|card| pool.char_id(card));
+                            chars.sort_unstable();
+                            if chars.windows(2).any(|w| w[0] == w[1]) {
+                                continue;
+                            }
+                            let score = leaf_evaluate(pool, search_ctx, &deck);
+                            if score < worst {
+                                worst = score;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn search_minimize_power_matches_bruteforce_worst() {
+        // 最弱组卡：minimize=true 应返回 power 最小的 5 角色互异 deck，
+        // 与暴力枚举一致。卡池跨 7 角色、power 各异，确保有真正的「最弱」组合。
+        let mut cards = Vec::new();
+        let powers = [120u32, 90, 250, 60, 400, 30, 180];
+        for (i, &p) in powers.iter().enumerate() {
+            cards.push(TestCard {
+                char_id: i as u8,
+                attr: (i % 4) as u8,
+                unit_mask: 1,
+                game_id: 200 + i as u16,
+                power: p,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 10,
+                },
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: p,
+                skill_max: 10,
+            });
+        }
+        let pool = build_pool(&cards);
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
+        search_ctx.minimize = true;
+
+        let results = search(
+            &pool,
+            &search_ctx,
+            &SearchParams {
+                top_k: 1,
+                timeout_ms: 0,
+            },
+        );
+        assert_eq!(results.len(), 1, "minimize 应返回 1 个结果");
+
+        let expected = brute_force_worst_power(&pool, &search_ctx);
+        assert_eq!(
+            results[0].score, expected,
+            "minimize 搜索结果应等于暴力最弱 power"
+        );
+
+        // 最弱解应为 5 张最小 power 卡：30+60+90+120+180 = 480。
+        assert_eq!(results[0].score, 480);
+
+        // 反向验证：同池 maximize 应严格更大（取最强 5 张）。
+        let mut max_ctx = ready_ctx(&pool, ScoreTarget::Power);
+        max_ctx.minimize = false;
+        let max_results = search(
+            &pool,
+            &max_ctx,
+            &SearchParams {
+                top_k: 1,
+                timeout_ms: 0,
+            },
+        );
+        assert!(
+            max_results[0].score > results[0].score,
+            "maximize({}) 应大于 minimize({})",
+            max_results[0].score,
+            results[0].score
+        );
     }
 
     #[test]

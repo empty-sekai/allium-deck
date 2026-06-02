@@ -245,6 +245,8 @@ fn general_per_character_trim(cards: &mut Vec<CardIntermediate>, params: &types:
 }
 
 fn target_per_character_trim(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
+    // minimize（最弱组卡，仅 Power）时保留每角色最弱的若干张，否则保留最强。
+    let minimize = params.minimize && matches!(params.target, crate::types::ScoreTarget::Power);
     cards.sort_by(|a, b| {
         let (a_key, b_key) = match params.target {
             crate::types::ScoreTarget::Power => (
@@ -260,9 +262,19 @@ fn target_per_character_trim(cards: &mut Vec<CardIntermediate>, params: &types::
                 (a_key, b_key)
             }
         };
-        b_key
-            .cmp(&a_key)
-            .then_with(|| b.card_rarity_type.cmp(&a.card_rarity_type))
+        // minimize 时按 power 升序（最弱优先保留），否则降序。次级键同向翻转。
+        let primary = if minimize {
+            a_key.cmp(&b_key)
+        } else {
+            b_key.cmp(&a_key)
+        };
+        let rarity = if minimize {
+            a.card_rarity_type.cmp(&b.card_rarity_type)
+        } else {
+            b.card_rarity_type.cmp(&a.card_rarity_type)
+        };
+        primary
+            .then(rarity)
             .then_with(|| a.game_card_id.cmp(&b.game_card_id))
     });
 
@@ -579,6 +591,7 @@ fn build_search_context(
             params.live_type,
             crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
         ),
+        minimize: params.minimize,
         live_type: params.live_type,
         event_type: event_ctx.map(|ctx| ctx.event_type),
         keep_after_training_state: params.keep_after_training_state,

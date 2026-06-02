@@ -253,6 +253,7 @@ pub fn parse_build_params_json(
             .unwrap_or("solo"),
     );
     params.target = parse_target(string_field(&value, "target").as_deref().unwrap_or("score"));
+    params.minimize = bool_field(&value, "minimize").unwrap_or(false);
     params.music_id = i32_field(&value, "musicId").or_else(|| i32_field(&value, "music_id"));
     params.music_diff =
         string_field(&value, "musicDiff").or_else(|| string_field(&value, "music_diff"));

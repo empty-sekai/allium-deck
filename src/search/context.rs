@@ -30,6 +30,8 @@ pub struct SearchContext {
     pub is_final_chapter: bool,
     /// challenge 模式下不要求角色唯一（pool 已过滤为同角色卡）
     pub enforce_char_uniqueness: bool,
+    /// 反向搜索：求最弱（最小化 power）而非最强。仅 Power 目标生效，其它目标忽略。
+    pub minimize: bool,
     pub live_type: LiveType,
     pub event_type: Option<EventType>,
     pub keep_after_training_state: bool,
