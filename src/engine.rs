@@ -713,6 +713,7 @@ impl OwnedGameData {
                 .iter()
                 .map(|row| MusicMeta {
                     music_id: row.music_id,
+                    difficulty: row.difficulty.clone(),
                     event_rate_solo: row.event_rate,
                     event_rate_multi: row.event_rate,
                     event_rate_auto: row.event_rate,

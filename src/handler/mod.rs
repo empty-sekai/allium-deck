@@ -1835,6 +1835,7 @@ mod tests {
         ];
         let music = [types::MusicMeta {
             music_id: 99,
+            difficulty: "master".to_string(),
             event_rate_solo: 100,
             event_rate_multi: 110,
             event_rate_auto: 90,
