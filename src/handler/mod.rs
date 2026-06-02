@@ -128,11 +128,6 @@ const PER_CHAR_KEEP: usize = 6;
 const FINAL_CHAPTER_PER_CHAR_KEEP: usize = 16;
 const GENERAL_TRIM_THRESHOLD: usize = 400;
 const GENERAL_PER_CHAR_KEEP: usize = 10;
-/// WL 池硬上限。WL 跳过 dominance 剪枝（见 search/dominance.rs），而 per_character_trim 的
-/// 「bonus≥60 全留」旁路在顶配下几乎让所有卡过线 → DFS 组合空间爆炸（170 顶配 5ms→12s）。
-/// 这是与剪枝无关的兜底安全网：仅当 WL 池超过该上限时按质量截断。设计意图本就是每角色 ~6 张
-/// （PER_CHAR_KEEP×27≈162），故取 160 量级，正常请求池远小于它、不受影响。
-const WL_POOL_HARD_CAP: usize = 160;
 
 fn ep_prefilter_keep(
     card: &CardIntermediate,
@@ -205,44 +200,6 @@ fn per_character_trim(
         let ch = (card.character_id as usize).min(26);
         if (counts[ch] as usize) < per_char_keep {
             counts[ch] += 1;
-            true
-        } else {
-            false
-        }
-    });
-}
-
-/// WL 池兜底硬截断：超过 `WL_POOL_HARD_CAP` 时按质量保留 top-N，固定卡/固定角色永不裁。
-///
-/// WL 跳过 dominance 剪枝，顶配下 `per_character_trim` 的「bonus≥60 全留」旁路会让池规模失控，
-/// DFS 组合空间随之爆炸。此函数是与正确性无关的性能安全网：只在池已经过大时生效，按
-/// `event_bonus → power×skill` 的同一质量序截断，确保最强候选一定保留，不影响小池正常请求。
-fn world_bloom_pool_hard_cap(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
-    if cards.len() <= WL_POOL_HARD_CAP {
-        return;
-    }
-    cards.sort_by(|a, b| {
-        let a_bonus = a.event_bonus.total_x2();
-        let b_bonus = b.event_bonus.total_x2();
-        let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
-        let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
-        b_bonus
-            .cmp(&a_bonus)
-            .then_with(|| b.card_rarity_type.cmp(&a.card_rarity_type))
-            .then_with(|| b_key.cmp(&a_key))
-            .then_with(|| a.game_card_id.cmp(&b.game_card_id))
-    });
-    let mut kept = 0usize;
-    cards.retain(|card| {
-        if params.fixed_cards.contains(&card.game_card_id)
-            || params
-                .fixed_characters
-                .contains(&(card.character_id as i32))
-        {
-            return true;
-        }
-        if kept < WL_POOL_HARD_CAP {
-            kept += 1;
             true
         } else {
             false
@@ -809,12 +766,6 @@ pub fn build_card_pool(
                 PER_CHAR_KEEP
             };
             per_character_trim(&mut cards, params, keep);
-            // WL 跳过 dominance 剪枝，且 per_character_trim 的「bonus≥60 全留」旁路在顶配下
-            // 几乎放行所有卡 → DFS 爆炸。仅 WL 加一道与剪枝无关的池硬上限兜底（final chapter
-            // 仍走 dominance 剪枝，不需要）。
-            if is_world_bloom {
-                world_bloom_pool_hard_cap(&mut cards, params);
-            }
         } else {
             per_character_trim(&mut cards, params, PER_CHAR_KEEP);
         }
