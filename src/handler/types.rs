@@ -159,6 +159,8 @@ pub struct BuildParams {
     pub unit_filter: Option<String>,
     /// 属性过滤。
     pub attr_filter: Option<String>,
+    /// 反向搜索：求最弱（最小化 power）而非最强。仅 Power 目标生效，其它目标忽略。
+    pub minimize: bool,
 }
 
 impl Default for BuildParams {
@@ -195,6 +197,7 @@ impl Default for BuildParams {
             life: None,
             unit_filter: None,
             attr_filter: None,
+            minimize: false,
         }
     }
 }
