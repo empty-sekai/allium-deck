@@ -574,6 +574,9 @@ pub struct EventSkillScoreUpLimit {
 pub struct MusicMeta {
     /// 歌曲 ID。
     pub music_id: i32,
+    /// 难度代码（easy/normal/hard/expert/master/append）。base_score/skill_scores 按难度不同。
+    #[serde(default)]
+    pub difficulty: String,
     /// Solo 活动倍率。
     pub event_rate_solo: i32,
     /// Multi 活动倍率。

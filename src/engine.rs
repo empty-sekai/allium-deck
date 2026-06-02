@@ -501,11 +501,10 @@ impl OwnedGameData {
         let skill_unit_map = infer_skill_units(&raw_cards, &raw_game_character_units);
         let event_ids = events.iter().map(|event| event.id).collect::<Vec<_>>();
 
+        // 保留所有难度行（easy/normal/hard/expert/master/append），base_score/skill_scores 分难度。
+        // 旧逻辑只留 master 行，导致 build_music_params 按非 master 难度选行时匹配不到、回落 master，
+        // 使所有难度算出相同分数（难度参数形同虚设）。
         let music_rows: Vec<RawMusicMetaRow> = load_json(music_metas_path)?;
-        let master_music_rows = music_rows
-            .into_iter()
-            .filter(|row| row.difficulty.eq_ignore_ascii_case("master"))
-            .collect::<Vec<_>>();
 
         Ok(Self {
             cards: raw_cards
@@ -709,10 +708,11 @@ impl OwnedGameData {
                 score_up_limit: entry.score_up_rate_limit,
             })
             .collect(),
-            music_metas: master_music_rows
+            music_metas: music_rows
                 .iter()
                 .map(|row| MusicMeta {
                     music_id: row.music_id,
+                    difficulty: row.difficulty.clone(),
                     event_rate_solo: row.event_rate,
                     event_rate_multi: row.event_rate,
                     event_rate_auto: row.event_rate,
@@ -726,7 +726,7 @@ impl OwnedGameData {
                     tap_count: row.tap_count,
                 })
                 .collect(),
-            music_difficulties: master_music_rows
+            music_difficulties: music_rows
                 .iter()
                 .map(|row| MusicDifficulty {
                     music_id: row.music_id,
