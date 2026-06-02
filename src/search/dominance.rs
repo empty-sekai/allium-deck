@@ -12,13 +12,12 @@ pub struct DominanceResult {
     pub after: usize,
 }
 
-/// 在安全场景下执行逐角色支配裁剪并返回压缩后的卡池。
+/// 执行逐角色支配裁剪并返回压缩后的卡池。
+///
+/// WL 同样走支配裁剪：被裁的卡仍在独立的 support_cards 里参与支援计算（支援与主搜索池解耦），
+/// 且 `dominates` 要求 attr 相同，异色变体全部保留，diff_attr_bonus 无损。
 pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceResult {
-    let keep = if ctx.is_world_bloom {
-        vec![true; pool.count()]
-    } else {
-        compute_keep_mask(pool, ctx)
-    };
+    let keep = compute_keep_mask(pool, ctx);
     let before = pool.count();
     let after = keep.iter().copied().filter(|keep| *keep).count();
 
