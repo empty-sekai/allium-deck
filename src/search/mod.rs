@@ -1,4 +1,5 @@
-﻿pub mod challenge_search;
+pub mod bruteforce;
+pub mod challenge_search;
 pub mod context;
 pub mod dfs;
 pub mod dominance;
@@ -8,6 +9,7 @@ pub mod suffix;
 pub mod types;
 pub mod warm_start;
 
+pub use bruteforce::{brute_force_search, BruteForceStats};
 pub use context::{SearchContext, SupportDeck};
 pub use dfs::{dfs_search, SearchStats};
 pub use dominance::eliminate_dominated;
