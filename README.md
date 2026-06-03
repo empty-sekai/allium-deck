@@ -94,12 +94,27 @@ cargo build --release
 
 - 单元测试：散落各模块 `#[cfg(test)]`（pool / search / handler）。
 - 端到端回归：`tests/e2e_regression.rs` 读 manifest 驱动，将搜索结果与参考输出逐项比对。数据路径可由环境变量覆盖（`ALLIUM_TESTDATA` / `ALLIUM_MASTERDATA_CN` / `ALLIUM_MASTERDATA_JP` / `ALLIUM_MUSIC_METAS`）。
-- 搜索结果正确性由以下测试用例用**暴力枚举**验证：
+- 测试数据分两层：
+  - `testdata/mock`：手工构造的小型数据集，84 个成功用例；用户持卡数 26-78 张（中位数 52）。覆盖 Score / Power / Skill / Bonus，live type 覆盖 multi / solo / auto / challenge / mysekai，其中 50 个用例带活动。
+  - `testdata/real`：由真实形态输入脱敏/固化得到的回归数据，1206 个成功用例；用户持卡数中位数 549，p95 687，最大 688。覆盖 Score / Power / Skill / Bonus，live type 覆盖 multi / solo / auto / challenge，其中 793 个用例带活动。
+- 数据集保留会影响评分的用户侧加成字段：
+  - `userCards` 决定候选卡、等级、技能等级、Master Rank、特训状态和卡面状态。
+  - `userAreas.areaItems` 决定区域道具综合力加成；mock 全部用例包含 24 个道具，real 中 1126 个用例包含道具，最多 55 个。
+  - `userCharacters` 决定角色等级加成；mock 和 real 成功用例均包含角色等级数据。
+  - `userHonors`、MySekai canvas / fixture / gate 字段覆盖 real 中多数用例，用于称号和 MySekai 相关加成。
+  - fixed card / fixed character / excluded card、unit / attr filter、challenge live character 等约束主要覆盖在 real 数据中，用于验证建池过滤和固定槽位逻辑。
+- 搜索结果正确性由以下单元测试用**暴力枚举**验证：
   - `search_dfs_matches_bruteforce_for_best_deck`
   - `search_dfs_bonus_noevent_matches_bruteforce_with_suffix_max_break`
   - `search_dfs_mysekai_matches_bruteforce_with_suffix_max_break`
   - `search_suffix_bound_is_sound_and_zero_pool_is_zero`
   - `search_dominance_preserves_best_score`
+- `tests/benchmark_proof.rs` 在真实数据规模上用无剪枝暴力枚举对照正式搜索，含两个暴力对照测试和一个数据集校验测试：
+  - `rust_bruteforce_matches_exact_on_full_testdata_pools`（暴力对照）：从 `testdata/mock` 与 `testdata/real` 抽样，按原输入构建完整卡池，对正式搜索与暴力枚举比较结果。只选择完整卡池组合数不超过 `ALLIUM_BF_CANDIDATE_LIMIT` 的 fixture——5 卡组合数按 `C(n, 5)` 增长，例如 160 张约 8.2 亿组，不适合常规测试，因此默认只覆盖较小的完整卡池。
+  - `rust_bruteforce_matches_exact_on_large_filtered_pools`（暴力对照）：针对高练度大卡池。先丢弃 1/2 星卡（`ALLIUM_BF_MIN_RARITY`），再按角色对 power / skill / event-bonus 各维度保留前 N 张（`ALLIUM_BF_PER_CHAR_KEEP`），把卡池压到可暴力枚举的规模，再做暴力对照。这是覆盖高练度高价值候选区的 stress 子集，不声称是完整大卡池的证明：被裁掉的低价值卡仍可能进入某些 Top-K 次优解。
+  - `testdata_corpus_layers_are_classified`（数据集校验）：核对 `testdata/mock` 与 `testdata/real` 的清单分层与目标分布，输出 `target/benchmark-proof/report.md` 与 JSON 明细。
+- 相关环境变量：`ALLIUM_BF_TOP_K`、`ALLIUM_BF_CASE_LIMIT` / `ALLIUM_BF_LARGE_CASE_LIMIT`、`ALLIUM_BF_CANDIDATE_LIMIT` / `ALLIUM_BF_LARGE_CANDIDATE_LIMIT`、`ALLIUM_BF_MIN_RARITY`、`ALLIUM_BF_PER_CHAR_KEEP`。缺少 masterdata 时这些对照测试会跳过。
+- 已知限制：Top-K（`top_k > 1`）下 dominance 剪枝可能丢失次优候选（Top-1 不受影响），详见 [issue #2](https://github.com/empty-sekai/allium-deck/issues/2)。上述暴力对照默认以 `ALLIUM_BF_TOP_K=1` 全量验证 Top-1。
 
 ## Soundness
 
@@ -115,7 +130,7 @@ cargo build --release
 - 属性相同（否则对 diff-attr 奖励的贡献不同，不能断言 B 无害）
 - Unit mask 是超集（rhs_mask ⊆ lhs_mask，避免丢失候选编队）
 
-替换安全：把 B 换成 A，在任何目标下分数不降。World Bloom 活动下支配剪枝**完全关闭**，因为 diff-attr 和支援卡组的交叉约束无法在单卡层面保证单调性。
+替换安全：把 B 换成 A，在任何目标下分数不降。World Bloom 活动同样走支配剪枝；支援卡组独立保存在 `SearchContext`，不会因为主搜索池压缩而丢支援候选，且支配关系要求属性相同，因此 diff-attr 奖励不会被异色替换破坏。
 
 **后缀上界（`suffix.rs`）——Sound ✅**
 
