@@ -114,7 +114,7 @@ cargo build --release
   - `rust_bruteforce_matches_exact_on_large_filtered_pools`（暴力对照）：针对高练度大卡池。先丢弃 1/2 星卡（`ALLIUM_BF_MIN_RARITY`），再按角色对 power / skill / event-bonus 各维度保留前 N 张（`ALLIUM_BF_PER_CHAR_KEEP`），把卡池压到可暴力枚举的规模，再做暴力对照。这是覆盖高练度高价值候选区的 stress 子集，不声称是完整大卡池的证明：被裁掉的低价值卡仍可能进入某些 Top-K 次优解。
   - `testdata_corpus_layers_are_classified`（数据集校验）：核对 `testdata/mock` 与 `testdata/real` 的清单分层与目标分布，输出 `target/benchmark-proof/report.md` 与 JSON 明细。
 - 相关环境变量：`ALLIUM_BF_TOP_K`、`ALLIUM_BF_CASE_LIMIT` / `ALLIUM_BF_LARGE_CASE_LIMIT`、`ALLIUM_BF_CANDIDATE_LIMIT` / `ALLIUM_BF_LARGE_CANDIDATE_LIMIT`、`ALLIUM_BF_MIN_RARITY`、`ALLIUM_BF_PER_CHAR_KEEP`。缺少 masterdata 时这些对照测试会跳过。
-- 已知限制：Top-K（`top_k > 1`）下 dominance 剪枝可能丢失次优候选（Top-1 不受影响），详见 [issue](#)。上述暴力对照默认以 `ALLIUM_BF_TOP_K=1` 全量验证 Top-1。
+- 已知限制：Top-K（`top_k > 1`）下 dominance 剪枝可能丢失次优候选（Top-1 不受影响），详见 [issue #2](https://github.com/empty-sekai/allium-deck/issues/2)。上述暴力对照默认以 `ALLIUM_BF_TOP_K=1` 全量验证 Top-1。
 
 ## Soundness
 
