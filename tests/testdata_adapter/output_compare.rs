@@ -270,7 +270,9 @@ fn format_expected_cards(expected: &[LegacyOutputCard], pool: &CardPool) -> Stri
                     let bonus = pool.event_bonus(idx);
                     format!(
                         "{}({}+{})",
-                        card.card_id, bonus.base_ceil(), bonus.limited_ceil()
+                        card.card_id,
+                        bonus.base_ceil(),
+                        bonus.limited_ceil()
                     )
                 }
                 None => format!("{}(missing)", card.card_id),

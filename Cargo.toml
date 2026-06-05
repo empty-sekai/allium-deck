@@ -1,9 +1,17 @@
 [package]
 name = "allium-deck"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 description = "Project Sekai deck recommendation engine: DFS / branch-and-bound exact search"
 license = "AGPL-3.0-only"
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+    "src/**",
+    "data/**",
+]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

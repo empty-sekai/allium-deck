@@ -136,11 +136,7 @@ fn search_simple_target(
             }
         };
         // minimize 时按质量升序取最弱前缀；否则降序取最强。
-        let ordering = if minimize {
-            ka.cmp(&kb)
-        } else {
-            kb.cmp(&ka)
-        };
+        let ordering = if minimize { ka.cmp(&kb) } else { kb.cmp(&ka) };
         ordering.then_with(|| a.raw().cmp(&b.raw()))
     });
 

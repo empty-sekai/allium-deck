@@ -695,7 +695,14 @@ pub fn build_card_pool(
             continue;
         };
 
-        let power = build_power(&user_card, &master, game, user, &indexes, fixture_bonus_limit);
+        let power = build_power(
+            &user_card,
+            &master,
+            game,
+            user,
+            &indexes,
+            fixture_bonus_limit,
+        );
         let (event_bonus, has_char_bonus, has_attr_bonus) = event_ctx
             .as_ref()
             .map(|ctx| build_card_event_bonus(&user_card, &master, game, ctx))

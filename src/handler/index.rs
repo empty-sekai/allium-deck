@@ -145,7 +145,9 @@ impl<'a> PoolIndexes<'a> {
 
     #[inline]
     pub(crate) fn skill(&self, skill_id: i32, skill_level: i32) -> Option<&'a Skill> {
-        self.skill_by_id_level.get(&(skill_id, skill_level)).copied()
+        self.skill_by_id_level
+            .get(&(skill_id, skill_level))
+            .copied()
     }
 
     #[inline]

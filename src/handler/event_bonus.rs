@@ -111,10 +111,7 @@ fn resolve_world_bloom_event_turn(game: &GameData<'_>, params: &BuildParams) -> 
     None
 }
 
-fn resolve_world_bloom_character_id(
-    game: &GameData<'_>,
-    params: &BuildParams,
-) -> Option<i32> {
+fn resolve_world_bloom_character_id(game: &GameData<'_>, params: &BuildParams) -> Option<i32> {
     if params.world_bloom_character_id.is_some() {
         return params.world_bloom_character_id;
     }

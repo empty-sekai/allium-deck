@@ -4,9 +4,9 @@
 //! 打印推荐卡组和分阶段耗时（建池 vs 搜索），方便核对 P3 建池性能和 P1/P2 语义改动。
 //!
 //! 它只用 allium-deck 的公开入口（engine + handler + search），不碰渲染、不碰服务层。
-//! 放在 examples/ 下，cargo 自动发现，无需在 Cargo.toml 注册 [[bin]]。
+//! 放在 src/bin/ 下，`cargo install allium-deck` 即得 recommend_cli 命令。
 //!
-//! 运行（standalone Docker 内或本机 `cargo run -p allium-deck --example recommend_cli --release --`）：
+//! 运行（standalone Docker 内或本机 `cargo run -p allium-deck --bin recommend_cli --release --`）：
 //!   recommend_cli \
 //!     --masterdata <dir> \
 //!     --music-metas <music_metas.json> \
@@ -58,7 +58,9 @@ fn run() -> Result<(), String> {
     let user_path = require("--user")?;
     let params_path = require("--params")?;
     let top_k: usize = arg("--top-k").and_then(|v| v.parse().ok()).unwrap_or(5);
-    let timeout_ms: u64 = arg("--timeout-ms").and_then(|v| v.parse().ok()).unwrap_or(30_000);
+    let timeout_ms: u64 = arg("--timeout-ms")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30_000);
 
     // 1) 加载 masterdata（一次性，对应服务里的 OwnedGameData 缓存）。
     let load_start = Instant::now();
@@ -76,7 +78,11 @@ fn run() -> Result<(), String> {
     let build_start = Instant::now();
     let (pool, ctx) = build_card_pool(&user, &game, &params).map_err(|e| e.to_string())?;
     let build_ms = ms(build_start);
-    eprintln!("[build_pool] {:.1}ms  pool={} 张候选卡", build_ms, pool.count());
+    eprintln!(
+        "[build_pool] {:.1}ms  pool={} 张候选卡",
+        build_ms,
+        pool.count()
+    );
 
     // WL 支援卡组诊断（P1）：count + 非零 bonus 数 + top3，用于确认支援加成不再恒为 0。
     {
@@ -112,7 +118,12 @@ fn run() -> Result<(), String> {
     println!("# top {} decks", results.len());
     for (rank, deck) in results.iter().enumerate() {
         let cards: Vec<u16> = deck.cards.iter().map(|c| pool.game_id(*c)).collect();
-        println!("{:>2}. score={:<14} cards={:?}", rank + 1, deck.score, cards);
+        println!(
+            "{:>2}. score={:<14} cards={:?}",
+            rank + 1,
+            deck.score,
+            cards
+        );
     }
     Ok(())
 }

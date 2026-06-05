@@ -17,10 +17,10 @@ RUN mkdir -p src && echo '' > src/lib.rs && cargo build --release 2>/dev/null ||
 
 # 2) 真实源码 + 测试 + 数据
 COPY src ./src
+COPY data ./data
 COPY tests ./tests
 COPY testdata ./testdata
-COPY docker/recommend_cli.rs examples/
 
-RUN touch src/lib.rs && cargo build --release --examples
+RUN touch src/lib.rs && cargo build --release --bin recommend_cli
 
 CMD ["cargo", "test", "--release", "--lib"]

@@ -1080,8 +1080,7 @@ fn load_wl_support_bonuses(
     if !from_disk.is_empty() {
         return Ok(from_disk);
     }
-    serde_json::from_str(embedded)
-        .map_err(|err| format!("解析内嵌 {file_name} 失败: {err}"))
+    serde_json::from_str(embedded).map_err(|err| format!("解析内嵌 {file_name} 失败: {err}"))
 }
 
 fn load_wl3_support_bonuses(masterdata_dir: &Path) -> Result<Vec<WBSupportDeckBonus>, String> {
@@ -1469,8 +1468,8 @@ mod tests {
             ("WL2", EMBEDDED_WL2_SUPPORT_BONUSES),
             ("WL3", EMBEDDED_WL3_SUPPORT_BONUSES),
         ] {
-            let parsed: Vec<crate::handler::WBSupportDeckBonus> =
-                serde_json::from_str(embedded).unwrap_or_else(|e| panic!("内嵌 {name} 解析失败: {e}"));
+            let parsed: Vec<crate::handler::WBSupportDeckBonus> = serde_json::from_str(embedded)
+                .unwrap_or_else(|e| panic!("内嵌 {name} 解析失败: {e}"));
             assert!(!parsed.is_empty(), "内嵌 {name} 支援表为空");
             // 至少有一档稀有度带非零角色加成，确认字段映射正确（camelCase）。
             let has_nonzero = parsed.iter().any(|row| {
@@ -1478,7 +1477,10 @@ mod tests {
                     .iter()
                     .any(|b| b.bonus_rate > 0.0)
             });
-            assert!(has_nonzero, "内嵌 {name} 无任何非零角色加成，字段映射可能错误");
+            assert!(
+                has_nonzero,
+                "内嵌 {name} 无任何非零角色加成，字段映射可能错误"
+            );
         }
     }
 
