@@ -88,19 +88,32 @@ cargo build --release
 
 ## CLI
 
-`recommend_cli` 是可独立运行的组卡推荐命令行工具，`cargo install allium-deck` 后即可通过 `recommend_cli` 命令调用，也可从 [GitHub Releases](https://github.com/empty-sekai/allium-deck/releases) 下载预编译二进制。
+`recommend_cli` 是可独立运行的组卡推荐命令行工具，可从 [GitHub Releases](https://github.com/empty-sekai/allium-deck/releases) 下载预编译二进制，或从源码安装。
 
 从命令行跑一次完整推荐，打印建池/搜索耗时和 Top-K 卡组：
 
 ```bash
-cargo build --release --bin recommend_cli
-
-# 或下载预编译二进制 (以 linux-x86_64 为例):
+# 方式1: 下载预编译二进制 (以 linux-x86_64 为例)
 curl -L -o recommend_cli \
   https://github.com/empty-sekai/allium-deck/releases/download/v0.0.1/recommend_cli-v0.0.1-linux-x86_64
 chmod +x recommend_cli
+./recommend_cli [OPTIONS]
 
-./recommend_cli \
+# 方式2: 从 git 安装 (无需 clone)
+cargo install --git https://github.com/empty-sekai/allium-deck --bin recommend_cli
+recommend_cli [OPTIONS]
+
+# 方式3: Clone 后本地编译
+git clone https://github.com/empty-sekai/allium-deck.git
+cd allium-deck
+cargo build --release --bin recommend_cli
+./target/release/recommend_cli [OPTIONS]
+```
+
+**使用方法：**
+
+```bash
+recommend_cli \
   --masterdata <masterdata-dir> \
   --music-metas <music_metas.json> \
   --user <user.json> \
