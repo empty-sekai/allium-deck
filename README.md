@@ -88,19 +88,18 @@ cargo build --release
 
 ## CLI
 
-`recommend_cli` 用于从命令行跑一次完整推荐，打印建池/搜索耗时和 Top-K 卡组。v0.0.1 提供 GitHub Release 二进制。
+`recommend_cli` 是可独立运行的组卡推荐命令行工具，`cargo install allium-deck` 后即可通过 `recommend_cli` 命令调用，也可从 [GitHub Releases](https://github.com/empty-sekai/allium-deck/releases) 下载预编译二进制。
 
-下载 Linux x86_64 示例：
+从命令行跑一次完整推荐，打印建池/搜索耗时和 Top-K 卡组：
 
 ```bash
+cargo build --release --bin recommend_cli
+
+# 或下载预编译二进制 (以 linux-x86_64 为例):
 curl -L -o recommend_cli \
   https://github.com/empty-sekai/allium-deck/releases/download/v0.0.1/recommend_cli-v0.0.1-linux-x86_64
 chmod +x recommend_cli
-```
 
-运行：
-
-```bash
 ./recommend_cli \
   --masterdata <masterdata-dir> \
   --music-metas <music_metas.json> \
@@ -115,9 +114,7 @@ chmod +x recommend_cli
 | `--masterdata` | 目录 | 游戏 masterdata 目录，内含 `cards.json`、`events.json`、`skills.json`、`cardRarities.json`、`gameCharacterUnits.json` 等文件。 |
 | `--music-metas` | 文件 | 歌曲元数据 JSON 文件。 |
 | `--user` | 文件 | 玩家数据 JSON，至少包含 `userCards`；区域道具、角色等级、称号、MySekai 等字段会参与评分。 |
-| `--params` | 文件 | 推荐参数 JSON，如 `region`、`eventId` / `event_id`、`liveType` / `live_type`、`target`、`musicId` / `music_id`、`musicDiff` / `music_diff`。 |
-
-`--params` 当前是文件路径，不是命令行参数集合。这样便于复用现有 JSON 入口，但对 CLI 用户不够顺手；后续可改成 `--target score --event-id ...` 形式或保留两种输入方式。
+| `--params` | 文件 | 推荐参数 JSON，支持 camelCase 和 snake_case 两种键名（`region`、`eventId` / `event_id`、`liveType` / `live_type`、`target`、`musicId` / `music_id`、`musicDiff` / `music_diff`）。 |
 
 输出示例：
 
