@@ -256,6 +256,10 @@ pub struct MasterCard {
     pub attr: String,
     /// 稀有度类型。
     pub card_rarity_type: i32,
+    /// 稀有度类型代码（原始字符串，如 "rarity_4"）。
+    pub rarity: String,
+    /// 资源包名。
+    pub asset_bundle_name: String,
     /// 技能 ID。
     pub skill_id: i32,
     /// 特训后技能 ID。

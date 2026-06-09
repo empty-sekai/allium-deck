@@ -493,10 +493,19 @@ pub struct OwnedGameData {
 impl OwnedGameData {
     /// 从磁盘加载 masterdata 和 music metas。
     pub fn load(masterdata_dir: &Path, music_metas_path: &Path) -> Result<Self, String> {
+        let sources = MasterdataSources::from_dir(masterdata_dir, music_metas_path)?;
+        Self::from_sources(&sources)
+    }
+
+    /// 从内存中的原始 JSON 来源组装（wasm/网络/测试用，无文件系统依赖）。
+    ///
+    /// 这是真正的 raw→flatten 扁平化逻辑；`load` 只是先把磁盘读成 `MasterdataSources`
+    /// 再委托到这里。两条路共用同一套组装代码，不分叉。
+    pub fn from_sources(sources: &MasterdataSources) -> Result<Self, String> {
         let raw_game_character_units: Vec<RawGameCharacterUnit> =
-            load_json(&masterdata_dir.join("gameCharacterUnits.json"))?;
-        let raw_cards: Vec<RawCard> = load_json(&masterdata_dir.join("cards.json"))?;
-        let events: Vec<RawEvent> = load_json(&masterdata_dir.join("events.json"))?;
+            sources.required("gameCharacterUnits.json")?;
+        let raw_cards: Vec<RawCard> = sources.required("cards.json")?;
+        let events: Vec<RawEvent> = sources.required("events.json")?;
 
         let skill_unit_map = infer_skill_units(&raw_cards, &raw_game_character_units);
         let event_ids = events.iter().map(|event| event.id).collect::<Vec<_>>();
@@ -504,7 +513,7 @@ impl OwnedGameData {
         // 保留所有难度行（easy/normal/hard/expert/master/append），base_score/skill_scores 分难度。
         // 旧逻辑只留 master 行，导致 build_music_params 按非 master 难度选行时匹配不到、回落 master，
         // 使所有难度算出相同分数（难度参数形同虚设）。
-        let music_rows: Vec<RawMusicMetaRow> = load_json(music_metas_path)?;
+        let music_rows: Vec<RawMusicMetaRow> = sources.music_rows()?;
 
         Ok(Self {
             cards: raw_cards
@@ -514,6 +523,15 @@ impl OwnedGameData {
                     character_id: card.character_id,
                     attr: card.attr.clone(),
                     card_rarity_type: rarity_type_to_index(&card.card_rarity_type),
+                    rarity: card.card_rarity_type.clone(),
+                    asset_bundle_name: card.asset_bundle_name.clone().unwrap_or_else(|| {
+                        let training = card.special_training_skill_id.is_some();
+                        if training {
+                            format!("card_{:06}_normal", card.id)
+                        } else {
+                            format!("chara_{:06}", card.id)
+                        }
+                    }),
                     skill_id: card.skill_id,
                     special_training_skill_id: card.special_training_skill_id,
                     special_training_power1_bonus_fixed: card.special_training_power1_bonus_fixed,
@@ -526,53 +544,50 @@ impl OwnedGameData {
                 })
                 .collect(),
             card_parameters: raw_cards.iter().flat_map(flatten_card_parameters).collect(),
-            card_rarities: load_json::<Vec<RawCardRarity>>(
-                &masterdata_dir.join("cardRarities.json"),
-            )?
-            .into_iter()
-            .map(|rarity| CardRarity {
-                card_rarity_type: rarity_type_to_index(&rarity.card_rarity_type),
-                max_level: rarity.max_level,
-                max_skill_level: rarity.max_skill_level,
-            })
-            .collect(),
-            card_episodes: load_json::<Vec<RawCardEpisode>>(
-                &masterdata_dir.join("cardEpisodes.json"),
-            )?
-            .into_iter()
-            .map(|episode| CardEpisode {
-                card_id: episode.card_id,
-                episode_no: episode.id,
-                power1_bonus_fixed: episode.power1_bonus_fixed,
-                power2_bonus_fixed: episode.power2_bonus_fixed,
-                power3_bonus_fixed: episode.power3_bonus_fixed,
-            })
-            .collect(),
-            master_lessons: load_json::<Vec<RawMasterLesson>>(
-                &masterdata_dir.join("masterLessons.json"),
-            )?
-            .into_iter()
-            .map(|lesson| MasterLesson {
-                card_rarity_type: rarity_type_to_index(&lesson.card_rarity_type),
-                master_rank: lesson.master_rank,
-                power1_bonus_fixed: lesson.power1_bonus_fixed,
-                power2_bonus_fixed: lesson.power2_bonus_fixed,
-                power3_bonus_fixed: lesson.power3_bonus_fixed,
-            })
-            .collect(),
+            card_rarities: sources
+                .required::<Vec<RawCardRarity>>("cardRarities.json")?
+                .into_iter()
+                .map(|rarity| CardRarity {
+                    card_rarity_type: rarity_type_to_index(&rarity.card_rarity_type),
+                    max_level: rarity.max_level,
+                    max_skill_level: rarity.max_skill_level,
+                })
+                .collect(),
+            card_episodes: sources
+                .required::<Vec<RawCardEpisode>>("cardEpisodes.json")?
+                .into_iter()
+                .map(|episode| CardEpisode {
+                    card_id: episode.card_id,
+                    episode_no: episode.id,
+                    power1_bonus_fixed: episode.power1_bonus_fixed,
+                    power2_bonus_fixed: episode.power2_bonus_fixed,
+                    power3_bonus_fixed: episode.power3_bonus_fixed,
+                })
+                .collect(),
+            master_lessons: sources
+                .required::<Vec<RawMasterLesson>>("masterLessons.json")?
+                .into_iter()
+                .map(|lesson| MasterLesson {
+                    card_rarity_type: rarity_type_to_index(&lesson.card_rarity_type),
+                    master_rank: lesson.master_rank,
+                    power1_bonus_fixed: lesson.power1_bonus_fixed,
+                    power2_bonus_fixed: lesson.power2_bonus_fixed,
+                    power3_bonus_fixed: lesson.power3_bonus_fixed,
+                })
+                .collect(),
             skills: flatten_skills(
-                &load_json::<Vec<RawSkill>>(&masterdata_dir.join("skills.json"))?,
+                &sources.required::<Vec<RawSkill>>("skills.json")?,
                 &skill_unit_map,
             )
             .0,
             skill_effects: flatten_skills(
-                &load_json::<Vec<RawSkill>>(&masterdata_dir.join("skills.json"))?,
+                &sources.required::<Vec<RawSkill>>("skills.json")?,
                 &skill_unit_map,
             )
             .1,
-            area_item_levels: flatten_area_item_levels(load_json::<Vec<RawAreaItemLevel>>(
-                &masterdata_dir.join("areaItemLevels.json"),
-            )?),
+            area_item_levels: flatten_area_item_levels(
+                sources.required::<Vec<RawAreaItemLevel>>("areaItemLevels.json")?,
+            ),
             game_character_units: raw_game_character_units
                 .iter()
                 .map(|entry| GameCharacterUnit {
@@ -580,26 +595,24 @@ impl OwnedGameData {
                     unit: entry.unit.clone(),
                 })
                 .collect(),
-            character_ranks: load_json::<Vec<RawCharacterRank>>(
-                &masterdata_dir.join("characterRanks.json"),
-            )?
-            .into_iter()
-            .map(|rank| CharacterRank {
-                character_rank: rank.character_rank,
-                power_bonus_rate: rank.power1_bonus_rate,
-            })
-            .collect(),
-            card_mysekai_canvas_bonuses: load_json::<Vec<RawCardMysekaiCanvasBonus>>(
-                &masterdata_dir.join("cardMysekaiCanvasBonuses.json"),
-            )?
-            .into_iter()
-            .map(|entry| CardMysekaiCanvasBonus {
-                card_rarity_type: rarity_type_to_index(&entry.card_rarity_type),
-                power1_bonus_fixed: entry.power1_bonus_fixed,
-                power2_bonus_fixed: entry.power2_bonus_fixed,
-                power3_bonus_fixed: entry.power3_bonus_fixed,
-            })
-            .collect(),
+            character_ranks: sources
+                .required::<Vec<RawCharacterRank>>("characterRanks.json")?
+                .into_iter()
+                .map(|rank| CharacterRank {
+                    character_rank: rank.character_rank,
+                    power_bonus_rate: rank.power1_bonus_rate,
+                })
+                .collect(),
+            card_mysekai_canvas_bonuses: sources
+                .required::<Vec<RawCardMysekaiCanvasBonus>>("cardMysekaiCanvasBonuses.json")?
+                .into_iter()
+                .map(|entry| CardMysekaiCanvasBonus {
+                    card_rarity_type: rarity_type_to_index(&entry.card_rarity_type),
+                    power1_bonus_fixed: entry.power1_bonus_fixed,
+                    power2_bonus_fixed: entry.power2_bonus_fixed,
+                    power3_bonus_fixed: entry.power3_bonus_fixed,
+                })
+                .collect(),
             events: events
                 .into_iter()
                 .map(|event| Event {
@@ -607,7 +620,8 @@ impl OwnedGameData {
                     event_type: event.event_type,
                 })
                 .collect(),
-            event_cards: load_json::<Vec<RawEventCard>>(&masterdata_dir.join("eventCards.json"))?
+            event_cards: sources
+                .required::<Vec<RawEventCard>>("eventCards.json")?
                 .into_iter()
                 .map(|entry| EventCard {
                     event_id: entry.event_id,
@@ -616,98 +630,93 @@ impl OwnedGameData {
                     leader_bonus_rate: entry.leader_bonus_rate.round() as i32,
                 })
                 .collect(),
-            event_deck_bonuses: load_json::<Vec<RawEventDeckBonus>>(
-                &masterdata_dir.join("eventDeckBonuses.json"),
-            )?
-            .into_iter()
-            .map(|entry| {
-                let mapped_unit = entry
-                    .game_character_unit_id
-                    .and_then(|id| raw_game_character_units.iter().find(|unit| unit.id == id));
-                EventDeckBonus {
+            event_deck_bonuses: sources
+                .required::<Vec<RawEventDeckBonus>>("eventDeckBonuses.json")?
+                .into_iter()
+                .map(|entry| {
+                    let mapped_unit = entry
+                        .game_character_unit_id
+                        .and_then(|id| raw_game_character_units.iter().find(|unit| unit.id == id));
+                    EventDeckBonus {
+                        event_id: entry.event_id,
+                        character_id: mapped_unit.map(|unit| unit.game_character_id),
+                        unit: mapped_unit.map(|unit| unit.unit.clone()),
+                        attr: entry.card_attr,
+                        bonus_rate: entry.bonus_rate.round() as i32,
+                    }
+                })
+                .collect(),
+            event_card_bonus_limits: sources
+                .required::<Vec<RawEventCardBonusLimit>>("eventCardBonusLimits.json")?
+                .into_iter()
+                .map(|entry| EventCardBonusLimit {
                     event_id: entry.event_id,
-                    character_id: mapped_unit.map(|unit| unit.game_character_id),
-                    unit: mapped_unit.map(|unit| unit.unit.clone()),
-                    attr: entry.card_attr,
+                    member_count_limit: entry.member_count_limit,
+                })
+                .collect(),
+            event_honor_bonuses: sources
+                .required::<Vec<RawEventHonorBonus>>("eventHonorBonuses.json")?
+                .into_iter()
+                .map(|entry| EventHonorBonus {
+                    event_id: entry.event_id,
+                    honor_id: entry.honor_id,
+                    leader_game_character_id: entry.leader_game_character_id,
+                    bonus_rate: entry.bonus_rate,
+                })
+                .collect(),
+            world_bloom_different_attribute_bonuses: sources
+                .required::<Vec<RawWorldBloomDiffAttrBonus>>(
+                    "worldBloomDifferentAttributeBonuses.json",
+                )?
+                .into_iter()
+                .map(|entry| WorldBloomDiffAttrBonus {
+                    attr_count: entry.attr_count,
                     bonus_rate: entry.bonus_rate.round() as i32,
-                }
-            })
-            .collect(),
-            event_card_bonus_limits: load_json::<Vec<RawEventCardBonusLimit>>(
-                &masterdata_dir.join("eventCardBonusLimits.json"),
-            )?
-            .into_iter()
-            .map(|entry| EventCardBonusLimit {
-                event_id: entry.event_id,
-                member_count_limit: entry.member_count_limit,
-            })
-            .collect(),
-            event_honor_bonuses: load_json::<Vec<RawEventHonorBonus>>(
-                &masterdata_dir.join("eventHonorBonuses.json"),
-            )?
-            .into_iter()
-            .map(|entry| EventHonorBonus {
-                event_id: entry.event_id,
-                honor_id: entry.honor_id,
-                leader_game_character_id: entry.leader_game_character_id,
-                bonus_rate: entry.bonus_rate,
-            })
-            .collect(),
-            world_bloom_different_attribute_bonuses: load_json::<Vec<RawWorldBloomDiffAttrBonus>>(
-                &masterdata_dir.join("worldBloomDifferentAttributeBonuses.json"),
-            )?
-            .into_iter()
-            .map(|entry| WorldBloomDiffAttrBonus {
-                attr_count: entry.attr_count,
-                bonus_rate: entry.bonus_rate.round() as i32,
-            })
-            .collect(),
-            world_blooms: load_optional_json::<Vec<RawWorldBloom>>(
-                &masterdata_dir.join("worldBlooms.json"),
-            )?
-            .into_iter()
-            .map(|entry| WorldBloom {
-                event_id: entry.event_id,
-                game_character_id: entry.game_character_id,
-                chapter_no: entry.chapter_no,
-            })
-            .collect(),
+                })
+                .collect(),
+            world_blooms: sources
+                .optional::<Vec<RawWorldBloom>>("worldBlooms.json")?
+                .into_iter()
+                .map(|entry| WorldBloom {
+                    event_id: entry.event_id,
+                    game_character_id: entry.game_character_id,
+                    chapter_no: entry.chapter_no,
+                })
+                .collect(),
             wb_support_deck_bonuses_wl1: load_wl_support_bonuses(
-                masterdata_dir,
+                sources,
                 "worldBloomSupportDeckBonusesWL1.json",
                 EMBEDDED_WL1_SUPPORT_BONUSES,
             )?,
             wb_support_deck_bonuses_wl2: load_wl_support_bonuses(
-                masterdata_dir,
+                sources,
                 "worldBloomSupportDeckBonusesWL2.json",
                 EMBEDDED_WL2_SUPPORT_BONUSES,
             )?,
-            wb_support_deck_bonuses_wl3: load_wl3_support_bonuses(masterdata_dir)?,
-            world_bloom_support_deck_unit_event_limited_bonuses: load_optional_json::<
-                Vec<WBSupportDeckUnitEventLimitedBonus>,
-            >(
-                &masterdata_dir.join("worldBloomSupportDeckUnitEventLimitedBonuses.json"),
+            wb_support_deck_bonuses_wl3: load_wl3_support_bonuses(sources)?,
+            world_bloom_support_deck_unit_event_limited_bonuses: sources.optional::<Vec<
+                WBSupportDeckUnitEventLimitedBonus,
+            >>(
+                "worldBloomSupportDeckUnitEventLimitedBonuses.json",
             )?,
-            event_mysekai_fixture_performance_bonus_limits: load_optional_json::<
-                Vec<RawEventFixtureBonusLimit>,
-            >(
-                &masterdata_dir.join("eventMysekaiFixtureGameCharacterPerformanceBonusLimits.json"),
-            )?
-            .into_iter()
-            .map(|entry| EventFixtureBonusLimit {
-                event_id: entry.event_id,
-                bonus_rate_limit: entry.bonus_rate_limit,
-            })
-            .collect(),
-            event_skill_score_up_limits: load_json::<Vec<RawEventSkillScoreUpLimit>>(
-                &masterdata_dir.join("eventSkillScoreUpLimits.json"),
-            )?
-            .into_iter()
-            .map(|entry| EventSkillScoreUpLimit {
-                event_id: entry.event_id,
-                score_up_limit: entry.score_up_rate_limit,
-            })
-            .collect(),
+            event_mysekai_fixture_performance_bonus_limits: sources
+                .optional::<Vec<RawEventFixtureBonusLimit>>(
+                    "eventMysekaiFixtureGameCharacterPerformanceBonusLimits.json",
+                )?
+                .into_iter()
+                .map(|entry| EventFixtureBonusLimit {
+                    event_id: entry.event_id,
+                    bonus_rate_limit: entry.bonus_rate_limit,
+                })
+                .collect(),
+            event_skill_score_up_limits: sources
+                .required::<Vec<RawEventSkillScoreUpLimit>>("eventSkillScoreUpLimits.json")?
+                .into_iter()
+                .map(|entry| EventSkillScoreUpLimit {
+                    event_id: entry.event_id,
+                    score_up_limit: entry.score_up_rate_limit,
+                })
+                .collect(),
             music_metas: music_rows
                 .iter()
                 .map(|row| MusicMeta {
@@ -734,23 +743,23 @@ impl OwnedGameData {
                     event_rate: Some(row.event_rate),
                 })
                 .collect(),
-            event_rarity_bonus_rates: load_json::<Vec<RawEventRarityBonusRate>>(
-                &masterdata_dir.join("eventRarityBonusRates.json"),
-            )?
-            .into_iter()
-            .flat_map(|entry| {
-                event_ids
-                    .iter()
-                    .copied()
-                    .map(move |event_id| EventRarityBonusRate {
-                        event_id,
-                        card_rarity_type: rarity_type_to_index(&entry.card_rarity_type),
-                        master_rank: entry.master_rank,
-                        bonus_rate_x2: rate_to_x2_i32(entry.bonus_rate),
-                    })
-            })
-            .collect(),
-            honors: load_optional_json::<Vec<RawHonor>>(&masterdata_dir.join("honors.json"))?
+            event_rarity_bonus_rates: sources
+                .required::<Vec<RawEventRarityBonusRate>>("eventRarityBonusRates.json")?
+                .into_iter()
+                .flat_map(|entry| {
+                    event_ids
+                        .iter()
+                        .copied()
+                        .map(move |event_id| EventRarityBonusRate {
+                            event_id,
+                            card_rarity_type: rarity_type_to_index(&entry.card_rarity_type),
+                            master_rank: entry.master_rank,
+                            bonus_rate_x2: rate_to_x2_i32(entry.bonus_rate),
+                        })
+                })
+                .collect(),
+            honors: sources
+                .optional::<Vec<RawHonor>>("honors.json")?
                 .into_iter()
                 .map(|entry| Honor {
                     id: entry.id,
@@ -764,12 +773,11 @@ impl OwnedGameData {
                         .collect(),
                 })
                 .collect(),
-            bonds_honors: load_optional_json::<Vec<RawIdOnly>>(
-                &masterdata_dir.join("bondsHonors.json"),
-            )?
-            .into_iter()
-            .map(|entry| BondsHonor { id: entry.id })
-            .collect(),
+            bonds_honors: sources
+                .optional::<Vec<RawIdOnly>>("bondsHonors.json")?
+                .into_iter()
+                .map(|entry| BondsHonor { id: entry.id })
+                .collect(),
         })
     }
 
@@ -1048,17 +1056,79 @@ fn flatten_skills(
     (skill_rows, effect_rows)
 }
 
-fn load_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
-    let text =
-        fs::read_to_string(path).map_err(|err| format!("读取 {} 失败: {err}", path.display()))?;
-    serde_json::from_str(&text).map_err(|err| format!("解析 {} 失败: {err}", path.display()))
+/// masterdata 的原始 JSON 来源（文件名 → 内容字符串）。
+///
+/// 把「从哪读字符串」与「raw→flatten 组装」解耦：`load` 从磁盘填充它，
+/// wasm 端从内嵌/网络字符串填充它，两条路共用同一套 `from_sources` 扁平化逻辑。
+/// `music_metas.json` 在游戏侧是独立命名空间，单列一个字段。
+#[derive(Debug, Default, Clone)]
+pub struct MasterdataSources {
+    tables: BTreeMap<String, String>,
+    music_metas: String,
 }
 
-fn load_optional_json<T: DeserializeOwned + Default>(path: &Path) -> Result<T, String> {
-    if !path.exists() {
-        return Ok(T::default());
+impl MasterdataSources {
+    /// 从内存 map 构造（wasm/测试用）。键为文件名（含 `.json`），值为该表 JSON 文本。
+    pub fn from_strings(
+        tables: impl IntoIterator<Item = (String, String)>,
+        music_metas: String,
+    ) -> Self {
+        Self {
+            tables: tables.into_iter().collect(),
+            music_metas,
+        }
     }
-    load_json(path)
+
+    /// 从磁盘目录读取所有 `*.json` + 独立的 music_metas 文件。
+    pub fn from_dir(masterdata_dir: &Path, music_metas_path: &Path) -> Result<Self, String> {
+        let mut tables = BTreeMap::new();
+        let entries = fs::read_dir(masterdata_dir)
+            .map_err(|err| format!("读取目录 {} 失败: {err}", masterdata_dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|err| format!("遍历 masterdata 目录失败: {err}"))?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let text = fs::read_to_string(&path)
+                .map_err(|err| format!("读取 {} 失败: {err}", path.display()))?;
+            tables.insert(name.to_string(), text);
+        }
+        let music_metas = fs::read_to_string(music_metas_path)
+            .map_err(|err| format!("读取 {} 失败: {err}", music_metas_path.display()))?;
+        Ok(Self {
+            tables,
+            music_metas,
+        })
+    }
+
+    /// 必需表：缺失即报错。
+    fn required<T: DeserializeOwned>(&self, file_name: &str) -> Result<T, String> {
+        let text = self
+            .tables
+            .get(file_name)
+            .ok_or_else(|| format!("缺少 masterdata 表 {file_name}"))?;
+        serde_json::from_str(text).map_err(|err| format!("解析 {file_name} 失败: {err}"))
+    }
+
+    /// 可选表：缺失则取默认值（空）。
+    fn optional<T: DeserializeOwned + Default>(&self, file_name: &str) -> Result<T, String> {
+        match self.tables.get(file_name) {
+            None => Ok(T::default()),
+            Some(text) => {
+                serde_json::from_str(text).map_err(|err| format!("解析 {file_name} 失败: {err}"))
+            }
+        }
+    }
+
+    /// music_metas 行。
+    fn music_rows(&self) -> Result<Vec<RawMusicMetaRow>, String> {
+        serde_json::from_str(&self.music_metas)
+            .map_err(|err| format!("解析 music_metas 失败: {err}"))
+    }
 }
 
 /// WL 支援加成表是仓库静态数据（moe 把它们放在 `data/`，不随游戏 masterdata 更新）。
@@ -1070,29 +1140,29 @@ const EMBEDDED_WL2_SUPPORT_BONUSES: &str =
 const EMBEDDED_WL3_SUPPORT_BONUSES: &str =
     include_str!("../data/worldBloomSupportDeckBonusesWL3.json");
 
-/// 加载某一轮 WL 支援加成表：优先用 masterdata 目录里的文件，缺失则用内嵌静态副本。
+/// 加载某一轮 WL 支援加成表：优先用 masterdata 来源里的文件，缺失则用内嵌静态副本。
 fn load_wl_support_bonuses(
-    masterdata_dir: &Path,
+    sources: &MasterdataSources,
     file_name: &str,
     embedded: &str,
 ) -> Result<Vec<WBSupportDeckBonus>, String> {
-    let from_disk = load_optional_json::<Vec<WBSupportDeckBonus>>(&masterdata_dir.join(file_name))?;
+    let from_disk = sources.optional::<Vec<WBSupportDeckBonus>>(file_name)?;
     if !from_disk.is_empty() {
         return Ok(from_disk);
     }
     serde_json::from_str(embedded).map_err(|err| format!("解析内嵌 {file_name} 失败: {err}"))
 }
 
-fn load_wl3_support_bonuses(masterdata_dir: &Path) -> Result<Vec<WBSupportDeckBonus>, String> {
-    let exact = load_optional_json::<Vec<WBSupportDeckBonus>>(
-        &masterdata_dir.join("worldBloomSupportDeckBonusesWL3.json"),
-    )?;
+fn load_wl3_support_bonuses(
+    sources: &MasterdataSources,
+) -> Result<Vec<WBSupportDeckBonus>, String> {
+    let exact =
+        sources.optional::<Vec<WBSupportDeckBonus>>("worldBloomSupportDeckBonusesWL3.json")?;
     if !exact.is_empty() {
         return Ok(exact);
     }
-    let legacy = load_optional_json::<Vec<WBSupportDeckBonus>>(
-        &masterdata_dir.join("worldBloomSupportDeckBonuses.json"),
-    )?;
+    let legacy =
+        sources.optional::<Vec<WBSupportDeckBonus>>("worldBloomSupportDeckBonuses.json")?;
     if !legacy.is_empty() {
         return Ok(legacy);
     }
@@ -1149,6 +1219,8 @@ struct RawCard {
     skill_id: i32,
     #[serde(default)]
     special_training_skill_id: Option<i32>,
+    #[serde(rename = "assetbundleName", default)]
+    asset_bundle_name: Option<String>,
     #[serde(default)]
     special_training_power1_bonus_fixed: i32,
     #[serde(default)]
@@ -1486,14 +1558,40 @@ mod tests {
 
     #[test]
     fn load_wl_support_bonuses_falls_back_to_embedded_when_file_absent() {
-        // masterdata 目录缺文件时，必须回退到内嵌副本而非返回空。
-        let empty_dir = std::env::temp_dir();
+        // masterdata 来源缺该表时，必须回退到内嵌副本而非返回空。
+        let empty = MasterdataSources::default();
         let wl1 = load_wl_support_bonuses(
-            &empty_dir,
+            &empty,
             "definitely_nonexistent_wl1_xyz.json",
             EMBEDDED_WL1_SUPPORT_BONUSES,
         )
         .expect("load");
         assert!(!wl1.is_empty(), "缺文件时应回退到内嵌 WL1 表");
+    }
+
+    #[test]
+    fn from_sources_matches_load_from_dir() {
+        // 拆分护栏：from_sources（内存）与 load（磁盘）必须产出逐字节一致的 OwnedGameData。
+        // 需要真实 masterdata；缺数据时跳过（CI 通过 env 提供）。
+        let Some(dir) = std::env::var_os("ALLIUM_MASTERDATA_CN") else {
+            eprintln!("跳过：未设 ALLIUM_MASTERDATA_CN");
+            return;
+        };
+        let Some(mm) = std::env::var_os("ALLIUM_MUSIC_METAS") else {
+            eprintln!("跳过：未设 ALLIUM_MUSIC_METAS");
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        let mm = std::path::PathBuf::from(mm);
+
+        let via_load = OwnedGameData::load(&dir, &mm).expect("load");
+        let sources = MasterdataSources::from_dir(&dir, &mm).expect("from_dir");
+        let via_sources = OwnedGameData::from_sources(&sources).expect("from_sources");
+
+        assert_eq!(
+            serde_json::to_vec(&via_load).unwrap(),
+            serde_json::to_vec(&via_sources).unwrap(),
+            "from_sources 与 load 产出不一致"
+        );
     }
 }
