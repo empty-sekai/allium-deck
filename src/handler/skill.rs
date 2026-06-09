@@ -62,10 +62,7 @@ pub(crate) fn build_skill(
         return SkillResult::default();
     };
 
-    let effects = idx
-        .skill_effects(skill_id, skill.level)
-        .iter()
-        .copied();
+    let effects = idx.skill_effects(skill_id, skill.level).iter().copied();
 
     let mut base_score_up = 0i32;
     let mut life_recovery = 0i32;

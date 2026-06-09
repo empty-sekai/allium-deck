@@ -419,9 +419,6 @@ impl SearchState<'_> {
     ) {
         let pre = self.suffix.precompute_layer_ep(&used, slots);
 
-        let mono_state = self.suffix.mono_precompute(&used, &partial, slots);
-        let mut mono_min_bonus = mono_state.as_ref().map(|s| s.min_bonus(threshold));
-        let mono_base = partial.bonus + pre.suffix_bonus + pre.extra_bonus_ub;
         let world_bloom_parts = self.ctx.is_world_bloom.then(|| {
             let mut attr_set = 0u8;
             let mut selected = [0u16; DECK_SIZE];
@@ -489,12 +486,6 @@ impl SearchState<'_> {
             let card_power = self.pool.power_max(card);
             let card_skill = self.pool.skill_max(card);
             let card_skill_u32 = card_skill as u32;
-
-            if let Some(min_bt) = mono_min_bonus {
-                if card_bonus + mono_base < min_bt {
-                    break;
-                }
-            }
 
             self.stats.ep_candidates += 1;
 
@@ -596,9 +587,6 @@ impl SearchState<'_> {
             let new_threshold = self.tracker.threshold();
             if new_threshold > threshold {
                 threshold = new_threshold;
-                if let Some(ref state) = mono_state {
-                    mono_min_bonus = Some(state.min_bonus(threshold));
-                }
             }
         }
     }

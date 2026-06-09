@@ -782,75 +782,6 @@ impl SuffixBound {
         support_sum
     }
 
-    pub(crate) fn mono_precompute(
-        &self,
-        used: &UsedSet,
-        partial: &PartialDeck,
-        slots: usize,
-    ) -> Option<MonoBreakState> {
-        if !self.has_event {
-            return None;
-        }
-        match self.target {
-            ScoreTarget::Score => self.mono_precompute_score(used, partial, slots),
-            _ => None,
-        }
-    }
-
-    fn mono_precompute_score(
-        &self,
-        used: &UsedSet,
-        partial: &PartialDeck,
-        slots: usize,
-    ) -> Option<MonoBreakState> {
-        if matches!(
-            self.effective_live_type,
-            LiveType::Challenge | LiveType::ChallengeAuto | LiveType::Mysekai
-        ) {
-            return None;
-        }
-
-        let max_power = partial.power
-            + suffix_sum_u32(&self.power_order, &self.power_vals, used.bits(), slots)
-            + self.honor_bonus;
-        let max_skill = partial.skill
-            + suffix_sum_u16_as_u32(&self.skill_order, &self.skill_vals, used.bits(), slots);
-        let max_leader = (partial.max_skill as u32).max(first_unused_val_u16(
-            &self.skill_order,
-            &self.skill_vals,
-            used.bits(),
-        ) as u32);
-        let max_live = self.calc_live_score_bound(max_power, max_skill, max_leader);
-
-        let base_score: i64 = match self.effective_live_type {
-            LiveType::Solo | LiveType::Auto => (100 + max_live / 20_000) as i64,
-            LiveType::Multi | LiveType::Cheerful => {
-                let other = if self.other_score == 0 {
-                    (max_live as i64).saturating_mul(4)
-                } else {
-                    self.other_score as i64
-                };
-                110 + max_live as i64 / 17_000 + (other / 340_000).min(13)
-            }
-            _ => return None,
-        };
-        if base_score <= 0 {
-            return None;
-        }
-
-        let bm = base_score * self.music_rate_pct as i64;
-        if bm <= 0 {
-            return None;
-        }
-
-        Some(MonoBreakState::Score {
-            bm,
-            boost: self.boost_rate_pct as i64,
-            is_cheerful: matches!(self.effective_live_type, LiveType::Cheerful),
-            life: self.life_rate_num as i64,
-        })
-    }
-
     #[inline(always)]
     fn calc_event_point_bound(&self, live_score: i32, total_bonus: u32) -> i32 {
         if !self.has_event {
@@ -1019,43 +950,6 @@ fn compact_excl(set: u32, excl: &[u32; DECK_SIZE], char_id: u8) -> u32 {
     }
     let pos = (set & (bit - 1)).count_ones() as usize;
     unsafe { *excl.get_unchecked(pos) }
-}
-
-/// 两阶段 mono break 预计算状态。
-pub(crate) enum MonoBreakState {
-    Score {
-        bm: i64,
-        boost: i64,
-        is_cheerful: bool,
-        life: i64,
-    },
-}
-
-impl MonoBreakState {
-    #[inline(always)]
-    pub(crate) fn min_bonus(&self, threshold: u64) -> u32 {
-        match self {
-            MonoBreakState::Score {
-                bm,
-                boost,
-                is_cheerful,
-                life,
-            } => {
-                let threshold_ep = (threshold >> 32) as i64;
-                if threshold_ep <= 0 {
-                    return 0;
-                }
-                let min_inner = if *is_cheerful {
-                    let min_wl = ((threshold_ep + 1) * 100 + boost - 1) / boost;
-                    (min_wl * 5000 + life - 1) / life
-                } else {
-                    ((threshold_ep + 1) * 100 + boost - 1) / boost
-                };
-                let min_bp100 = (min_inner * 10_000 + bm - 1) / bm;
-                (min_bp100 - 100).max(0) as u32
-            }
-        }
-    }
 }
 
 #[inline(always)]
