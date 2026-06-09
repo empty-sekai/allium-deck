@@ -3,6 +3,9 @@
 *.swp
 .DS_Store
 Thumbs.db
+__pycache__/
+*.py[cod]
+.tmp/
 
 # 构建期生成的 masterdata 内嵌二进制（build_gamedata / CI 重建，不入库）
 /src/embedded/*.postcard

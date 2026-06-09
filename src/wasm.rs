@@ -5,7 +5,6 @@
 //! 改组卡只动 `search/`+`handler/`，此入口自动跟随。
 
 use std::collections::HashMap;
-
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -13,6 +12,12 @@ use crate::engine::{parse_build_params_json, parse_user_profile_json};
 use crate::handler::{build_card_pool, cultivated_user_cards, GameData, MasterCard, UserCard};
 use crate::pool::CardPool;
 use crate::search::{search, summarize_deck, DeckResult, SearchContext, SearchParams};
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn performance_now() -> f64;
+}
 
 #[wasm_bindgen(start)]
 pub fn init() {
@@ -28,7 +33,9 @@ pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, 
     let params = parse_build_params_json(params_json).map_err(to_js)?;
     let game = owned.as_ref();
 
+    let build_pool_start = performance_now();
     let (pool, ctx) = build_card_pool(&user, &game, &params).map_err(to_js)?;
+    let build_pool_ms = elapsed_ms(build_pool_start);
     let mut render_user = user.clone();
     render_user.user_cards = cultivated_user_cards(&user, &game, &params);
     let user_cards = render_user
@@ -37,6 +44,7 @@ pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, 
         .map(|card| (card.card_id, card))
         .collect::<HashMap<_, _>>();
 
+    let search_start = performance_now();
     let results = search(
         &pool,
         &ctx,
@@ -45,6 +53,7 @@ pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, 
             timeout_ms: 0,
         },
     );
+    let search_ms = elapsed_ms(search_start);
 
     let decks: Vec<DeckOut> = results
         .iter()
@@ -52,16 +61,36 @@ pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, 
         .map(|(index, result)| DeckOut::build(index + 1, &pool, &ctx, &game, &user_cards, result))
         .collect();
 
-    serde_json::to_string(&DeckResponse { decks }).map_err(to_js)
+    serde_json::to_string(&DeckResponse {
+        decks,
+        performance: DeckPerformance {
+            build_pool_ms,
+            search_ms,
+            pool_size: pool.count(),
+        },
+    })
+    .map_err(to_js)
 }
 
 fn to_js<E: std::fmt::Display>(err: E) -> JsValue {
     JsValue::from_str(&err.to_string())
 }
 
+fn elapsed_ms(start: f64) -> f64 {
+    performance_now() - start
+}
+
 #[derive(Serialize)]
 struct DeckResponse {
     decks: Vec<DeckOut>,
+    performance: DeckPerformance,
+}
+
+#[derive(Serialize)]
+struct DeckPerformance {
+    build_pool_ms: f64,
+    search_ms: f64,
+    pool_size: usize,
 }
 
 #[derive(Serialize)]
