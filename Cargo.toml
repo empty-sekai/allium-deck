@@ -3,12 +3,13 @@ name = "allium-deck"
 version = "0.0.3"
 edition = "2021"
 description = "Project Sekai deck recommendation engine: DFS / branch-and-bound exact search"
-license = "AGPL-3.0-only"
+license = "MIT OR Apache-2.0"
 include = [
     "Cargo.toml",
     "Cargo.lock",
     "README.md",
-    "LICENSE",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
     "src/**",
     "data/**",
 ]

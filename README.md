@@ -247,4 +247,4 @@ Top-K（`top_k > 1`）下被支配卡参与的组合本身可能是合法的次�
 
 ## 许可证
 
-[AGPL-3.0-only](./LICENSE)。Copyright (C) allium / emptysekai。
+[MIT](./LICENSE-MIT) OR [Apache-2.0](./LICENSE-APACHE)。Copyright (C) allium / emptysekai。
