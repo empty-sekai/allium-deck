@@ -70,7 +70,7 @@ def main() -> int:
         if args.mode == "publish":
             version = infer_publish_version(cdn_base, region)
         else:
-            version = env_first("CNB_BRANCH", "GITHUB_REF_NAME")
+            version = infer_publish_version(cdn_base, region)
     version = sanitize_version(version)
 
     source_repository = env_first("SOURCE_REPOSITORY", "GITHUB_REPOSITORY") or "empty-sekai/allium-deck"
@@ -88,7 +88,7 @@ def main() -> int:
         "SOURCE_REPOSITORY": source_repository,
         "SOURCE_REVISION": source_revision,
         "RELEASE_TAG": tag,
-        "WASM_ZIP": f"allium-deck-wasm-{tag}-{region}.zip",
+        "WASM_ZIP": f"allium-deck-wasm-{tag}-{version}-{region}.zip",
     }
     write_env(Path(args.env_out), values)
     print(f"region={region}")
