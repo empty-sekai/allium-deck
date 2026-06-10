@@ -65,7 +65,7 @@ pub struct SuffixBound {
     avg_leader_rate_1m: i64,
     /// 5 × multi_teammate_score_up（Multi/Cheerful 专用）。
     teammate_su_5x: i64,
-    /// Multi: 75_000 (= 0.075 × 1M), 其他: 0。
+    /// Multi/Cheerful: 75_000 (= 0.075 × 1M), 其他: 0。
     active_1m_coeff: i64,
     other_score: i32,
     /// Cheerful: 5750 + clamp(life, 500, 1000), 其他: 0。
@@ -165,7 +165,10 @@ impl SuffixBound {
                 .multi_teammate_score_up
                 .map(|v| v as i64 * 5)
                 .unwrap_or(0),
-            active_1m_coeff: if matches!(ctx.effective_live_type(), LiveType::Multi) {
+            active_1m_coeff: if matches!(
+                ctx.effective_live_type(),
+                LiveType::Multi | LiveType::Cheerful
+            ) {
                 75_000
             } else {
                 0

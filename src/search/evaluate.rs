@@ -413,7 +413,10 @@ fn calc_live_score(
     } else {
         DECK_SIZE as i32 * total_power
     };
-    let active_bonus = if matches!(ctx.effective_live_type(), LiveType::Multi) {
+    let active_bonus = if matches!(
+        ctx.effective_live_type(),
+        LiveType::Multi | LiveType::Cheerful
+    ) {
         DECK_SIZE as f64 * 0.015 * power_sum as f64
     } else {
         0.0
@@ -843,6 +846,91 @@ fn skill_score_index(live_type: LiveType) -> usize {
 #[inline(always)]
 fn encode_skill_target(score_up: f64) -> u64 {
     (score_up * SKILL_SCALE + 1e-6).floor() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::context::SupportDeck;
+    use crate::types::EventType;
+
+    fn ctx(live_type: LiveType) -> SearchContext {
+        SearchContext {
+            target: ScoreTarget::Score,
+            fixed_card_ids: Vec::new(),
+            fixed_character_ids: Vec::new(),
+            music_rate_pct: 100,
+            boost_rate_pct: 100,
+            base_score: 1.0,
+            base_score_auto: 1.0,
+            fever_score: 0.0,
+            skill_scores: [[0.0; 6]; 3],
+            other_score: 0,
+            life: 1000,
+            diff_attr_bonus: [0; 6],
+            support_deck: SupportDeck::default(),
+            support_decks_by_character: Vec::new(),
+            is_world_bloom: false,
+            is_final_chapter: false,
+            enforce_char_uniqueness: true,
+            minimize: false,
+            live_type,
+            event_type: None,
+            keep_after_training_state: false,
+            skill_reference_strategy: SkillReferenceStrategy::Average,
+            best_skill_as_leader: true,
+            live_skill_order: LiveSkillOrder::Best,
+            specific_skill_order: None,
+            multi_teammate_score_up: None,
+            multi_teammate_power: None,
+            multi_live_score_up_lower_bound: None,
+            extra_bonus_ub: 0,
+            w_power: 2.0,
+            w_bonus: 1.0,
+            skill_ub_global: 0,
+            card_bonus_count_limit: DECK_SIZE,
+            honor_bonus: 0,
+            power_total_cap: None,
+            leader_honor_bonus: Vec::new(),
+            leader_limit_bonus: Vec::new(),
+            final_chapter_member_keep: Vec::new(),
+            skill_is_after_training: Vec::new(),
+            trained_to_special_image: Vec::new(),
+        }
+    }
+
+    fn empty_permutation() -> EvaluatedPermutation {
+        EvaluatedPermutation {
+            order: [0, 1, 2, 3, 4],
+            skills: [LiveSkillValue::default(); DECK_SIZE],
+            multi_live_score_up: 0.0,
+        }
+    }
+
+    #[test]
+    fn cheerful_live_score_includes_coop_active_bonus() {
+        let permutation = empty_permutation();
+
+        assert_eq!(
+            calc_live_score(1_000, &permutation, &ctx(LiveType::Solo)),
+            4_000
+        );
+        assert_eq!(
+            calc_live_score(1_000, &permutation, &ctx(LiveType::Multi)),
+            4_375
+        );
+        assert_eq!(
+            calc_live_score(1_000, &permutation, &ctx(LiveType::Cheerful)),
+            4_375
+        );
+
+        let mut cheerful_event_ctx = ctx(LiveType::Multi);
+        cheerful_event_ctx.event_type = Some(EventType::CheerfulCarnival);
+        assert_eq!(
+            calc_live_score(1_000, &permutation, &cheerful_event_ctx),
+            4_375
+        );
+    }
 }
 
 #[inline(always)]

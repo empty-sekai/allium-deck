@@ -186,19 +186,39 @@ fn fixture_bonus(
     ((sum_power as f64) * (clamped as f64) * 0.001_f64).floor() as i32
 }
 
-fn gate_bonus(sum_power: i32, card_units: &[Unit], user: &UserProfile) -> i32 {
+fn gate_bonus(sum_power: i32, card_units: &[Unit], game: &GameData<'_>, user: &UserProfile) -> i32 {
     let is_only_piapro = card_units.len() == 1 && matches!(card_units[0], Unit::Piapro);
     let max_rate = user
         .user_mysekai_gate_bonuses
         .iter()
-        .filter(|entry| {
+        .filter_map(|entry| resolve_user_gate_bonus(entry, game))
+        .filter(|(unit_code, _)| {
             is_only_piapro
-                || entry.unit.trim().is_empty()
-                || parse_unit_code(entry.unit.trim()).is_some_and(|unit| card_units.contains(&unit))
+                || unit_code.trim().is_empty()
+                || parse_unit_code(unit_code.trim()).is_some_and(|unit| card_units.contains(&unit))
         })
-        .map(|entry| entry.bonus_rate)
+        .map(|(_, rate)| rate)
         .fold(0.0_f64, f64::max);
     ((sum_power as f64) * max_rate * 0.01_f64).floor() as i32
+}
+
+fn resolve_user_gate_bonus<'a>(
+    entry: &'a super::types::UserGateBonus,
+    game: &'a GameData<'_>,
+) -> Option<(&'a str, f64)> {
+    if let (Some(gate_id), Some(level)) = (entry.mysekai_gate_id, entry.mysekai_gate_level) {
+        let gate = game.mysekai_gates.iter().find(|gate| gate.id == gate_id)?;
+        let level = game
+            .mysekai_gate_levels
+            .iter()
+            .find(|row| row.mysekai_gate_id == gate_id && row.level == level)?;
+        return Some((gate.unit.as_str(), level.power_bonus_rate));
+    }
+    if entry.bonus_rate > 0.0 {
+        Some((entry.unit.as_str(), entry.bonus_rate))
+    } else {
+        None
+    }
 }
 
 fn floor_mul_rate(base: i32, rate: f64) -> i32 {
@@ -246,7 +266,7 @@ pub(crate) fn build_power(
             );
             let area_sum = area_bonus[0] + area_bonus[1] + area_bonus[2];
             let fixture = fixture_bonus(base_sum, master.character_id, fixture_bonus_limit, user);
-            let gate = gate_bonus(base_sum, &card_units, user);
+            let gate = gate_bonus(base_sum, &card_units, game, user);
             let total = base_sum + character_sum + area_sum + fixture + gate;
 
             let detail = PowerDetail {
@@ -274,9 +294,12 @@ pub(crate) fn build_power(
 
 #[cfg(test)]
 mod tests {
-    use super::fixture_bonus;
-    use crate::handler::types::UserFixtureBonus;
+    use super::{fixture_bonus, gate_bonus};
+    use crate::handler::types::{
+        GameData, MysekaiGate, MysekaiGateLevel, UserFixtureBonus, UserGateBonus,
+    };
     use crate::handler::UserProfile;
+    use crate::types::Unit;
 
     #[test]
     fn fixture_bonus_only_clamps_when_limit_is_present() {
@@ -291,6 +314,64 @@ mod tests {
 
         assert_eq!(fixture_bonus(38_792, 20, None, &user), 1_163);
         assert_eq!(fixture_bonus(38_792, 20, Some(20), &user), 775);
+    }
+
+    #[test]
+    fn gate_bonus_uses_masterdata_gate_level_rate() {
+        let gates = [MysekaiGate {
+            id: 1,
+            unit: "light_sound".to_string(),
+        }];
+        let levels = [MysekaiGateLevel {
+            mysekai_gate_id: 1,
+            level: 2,
+            power_bonus_rate: 1.5,
+        }];
+        let game = GameData {
+            cards: &[],
+            card_parameters: &[],
+            card_rarities: &[],
+            card_episodes: &[],
+            master_lessons: &[],
+            skills: &[],
+            skill_effects: &[],
+            area_item_levels: &[],
+            game_character_units: &[],
+            character_ranks: &[],
+            card_mysekai_canvas_bonuses: &[],
+            mysekai_gates: &gates,
+            mysekai_gate_levels: &levels,
+            events: &[],
+            event_cards: &[],
+            event_deck_bonuses: &[],
+            event_card_bonus_limits: &[],
+            event_honor_bonuses: &[],
+            world_bloom_different_attribute_bonuses: &[],
+            world_blooms: &[],
+            wb_support_deck_bonuses_wl1: &[],
+            wb_support_deck_bonuses_wl2: &[],
+            wb_support_deck_bonuses_wl3: &[],
+            world_bloom_support_deck_unit_event_limited_bonuses: &[],
+            event_mysekai_fixture_performance_bonus_limits: &[],
+            event_skill_score_up_limits: &[],
+            music_metas: &[],
+            music_difficulties: &[],
+            event_rarity_bonus_rates: &[],
+            honors: &[],
+            bonds_honors: &[],
+        };
+        let user = UserProfile {
+            user_mysekai_gate_bonuses: vec![UserGateBonus {
+                mysekai_gate_id: Some(1),
+                mysekai_gate_level: Some(2),
+                unit: "school_refusal".to_string(),
+                bonus_rate: 40.0,
+            }],
+            ..UserProfile::default()
+        };
+
+        assert_eq!(gate_bonus(10_000, &[Unit::LightSound], &game, &user), 150);
+        assert_eq!(gate_bonus(10_000, &[Unit::Idol], &game, &user), 0);
     }
 }
 
