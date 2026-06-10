@@ -49,6 +49,7 @@ pub fn search_instrumented(
     let mut search_pool = dominance.pool;
     let mut search_ctx = dominance.ctx;
     let mut original_indices = dominance.original_indices;
+    let alternatives = dominance.alternatives;
     if search_ctx.is_final_chapter {
         let member_keep = dominance::compute_member_keep(&search_pool);
         if let Some(leader_char) = search_ctx.fixed_character_at(0) {
@@ -89,7 +90,8 @@ pub fn search_instrumented(
             )
         };
         let remapped = remap_results(compacted_results, &original_indices);
-        return (remapped, stats);
+        let expanded = expand_dominated_alternatives(pool, ctx, &alternatives, params, remapped);
+        return (expanded, stats);
     }
     let suffix = SuffixBound::build(&search_pool, &search_ctx);
     let seeds = warm_start::warm_start_best(&search_pool, &search_ctx)
@@ -98,7 +100,95 @@ pub fn search_instrumented(
     let (compacted_results, stats) =
         dfs::dfs_search_instrumented_with_seeds(&search_pool, &search_ctx, &suffix, params, seeds);
     let remapped = remap_results(compacted_results, &original_indices);
-    (remapped, stats)
+    let expanded = expand_dominated_alternatives(pool, ctx, &alternatives, params, remapped);
+    (expanded, stats)
+}
+
+/// Top-K 支配替代展开。
+///
+/// dominance 裁剪对 Top-1 无损（被裁卡换成支配者分数不降），但 Top-K 下被裁卡参与的
+/// 组合本身可能是合法的次优解（issue #2）。设真实 Top-K 中存在含被裁卡的卡组 D，把
+/// 其中每张被裁卡换成其支配根得到 D'，则 score(D') >= score(D) >= 第 K 名阈值，故 D'
+/// 必在裁剪池的精确 Top-K 结果里。因此对每个搜索结果按槽位做替代回换（含多槽组合）、
+/// 重新评估并合并，即可还原全部丢失的次优解。
+///
+/// 回换方向是支配的逆向，分数单调不升，按当前第 K 名阈值剪枝；`top_k <= 1` 直接跳过，
+/// 主搜索路径零开销。
+fn expand_dominated_alternatives(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    alternatives: &[Vec<CardIdx>],
+    params: &SearchParams,
+    results: Vec<DeckResult>,
+) -> Vec<DeckResult> {
+    if params.top_k <= 1 {
+        return results;
+    }
+    let has_alternatives = results.iter().any(|result| {
+        result
+            .cards
+            .iter()
+            .any(|card| !alternatives[card.raw()].is_empty())
+    });
+    if !has_alternatives {
+        return results;
+    }
+
+    let mut tracker = dfs::TopKTracker::new(params.top_k, pool);
+    for result in &results {
+        tracker.insert(*result);
+    }
+    for result in &results {
+        let mut deck = result.cards;
+        expand_substitutions(
+            pool,
+            ctx,
+            alternatives,
+            &mut deck,
+            result.score,
+            0,
+            &mut tracker,
+        );
+    }
+    tracker.into_vec()
+}
+
+/// 自 `from_slot` 起逐槽尝试把支配者回换成其支配的卡（多槽组合经递归覆盖）。
+/// `node_score` 是当前替换组合的分数；再多换任何一张分数不会更高，因此 tracker
+/// 满且 node_score 严格低于阈值时整棵子树可剪（同分仍展开，保住 tie-break 名次）。
+fn expand_substitutions(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    alternatives: &[Vec<CardIdx>],
+    deck: &mut [CardIdx; DECK_SIZE],
+    node_score: u64,
+    from_slot: usize,
+    tracker: &mut dfs::TopKTracker,
+) {
+    let threshold = tracker.threshold();
+    if threshold != 0 && node_score < threshold {
+        return;
+    }
+    let mut slot = from_slot;
+    while slot < DECK_SIZE {
+        // 固定卡槽位按 game_id 锁死，被支配的替代卡 game_id 必不同（固定卡不参与裁剪），跳过。
+        if ctx.fixed_card_at(slot).is_some() {
+            slot += 1;
+            continue;
+        }
+        let original = deck[slot];
+        for &alt in &alternatives[original.raw()] {
+            deck[slot] = alt;
+            // 支配卡与被支配卡同角色，角色唯一性与固定角色槽位约束自然保持。
+            let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) else {
+                continue;
+            };
+            tracker.insert(DeckResult::new(*deck, score));
+            expand_substitutions(pool, ctx, alternatives, deck, score, slot + 1, tracker);
+        }
+        deck[slot] = original;
+        slot += 1;
+    }
 }
 
 fn search_simple_target(
@@ -1853,5 +1943,137 @@ mod tests {
             .unwrap_or(0);
 
         assert_eq!(before, after);
+    }
+
+    fn dominance_pair_card(game_id: u16, char_id: u8, power: u32) -> TestCard {
+        TestCard {
+            char_id,
+            attr: 0,
+            unit_mask: 1,
+            game_id,
+            power,
+            skill: SkillSlot {
+                skill_type: 0,
+                value: 10,
+            },
+            base_bonus: 0,
+            limited_bonus: 0,
+            power_max: power,
+            skill_max: 10,
+        }
+    }
+
+    fn assert_results_match_bruteforce(
+        pool: &CardPool,
+        results: &[DeckResult],
+        brute: &[DeckResult],
+    ) {
+        assert_eq!(results.len(), brute.len(), "result length differs");
+        for (rank, (exact, brute)) in results.iter().zip(brute.iter()).enumerate() {
+            assert_eq!(exact.score, brute.score, "score differs at rank {rank}");
+            assert_eq!(
+                exact.game_card_set_key(pool),
+                brute.game_card_set_key(pool),
+                "card set differs at rank {rank}",
+            );
+        }
+    }
+
+    #[test]
+    fn search_top_k_recovers_dominated_alternatives() {
+        // char0 的 B(295) 被 A(300) 支配裁掉，但 {B,1,2,3,4} 是全局第 2 名：
+        // Top-K 替代展开应把它找回来，与暴力枚举一致（issue #2）。
+        let cards = [
+            dominance_pair_card(700, 0, 300),
+            dominance_pair_card(701, 0, 295),
+            dominance_pair_card(702, 1, 400),
+            dominance_pair_card(703, 2, 410),
+            dominance_pair_card(704, 3, 420),
+            dominance_pair_card(705, 4, 430),
+            dominance_pair_card(706, 5, 200),
+        ];
+        let pool = build_pool(&cards);
+        let search_ctx = ready_ctx(&pool, ScoreTarget::Score);
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
+
+        // 前提：B 确实被支配裁掉。
+        let dominance = eliminate_dominated(&pool, &search_ctx);
+        assert_eq!(dominance.after, dominance.before - 1);
+
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+        assert!(
+            results[1]
+                .cards
+                .iter()
+                .any(|card| pool.game_id(*card) == 701),
+            "rank 1 should contain the dominated card 701",
+        );
+    }
+
+    #[test]
+    fn search_top_k_recovers_multi_slot_dominated_alternatives() {
+        // 两个角色各有一张被支配卡，第 4 名 {B,D,...} 需要同时回换两个槽位。
+        let cards = [
+            dominance_pair_card(800, 0, 300),
+            dominance_pair_card(801, 0, 296),
+            dominance_pair_card(802, 1, 400),
+            dominance_pair_card(803, 1, 395),
+            dominance_pair_card(804, 2, 500),
+            dominance_pair_card(805, 3, 510),
+            dominance_pair_card(806, 4, 520),
+        ];
+        let pool = build_pool(&cards);
+        let search_ctx = ready_ctx(&pool, ScoreTarget::Score);
+        let params = SearchParams {
+            top_k: 4,
+            timeout_ms: 0,
+        };
+
+        let dominance = eliminate_dominated(&pool, &search_ctx);
+        assert_eq!(dominance.after, dominance.before - 2);
+
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+        assert_eq!(results.len(), 4);
+        let last_game_ids = results[3].cards.map(|card| pool.game_id(card)).to_vec();
+        assert!(
+            last_game_ids.contains(&801) && last_game_ids.contains(&803),
+            "rank 3 should substitute both dominated cards, got {last_game_ids:?}",
+        );
+    }
+
+    #[test]
+    fn search_top_k_dominated_alternatives_respect_fixed_slots() {
+        // 固定卡槽位不参与回换：固定 game_id 800 时，被支配卡 801 不得顶掉它。
+        let cards = [
+            dominance_pair_card(800, 0, 300),
+            dominance_pair_card(801, 0, 296),
+            dominance_pair_card(802, 1, 400),
+            dominance_pair_card(803, 2, 500),
+            dominance_pair_card(804, 3, 510),
+            dominance_pair_card(805, 4, 520),
+            dominance_pair_card(806, 5, 210),
+        ];
+        let pool = build_pool(&cards);
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Score);
+        search_ctx.fixed_card_ids = vec![800];
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
+
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+        for result in &results {
+            assert_eq!(pool.game_id(result.cards[0]), 800);
+            assert!(result.cards.iter().all(|card| pool.game_id(*card) != 801));
+        }
     }
 }
