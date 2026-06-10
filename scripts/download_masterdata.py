@@ -7,14 +7,16 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
 
-REQUIRED_TABLES = [
+CDN_TABLES = [
     "gameCharacterUnits",
     "cards",
     "events",
@@ -32,18 +34,12 @@ REQUIRED_TABLES = [
     "eventCardBonusLimits",
     "eventHonorBonuses",
     "worldBloomDifferentAttributeBonuses",
-    "eventSkillScoreUpLimits",
-    "eventRarityBonusRates",
-]
-
-OPTIONAL_TABLES = [
     "worldBlooms",
-    "worldBloomSupportDeckBonusesWL1",
-    "worldBloomSupportDeckBonusesWL2",
-    "worldBloomSupportDeckBonusesWL3",
     "worldBloomSupportDeckBonuses",
     "worldBloomSupportDeckUnitEventLimitedBonuses",
     "eventMysekaiFixtureGameCharacterPerformanceBonusLimits",
+    "eventSkillScoreUpLimits",
+    "eventRarityBonusRates",
     "honors",
     "bondsHonors",
 ]
@@ -59,8 +55,19 @@ def sha256(data: bytes) -> str:
 
 def fetch(url: str, timeout: int) -> tuple[bytes, dict[str, str]]:
     request = urllib.request.Request(url, headers={"User-Agent": "allium-deck-wasm-ci/1.0"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return response.read(), dict(response.headers.items())
+    last_error: Exception | None = None
+    for attempt in range(1, 5):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read(), dict(response.headers.items())
+        except urllib.error.HTTPError:
+            raise
+        except urllib.error.URLError as exc:
+            last_error = exc
+            if attempt >= 4:
+                break
+            time.sleep(min(2 ** (attempt - 1), 8))
+    raise last_error or RuntimeError(f"download failed for {url}")
 
 
 def parse_json(data: bytes, label: str) -> object:
@@ -81,7 +88,6 @@ def music_url(cdn_base: str, region: str) -> str:
 def download_table(
     table: str,
     *,
-    required: bool,
     cdn_base: str,
     region: str,
     out_dir: Path,
@@ -92,9 +98,6 @@ def download_table(
     try:
         data, headers = fetch(url, timeout)
     except urllib.error.HTTPError as exc:
-        if not required and exc.code == 404:
-            print(f"[skip] optional {table}.json not found on CDN", file=sys.stderr)
-            return None
         raise RuntimeError(f"download failed for {url}: HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"download failed for {url}: {exc}") from exc
@@ -105,7 +108,6 @@ def download_table(
     return {
         "name": f"{table}.json",
         "url": url,
-        "required": required,
         "bytes": len(data),
         "sha256": sha256(data),
         "etag": headers.get("ETag") or headers.get("etag"),
@@ -115,24 +117,47 @@ def download_table(
 def download_tables(
     tables: Iterable[str],
     *,
-    required: bool,
     cdn_base: str,
     region: str,
     out_dir: Path,
     timeout: int,
+    workers: int,
 ) -> list[dict[str, object]]:
+    ordered_tables = list(tables)
+    if not ordered_tables:
+        return []
+
     entries = []
-    for table in tables:
-        entry = download_table(
-            table,
-            required=required,
-            cdn_base=cdn_base,
-            region=region,
-            out_dir=out_dir,
-            timeout=timeout,
-        )
-        if entry is not None:
-            entries.append(entry)
+    errors = []
+    max_workers = max(1, min(workers, len(ordered_tables)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(
+                download_table,
+                table,
+                cdn_base=cdn_base,
+                region=region,
+                out_dir=out_dir,
+                timeout=timeout,
+            ): table
+            for table in ordered_tables
+        }
+        for future in as_completed(futures):
+            table = futures[future]
+            try:
+                entry = future.result()
+            except Exception as exc:
+                errors.append(f"{table}: {exc}")
+                continue
+            if entry is not None:
+                entries.append(entry)
+
+    if errors:
+        detail = "\n  - ".join(errors)
+        raise RuntimeError(f"CDN table download failed:\n  - {detail}")
+
+    order = {f"{table}.json": index for index, table in enumerate(ordered_tables)}
+    entries.sort(key=lambda entry: order.get(str(entry["name"]), len(order)))
     return entries
 
 
@@ -145,6 +170,7 @@ def main() -> int:
     parser.add_argument("--manifest-out", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
     if args.region != "cn":
@@ -159,21 +185,13 @@ def main() -> int:
     music_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
-    required = download_tables(
-        REQUIRED_TABLES,
-        required=True,
+    tables = download_tables(
+        CDN_TABLES,
         cdn_base=args.cdn_base,
         region=args.region,
         out_dir=out_dir,
         timeout=args.timeout,
-    )
-    optional = download_tables(
-        OPTIONAL_TABLES,
-        required=False,
-        cdn_base=args.cdn_base,
-        region=args.region,
-        out_dir=out_dir,
-        timeout=args.timeout,
+        workers=args.workers,
     )
 
     music_data, music_headers = fetch(music_url(args.cdn_base, args.region), args.timeout)
@@ -188,9 +206,7 @@ def main() -> int:
         "version": args.version,
         "cdn_base": args.cdn_base.rstrip("/"),
         "downloaded_at": utc_now(),
-        "required_tables": REQUIRED_TABLES,
-        "optional_tables": OPTIONAL_TABLES,
-        "tables": required + optional,
+        "tables": tables,
         "music_metas": {
             "name": "music_metas.json",
             "url": music_url(args.cdn_base, args.region),
