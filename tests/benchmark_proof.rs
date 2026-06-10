@@ -203,6 +203,47 @@ fn rust_bruteforce_matches_exact_on_full_testdata_pools() {
     eprintln!("wrote {}", path.display());
 }
 
+/// issue #2 的 Top-K 回归：dominance 裁剪曾丢失被支配卡参与的次优解。
+/// 完整卡池 C(n,5) 约 7000 万，默认 1000 万预算下会被全池对照跳过，
+/// 故单列一个用例锁住该 fixture（仍受 ALLIUM_BF_CANDIDATE_LIMIT 控制，
+/// 按 issue 验证命令以 ALLIUM_BF_CANDIDATE_LIMIT=100000000 运行）。
+#[test]
+fn rust_bruteforce_matches_exact_top_k_on_issue2_fixture() {
+    const ISSUE2_CASE: &str = "mass_392500_score_multi_ev";
+
+    if usable_masterdata_hint().is_none() {
+        eprintln!(
+            "skip issue #2 Top-K proof: set ALLIUM_MASTERDATA_CN/JP or provide ../masterdata_* from repo root"
+        );
+        return;
+    }
+
+    let root = testdata_dir("real");
+    let manifest = load_manifest(&root).unwrap();
+    let case = manifest
+        .cases
+        .iter()
+        .find(|case| case.name == ISSUE2_CASE)
+        .expect("issue #2 fixture should exist in real manifest");
+    let input = load_json::<LegacyInput>(&root.join(&case.input_path)).unwrap();
+    let (params, user, mut search_params) = transform_input(&input).unwrap();
+    search_params.top_k = search_params.top_k.min(bf_top_k());
+    let game = game_for_region(&params.region).unwrap();
+    let (pool, ctx) = build_card_pool(&user, &game.as_ref(), &params).unwrap();
+    let candidates = combination_count(pool.count(), allium_deck::DECK_SIZE);
+    if candidates > bf_candidate_limit() {
+        eprintln!(
+            "skip issue #2 Top-K proof: {candidates} candidates exceed ALLIUM_BF_CANDIDATE_LIMIT={}",
+            bf_candidate_limit()
+        );
+        return;
+    }
+
+    let (exact, _) = search_instrumented(&pool, &ctx, &search_params);
+    let (brute, _) = brute_force_search(&pool, &ctx, &search_params);
+    assert_same_results(&pool, ISSUE2_CASE, &exact, &brute);
+}
+
 #[test]
 fn rust_bruteforce_matches_exact_on_large_filtered_pools() {
     let Some(masterdata_hint) = usable_masterdata_hint() else {

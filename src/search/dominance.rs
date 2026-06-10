@@ -8,6 +8,9 @@ pub struct DominanceResult {
     pub pool: CardPool,
     pub ctx: SearchContext,
     pub original_indices: Vec<CardIdx>,
+    /// 原 dense 索引 -> 被该卡（直接或经支配链传递）支配而裁掉的原索引列表。
+    /// 仅存活卡的条目非空，供 Top-K 搜索后的替代展开使用。
+    pub alternatives: Vec<Vec<CardIdx>>,
     pub before: usize,
     pub after: usize,
 }
@@ -17,9 +20,24 @@ pub struct DominanceResult {
 /// WL 同样走支配裁剪：被裁的卡仍在独立的 support_cards 里参与支援计算（支援与主搜索池解耦），
 /// 且 `dominates` 要求 attr 相同，异色变体全部保留，diff_attr_bonus 无损。
 pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceResult {
-    let keep = compute_keep_mask(pool, ctx);
+    let (keep, dominated_by) = compute_keep_mask_with_winners(pool, ctx);
     let before = pool.count();
     let after = keep.iter().copied().filter(|keep| *keep).count();
+
+    // 链压缩：被裁卡沿「被谁裁掉」链走到存活根。支配关系逐维度比较、可传递，
+    // 因此根支配它链上的每一张被裁卡。
+    let mut alternatives = vec![Vec::new(); before];
+    let mut dense = 0usize;
+    while dense < before {
+        if !keep[dense] {
+            let mut root = dominated_by[dense] as usize;
+            while !keep[root] {
+                root = dominated_by[root] as usize;
+            }
+            alternatives[root].push(CardIdx::new(dense as u16));
+        }
+        dense += 1;
+    }
 
     let original_indices = keep
         .iter()
@@ -39,6 +57,7 @@ pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceRes
         pool: compacted,
         ctx: remapped_ctx,
         original_indices,
+        alternatives,
         before,
         after,
     }
@@ -94,7 +113,14 @@ pub fn compute_member_keep(pool: &CardPool) -> Vec<bool> {
 }
 
 fn compute_keep_mask(pool: &CardPool, ctx: &SearchContext) -> Vec<bool> {
+    compute_keep_mask_with_winners(pool, ctx).0
+}
+
+/// 返回保留位图与「被谁裁掉」映射：dominated_by[dense] 仅在 keep[dense]=false 时有意义，
+/// 记录裁掉该卡的卡的 dense 索引（裁剪者之后仍可能被裁，使用前需链压缩到存活根）。
+fn compute_keep_mask_with_winners(pool: &CardPool, ctx: &SearchContext) -> (Vec<bool>, Vec<u16>) {
     let mut keep = vec![true; pool.count()];
+    let mut dominated_by = vec![0u16; pool.count()];
     let mut char_id = 0u8;
     while (char_id as usize) < 27 {
         let cards: Vec<CardIdx> = pool
@@ -117,6 +143,7 @@ fn compute_keep_mask(pool: &CardPool, ctx: &SearchContext) -> Vec<bool> {
                         && dominates(pool, ctx, a, b)
                     {
                         keep[b.raw()] = false;
+                        dominated_by[b.raw()] = a.raw() as u16;
                     }
                 }
                 right += 1;
@@ -125,7 +152,7 @@ fn compute_keep_mask(pool: &CardPool, ctx: &SearchContext) -> Vec<bool> {
         }
         char_id += 1;
     }
-    keep
+    (keep, dominated_by)
 }
 
 fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -> bool {
