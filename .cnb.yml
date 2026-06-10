@@ -124,7 +124,9 @@
           exit 0
         fi
         if [ "${CNB_BRANCH:-}" = "main" ] || \
+           [ "${CNB_EVENT:-}" = "api_trigger" ] || \
            [ "${CNB_EVENT:-}" = "api_trigger_deck_wasm_publish" ] || \
+           [ "${CNB_EVENT:-}" = "web_trigger" ] || \
            [ "${CNB_EVENT:-}" = "web_trigger_deck_wasm_publish" ] || \
            [ "${PUBLISH_LATEST:-}" = "true" ]; then
           python3 scripts/upload_cos.py \
@@ -198,7 +200,11 @@ main:
     - *deck_wasm_publish
 
 $:
+  api_trigger:
+    - *deck_wasm_publish
   api_trigger_deck_wasm_publish:
+    - *deck_wasm_publish
+  web_trigger:
     - *deck_wasm_publish
   web_trigger_deck_wasm_publish:
     - *deck_wasm_publish
