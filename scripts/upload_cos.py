@@ -69,7 +69,7 @@ def upload_one(client, *, bucket: str, file: Path, key: str, cache_control: str)
         try:
             with file.open("rb") as body:
                 if size <= SINGLE_PUT_LIMIT:
-                    client.put_object(Body=body, ContentLength=size, **kwargs)
+                    client.put_object(Body=body, ContentLength=str(size), **kwargs)
                 else:
                     client.upload_file(LocalFilePath=str(file), **kwargs)
             return
