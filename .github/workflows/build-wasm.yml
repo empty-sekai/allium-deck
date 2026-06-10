@@ -11,6 +11,7 @@ on:
       - "src/**"
       - "scripts/download_masterdata.py"
       - "scripts/package_wasm.py"
+      - "scripts/resolve_wasm_inputs.py"
       - "scripts/upload_cos.py"
   workflow_dispatch:
     inputs:
@@ -151,8 +152,8 @@ jobs:
           name: deck-wasm-${{ env.REGION }}-${{ env.MASTERDATA_VERSION }}
           path: ${{ env.DIST_DIR }}
 
-      - name: Install S3 SDK
-        run: python3 -m pip install --upgrade boto3
+      - name: Install upload SDKs
+        run: python3 -m pip install --upgrade boto3 cos-python-sdk-v5
 
       - name: Upload immutable COS prefix
         env:

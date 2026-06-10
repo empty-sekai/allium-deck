@@ -67,10 +67,11 @@ def upload_one(client, *, bucket: str, file: Path, key: str, cache_control: str)
     }
     for attempt in range(1, MAX_UPLOAD_ATTEMPTS + 1):
         try:
-            if size <= SINGLE_PUT_LIMIT:
-                client.put_object(Body=file.read_bytes(), **kwargs)
-            else:
-                client.upload_file(LocalFilePath=str(file), **kwargs)
+            with file.open("rb") as body:
+                if size <= SINGLE_PUT_LIMIT:
+                    client.put_object(Body=body, ContentLength=size, **kwargs)
+                else:
+                    client.upload_file(LocalFilePath=str(file), **kwargs)
             return
         except Exception:
             if attempt >= MAX_UPLOAD_ATTEMPTS:
@@ -89,6 +90,7 @@ def upload_with_boto3(
     secret_key: str,
     session_token: str,
     cache_control: str,
+    addressing_style: str,
 ) -> int:
     try:
         import boto3
@@ -105,9 +107,9 @@ def upload_with_boto3(
         aws_session_token=session_token or None,
         config=Config(
             connect_timeout=10,
-            read_timeout=60,
+            read_timeout=180,
             retries={"max_attempts": MAX_UPLOAD_ATTEMPTS, "mode": "standard"},
-            s3={"addressing_style": "virtual"},
+            s3={"addressing_style": addressing_style},
         ),
     )
 
@@ -117,13 +119,15 @@ def upload_with_boto3(
         key = f"{prefix}/{rel}"
         for attempt in range(1, MAX_UPLOAD_ATTEMPTS + 1):
             try:
-                client.put_object(
-                    Bucket=bucket,
-                    Key=key,
-                    Body=file.read_bytes(),
-                    ContentType=content_type(file),
-                    CacheControl=cache_control,
-                )
+                with file.open("rb") as body:
+                    client.put_object(
+                        Bucket=bucket,
+                        Key=key,
+                        Body=body,
+                        ContentLength=file.stat().st_size,
+                        ContentType=content_type(file),
+                        CacheControl=cache_control,
+                    )
                 break
             except Exception:
                 if attempt >= MAX_UPLOAD_ATTEMPTS:
@@ -131,6 +135,48 @@ def upload_with_boto3(
                 time.sleep(min(2 ** (attempt - 1), 8))
         uploaded += 1
         print(f"[upload] s3://{bucket}/{key}")
+    return uploaded
+
+
+def upload_with_qcloud(
+    *,
+    source_dir: Path,
+    prefix: str,
+    bucket: str,
+    region: str,
+    secret_id: str,
+    secret_key: str,
+    session_token: str,
+    cache_control: str,
+) -> int:
+    try:
+        from qcloud_cos import CosConfig, CosS3Client
+    except ImportError as exc:
+        raise RuntimeError("qcloud_cos is not installed; run `pip install cos-python-sdk-v5`") from exc
+
+    config = CosConfig(
+        Region=region,
+        SecretId=secret_id,
+        SecretKey=secret_key,
+        Token=session_token or None,
+        Scheme="https",
+        Timeout=180,
+    )
+    client = CosS3Client(config)
+
+    uploaded = 0
+    for file in sorted(path for path in source_dir.rglob("*") if path.is_file()):
+        rel = file.relative_to(source_dir).as_posix()
+        key = f"{prefix}/{rel}"
+        upload_one(
+            client,
+            bucket=bucket,
+            file=file,
+            key=key,
+            cache_control=cache_control,
+        )
+        uploaded += 1
+        print(f"[upload] cos://{bucket}/{key}")
     return uploaded
 
 
@@ -144,6 +190,17 @@ def main() -> int:
     parser.add_argument("--secret-key")
     parser.add_argument("--session-token", default=os.environ.get("COS_SESSION_TOKEN", "") or os.environ.get("S3_SESSION_TOKEN", ""))
     parser.add_argument("--cache-control", default="public,max-age=300")
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "qcloud", "s3"],
+        default=os.environ.get("UPLOAD_BACKEND", "auto"),
+        help="upload backend; auto uses S3 endpoint first when configured, then falls back to qcloud",
+    )
+    parser.add_argument(
+        "--s3-addressing-style",
+        choices=["virtual", "path", "auto"],
+        default=os.environ.get("S3_ADDRESSING_STYLE", os.environ.get("COS_ADDRESSING_STYLE", "auto")),
+    )
     args = parser.parse_args()
 
     source_dir = Path(args.dir)
@@ -161,13 +218,48 @@ def main() -> int:
     endpoint = os.environ.get("S3_ENDPOINT", "").strip()
 
     prefix = args.prefix.strip("/")
-    if endpoint:
+    backend = args.backend
+    if backend == "auto":
+        backend = "s3" if endpoint else "qcloud"
+
+    if backend == "s3":
+        if not endpoint:
+            raise RuntimeError("S3 backend requires S3_ENDPOINT")
         endpoint = normalize_s3_endpoint(endpoint, bucket)
-        uploaded = upload_with_boto3(
+        addressing_styles = (
+            ["virtual", "path"] if args.s3_addressing_style == "auto" else [args.s3_addressing_style]
+        )
+        last_error: Exception | None = None
+        for addressing_style in addressing_styles:
+            try:
+                uploaded = upload_with_boto3(
+                    source_dir=source_dir,
+                    prefix=prefix,
+                    bucket=bucket,
+                    endpoint=endpoint,
+                    region=region,
+                    secret_id=secret_id,
+                    secret_key=secret_key,
+                    session_token=args.session_token,
+                    cache_control=args.cache_control,
+                    addressing_style=addressing_style,
+                )
+                print(f"[upload] {uploaded} files")
+                return 0
+            except Exception as exc:
+                last_error = exc
+                if addressing_style == addressing_styles[-1]:
+                    break
+                print(f"[upload] retrying with S3 addressing_style={addressing_styles[-1]} after: {exc}")
+        if args.backend == "s3":
+            raise last_error or RuntimeError("S3 upload failed")
+        print(f"[upload] falling back to qcloud COS SDK after S3 failure: {last_error}")
+
+    if backend == "qcloud" or args.backend == "auto":
+        uploaded = upload_with_qcloud(
             source_dir=source_dir,
             prefix=prefix,
             bucket=bucket,
-            endpoint=endpoint,
             region=region,
             secret_id=secret_id,
             secret_key=secret_key,
@@ -177,37 +269,7 @@ def main() -> int:
         print(f"[upload] {uploaded} files")
         return 0
 
-    try:
-        from qcloud_cos import CosConfig, CosS3Client
-    except ImportError as exc:
-        raise RuntimeError("qcloud_cos is not installed; run `pip install cos-python-sdk-v5`") from exc
-
-    config = CosConfig(
-        Region=region,
-        SecretId=secret_id,
-        SecretKey=secret_key,
-        Token=args.session_token or None,
-        Scheme="https",
-        Timeout=60,
-    )
-    client = CosS3Client(config)
-
-    uploaded = 0
-    for file in sorted(path for path in source_dir.rglob("*") if path.is_file()):
-        rel = file.relative_to(source_dir).as_posix()
-        key = f"{prefix}/{rel}"
-        upload_one(
-            client,
-            bucket=bucket,
-            file=file,
-            key=key,
-            cache_control=args.cache_control,
-        )
-        uploaded += 1
-        print(f"[upload] cos://{bucket}/{key}")
-
-    print(f"[upload] {uploaded} files")
-    return 0
+    raise RuntimeError(f"unsupported backend: {backend}")
 
 
 if __name__ == "__main__":
