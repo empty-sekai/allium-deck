@@ -207,7 +207,7 @@ jobs:
           else
             RANGE="${GITHUB_REF_NAME}"
           fi
-          git-cliff --tag "${GITHUB_REF_NAME}" --output CHANGELOG.md "$RANGE"
+          git-cliff --tag "${GITHUB_REF_NAME}" --output CHANGELOG.md --first-parent "$RANGE"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
