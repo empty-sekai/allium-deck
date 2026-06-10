@@ -70,7 +70,7 @@ def main() -> int:
         if args.mode == "publish":
             version = infer_publish_version(cdn_base, region)
         else:
-            version = env_first("CNB_BRANCH", "GITHUB_REF_NAME")
+            version = infer_publish_version(cdn_base, region)
     version = sanitize_version(version)
 
     source_repository = env_first("SOURCE_REPOSITORY", "GITHUB_REPOSITORY") or "empty-sekai/allium-deck"

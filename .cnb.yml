@@ -193,8 +193,7 @@
         CNB-built WASM package for $RELEASE_TAG.
 
         Source revision: $SOURCE_REVISION
-        Masterdata label: $MASTERDATA_VERSION
-        CDN base: $CDN_BASE
+        Masterdata version: $MASTERDATA_VERSION
         EOF
     - name: Upload GitHub Release asset
       script: |
