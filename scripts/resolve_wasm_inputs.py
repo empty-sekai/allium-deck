@@ -9,8 +9,9 @@ import os
 import re
 import shlex
 import subprocess
-import urllib.request
 from pathlib import Path
+
+from http_retry import read_url
 
 
 def env_first(*names: str) -> str:
@@ -30,8 +31,13 @@ def git_value(*args: str) -> str:
 
 def infer_publish_version(cdn_base: str, region: str) -> str:
     manifest_url = f"{cdn_base.rstrip('/')}/deck-wasm/{region}/latest/manifest.json"
-    with urllib.request.urlopen(manifest_url, timeout=30) as response:
-        manifest = json.load(response)
+    data, _headers = read_url(
+        manifest_url,
+        headers={"User-Agent": "allium-deck-wasm-ci/1.0"},
+        timeout=30,
+        label="deck wasm latest manifest",
+    )
+    manifest = json.loads(data)
     return str(manifest.get("masterdata_version") or "").strip()
 
 

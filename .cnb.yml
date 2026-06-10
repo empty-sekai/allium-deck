@@ -1,5 +1,6 @@
 .deck-wasm-download-masterdata: &deck_wasm_download_masterdata
   name: Download CN masterdata
+  retry: 2
   script: |
     set -e
     . .tmp/cnb-wasm.env
@@ -10,6 +11,7 @@
       --music-metas "$MUSIC_METAS" \
       --manifest-out "$MASTERDATA_MANIFEST" \
       --version "$MASTERDATA_VERSION" \
+      --retries "${DOWNLOAD_RETRIES:-5}" \
       --workers "${DOWNLOAD_WORKERS:-8}"
 
 .deck-wasm-build-gamedata: &deck_wasm_build_gamedata

@@ -7,13 +7,13 @@ import argparse
 import hashlib
 import json
 import sys
-import time
 import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
+
+from http_retry import DEFAULT_ATTEMPTS, read_url
 
 
 CDN_TABLES = [
@@ -53,21 +53,14 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def fetch(url: str, timeout: int) -> tuple[bytes, dict[str, str]]:
-    request = urllib.request.Request(url, headers={"User-Agent": "allium-deck-wasm-ci/1.0"})
-    last_error: Exception | None = None
-    for attempt in range(1, 5):
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return response.read(), dict(response.headers.items())
-        except urllib.error.HTTPError:
-            raise
-        except urllib.error.URLError as exc:
-            last_error = exc
-            if attempt >= 4:
-                break
-            time.sleep(min(2 ** (attempt - 1), 8))
-    raise last_error or RuntimeError(f"download failed for {url}")
+def fetch(url: str, timeout: int, *, label: str, retries: int) -> tuple[bytes, dict[str, str]]:
+    return read_url(
+        url,
+        headers={"User-Agent": "allium-deck-wasm-ci/1.0"},
+        timeout=timeout,
+        attempts=retries,
+        label=label,
+    )
 
 
 def parse_json(data: bytes, label: str) -> object:
@@ -92,14 +85,15 @@ def download_table(
     region: str,
     out_dir: Path,
     timeout: int,
+    retries: int,
 ) -> dict[str, object] | None:
     url = table_url(cdn_base, region, table)
     target = out_dir / f"{table}.json"
     try:
-        data, headers = fetch(url, timeout)
+        data, headers = fetch(url, timeout, label=f"{table}.json", retries=retries)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"download failed for {url}: HTTP {exc.code}") from exc
-    except urllib.error.URLError as exc:
+    except Exception as exc:
         raise RuntimeError(f"download failed for {url}: {exc}") from exc
 
     parse_json(data, f"{table}.json")
@@ -121,6 +115,7 @@ def download_tables(
     region: str,
     out_dir: Path,
     timeout: int,
+    retries: int,
     workers: int,
 ) -> list[dict[str, object]]:
     ordered_tables = list(tables)
@@ -139,6 +134,7 @@ def download_tables(
                 region=region,
                 out_dir=out_dir,
                 timeout=timeout,
+                retries=retries,
             ): table
             for table in ordered_tables
         }
@@ -170,6 +166,7 @@ def main() -> int:
     parser.add_argument("--manifest-out", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--timeout", type=int, default=60)
+    parser.add_argument("--retries", type=int, default=DEFAULT_ATTEMPTS)
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
@@ -191,10 +188,16 @@ def main() -> int:
         region=args.region,
         out_dir=out_dir,
         timeout=args.timeout,
+        retries=args.retries,
         workers=args.workers,
     )
 
-    music_data, music_headers = fetch(music_url(args.cdn_base, args.region), args.timeout)
+    music_data, music_headers = fetch(
+        music_url(args.cdn_base, args.region),
+        args.timeout,
+        label="music_metas.json",
+        retries=args.retries,
+    )
     music_rows = parse_json(music_data, "music_metas.json")
     if not isinstance(music_rows, list) or not music_rows:
         raise RuntimeError("music_metas.json is empty or not an array")
