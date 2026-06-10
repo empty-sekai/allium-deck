@@ -1,6 +1,17 @@
 name: build-wasm
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-wasm.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "scripts/download_masterdata.py"
+      - "scripts/package_wasm.py"
+      - "scripts/upload_cos.py"
   workflow_dispatch:
     inputs:
       region:
@@ -42,6 +53,7 @@ jobs:
           import json
           import os
           import re
+          import urllib.request
 
           with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as handle:
               event = json.load(handle)
@@ -52,7 +64,15 @@ jobs:
           cdn_base = (payload.get("cdn_base") or inputs.get("cdn_base") or "https://cdn.emptysekai.com").strip().rstrip("/")
           version = (payload.get("masterdata_version") or inputs.get("masterdata_version") or "").strip()
           if not version:
-              raise SystemExit("masterdata_version is required and must be the CN dataVersion")
+              manifest_url = f"{cdn_base}/deck-wasm/{region}/latest/manifest.json"
+              try:
+                  with urllib.request.urlopen(manifest_url, timeout=30) as response:
+                      manifest = json.load(response)
+                  version = str(manifest.get("masterdata_version") or "").strip()
+              except Exception as exc:
+                  raise SystemExit(f"masterdata_version is required and could not be inferred from {manifest_url}: {exc}") from exc
+          if not version:
+              raise SystemExit("masterdata_version is required and could not be inferred from current CDN manifest")
           version = re.sub(r"[^A-Za-z0-9._-]+", "-", version).strip("-")
           if not version:
               raise SystemExit("masterdata_version became empty after sanitization")

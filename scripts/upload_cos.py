@@ -6,8 +6,12 @@ from __future__ import annotations
 import argparse
 import mimetypes
 import os
+import time
 from pathlib import Path
 from urllib.parse import urlparse
+
+SINGLE_PUT_LIMIT = 16 * 1024 * 1024
+MAX_UPLOAD_ATTEMPTS = 4
 
 
 def content_type(path: Path) -> str:
@@ -40,6 +44,29 @@ def region_from_endpoint(endpoint: str) -> str:
     if len(parts) >= 3 and parts[0] == "cos":
         return parts[1]
     return ""
+
+
+def upload_one(client, *, bucket: str, file: Path, key: str, cache_control: str) -> None:
+    size = file.stat().st_size
+    kwargs = {
+        "Bucket": bucket,
+        "LocalFilePath": str(file),
+        "Key": key,
+        "EnableMD5": True,
+        "CacheControl": cache_control,
+        "ContentType": content_type(file),
+    }
+    for attempt in range(1, MAX_UPLOAD_ATTEMPTS + 1):
+        try:
+            if size <= SINGLE_PUT_LIMIT:
+                client.put_object_from_local_file(**kwargs)
+            else:
+                client.upload_file(**kwargs)
+            return
+        except Exception:
+            if attempt >= MAX_UPLOAD_ATTEMPTS:
+                raise
+            time.sleep(min(2 ** (attempt - 1), 8))
 
 
 def main() -> int:
@@ -86,13 +113,12 @@ def main() -> int:
     for file in sorted(path for path in source_dir.rglob("*") if path.is_file()):
         rel = file.relative_to(source_dir).as_posix()
         key = f"{prefix}/{rel}"
-        client.upload_file(
-            Bucket=bucket,
-            LocalFilePath=str(file),
-            Key=key,
-            EnableMD5=True,
-            CacheControl=args.cache_control,
-            ContentType=content_type(file),
+        upload_one(
+            client,
+            bucket=bucket,
+            file=file,
+            key=key,
+            cache_control=args.cache_control,
         )
         uploaded += 1
         print(f"[upload] cos://{bucket}/{key}")
