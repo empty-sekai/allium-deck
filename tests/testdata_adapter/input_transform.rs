@@ -75,6 +75,8 @@ pub fn transform_input(
             .user_mysekai_gates
             .iter()
             .map(|entry| UserGateBonus {
+                mysekai_gate_id: Some(entry.mysekai_gate_id),
+                mysekai_gate_level: Some(entry.mysekai_gate_level),
                 unit: gate_unit(entry.mysekai_gate_id).to_string(),
                 bonus_rate: (entry.mysekai_gate_level.max(0) as f64) * 0.1,
             })

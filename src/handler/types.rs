@@ -30,6 +30,10 @@ pub struct GameData<'a> {
     pub character_ranks: &'a [CharacterRank],
     /// MySekai 画布加成表。
     pub card_mysekai_canvas_bonuses: &'a [CardMysekaiCanvasBonus],
+    /// MySekai gate 主表。
+    pub mysekai_gates: &'a [MysekaiGate],
+    /// MySekai gate 等级表。
+    pub mysekai_gate_levels: &'a [MysekaiGateLevel],
     /// 活动主表。
     pub events: &'a [Event],
     /// 活动卡加成表。
@@ -418,6 +422,26 @@ pub struct CardMysekaiCanvasBonus {
     pub power3_bonus_fixed: i32,
 }
 
+/// MySekai gate 主表。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MysekaiGate {
+    /// gate ID。
+    pub id: i32,
+    /// gate 适用团。
+    pub unit: String,
+}
+
+/// MySekai gate 等级表。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MysekaiGateLevel {
+    /// gate ID。
+    pub mysekai_gate_id: i32,
+    /// gate 等级。
+    pub level: i32,
+    /// 综合力加成率。
+    pub power_bonus_rate: f64,
+}
+
 /// 活动主表。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Event {
@@ -736,6 +760,10 @@ pub struct UserFixtureBonus {
 /// 用户 gate bonus。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserGateBonus {
+    /// 原始 gate ID。真实用户数据优先通过 masterdata 查表解析。
+    pub mysekai_gate_id: Option<i32>,
+    /// 原始 gate 等级。
+    pub mysekai_gate_level: Option<i32>,
     /// 团代码。
     pub unit: String,
     /// bonus rate。

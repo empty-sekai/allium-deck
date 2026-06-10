@@ -103,9 +103,89 @@ jobs:
           name: recommend_cli-${{ matrix.target }}
           path: release/*
 
+  build-wasm-release:
+    name: build wasm release package
+    needs: test
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve WASM release inputs
+        run: |
+          {
+            echo "REGION=cn"
+            echo "CDN_BASE=https://cdn.emptysekai.com"
+            echo "MASTERDATA_VERSION=${GITHUB_REF_NAME}"
+            echo "MASTERDATA_DIR=.tmp/masterdata/cn"
+            echo "MUSIC_METAS=.tmp/music_metas/cn/music_metas.json"
+            echo "MASTERDATA_MANIFEST=.tmp/masterdata-manifest.json"
+            echo "DIST_DIR=dist/deck-wasm"
+            echo "WASM_ZIP=allium-deck-wasm-${GITHUB_REF_NAME}-cn.zip"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry & build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.15.0 --locked
+
+      - name: Download CN latest masterdata snapshot
+        run: |
+          python3 scripts/download_masterdata.py \
+            --region "$REGION" \
+            --cdn-base "$CDN_BASE" \
+            --out-dir "$MASTERDATA_DIR" \
+            --music-metas "$MUSIC_METAS" \
+            --manifest-out "$MASTERDATA_MANIFEST" \
+            --version "$MASTERDATA_VERSION"
+
+      - name: Build embedded gamedata
+        run: |
+          cargo run --release --bin build_gamedata -- \
+            --masterdata "$MASTERDATA_DIR" \
+            --music-metas "$MUSIC_METAS" \
+            --region "$REGION"
+
+      - name: Build wasm
+        env:
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+          CARGO_PROFILE_RELEASE_LTO: "fat"
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+          CARGO_PROFILE_RELEASE_PANIC: "abort"
+        run: wasm-pack build --target web --features wasm
+
+      - name: Package WASM files
+        run: |
+          python3 scripts/package_wasm.py \
+            --pkg-dir pkg \
+            --out-dir "$DIST_DIR" \
+            --region "$REGION" \
+            --version "$MASTERDATA_VERSION" \
+            --cdn-base "$CDN_BASE" \
+            --source-repository "$GITHUB_REPOSITORY" \
+            --source-revision "$GITHUB_SHA" \
+            --masterdata-manifest "$MASTERDATA_MANIFEST"
+          mkdir -p release
+          (cd "$DIST_DIR" && zip -9 -r "../../$WASM_ZIP" .)
+          mv "$WASM_ZIP" release/
+
+      - name: Upload WASM release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: allium-deck-wasm-${{ github.ref_name }}-cn
+          path: release/*.zip
+
   release:
     name: release
-    needs: [test, build-binaries]
+    needs: [test, build-binaries, build-wasm-release]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -139,3 +219,4 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             artifacts/**/recommend_cli-*
+            artifacts/**/allium-deck-wasm-*.zip

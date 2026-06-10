@@ -15,8 +15,7 @@ static GAMEDATA: OnceLock<Result<OwnedGameData, String>> = OnceLock::new();
 /// 还原内嵌的 cn `OwnedGameData`。
 pub fn embedded_gamedata() -> Result<&'static OwnedGameData, EngineError> {
     match GAMEDATA.get_or_init(|| {
-        postcard::from_bytes(GAMEDATA_CN)
-            .map_err(|err| format!("内嵌 masterdata 解码失败: {err}"))
+        postcard::from_bytes(GAMEDATA_CN).map_err(|err| format!("内嵌 masterdata 解码失败: {err}"))
     }) {
         Ok(data) => Ok(data),
         Err(message) => Err(EngineError::Build(message.clone())),

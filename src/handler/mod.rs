@@ -310,9 +310,8 @@ fn keep_card(card: &CardIntermediate, params: &types::BuildParams) -> bool {
             .and_then(parse_unit_code)
             .and_then(types::unit_to_pool_index)
         {
-            let piapro_bit = 1u8 << 5;
             let wanted = 1u8 << unit;
-            if card.unit_mask_raw & (wanted | piapro_bit) == 0 {
+            if card.unit_mask_raw & wanted == 0 {
                 return false;
             }
         }
@@ -335,9 +334,8 @@ fn keep_card(card: &CardIntermediate, params: &types::BuildParams) -> bool {
                 .and_then(parse_unit_code)
                 .and_then(types::unit_to_pool_index)
             {
-                let piapro_bit = 1u8 << 5;
                 let wanted = 1u8 << unit;
-                if card.unit_mask_raw & (wanted | piapro_bit) == 0 {
+                if card.unit_mask_raw & wanted == 0 {
                     return false;
                 }
             }
@@ -355,8 +353,9 @@ fn keep_card(card: &CardIntermediate, params: &types::BuildParams) -> bool {
 
 fn normalize_boost_rate_pct(boost: Option<i32>) -> u32 {
     match boost {
-        Some(value) if value > 0 && value <= 20 => (value * 100) as u32,
-        Some(value) if value > 0 => value as u32,
+        Some(value) if value <= 0 => 100,
+        Some(value) if value <= 5 => (value * 500) as u32,
+        Some(value) if value <= 10 => (2500 + (value - 5) * 200) as u32,
         _ => 100,
     }
 }
@@ -910,6 +909,8 @@ mod tests {
             game_character_units: units,
             character_ranks: &[],
             card_mysekai_canvas_bonuses: &[],
+            mysekai_gates: &[],
+            mysekai_gate_levels: &[],
             events: &[],
             event_cards: &[],
             event_deck_bonuses: &[],
@@ -943,6 +944,69 @@ mod tests {
             is_virtual: false,
             has_canvas_bonus_override: None,
         }
+    }
+
+    #[test]
+    fn boost_is_fire_count_piecewise_multiplier() {
+        assert_eq!(normalize_boost_rate_pct(Some(0)), 100);
+        assert_eq!(normalize_boost_rate_pct(Some(1)), 500);
+        assert_eq!(normalize_boost_rate_pct(Some(5)), 2500);
+        assert_eq!(normalize_boost_rate_pct(Some(10)), 3500);
+        assert_eq!(normalize_boost_rate_pct(Some(11)), 100);
+        assert_eq!(normalize_boost_rate_pct(None), 100);
+    }
+
+    #[test]
+    fn hard_unit_filter_keeps_virtual_singer_support_unit_only_when_matching() {
+        let cards = [MasterCard {
+            id: 1,
+            character_id: 21,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: "chara_000001".to_string(),
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: Some("light_sound".to_string()),
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        }];
+        let params = [types::CardParameter {
+            card_id: 1,
+            level: 1,
+            param1: 100,
+            param2: 100,
+            param3: 100,
+        }];
+        let units = [types::GameCharacterUnit {
+            game_character_id: 21,
+            unit: "piapro".to_string(),
+        }];
+        let game = sample_game(&cards, &params, &[], &[], &[], &[], &[], &[], &units);
+        let user = UserProfile {
+            user_cards: vec![sample_user_card(1)],
+            ..UserProfile::default()
+        };
+
+        let ln_params = BuildParams {
+            unit_filter: Some("light_sound".to_string()),
+            ..BuildParams::default()
+        };
+        let (pool, _) = build_card_pool(&user, &game, &ln_params).unwrap();
+        assert_eq!(pool.count(), 1);
+
+        let mmj_params = BuildParams {
+            unit_filter: Some("idol".to_string()),
+            ..BuildParams::default()
+        };
+        assert_eq!(
+            build_card_pool(&user, &game, &mmj_params).unwrap_err(),
+            BuildError::EmptyPool
+        );
     }
 
     #[test]
@@ -1092,6 +1156,8 @@ mod tests {
             game_character_units: &units,
             character_ranks: &[],
             card_mysekai_canvas_bonuses: &[],
+            mysekai_gates: &[],
+            mysekai_gate_levels: &[],
             events: &events,
             event_cards: &[],
             event_deck_bonuses: &[],
@@ -1895,6 +1961,8 @@ mod tests {
             game_character_units: &units,
             character_ranks: &[],
             card_mysekai_canvas_bonuses: &[],
+            mysekai_gates: &[],
+            mysekai_gate_levels: &[],
             events: &[],
             event_cards: &[],
             event_deck_bonuses: &[],
@@ -2184,6 +2252,8 @@ mod tests {
             game_character_units: &units,
             character_ranks: &[],
             card_mysekai_canvas_bonuses: &[],
+            mysekai_gates: &[],
+            mysekai_gate_levels: &[],
             events: &[],
             event_cards: &[],
             event_deck_bonuses: &[],

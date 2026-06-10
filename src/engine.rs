@@ -6,10 +6,10 @@ use crate::handler::{
     BondsHonor, CardEpisode, CardMysekaiCanvasBonus, CardParameter, CardRarity, CharacterRank,
     Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
     EventRarityBonusRate, EventSkillScoreUpLimit, GameCharacterUnit, GameData, Honor, HonorLevel,
-    MasterCard, MasterLesson, MusicDifficulty, MusicMeta, Skill, SkillEffect, UserAreaItem,
-    UserCard, UserChallengeDeck, UserDeck, UserFixtureBonus, UserGateBonus, UserHonor, UserProfile,
-    UserWBSupportDeck, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus, WorldBloom,
-    WorldBloomDiffAttrBonus,
+    MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate, MysekaiGateLevel, Skill,
+    SkillEffect, UserAreaItem, UserCard, UserChallengeDeck, UserDeck, UserFixtureBonus,
+    UserGateBonus, UserHonor, UserProfile, UserWBSupportDeck, WBSupportDeckBonus,
+    WBSupportDeckUnitEventLimitedBonus, WorldBloom, WorldBloomDiffAttrBonus,
 };
 use crate::search::{DeckResult, SearchParams};
 use crate::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
@@ -170,8 +170,10 @@ fn user_profile_from_value(value: &Value) -> UserProfile {
                 let gate_id = i32_field(entry, "mysekaiGateId")?;
                 let level = i32_field(entry, "mysekaiGateLevel").unwrap_or(0);
                 Some(UserGateBonus {
-                    unit: gate_unit(gate_id).to_string(),
-                    bonus_rate: (level.max(0) as f64) * 0.1,
+                    mysekai_gate_id: Some(gate_id),
+                    mysekai_gate_level: Some(level),
+                    unit: String::new(),
+                    bonus_rate: 0.0,
                 })
             })
             .collect(),
@@ -282,9 +284,12 @@ pub fn parse_build_params_json(
     );
     params.live_skill_order = parse_live_skill_order(
         string_field(&value, "liveSkillOrder")
+            .or_else(|| string_field(&value, "skillOrderChooseStrategy"))
+            .or_else(|| string_field(&value, "skill_order_choose_strategy"))
             .as_deref()
             .unwrap_or("best"),
     );
+    params.specific_skill_order = parse_specific_skill_order(&value);
     params.multi_teammate_score_up = i32_field(&value, "multiLiveTeammateScoreUp")
         .or_else(|| i32_field(&value, "multi_teammate_score_up"));
     params.multi_teammate_power = i32_field(&value, "multiLiveTeammatePower")
@@ -406,17 +411,6 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn gate_unit(gate_id: i32) -> &'static str {
-    match gate_id {
-        1 => "light_sound",
-        2 => "idol",
-        3 => "street",
-        4 => "theme_park",
-        5 => "school_refusal",
-        _ => "piapro",
-    }
-}
-
 fn parse_live_type(value: &str) -> LiveType {
     match value.trim().to_ascii_lowercase().as_str() {
         "auto" => LiveType::Auto,
@@ -427,6 +421,29 @@ fn parse_live_type(value: &str) -> LiveType {
         "mysekai" => LiveType::Mysekai,
         _ => LiveType::Solo,
     }
+}
+
+fn parse_specific_skill_order(value: &Value) -> Option<[usize; 5]> {
+    let entry = value
+        .get("specificSkillOrder")
+        .or_else(|| value.get("specific_skill_order"))?;
+    let values = match entry {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_u64().map(|value| value as usize))
+            .collect::<Vec<_>>(),
+        Value::String(text) => text
+            .split(',')
+            .filter_map(|part| part.trim().parse::<usize>().ok())
+            .collect::<Vec<_>>(),
+        _ => return None,
+    };
+    if values.len() != 5 {
+        return None;
+    }
+    let mut order = [0usize; 5];
+    order.copy_from_slice(&values[..5]);
+    Some(order)
 }
 
 fn parse_target(value: &str) -> ScoreTarget {
@@ -469,6 +486,8 @@ pub struct OwnedGameData {
     pub game_character_units: Vec<GameCharacterUnit>,
     pub character_ranks: Vec<CharacterRank>,
     pub card_mysekai_canvas_bonuses: Vec<CardMysekaiCanvasBonus>,
+    pub mysekai_gates: Vec<MysekaiGate>,
+    pub mysekai_gate_levels: Vec<MysekaiGateLevel>,
     pub events: Vec<Event>,
     pub event_cards: Vec<EventCard>,
     pub event_deck_bonuses: Vec<EventDeckBonus>,
@@ -611,6 +630,23 @@ impl OwnedGameData {
                     power1_bonus_fixed: entry.power1_bonus_fixed,
                     power2_bonus_fixed: entry.power2_bonus_fixed,
                     power3_bonus_fixed: entry.power3_bonus_fixed,
+                })
+                .collect(),
+            mysekai_gates: sources
+                .optional::<Vec<RawMysekaiGate>>("mysekaiGates.json")?
+                .into_iter()
+                .map(|entry| MysekaiGate {
+                    id: entry.id,
+                    unit: entry.unit,
+                })
+                .collect(),
+            mysekai_gate_levels: sources
+                .optional::<Vec<RawMysekaiGateLevel>>("mysekaiGateLevels.json")?
+                .into_iter()
+                .map(|entry| MysekaiGateLevel {
+                    mysekai_gate_id: entry.mysekai_gate_id,
+                    level: entry.level,
+                    power_bonus_rate: entry.power_bonus_rate,
                 })
                 .collect(),
             events: events
@@ -795,6 +831,8 @@ impl OwnedGameData {
             game_character_units: &self.game_character_units,
             character_ranks: &self.character_ranks,
             card_mysekai_canvas_bonuses: &self.card_mysekai_canvas_bonuses,
+            mysekai_gates: &self.mysekai_gates,
+            mysekai_gate_levels: &self.mysekai_gate_levels,
             events: &self.events,
             event_cards: &self.event_cards,
             event_deck_bonuses: &self.event_deck_bonuses,
@@ -1354,6 +1392,21 @@ struct RawCardMysekaiCanvasBonus {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RawMysekaiGate {
+    id: i32,
+    unit: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMysekaiGateLevel {
+    mysekai_gate_id: i32,
+    level: i32,
+    power_bonus_rate: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawEvent {
     id: i32,
     event_type: String,
@@ -1529,6 +1582,23 @@ mod tests {
         let params = parse_build_params_json(r#"{"region":"cn"}"#).expect("parse");
         assert!(!params.card_configs.rarity_4_config.level_max);
         assert!(params.single_card_configs.is_empty());
+    }
+
+    #[test]
+    fn parse_build_params_reads_specific_skill_order() {
+        let params = parse_build_params_json(
+            r#"{"liveSkillOrder":"specific","specificSkillOrder":[4,3,2,1,0]}"#,
+        )
+        .expect("parse");
+        assert_eq!(params.live_skill_order, LiveSkillOrder::Specific);
+        assert_eq!(params.specific_skill_order, Some([4, 3, 2, 1, 0]));
+
+        let params = parse_build_params_json(
+            r#"{"skill_order_choose_strategy":"specific","specific_skill_order":"0,1,2,3,4"}"#,
+        )
+        .expect("parse");
+        assert_eq!(params.live_skill_order, LiveSkillOrder::Specific);
+        assert_eq!(params.specific_skill_order, Some([0, 1, 2, 3, 4]));
     }
 
     #[test]
