@@ -7,6 +7,7 @@
 | 文件 | 作用 |
 |------|------|
 | `Dockerfile` | builder：缓存依赖层 → 编译 + 跑单测 |
+| `Dockerfile.wasm-ci` | CNB WASM 发布 builder：Rust 1.94 + wasm-pack + Python 上传 SDK |
 
 CLI 真身已迁到 `src/bin/recommend_cli.rs`（`cargo install allium-deck` 出来就是 `recommend_cli` 命令），`docker/` 不再放源码。
 
