@@ -199,6 +199,12 @@ main:
   push:
     - *deck_wasm_publish
 
+"codex/fix-deck-wasm-ci-upload":
+  push:
+    - <<: *deck_wasm_publish
+      env:
+        PUBLISH_LATEST: "true"
+
 $:
   api_trigger:
     - *deck_wasm_publish
