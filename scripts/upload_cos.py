@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
-SINGLE_PUT_LIMIT = 16 * 1024 * 1024
+SINGLE_PUT_LIMIT = 64 * 1024 * 1024
 MAX_UPLOAD_ATTEMPTS = 4
 
 
@@ -50,7 +50,6 @@ def upload_one(client, *, bucket: str, file: Path, key: str, cache_control: str)
     size = file.stat().st_size
     kwargs = {
         "Bucket": bucket,
-        "LocalFilePath": str(file),
         "Key": key,
         "EnableMD5": True,
         "CacheControl": cache_control,
@@ -59,9 +58,9 @@ def upload_one(client, *, bucket: str, file: Path, key: str, cache_control: str)
     for attempt in range(1, MAX_UPLOAD_ATTEMPTS + 1):
         try:
             if size <= SINGLE_PUT_LIMIT:
-                client.put_object_from_local_file(**kwargs)
+                client.put_object(Body=file.read_bytes(), **kwargs)
             else:
-                client.upload_file(**kwargs)
+                client.upload_file(LocalFilePath=str(file), **kwargs)
             return
         except Exception:
             if attempt >= MAX_UPLOAD_ATTEMPTS:
@@ -105,6 +104,7 @@ def main() -> int:
         SecretKey=secret_key,
         Token=args.session_token or None,
         Scheme="https",
+        Timeout=60,
     )
     client = CosS3Client(config)
     prefix = args.prefix.strip("/")
