@@ -4,12 +4,14 @@
 //! （parse_* / build_card_pool / search / summarize_deck / game_id），无任何组卡逻辑复制——
 //! 改组卡只动 `search/`+`handler/`，此入口自动跟随。
 
-use std::collections::HashMap;
 use serde::Serialize;
+use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
 use crate::engine::{parse_build_params_json, parse_user_profile_json};
-use crate::handler::{build_card_pool, cultivated_user_cards, GameData, MasterCard, UserCard};
+use crate::handler::{
+    build_card_pool, cultivated_user_cards, GameData, MasterCard, UserCard, UserProfile,
+};
 use crate::pool::CardPool;
 use crate::search::{search, summarize_deck, DeckResult, SearchContext, SearchParams};
 
@@ -58,7 +60,9 @@ pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, 
     let decks: Vec<DeckOut> = results
         .iter()
         .enumerate()
-        .map(|(index, result)| DeckOut::build(index + 1, &pool, &ctx, &game, &user_cards, result))
+        .map(|(index, result)| {
+            DeckOut::build(index + 1, &pool, &ctx, &game, &user, &user_cards, result)
+        })
         .collect();
 
     serde_json::to_string(&DeckResponse {
@@ -116,13 +120,22 @@ struct CardOut {
     asset_key: String,
     rarity: String,
     attr: String,
+    character_id: u8,
+    attr_id: u8,
+    unit_mask_raw: u8,
     level: i32,
     skill_level: i32,
     skill_score_up: f64,
+    power_total: i32,
+    pool_power_max: u32,
+    pool_skill_min: u8,
+    pool_skill_max: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     event_bonus: Option<f64>,
     master_rank: i32,
     trained: bool,
+    has_canvas_bonus: bool,
+    canvas_power: i32,
     episode1_read: bool,
     episode2_read: bool,
 }
@@ -133,6 +146,7 @@ impl DeckOut {
         pool: &CardPool,
         ctx: &SearchContext,
         game: &GameData<'_>,
+        original_user: &UserProfile,
         user_cards: &HashMap<i32, &UserCard>,
         result: &DeckResult,
     ) -> Self {
@@ -146,8 +160,10 @@ impl DeckOut {
                             pool,
                             ctx,
                             game,
+                            original_user,
                             user_cards,
                             card_idx,
+                            summary.card_power_total[card_pos],
                             summary.card_skill_score_up[card_pos],
                             (summary.card_event_bonus_rates[card_pos] > 0.0)
                                 .then_some(summary.card_event_bonus_rates[card_pos]),
@@ -175,8 +191,10 @@ impl DeckOut {
                             pool,
                             ctx,
                             game,
+                            original_user,
                             user_cards,
                             card_idx,
+                            pool.power_max(card_idx).min(i32::MAX as u32) as i32,
                             f64::from(pool.skill_max(card_idx)),
                             None,
                         )
@@ -211,8 +229,10 @@ impl CardOut {
         pool: &CardPool,
         ctx: &SearchContext,
         game: &GameData<'_>,
+        original_user: &UserProfile,
         user_cards: &HashMap<i32, &UserCard>,
         card_idx: crate::pool::CardIdx,
+        power_total: i32,
         skill_score_up: f64,
         event_bonus: Option<f64>,
     ) -> Self {
@@ -222,17 +242,33 @@ impl CardOut {
             .map(default_image_is_trained)
             .unwrap_or_else(|| ctx.trained_to_special_image_at(card_idx.raw()));
         let meta = card_meta(game, card_id, trained);
+        let has_canvas_bonus = user_card
+            .and_then(|card| card.has_canvas_bonus_override)
+            .unwrap_or_else(|| {
+                original_user
+                    .user_mysekai_canvas_bonus_cards
+                    .contains(&card_id)
+            });
         Self {
             card_id,
             asset_key: meta.asset_key,
-            rarity: meta.rarity,
+            rarity: meta.rarity.clone(),
             attr: meta.attr,
+            character_id: pool.char_id(card_idx),
+            attr_id: pool.attr(card_idx),
+            unit_mask_raw: pool.unit_mask_raw(card_idx),
             level: user_card.map(|card| card.level).unwrap_or(0),
             skill_level: user_card.map(|card| card.skill_level).unwrap_or(0),
             skill_score_up,
+            power_total,
+            pool_power_max: pool.power_max(card_idx),
+            pool_skill_min: pool.skill_min(card_idx),
+            pool_skill_max: pool.skill_max(card_idx),
             event_bonus,
             master_rank: user_card.map(|card| card.master_rank).unwrap_or(0),
             trained,
+            has_canvas_bonus,
+            canvas_power: canvas_power(game, &meta.rarity, has_canvas_bonus),
             episode1_read: user_card
                 .map(|card| card.episodes_read.len() >= 1)
                 .unwrap_or(false),
@@ -240,6 +276,29 @@ impl CardOut {
                 .map(|card| card.episodes_read.len() >= 2)
                 .unwrap_or(false),
         }
+    }
+}
+
+fn canvas_power(game: &GameData<'_>, rarity: &str, enabled: bool) -> i32 {
+    if !enabled {
+        return 0;
+    }
+    let rarity_type = rarity_type_to_index(rarity);
+    game.card_mysekai_canvas_bonuses
+        .iter()
+        .find(|bonus| bonus.card_rarity_type == rarity_type)
+        .map(|bonus| bonus.power1_bonus_fixed + bonus.power2_bonus_fixed + bonus.power3_bonus_fixed)
+        .unwrap_or(0)
+}
+
+fn rarity_type_to_index(value: &str) -> i32 {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "rarity_1" => 1,
+        "rarity_2" => 2,
+        "rarity_3" => 3,
+        "rarity_4" => 4,
+        "rarity_birthday" | "birthday" => 5,
+        _ => 4,
     }
 }
 

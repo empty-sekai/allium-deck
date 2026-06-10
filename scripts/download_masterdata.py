@@ -25,6 +25,8 @@ REQUIRED_TABLES = [
     "areaItemLevels",
     "characterRanks",
     "cardMysekaiCanvasBonuses",
+    "mysekaiGates",
+    "mysekaiGateLevels",
     "eventCards",
     "eventDeckBonuses",
     "eventCardBonusLimits",

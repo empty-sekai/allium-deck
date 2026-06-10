@@ -1,6 +1,6 @@
 [package]
 name = "allium-deck"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 description = "Project Sekai deck recommendation engine: DFS / branch-and-bound exact search"
 license = "AGPL-3.0-only"

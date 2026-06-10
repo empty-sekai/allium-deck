@@ -95,7 +95,7 @@ cargo build --release
 ```bash
 # 方式1: 下载预编译二进制 (以 linux-x86_64 为例)
 curl -L -o recommend_cli \
-  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.1/recommend_cli-v0.0.1-linux-x86_64
+  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.2/recommend_cli-v0.0.2-linux-x86_64
 chmod +x recommend_cli
 ./recommend_cli [OPTIONS]
 
@@ -117,7 +117,18 @@ recommend_cli \
   --masterdata <masterdata-dir> \
   --music-metas <music_metas.json> \
   --user <user.json> \
-  --params <params.json>
+  --target score \
+  --live-type multi \
+  --event-id 170 \
+  --music-id 74 \
+  --music-diff expert \
+  --boost 10 \
+  --event-unit ln \
+  --event-attr cool \
+  --unit-filter ln \
+  --multi-teammate-power 250000 \
+  --multi-teammate-score-up 200 \
+  --top-k 5
 ```
 
 参数：
@@ -127,16 +138,46 @@ recommend_cli \
 | `--masterdata` | 目录 | 游戏 masterdata 目录，内含 `cards.json`、`events.json`、`skills.json`、`cardRarities.json`、`gameCharacterUnits.json` 等文件。 |
 | `--music-metas` | 文件 | 歌曲元数据 JSON 文件。 |
 | `--user` | 文件 | 玩家数据 JSON，至少包含 `userCards`；区域道具、角色等级、称号、MySekai 等字段会参与评分。 |
-| `--params` | 文件 | 推荐参数 JSON，支持 camelCase 和 snake_case 两种键名（`region`、`eventId` / `event_id`、`liveType` / `live_type`、`target`、`musicId` / `music_id`、`musicDiff` / `music_diff`）。 |
+| `--params` | 文件 | 兼容入口：读取推荐参数 JSON；直接 flags 会覆盖同名 JSON 字段。 |
+| `--target` | 枚举 | `score` / `power` / `skill` / `mysekai`。 |
+| `--live-type` | 枚举 | `solo` / `multi` / `cheerful` / `auto` / `challenge` / `challenge_auto` / `mysekai`。 |
+| `--event-id` / `--music-id` / `--music-diff` | 值 | 活动、歌曲和难度；难度为 `easy` / `normal` / `hard` / `expert` / `master` / `append`。 |
+| `--boost` | 整数 | 火数 `0..10`：`0` 为无火，`1..5` 为 `5/10/15/20/25x`，`6..10` 为 `27/29/31/33/35x`。 |
+| `--fixed-cards` / `--fixed-characters` / `--excluded-cards` | 列表 | 逗号分隔的卡 ID / 角色 ID 约束。 |
+| `--event-unit` / `--event-attr` | 枚举 | 模拟活动团和属性；团可用 `ln/mmj/vbs/wxs/25ji/vs`，属性可用 `cool/cute/happy/pure/mysterious`。 |
+| `--unit-filter` / `--attr-filter` | 枚举 | 硬过滤候选池；VS 双团卡按 `support_unit` 参与对应团过滤。 |
+| `--world-bloom-character-id` / `--world-bloom-event-turn` / `--challenge-live-character-id` | 值 | WL / Challenge Live 特殊参数。 |
+| `--skill-reference-strategy` / `--live-skill-order` / `--specific-skill-order` | 值 | 技能参考与发动顺序；指定顺序使用 `0,1,2,3,4`。 |
+| `--multi-teammate-power` / `--multi-teammate-score-up` / `--multi-live-score-up-lower-bound` | 值 | 协力和 Cheerful 队友综合力、技能实效、技能总下限。 |
+| `--other-score` / `--life` | 值 | Cheerful 对手分数和体力。 |
+| `--rarity4-config` / `--single-card-config` | 值 | 养成配置，如 `level_max,skill_max,master_max,episode_read,canvas` 和 `123:level_max,skill_max`。 |
 
 输出示例：
 
+`stderr` 只输出进度和耗时，`stdout` 固定输出结构化 JSON，便于回归和性能对比：
+
 ```text
 [load] masterdata+music_metas: 135.0ms
-[build_pool] 1.4ms  pool=78 张候选卡
+[build_pool] 1.4ms  pool=78 effective_live=Multi
 [search] 0.4ms  leaf=84 ub_prunes=278 ep_explored=18 mono_break=12
-# top 5 decks
- 1. score=3169686848416  cards=[111, 109, 110, 208, 166]
+[total] 136.8ms
+```
+
+```json
+{
+  "effective_params": { "target": "Score", "live_type": "Multi", "boost": 10 },
+  "diagnostics": { "pool_size": 78, "effective_live_type": "Multi" },
+  "timing": { "build_pool_ms": 1.4, "search_ms": 0.4 },
+  "decks": [
+    {
+      "rank": 1,
+      "event_point": 1234567,
+      "cards": [
+        { "card_id": 111, "power_total": 35210, "skill_score_up": 120.0, "has_canvas_bonus": true, "canvas_power": 600 }
+      ]
+    }
+  ]
+}
 ```
 
 ## 静态数据
@@ -146,26 +187,17 @@ recommend_cli \
 ## 测试
 
 - 单元测试：散落各模块 `#[cfg(test)]`（pool / search / handler）。
-- 端到端回归：`tests/e2e_regression.rs` 读 manifest 驱动，将搜索结果与参考输出逐项比对。数据路径可由环境变量覆盖（`ALLIUM_TESTDATA` / `ALLIUM_MASTERDATA_CN` / `ALLIUM_MASTERDATA_JP` / `ALLIUM_MUSIC_METAS`）。
-- 测试数据分两层：
-  - `testdata/mock`：手工构造的小型数据集，84 个成功用例；用户持卡数 26-78 张（中位数 52）。覆盖 Score / Power / Skill / Bonus，live type 覆盖 multi / solo / auto / challenge / mysekai，其中 50 个用例带活动。
-  - `testdata/real`：由真实形态输入脱敏/固化得到的回归数据，1206 个成功用例；用户持卡数中位数 549，p95 687，最大 688。覆盖 Score / Power / Skill / Bonus，live type 覆盖 multi / solo / auto / challenge，其中 793 个用例带活动。
-- 数据集保留会影响评分的用户侧加成字段：
-  - `userCards` 决定候选卡、等级、技能等级、Master Rank、特训状态和卡面状态。
-  - `userAreas.areaItems` 决定区域道具综合力加成；mock 全部用例包含 24 个道具，real 中 1126 个用例包含道具，最多 55 个。
-  - `userCharacters` 决定角色等级加成；mock 和 real 成功用例均包含角色等级数据。
-  - `userHonors`、MySekai canvas / fixture / gate 字段覆盖 real 中多数用例，用于称号和 MySekai 相关加成。
-  - fixed card / fixed character / excluded card、unit / attr filter、challenge live character 等约束主要覆盖在 real 数据中，用于验证建池过滤和固定槽位逻辑。
+- Eval fixtures：`tests/fixtures/eval` 使用小型可审计数据固定火数、协力/Cheerful、技能顺序、WL、MySekai 等评分规则。
 - 搜索结果正确性由以下单元测试用**暴力枚举**验证：
   - `search_dfs_matches_bruteforce_for_best_deck`
   - `search_dfs_bonus_noevent_matches_bruteforce_with_suffix_max_break`
   - `search_dfs_mysekai_matches_bruteforce_with_suffix_max_break`
   - `search_suffix_bound_is_sound_and_zero_pool_is_zero`
   - `search_dominance_preserves_best_score`
-- `tests/benchmark_proof.rs` 在真实数据规模上用无剪枝暴力枚举对照正式搜索，含两个暴力对照测试和一个数据集校验测试：
-  - `rust_bruteforce_matches_exact_on_full_testdata_pools`（暴力对照）：从 `testdata/mock` 与 `testdata/real` 抽样，按原输入构建完整卡池，对正式搜索与暴力枚举比较结果。只选择完整卡池组合数不超过 `ALLIUM_BF_CANDIDATE_LIMIT` 的 fixture——5 卡组合数按 `C(n, 5)` 增长，例如 160 张约 8.2 亿组，不适合常规测试，因此默认只覆盖较小的完整卡池。
+- `tests/benchmark_proof.rs` 用无剪枝暴力枚举对照正式搜索，含两个暴力对照测试和一个数据集校验测试：
+  - `rust_bruteforce_matches_exact_on_full_testdata_pools`（暴力对照）：从本仓库小型 fixtures 抽样，按原输入构建完整卡池，对正式搜索与暴力枚举比较结果。只选择完整卡池组合数不超过 `ALLIUM_BF_CANDIDATE_LIMIT` 的 fixture。
   - `rust_bruteforce_matches_exact_on_large_filtered_pools`（暴力对照）：针对高练度大卡池。先丢弃 1/2 星卡（`ALLIUM_BF_MIN_RARITY`），再按角色对 power / skill / event-bonus 各维度保留前 N 张（`ALLIUM_BF_PER_CHAR_KEEP`），把卡池压到可暴力枚举的规模，再做暴力对照。这是覆盖高练度高价值候选区的 stress 子集，不声称是完整大卡池的证明：被裁掉的低价值卡仍可能进入某些 Top-K 次优解。
-  - `testdata_corpus_layers_are_classified`（数据集校验）：核对 `testdata/mock` 与 `testdata/real` 的清单分层与目标分布，输出 `target/benchmark-proof/report.md` 与 JSON 明细。
+  - `testdata_corpus_layers_are_classified`（数据集校验）：核对当前 fixture 清单分层与目标分布，输出 `target/benchmark-proof/report.md` 与 JSON 明细。
 - 相关环境变量：`ALLIUM_BF_TOP_K`、`ALLIUM_BF_CASE_LIMIT` / `ALLIUM_BF_LARGE_CASE_LIMIT`、`ALLIUM_BF_CANDIDATE_LIMIT` / `ALLIUM_BF_LARGE_CANDIDATE_LIMIT`、`ALLIUM_BF_MIN_RARITY`、`ALLIUM_BF_PER_CHAR_KEEP`。缺少 masterdata 时这些对照测试会跳过。
 - 已知限制：Top-K（`top_k > 1`）下 dominance 剪枝可能丢失次优候选（Top-1 不受影响），详见 [issue #2](https://github.com/empty-sekai/allium-deck/issues/2)。上述暴力对照默认以 `ALLIUM_BF_TOP_K=1` 全量验证 Top-1。
 

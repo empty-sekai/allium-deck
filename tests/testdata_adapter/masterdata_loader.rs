@@ -6,8 +6,9 @@ use allium_deck::handler::{
     BondsHonor, CardEpisode, CardMysekaiCanvasBonus, CardParameter, CardRarity, CharacterRank,
     Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
     EventRarityBonusRate, EventSkillScoreUpLimit, GameCharacterUnit, GameData, Honor, HonorLevel,
-    MasterCard, MasterLesson, MusicDifficulty, MusicMeta, Skill, SkillEffect, WBSupportDeckBonus,
-    WBSupportDeckUnitEventLimitedBonus, WorldBloom, WorldBloomDiffAttrBonus,
+    MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate, MysekaiGateLevel, Skill,
+    SkillEffect, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus, WorldBloom,
+    WorldBloomDiffAttrBonus,
 };
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -26,6 +27,8 @@ pub struct OwnedGameData {
     pub game_character_units: Vec<GameCharacterUnit>,
     pub character_ranks: Vec<CharacterRank>,
     pub card_mysekai_canvas_bonuses: Vec<CardMysekaiCanvasBonus>,
+    pub mysekai_gates: Vec<MysekaiGate>,
+    pub mysekai_gate_levels: Vec<MysekaiGateLevel>,
     pub events: Vec<Event>,
     pub event_cards: Vec<EventCard>,
     pub event_deck_bonuses: Vec<EventDeckBonus>,
@@ -72,6 +75,15 @@ impl OwnedGameData {
                     character_id: card.character_id,
                     attr: card.attr.clone(),
                     card_rarity_type: rarity_type_to_index(&card.card_rarity_type),
+                    rarity: card.card_rarity_type.clone(),
+                    asset_bundle_name: card.asset_bundle_name.clone().unwrap_or_else(|| {
+                        let training = card.special_training_skill_id.is_some();
+                        if training {
+                            format!("card_{:06}_normal", card.id)
+                        } else {
+                            format!("chara_{:06}", card.id)
+                        }
+                    }),
                     skill_id: card.skill_id,
                     special_training_skill_id: card.special_training_skill_id,
                     special_training_power1_bonus_fixed: card.special_training_power1_bonus_fixed,
@@ -156,6 +168,25 @@ impl OwnedGameData {
                 power1_bonus_fixed: entry.power1_bonus_fixed,
                 power2_bonus_fixed: entry.power2_bonus_fixed,
                 power3_bonus_fixed: entry.power3_bonus_fixed,
+            })
+            .collect(),
+            mysekai_gates: load_optional_json::<Vec<RawMysekaiGate>>(
+                &masterdata_dir.join("mysekaiGates.json"),
+            )?
+            .into_iter()
+            .map(|entry| MysekaiGate {
+                id: entry.id,
+                unit: entry.unit,
+            })
+            .collect(),
+            mysekai_gate_levels: load_optional_json::<Vec<RawMysekaiGateLevel>>(
+                &masterdata_dir.join("mysekaiGateLevels.json"),
+            )?
+            .into_iter()
+            .map(|entry| MysekaiGateLevel {
+                mysekai_gate_id: entry.mysekai_gate_id,
+                level: entry.level,
+                power_bonus_rate: entry.power_bonus_rate,
             })
             .collect(),
             events: events
@@ -327,6 +358,8 @@ impl OwnedGameData {
             game_character_units: &self.game_character_units,
             character_ranks: &self.character_ranks,
             card_mysekai_canvas_bonuses: &self.card_mysekai_canvas_bonuses,
+            mysekai_gates: &self.mysekai_gates,
+            mysekai_gate_levels: &self.mysekai_gate_levels,
             events: &self.events,
             event_cards: &self.event_cards,
             event_deck_bonuses: &self.event_deck_bonuses,
@@ -652,6 +685,8 @@ struct RawCard {
     skill_id: i32,
     #[serde(default)]
     special_training_skill_id: Option<i32>,
+    #[serde(rename = "assetbundleName", default)]
+    asset_bundle_name: Option<String>,
     #[serde(default)]
     special_training_power1_bonus_fixed: i32,
     #[serde(default)]
@@ -781,6 +816,21 @@ struct RawCardMysekaiCanvasBonus {
     power1_bonus_fixed: i32,
     power2_bonus_fixed: i32,
     power3_bonus_fixed: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMysekaiGate {
+    id: i32,
+    unit: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawMysekaiGateLevel {
+    mysekai_gate_id: i32,
+    level: i32,
+    power_bonus_rate: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
