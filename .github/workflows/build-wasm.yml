@@ -151,8 +151,8 @@ jobs:
           name: deck-wasm-${{ env.REGION }}-${{ env.MASTERDATA_VERSION }}
           path: ${{ env.DIST_DIR }}
 
-      - name: Install COS SDK
-        run: python3 -m pip install --upgrade cos-python-sdk-v5
+      - name: Install S3 SDK
+        run: python3 -m pip install --upgrade boto3
 
       - name: Upload immutable COS prefix
         env:

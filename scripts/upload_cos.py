@@ -46,6 +46,16 @@ def region_from_endpoint(endpoint: str) -> str:
     return ""
 
 
+def normalize_s3_endpoint(endpoint: str, bucket: str) -> str:
+    parsed = urlparse(endpoint)
+    if not parsed.scheme or not parsed.netloc:
+        return endpoint
+    prefix = f"{bucket}."
+    if parsed.netloc.startswith(prefix):
+        return parsed._replace(netloc=parsed.netloc[len(prefix) :]).geturl()
+    return endpoint
+
+
 def upload_one(client, *, bucket: str, file: Path, key: str, cache_control: str) -> None:
     size = file.stat().st_size
     kwargs = {
@@ -66,6 +76,62 @@ def upload_one(client, *, bucket: str, file: Path, key: str, cache_control: str)
             if attempt >= MAX_UPLOAD_ATTEMPTS:
                 raise
             time.sleep(min(2 ** (attempt - 1), 8))
+
+
+def upload_with_boto3(
+    *,
+    source_dir: Path,
+    prefix: str,
+    bucket: str,
+    endpoint: str,
+    region: str,
+    secret_id: str,
+    secret_key: str,
+    session_token: str,
+    cache_control: str,
+) -> int:
+    try:
+        import boto3
+        from botocore.config import Config
+    except ImportError as exc:
+        raise RuntimeError("boto3 is not installed; run `pip install boto3`") from exc
+
+    client = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        region_name=region,
+        aws_access_key_id=secret_id,
+        aws_secret_access_key=secret_key,
+        aws_session_token=session_token or None,
+        config=Config(
+            connect_timeout=10,
+            read_timeout=60,
+            retries={"max_attempts": MAX_UPLOAD_ATTEMPTS, "mode": "standard"},
+            s3={"addressing_style": "virtual"},
+        ),
+    )
+
+    uploaded = 0
+    for file in sorted(path for path in source_dir.rglob("*") if path.is_file()):
+        rel = file.relative_to(source_dir).as_posix()
+        key = f"{prefix}/{rel}"
+        for attempt in range(1, MAX_UPLOAD_ATTEMPTS + 1):
+            try:
+                client.put_object(
+                    Bucket=bucket,
+                    Key=key,
+                    Body=file.read_bytes(),
+                    ContentType=content_type(file),
+                    CacheControl=cache_control,
+                )
+                break
+            except Exception:
+                if attempt >= MAX_UPLOAD_ATTEMPTS:
+                    raise
+                time.sleep(min(2 ** (attempt - 1), 8))
+        uploaded += 1
+        print(f"[upload] s3://{bucket}/{key}")
+    return uploaded
 
 
 def main() -> int:
@@ -92,6 +158,24 @@ def main() -> int:
         raise RuntimeError("missing COS_REGION/S3_REGION")
     secret_id = env_or_arg(args.secret_id, "COS_SECRET_ID", "S3_ACCESS_KEY_ID")
     secret_key = env_or_arg(args.secret_key, "COS_SECRET_KEY", "S3_ACCESS_KEY_SECRET")
+    endpoint = os.environ.get("S3_ENDPOINT", "").strip()
+
+    prefix = args.prefix.strip("/")
+    if endpoint:
+        endpoint = normalize_s3_endpoint(endpoint, bucket)
+        uploaded = upload_with_boto3(
+            source_dir=source_dir,
+            prefix=prefix,
+            bucket=bucket,
+            endpoint=endpoint,
+            region=region,
+            secret_id=secret_id,
+            secret_key=secret_key,
+            session_token=args.session_token,
+            cache_control=args.cache_control,
+        )
+        print(f"[upload] {uploaded} files")
+        return 0
 
     try:
         from qcloud_cos import CosConfig, CosS3Client
@@ -107,7 +191,6 @@ def main() -> int:
         Timeout=60,
     )
     client = CosS3Client(config)
-    prefix = args.prefix.strip("/")
 
     uploaded = 0
     for file in sorted(path for path in source_dir.rglob("*") if path.is_file()):
