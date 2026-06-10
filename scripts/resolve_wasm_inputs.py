@@ -88,7 +88,7 @@ def main() -> int:
         "SOURCE_REPOSITORY": source_repository,
         "SOURCE_REVISION": source_revision,
         "RELEASE_TAG": tag,
-        "WASM_ZIP": f"allium-deck-wasm-{tag}-{region}.zip",
+        "WASM_ZIP": f"allium-deck-wasm-{tag}-{version}-{region}.zip",
     }
     write_env(Path(args.env_out), values)
     print(f"region={region}")
