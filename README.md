@@ -196,7 +196,7 @@ recommend_cli \
   - `search_dominance_preserves_best_score`
 - `tests/benchmark_proof.rs` 用无剪枝暴力枚举对照正式搜索，含三个暴力对照测试和一个数据集校验测试：
   - `rust_bruteforce_matches_exact_on_full_testdata_pools`（暴力对照）：从本仓库小型 fixtures 抽样，按原输入构建完整卡池，对正式搜索与暴力枚举比较结果。只选择完整卡池组合数不超过 `ALLIUM_BF_CANDIDATE_LIMIT` 的 fixture。
-  - `rust_bruteforce_matches_exact_top_k_on_issue2_fixture`（Top-K 回归）：锁住 [issue #2](https://github.com/empty-sekai/allium-deck/issues/2) 的 fixture `real/mass_392500_score_multi_ev`，验证 Top-K 支配替代展开。该池组合数约 7000 万，需以 `ALLIUM_BF_TOP_K=3 ALLIUM_BF_CANDIDATE_LIMIT=100000000` 运行。
+  - `rust_bruteforce_matches_exact_top_k_on_issue2_fixture`（Top-K 回归）：锁住 [issue #2](https://github.com/empty-sekai/allium-deck/issues/2) 的 fixture `real/mass_392500_score_multi_ev`，验证普通主搜索路径的 Top-K 支配替代展开。该池组合数约 7000 万，需以 `ALLIUM_BF_TOP_K=3 ALLIUM_BF_CANDIDATE_LIMIT=100000000` 运行。
   - `rust_bruteforce_matches_exact_on_large_filtered_pools`（暴力对照）：针对高练度大卡池。先丢弃 1/2 星卡（`ALLIUM_BF_MIN_RARITY`），再按角色对 power / skill / event-bonus 各维度保留前 N 张（`ALLIUM_BF_PER_CHAR_KEEP`），把卡池压到可暴力枚举的规模，再做暴力对照。这是覆盖高练度高价值候选区的 stress 子集，不声称是完整大卡池的证明：被裁掉的低价值卡仍可能进入某些 Top-K 次优解。
   - `testdata_corpus_layers_are_classified`（数据集校验）：核对当前 fixture 清单分层与目标分布，输出 `target/benchmark-proof/report.md` 与 JSON 明细。
 - 相关环境变量：`ALLIUM_BF_TOP_K`、`ALLIUM_BF_CASE_LIMIT` / `ALLIUM_BF_LARGE_CASE_LIMIT`、`ALLIUM_BF_CANDIDATE_LIMIT` / `ALLIUM_BF_LARGE_CANDIDATE_LIMIT`、`ALLIUM_BF_MIN_RARITY`、`ALLIUM_BF_PER_CHAR_KEEP`。缺少 masterdata 时这些对照测试会跳过。
@@ -217,7 +217,7 @@ recommend_cli \
 
 替换安全：把 B 换成 A，在任何目标下分数不降。World Bloom 活动同样走支配剪枝；支援卡组独立保存在 `SearchContext`，不会因为主搜索池压缩而丢支援候选，且支配关系要求属性相同，因此 diff-attr 奖励不会被异色替换破坏。
 
-Top-K（`top_k > 1`）下被支配卡参与的组合本身可能是合法的次优解，仅靠裁剪会丢名次（曾为 [issue #2](https://github.com/empty-sekai/allium-deck/issues/2)）。现在裁剪时记录支配映射（链压缩到存活根），搜索后对每个结果做**替代回换展开**：设真实 Top-K 中有含被裁卡的卡组 D，把其中每张被裁卡换成支配根得到 D'，由支配性 score(D') ≥ score(D) ≥ 第 K 名阈值，D' 必在裁剪池的精确 Top-K 里；从 D' 逐槽（含多槽组合）把支配根换回被裁卡并重新评估、合并，即可还原全部丢失的次优解。回换分数单调不升，按当前第 K 名阈值剪枝；`top_k = 1` 跳过展开，主搜索路径零开销。
+Top-K（`top_k > 1`）下被支配卡参与的组合本身可能是合法的次优解，仅靠裁剪会丢名次（曾为 [issue #2](https://github.com/empty-sekai/allium-deck/issues/2)）。普通主搜索路径现在会在裁剪时记录支配映射（链压缩到存活根），搜索后对每个结果做**替代回换展开**：设真实 Top-K 中有含被裁卡的卡组 D，把其中每张被裁卡换成支配根得到 D'，由支配性 score(D') ≥ score(D) ≥ 第 K 名阈值，D' 必在裁剪池的精确 Top-K 里；从 D' 逐槽（含多槽组合）把支配根换回被裁卡并重新评估、合并，即可还原该路径下丢失的次优解。回换分数单调不升，按当前第 K 名阈值剪枝；`top_k = 1` 跳过展开，主搜索路径零开销。终章 member 侧还有额外裁剪，Top-K 替代展开另见 [issue #7](https://github.com/empty-sekai/allium-deck/issues/7)。
 
 **后缀上界（`suffix.rs`）——Sound ✅**
 
