@@ -201,8 +201,13 @@ jobs:
 
       - name: Generate CHANGELOG
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          git-cliff --tag "v${VERSION}" --output CHANGELOG.md
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
+          if [ -n "$PREVIOUS_TAG" ]; then
+            RANGE="${PREVIOUS_TAG}..${GITHUB_REF_NAME}"
+          else
+            RANGE="${GITHUB_REF_NAME}"
+          fi
+          git-cliff --tag "${GITHUB_REF_NAME}" --output CHANGELOG.md "$RANGE"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4

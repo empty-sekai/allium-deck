@@ -1,0 +1,31 @@
+branch:
+  - reg: ^(main|codex/.*)$
+    buttons:
+      - name: Publish deck WASM
+        description: Publish CN deck WASM to CDN
+        event: web_trigger_deck_wasm_publish
+        isDefault: false
+        inputs:
+          MASTERDATA_VERSION:
+            name: Masterdata version
+            description: Leave empty to reuse the current CDN manifest label.
+            placeholder: 6.0.0.36
+            required: false
+            type: input
+          CDN_BASE:
+            name: CDN base
+            description: Public CDN base URL.
+            required: true
+            type: input
+            default: https://cdn.emptysekai.com
+          PUBLISH_LATEST:
+            name: Publish latest
+            description: Also overwrite deck-wasm/cn/latest.
+            required: false
+            type: switch
+            default: "true"
+            options:
+              - name: "Yes"
+                value: "true"
+              - name: "No"
+                value: "false"

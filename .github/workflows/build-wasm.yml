@@ -1,6 +1,17 @@
 name: build-wasm
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-wasm.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "scripts/download_masterdata.py"
+      - "scripts/package_wasm.py"
+      - "scripts/resolve_wasm_inputs.py"
   workflow_dispatch:
     inputs:
       region:
@@ -26,12 +37,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: deck-wasm
+  group: deck-wasm-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: build and publish wasm
+    name: build wasm artifact
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +53,7 @@ jobs:
           import json
           import os
           import re
+          import urllib.request
 
           with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as handle:
               event = json.load(handle)
@@ -52,7 +64,15 @@ jobs:
           cdn_base = (payload.get("cdn_base") or inputs.get("cdn_base") or "https://cdn.emptysekai.com").strip().rstrip("/")
           version = (payload.get("masterdata_version") or inputs.get("masterdata_version") or "").strip()
           if not version:
-              raise SystemExit("masterdata_version is required and must be the CN dataVersion")
+              manifest_url = f"{cdn_base}/deck-wasm/{region}/latest/manifest.json"
+              try:
+                  with urllib.request.urlopen(manifest_url, timeout=30) as response:
+                      manifest = json.load(response)
+                  version = str(manifest.get("masterdata_version") or "").strip()
+              except Exception as exc:
+                  raise SystemExit(f"masterdata_version is required and could not be inferred from {manifest_url}: {exc}") from exc
+          if not version:
+              raise SystemExit("masterdata_version is required and could not be inferred from current CDN manifest")
           version = re.sub(r"[^A-Za-z0-9._-]+", "-", version).strip("-")
           if not version:
               raise SystemExit("masterdata_version became empty after sanitization")
@@ -130,34 +150,3 @@ jobs:
         with:
           name: deck-wasm-${{ env.REGION }}-${{ env.MASTERDATA_VERSION }}
           path: ${{ env.DIST_DIR }}
-
-      - name: Install COS SDK
-        run: python3 -m pip install --upgrade cos-python-sdk-v5
-
-      - name: Upload immutable COS prefix
-        env:
-          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID || secrets.COS_SECRET_ID }}
-          S3_ACCESS_KEY_SECRET: ${{ secrets.S3_ACCESS_KEY_SECRET || secrets.COS_SECRET_KEY }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET || secrets.COS_BUCKET }}
-          S3_REGION: ${{ secrets.S3_REGION || secrets.COS_REGION }}
-          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
-          COS_SESSION_TOKEN: ${{ secrets.COS_SESSION_TOKEN }}
-        run: |
-          python3 scripts/upload_cos.py \
-            --dir "$DIST_DIR" \
-            --prefix "deck-wasm/$REGION/$MASTERDATA_VERSION" \
-            --cache-control "public,max-age=31536000,immutable"
-
-      - name: Upload latest COS prefix
-        env:
-          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID || secrets.COS_SECRET_ID }}
-          S3_ACCESS_KEY_SECRET: ${{ secrets.S3_ACCESS_KEY_SECRET || secrets.COS_SECRET_KEY }}
-          S3_BUCKET: ${{ secrets.S3_BUCKET || secrets.COS_BUCKET }}
-          S3_REGION: ${{ secrets.S3_REGION || secrets.COS_REGION }}
-          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
-          COS_SESSION_TOKEN: ${{ secrets.COS_SESSION_TOKEN }}
-        run: |
-          python3 scripts/upload_cos.py \
-            --dir "$DIST_DIR" \
-            --prefix "deck-wasm/$REGION/latest" \
-            --cache-control "public,max-age=300"
