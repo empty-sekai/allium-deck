@@ -209,6 +209,15 @@ jobs:
             RANGE="${GITHUB_REF_NAME}"
           fi
           git-cliff --tag "${GITHUB_REF_NAME}" --output CHANGELOG.md --first-parent "$RANGE"
+          MASTERDATA_VERSION=$(curl -sSf "https://cdn.emptysekai.com/deck-wasm/cn/latest/manifest.json" | python3 -c "import sys,json; print(json.load(sys.stdin)['masterdata_version'])")
+          {
+            echo ""
+            echo "### Assets"
+            echo "| Asset | Description |"
+            echo "|-------|------------|"
+            echo "| \`recommend_cli-${GITHUB_REF_NAME}-*\` | Prebuilt CLI binaries (linux x86_64 / musl / aarch64, windows x86_64) |"
+            echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}-${MASTERDATA_VERSION}-cn.zip\` | Browser WASM engine with embedded CN masterdata snapshot |"
+          } >> CHANGELOG.md
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
