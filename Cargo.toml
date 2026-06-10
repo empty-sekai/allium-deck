@@ -1,9 +1,17 @@
 [package]
 name = "allium-deck"
-version = "0.1.0"
+version = "0.0.2"
 edition = "2021"
 description = "Project Sekai deck recommendation engine: DFS / branch-and-bound exact search"
 license = "AGPL-3.0-only"
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+    "src/**",
+    "data/**",
+]
 
 [lib]
 # cdylib: wasm-pack 产出 .wasm；rlib: 保留给 scapus / CLI / 测试以库形式链接。

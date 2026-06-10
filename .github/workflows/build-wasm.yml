@@ -1,0 +1,152 @@
+name: build-wasm
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/build-wasm.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "src/**"
+      - "scripts/download_masterdata.py"
+      - "scripts/package_wasm.py"
+      - "scripts/resolve_wasm_inputs.py"
+  workflow_dispatch:
+    inputs:
+      region:
+        description: "Masterdata region"
+        required: true
+        default: "cn"
+        type: choice
+        options:
+          - cn
+      masterdata_version:
+        description: "CN masterdata dataVersion; used as deck-wasm/cn/<dataVersion>/"
+        required: true
+      cdn_base:
+        description: "Public COS/EO base URL"
+        required: true
+        default: "https://cdn.emptysekai.com"
+  repository_dispatch:
+    types:
+      - masterdata-updated
+      - deck-wasm-build
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deck-wasm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build wasm artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve build inputs
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+          with open(os.environ["GITHUB_EVENT_PATH"], "r", encoding="utf-8") as handle:
+              event = json.load(handle)
+
+          inputs = event.get("inputs") or {}
+          payload = event.get("client_payload") or {}
+          region = (payload.get("region") or inputs.get("region") or "cn").strip()
+          cdn_base = (payload.get("cdn_base") or inputs.get("cdn_base") or "https://cdn.emptysekai.com").strip().rstrip("/")
+          version = (payload.get("masterdata_version") or inputs.get("masterdata_version") or "").strip()
+          if not version:
+              manifest_url = f"{cdn_base}/deck-wasm/{region}/latest/manifest.json"
+              try:
+                  with urllib.request.urlopen(manifest_url, timeout=30) as response:
+                      manifest = json.load(response)
+                  version = str(manifest.get("masterdata_version") or "").strip()
+              except Exception as exc:
+                  raise SystemExit(f"masterdata_version is required and could not be inferred from {manifest_url}: {exc}") from exc
+          if not version:
+              raise SystemExit("masterdata_version is required and could not be inferred from current CDN manifest")
+          version = re.sub(r"[^A-Za-z0-9._-]+", "-", version).strip("-")
+          if not version:
+              raise SystemExit("masterdata_version became empty after sanitization")
+          if region != "cn":
+              raise SystemExit(f"unsupported region: {region}")
+
+          env_path = os.environ["GITHUB_ENV"]
+          with open(env_path, "a", encoding="utf-8") as env:
+              env.write(f"REGION={region}\n")
+              env.write(f"CDN_BASE={cdn_base}\n")
+              env.write(f"MASTERDATA_VERSION={version}\n")
+              env.write("MASTERDATA_DIR=.tmp/masterdata/cn\n")
+              env.write("MUSIC_METAS=.tmp/music_metas/cn/music_metas.json\n")
+              env.write("MASTERDATA_MANIFEST=.tmp/masterdata-manifest.json\n")
+              env.write("DIST_DIR=dist/deck-wasm\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write(f"region: `{region}`\n\n")
+              summary.write(f"release label: `{version}`\n\n")
+              summary.write(f"latest URL: `{cdn_base}/deck-wasm/{region}/latest/allium_deck.js`\n")
+          PY
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --version 0.15.0 --locked
+
+      - name: Download public COS masterdata
+        run: |
+          python3 scripts/download_masterdata.py \
+            --region "$REGION" \
+            --cdn-base "$CDN_BASE" \
+            --out-dir "$MASTERDATA_DIR" \
+            --music-metas "$MUSIC_METAS" \
+            --manifest-out "$MASTERDATA_MANIFEST" \
+            --version "$MASTERDATA_VERSION"
+
+      - name: Build embedded gamedata
+        run: |
+          cargo run --release --bin build_gamedata -- \
+            --masterdata "$MASTERDATA_DIR" \
+            --music-metas "$MUSIC_METAS" \
+            --region "$REGION"
+
+      - name: Build wasm
+        env:
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
+          CARGO_PROFILE_RELEASE_LTO: "fat"
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
+          CARGO_PROFILE_RELEASE_PANIC: "abort"
+        run: wasm-pack build --target web --features wasm
+
+      - name: Package CDN files
+        run: |
+          python3 scripts/package_wasm.py \
+            --pkg-dir pkg \
+            --out-dir "$DIST_DIR" \
+            --region "$REGION" \
+            --version "$MASTERDATA_VERSION" \
+            --cdn-base "$CDN_BASE" \
+            --source-repository "$GITHUB_REPOSITORY" \
+            --source-revision "$GITHUB_SHA" \
+            --masterdata-manifest "$MASTERDATA_MANIFEST"
+
+      - name: Upload GitHub artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deck-wasm-${{ env.REGION }}-${{ env.MASTERDATA_VERSION }}
+          path: ${{ env.DIST_DIR }}
