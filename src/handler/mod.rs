@@ -1592,6 +1592,39 @@ mod tests {
     }
 
     #[test]
+    fn handler_level_max_marks_trainable_cards_after_training() {
+        let master = MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: "".to_string(),
+            asset_bundle_name: "chara_000001".to_string(),
+            skill_id: 10,
+            special_training_skill_id: Some(11),
+            special_training_power1_bonus_fixed: 100,
+            special_training_power2_bonus_fixed: 100,
+            special_training_power3_bonus_fixed: 100,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        };
+        let mut user_card = sample_user_card(1);
+        user_card.level = 1;
+        user_card.special_training_status = "not_doing".to_string();
+        user_card.default_image = "original".to_string();
+        let mut configs = CardConfigSet::default();
+        configs.rarity_4_config.level_max = true;
+
+        assert!(apply_card_config(&mut user_card, &master, &configs));
+
+        assert_eq!(user_card.level, 60);
+        assert_eq!(user_card.special_training_status, "done");
+        assert_eq!(user_card.default_image, "special_training");
+    }
+
+    #[test]
     fn handler_cultivated_user_cards_matches_pool_cultivation() {
         // 渲染层养成卡况必须与建池同源：满级开关后 level 抬到 max，disable 的卡被剔除。
         let cards = [
