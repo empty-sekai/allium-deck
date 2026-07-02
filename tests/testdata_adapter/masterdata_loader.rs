@@ -102,7 +102,7 @@ impl OwnedGameData {
             .into_iter()
             .map(|rarity| CardRarity {
                 card_rarity_type: rarity_type_to_index(&rarity.card_rarity_type),
-                max_level: rarity.max_level,
+                max_level: rarity.training_max_level.unwrap_or(rarity.max_level),
                 max_skill_level: rarity.max_skill_level,
             })
             .collect(),
@@ -711,6 +711,8 @@ struct RawCardParameters {
 struct RawCardRarity {
     card_rarity_type: String,
     max_level: i32,
+    #[serde(default)]
+    training_max_level: Option<i32>,
     max_skill_level: i32,
 }
 

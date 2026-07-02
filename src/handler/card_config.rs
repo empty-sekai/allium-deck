@@ -24,6 +24,10 @@ pub(crate) fn apply_card_config(
         if let Some(max_level) = master.max_level {
             user_card.level = max_level.max(user_card.level);
         }
+        if master.special_training_skill_id.is_some() {
+            user_card.special_training_status = "done".to_string();
+            user_card.default_image = "special_training".to_string();
+        }
     }
     if config.skill_max {
         if let Some(max_skill_level) = master.max_skill_level {

@@ -532,7 +532,8 @@ impl OwnedGameData {
         // 保留所有难度行（easy/normal/hard/expert/master/append），base_score/skill_scores 分难度。
         // 旧逻辑只留 master 行，导致 build_music_params 按非 master 难度选行时匹配不到、回落 master，
         // 使所有难度算出相同分数（难度参数形同虚设）。
-        let music_rows: Vec<RawMusicMetaRow> = sources.music_rows()?;
+        let mut music_rows: Vec<RawMusicMetaRow> = sources.music_rows()?;
+        add_omakase_music_rows(&mut music_rows);
 
         Ok(Self {
             cards: raw_cards
@@ -568,7 +569,7 @@ impl OwnedGameData {
                 .into_iter()
                 .map(|rarity| CardRarity {
                     card_rarity_type: rarity_type_to_index(&rarity.card_rarity_type),
-                    max_level: rarity.max_level,
+                    max_level: rarity.training_max_level.unwrap_or(rarity.max_level),
                     max_skill_level: rarity.max_skill_level,
                 })
                 .collect(),
@@ -1283,6 +1284,8 @@ struct RawCardParameters {
 struct RawCardRarity {
     card_rarity_type: String,
     max_level: i32,
+    #[serde(default)]
+    training_max_level: Option<i32>,
     max_skill_level: i32,
 }
 
@@ -1494,6 +1497,87 @@ struct RawMusicMetaRow {
     tap_count: i32,
 }
 
+const OMAKASE_MUSIC_ID: i32 = 10000;
+const OMAKASE_SOURCE_DIFFS: &[&str] = &["master", "expert", "hard"];
+const OMAKASE_OUTPUT_DIFFS: &[&str] = &["easy", "normal", "hard", "expert", "master", "append"];
+
+fn add_omakase_music_rows(rows: &mut Vec<RawMusicMetaRow>) {
+    let existing_count = rows
+        .iter()
+        .filter(|row| {
+            row.music_id == OMAKASE_MUSIC_ID
+                && OMAKASE_OUTPUT_DIFFS
+                    .iter()
+                    .any(|diff| row.difficulty.eq_ignore_ascii_case(diff))
+        })
+        .count();
+    if existing_count >= OMAKASE_OUTPUT_DIFFS.len() {
+        return;
+    }
+
+    rows.retain(|row| row.music_id != OMAKASE_MUSIC_ID);
+
+    let mut count = 0usize;
+    let mut music_time = 0.0;
+    let mut event_rate = 0i64;
+    let mut base_score = 0.0;
+    let mut base_score_auto = 0.0;
+    let mut skill_score_solo = [0.0; 6];
+    let mut skill_score_auto = [0.0; 6];
+    let mut skill_score_multi = [0.0; 6];
+    let mut fever_score = 0.0;
+    let mut tap_count = 0i64;
+
+    for row in rows.iter().filter(|row| {
+        OMAKASE_SOURCE_DIFFS
+            .iter()
+            .any(|diff| row.difficulty.eq_ignore_ascii_case(diff))
+    }) {
+        count += 1;
+        music_time += row.music_time;
+        event_rate += i64::from(row.event_rate);
+        base_score += row.base_score;
+        base_score_auto += row.base_score_auto;
+        for idx in 0..6 {
+            skill_score_solo[idx] += row.skill_score_solo[idx];
+            skill_score_auto[idx] += row.skill_score_auto[idx];
+            skill_score_multi[idx] += row.skill_score_multi[idx];
+        }
+        fever_score += row.fever_score;
+        tap_count += i64::from(row.tap_count);
+    }
+
+    if count == 0 {
+        return;
+    }
+
+    let denom = count as f64;
+    for idx in 0..6 {
+        skill_score_solo[idx] /= denom;
+        skill_score_auto[idx] /= denom;
+        skill_score_multi[idx] /= denom;
+    }
+    let average = RawMusicMetaRow {
+        music_id: OMAKASE_MUSIC_ID,
+        difficulty: String::new(),
+        music_time: music_time / denom,
+        event_rate: (event_rate / count as i64) as i32,
+        base_score: base_score / denom,
+        base_score_auto: base_score_auto / denom,
+        skill_score_solo,
+        skill_score_auto,
+        skill_score_multi,
+        fever_score: fever_score / denom,
+        tap_count: (tap_count / count as i64) as i32,
+    };
+
+    rows.extend(OMAKASE_OUTPUT_DIFFS.iter().map(|diff| {
+        let mut row = average.clone();
+        row.difficulty = (*diff).to_string();
+        row
+    }));
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawEventRarityBonusRate {
@@ -1534,6 +1618,57 @@ struct RawHonorLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn music_row(
+        music_id: i32,
+        difficulty: &str,
+        base_score: f64,
+        event_rate: i32,
+    ) -> RawMusicMetaRow {
+        RawMusicMetaRow {
+            music_id,
+            difficulty: difficulty.to_string(),
+            music_time: base_score * 10.0,
+            event_rate,
+            base_score,
+            base_score_auto: base_score + 1.0,
+            skill_score_solo: [base_score; 6],
+            skill_score_auto: [base_score + 2.0; 6],
+            skill_score_multi: [base_score + 3.0; 6],
+            fever_score: base_score + 4.0,
+            tap_count: event_rate,
+        }
+    }
+
+    #[test]
+    fn add_omakase_music_rows_averages_master_expert_hard() {
+        let mut rows = vec![
+            music_row(1, "easy", 10.0, 100),
+            music_row(1, "hard", 20.0, 101),
+            music_row(2, "expert", 40.0, 102),
+            music_row(3, "master", 60.0, 103),
+            music_row(4, "append", 100.0, 999),
+        ];
+
+        add_omakase_music_rows(&mut rows);
+
+        let omakase: Vec<_> = rows
+            .iter()
+            .filter(|row| row.music_id == OMAKASE_MUSIC_ID)
+            .collect();
+        assert_eq!(omakase.len(), OMAKASE_OUTPUT_DIFFS.len());
+        assert!(OMAKASE_OUTPUT_DIFFS
+            .iter()
+            .all(|diff| omakase.iter().any(|row| row.difficulty == *diff)));
+        let master = omakase
+            .iter()
+            .find(|row| row.difficulty == "master")
+            .expect("omakase master row");
+        assert!((master.base_score - 40.0).abs() < 1e-9);
+        assert_eq!(master.event_rate, 102);
+        assert_eq!(master.tap_count, 102);
+        assert!((master.skill_score_multi[0] - 43.0).abs() < 1e-9);
+    }
 
     #[test]
     fn parse_build_params_reads_camel_case_card_configs() {
