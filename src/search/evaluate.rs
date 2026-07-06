@@ -186,6 +186,53 @@ pub(crate) fn leaf_evaluate_checked(
     }
 }
 
+/// Challenge live score evaluation skips event bonus aggregation because
+/// challenge event points only depend on live score.
+#[inline(always)]
+pub(crate) fn leaf_evaluate_challenge_score_checked(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; 5],
+) -> Option<u64> {
+    debug_assert!(matches!(
+        ctx.effective_live_type(),
+        LiveType::Challenge | LiveType::ChallengeAuto
+    ));
+    debug_assert!(matches!(ctx.target, ScoreTarget::Score));
+
+    let power_total = ctx.clamp_power_total(resolve_power_target(pool, deck) + ctx.honor_bonus);
+    let prepared = prepare_skills(pool, ctx, deck);
+    let mut best = 0u64;
+    let mut found = false;
+    let mut mask = prepared.enumerate_mask;
+    loop {
+        let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
+        if !permutation_satisfies_lower_bound(ctx, &permutation) {
+            if mask == 0 {
+                break;
+            }
+            mask = (mask - 1) & prepared.enumerate_mask;
+            continue;
+        }
+        let live_score = calc_live_score(power_total, &permutation, ctx);
+        let event_point = if ctx.has_event() {
+            calc_event_point(live_score, 0.0, ctx)
+        } else {
+            live_score
+        };
+        let encoded = ((event_point as u64) << 32) | (live_score as u32 as u64);
+        if encoded > best {
+            best = encoded;
+        }
+        found = true;
+        if mask == 0 {
+            break;
+        }
+        mask = (mask - 1) & prepared.enumerate_mask;
+    }
+    found.then_some(best)
+}
+
 #[inline(always)]
 fn summarize_key(
     ctx: &SearchContext,

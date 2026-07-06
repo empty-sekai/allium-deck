@@ -23,6 +23,10 @@ pub(crate) struct SkillResult {
     pub full: SkillInfo,
 }
 
+pub(crate) fn is_bfes_skill_pair(left: &SkillResult, right: &SkillResult) -> bool {
+    left.ref_skill.is_some() || right.ref_skill.is_some() || left.full.has_ref || right.full.has_ref
+}
+
 /// 卡牌技能状态选择。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SkillState {

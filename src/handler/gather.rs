@@ -2,7 +2,7 @@ use crate::pool::{CardPool, EventBonusHot, PoolBuilder, SkillSlot};
 use crate::types::{DefaultImage, LiveType, PowerDetail, ScoreTarget, SkillInfo};
 
 use super::power::PowerResult;
-use super::skill::SkillResult;
+use super::skill::{is_bfes_skill_pair, SkillResult};
 
 /// gather 前的卡级中间态。
 #[derive(Debug, Clone, PartialEq)]
@@ -179,6 +179,54 @@ fn compare_cards(
     }
 }
 
+fn fixed_slot_rank(
+    card: &CardIntermediate,
+    fixed_card_ids: &[u16],
+    fixed_character_ids: &[u8],
+) -> Option<usize> {
+    let game_card_id = card.game_card_id.max(0).min(u16::MAX as i32) as u16;
+    if let Some(pos) = fixed_card_ids.iter().position(|id| *id == game_card_id) {
+        return Some(pos);
+    }
+    fixed_character_ids
+        .iter()
+        .position(|id| *id == card.character_id)
+        .map(|pos| fixed_card_ids.len() + pos)
+}
+
+fn compare_cards_with_fixed_slots(
+    left: &CardIntermediate,
+    right: &CardIntermediate,
+    target: ScoreTarget,
+    has_event: bool,
+    effective_live_type: LiveType,
+    fixed_card_ids: &[u16],
+    fixed_character_ids: &[u8],
+) -> std::cmp::Ordering {
+    match (
+        fixed_slot_rank(left, fixed_card_ids, fixed_character_ids),
+        fixed_slot_rank(right, fixed_card_ids, fixed_character_ids),
+    ) {
+        (Some(left_rank), Some(right_rank)) if left_rank != right_rank => {
+            return left_rank.cmp(&right_rank);
+        }
+        (Some(_), Some(_))
+            if left.game_card_id == right.game_card_id
+                && is_bfes_skill_pair(&left.skill, &right.skill) =>
+        {
+            let left_trained = matches!(left.default_image, DefaultImage::SpecialTraining);
+            let right_trained = matches!(right.default_image, DefaultImage::SpecialTraining);
+            if left_trained != right_trained {
+                return right_trained.cmp(&left_trained);
+            }
+        }
+        (Some(_), None) => return std::cmp::Ordering::Less,
+        (None, Some(_)) => return std::cmp::Ordering::Greater,
+        _ => {}
+    }
+    compare_cards(left, right, target, has_event, effective_live_type)
+}
+
 #[inline(always)]
 fn score_noevent_sort_key(card: &CardIntermediate) -> u64 {
     card.power.power_max.max(0) as u64 * (256 + card.skill.skill_max as u64)
@@ -190,8 +238,26 @@ pub(crate) fn sort_and_gather(
     target: ScoreTarget,
     has_event: bool,
     effective_live_type: LiveType,
+    fixed_card_ids: &[u16],
+    fixed_character_ids: &[u8],
 ) -> (CardPool, Vec<FullPrecisionCard>) {
-    cards.sort_by(|left, right| compare_cards(left, right, target, has_event, effective_live_type));
+    if fixed_card_ids.is_empty() && fixed_character_ids.is_empty() {
+        cards.sort_by(|left, right| {
+            compare_cards(left, right, target, has_event, effective_live_type)
+        });
+    } else {
+        cards.sort_by(|left, right| {
+            compare_cards_with_fixed_slots(
+                left,
+                right,
+                target,
+                has_event,
+                effective_live_type,
+                fixed_card_ids,
+                fixed_character_ids,
+            )
+        });
+    }
 
     let mut builder = PoolBuilder::new(cards.len() as u16);
     let mut unit_count_idx = 0u8;

@@ -23,9 +23,11 @@ use event_bonus::{
 use gather::{sort_and_gather, CardIntermediate, FullPrecisionCard};
 use music::build_music_params;
 use power::{build_power, resolve_unit_mask};
-use skill::{build_skill, SkillState};
+use skill::{build_skill, is_bfes_skill_pair, SkillResult, SkillState};
 use support_bonus::calc_wb_support_bonus;
-use types::{attr_to_pool_index, default_image_kind, parse_attr_code, parse_unit_code};
+use types::{
+    attr_to_pool_index, default_image_kind, is_after_training, parse_attr_code, parse_unit_code,
+};
 
 pub use types::*;
 
@@ -102,7 +104,7 @@ fn normalize_user_cards(
             .cards
             .iter()
             .find(|card| card.id == card_id)
-            .is_some_and(|card| card.special_training_skill_id.is_some());
+            .is_some_and(card_can_special_train);
         let (special_training_status, default_image) = if can_train {
             ("done".to_string(), "special_training".to_string())
         } else {
@@ -128,6 +130,7 @@ const PER_CHAR_KEEP: usize = 6;
 const FINAL_CHAPTER_PER_CHAR_KEEP: usize = 16;
 const GENERAL_TRIM_THRESHOLD: usize = 400;
 const GENERAL_PER_CHAR_KEEP: usize = 10;
+const CHALLENGE_ALL_PER_CHAR_KEEP: usize = 19;
 
 fn ep_prefilter_keep(
     card: &CardIntermediate,
@@ -223,7 +226,11 @@ fn ep_prefilter_keep_with_params(
     ep_prefilter_keep(card, is_world_bloom, is_final_chapter)
 }
 
-fn general_per_character_trim(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
+fn general_per_character_trim(
+    cards: &mut Vec<CardIntermediate>,
+    params: &types::BuildParams,
+    per_char_keep: usize,
+) {
     cards.sort_by(|a, b| {
         let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
         let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
@@ -235,7 +242,7 @@ fn general_per_character_trim(cards: &mut Vec<CardIntermediate>, params: &types:
             return true;
         }
         let ch = (card.character_id as usize).min(26);
-        if (counts[ch] as usize) < GENERAL_PER_CHAR_KEEP {
+        if (counts[ch] as usize) < per_char_keep {
             counts[ch] += 1;
             true
         } else {
@@ -441,9 +448,6 @@ fn skill_states_for_card(
     master: &types::MasterCard,
     params: &types::BuildParams,
 ) -> Vec<SkillState> {
-    if master.special_training_skill_id.is_none() {
-        return vec![SkillState::BeforeTraining];
-    }
     if params.keep_after_training_state {
         if matches!(
             default_image_kind(&user_card.default_image),
@@ -453,8 +457,63 @@ fn skill_states_for_card(
         } else {
             vec![SkillState::BeforeTraining]
         }
-    } else {
+    } else if master.special_training_skill_id.is_some() {
         vec![SkillState::AfterTraining, SkillState::BeforeTraining]
+    } else if matches!(
+        default_image_kind(&user_card.default_image),
+        DefaultImage::SpecialTraining
+    ) || is_after_training(&user_card.special_training_status)
+    {
+        vec![SkillState::AfterTraining]
+    } else {
+        vec![SkillState::BeforeTraining]
+    }
+}
+
+fn card_can_special_train(master: &types::MasterCard) -> bool {
+    master.special_training_skill_id.is_some()
+        || master.special_training_power1_bonus_fixed > 0
+        || master.special_training_power2_bonus_fixed > 0
+        || master.special_training_power3_bonus_fixed > 0
+        || matches!(master.card_rarity_type, 3 | 4)
+}
+
+fn collapse_non_bfes_skill_states(
+    mut states: Vec<(SkillState, SkillResult)>,
+) -> Vec<(SkillState, SkillResult)> {
+    if states.len() != 2 {
+        return states;
+    }
+    let after_pos = states
+        .iter()
+        .position(|(state, _)| matches!(state, SkillState::AfterTraining));
+    let before_pos = states
+        .iter()
+        .position(|(state, _)| matches!(state, SkillState::BeforeTraining));
+    let (Some(after_pos), Some(before_pos)) = (after_pos, before_pos) else {
+        return states;
+    };
+    if is_bfes_skill_pair(&states[after_pos].1, &states[before_pos].1) {
+        return states;
+    }
+    let keep_pos = if states[after_pos].1.skill_max > states[before_pos].1.skill_max {
+        after_pos
+    } else {
+        before_pos
+    };
+    let selected = states.swap_remove(keep_pos);
+    vec![selected]
+}
+
+fn default_image_for_user_card(user_card: &types::UserCard) -> DefaultImage {
+    if matches!(
+        default_image_kind(&user_card.default_image),
+        DefaultImage::SpecialTraining
+    ) || is_after_training(&user_card.special_training_status)
+    {
+        DefaultImage::SpecialTraining
+    } else {
+        DefaultImage::Original
     }
 }
 
@@ -716,19 +775,33 @@ pub fn build_card_pool(
             .unwrap_or(0);
         let character_rank = user_character_rank(user, master.character_id);
 
-        for skill_state in skill_states_for_card(&user_card, &master, params) {
-            let skill = build_skill(
-                &user_card,
-                &master,
-                game,
-                &indexes,
-                character_rank,
-                event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
-                skill_state,
-            );
-            let default_image = match skill_state {
-                SkillState::BeforeTraining => DefaultImage::Original,
-                SkillState::AfterTraining => DefaultImage::SpecialTraining,
+        let skill_options = skill_states_for_card(&user_card, &master, params)
+            .into_iter()
+            .map(|skill_state| {
+                let skill = build_skill(
+                    &user_card,
+                    &master,
+                    game,
+                    &indexes,
+                    character_rank,
+                    event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
+                    skill_state,
+                );
+                (skill_state, skill)
+            })
+            .collect::<Vec<_>>();
+        let skill_state_controls_image = skill_options.len() == 2
+            && is_bfes_skill_pair(&skill_options[0].1, &skill_options[1].1);
+        let user_default_image = default_image_for_user_card(&user_card);
+
+        for (skill_state, skill) in collapse_non_bfes_skill_states(skill_options) {
+            let default_image = if skill_state_controls_image {
+                match skill_state {
+                    SkillState::BeforeTraining => DefaultImage::Original,
+                    SkillState::AfterTraining => DefaultImage::SpecialTraining,
+                }
+            } else {
+                user_default_image
             };
 
             let ep_sort_key =
@@ -790,14 +863,23 @@ pub fn build_card_pool(
         }
     }
 
-    if !matches!(
+    let is_challenge_live = matches!(
+        params.live_type,
+        crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+    );
+    let is_challenge_all = is_challenge_live && params.challenge_live_character_id.is_none();
+
+    if is_challenge_live && cards.len() > CHALLENGE_ALL_PER_CHAR_KEEP {
+        general_per_character_trim(&mut cards, params, CHALLENGE_ALL_PER_CHAR_KEEP);
+    } else if !matches!(
         params.target,
         crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
-    ) && !is_final_chapter
+    ) && !is_challenge_all
+        && !is_final_chapter
         && !is_world_bloom
         && cards.len() > GENERAL_TRIM_THRESHOLD
     {
-        general_per_character_trim(&mut cards, params);
+        general_per_character_trim(&mut cards, params, GENERAL_PER_CHAR_KEEP);
     }
 
     if matches!(
@@ -830,6 +912,8 @@ pub fn build_card_pool(
         params.target,
         event_ctx.is_some(),
         effective_live_type,
+        &fixed_card_ids,
+        &fixed_character_ids,
     );
     let mut search_ctx = build_search_context(
         &full,
@@ -883,7 +967,7 @@ pub fn cultivated_user_cards(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::{EventBonusHot, SkillSlot};
+    use crate::pool::{EventBonusHot, RefSkill, SkillSlot};
     use crate::types::{LiveType, ScoreTarget, SkillReferenceStrategy};
 
     fn sample_game<'a>(
@@ -1470,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn handler_build_card_pool_splits_bfes_dual_skill_cards() {
+    fn handler_build_card_pool_splits_bfes_reference_skill_cards() {
         let cards = [MasterCard {
             id: 1,
             character_id: 1,
@@ -1512,6 +1596,16 @@ mod tests {
                 activate_character_rank: None,
             },
             types::SkillEffect {
+                skill_id: 10,
+                skill_level: 1,
+                effect_type: "score_up_reference".to_string(),
+                value: 50,
+                additional_value: Some(70),
+                unit_member_count: None,
+                unit: None,
+                activate_character_rank: None,
+            },
+            types::SkillEffect {
                 skill_id: 11,
                 skill_level: 1,
                 effect_type: "score_up".to_string(),
@@ -1540,12 +1634,8 @@ mod tests {
             build_card_pool(&user, &game, &params).expect("dual-skill pool should build");
         assert_eq!(pool.count(), 2);
         assert_eq!(
-            pool.skill_max(pool.card_idx(0).expect("after skill entry")),
-            120
-        );
-        assert_eq!(
             pool.skill_max(pool.card_idx(1).expect("before skill entry")),
-            80
+            120
         );
     }
 
@@ -1814,11 +1904,152 @@ mod tests {
             ScoreTarget::Power,
             false,
             LiveType::Solo,
+            &[],
+            &[],
         );
         assert_eq!(pool.count(), 3);
         assert_eq!(pool.game_id(pool.card_idx(0).unwrap()), 3);
         assert_eq!(pool.game_id(pool.card_idx(1).unwrap()), 2);
         assert_eq!(pool.game_id(pool.card_idx(2).unwrap()), 1);
+    }
+
+    #[test]
+    fn handler_sort_and_gather_moves_fixed_card_states_before_members() {
+        let card =
+            |game_card_id: i32, character_id: u8, power_max: i32, skill_max: u8, default_image| {
+                CardIntermediate {
+                    game_card_id,
+                    card_rarity_type: 4,
+                    character_id,
+                    attr: 0,
+                    unit_mask_raw: 1,
+                    default_image,
+                    master_rank: 0,
+                    skill_level: 1,
+                    has_char_bonus: false,
+                    has_attr_bonus: false,
+                    power: power::PowerResult {
+                        resolved: [[crate::types::PowerDetail::default(); 4]; 6],
+                        power_min: power_max - 10,
+                        power_max,
+                    },
+                    skill: skill::SkillResult {
+                        slot: SkillSlot::default(),
+                        unit_count: None,
+                        diff: None,
+                        ref_skill: if game_card_id == 949
+                            && matches!(default_image, crate::types::DefaultImage::Original)
+                        {
+                            Some(RefSkill { rate: 50, max: 70 })
+                        } else {
+                            None
+                        },
+                        skill_min: skill_max,
+                        skill_max,
+                        full: crate::types::SkillInfo {
+                            is_after_training: matches!(
+                                default_image,
+                                crate::types::DefaultImage::SpecialTraining
+                            ),
+                            has_ref: game_card_id == 949
+                                && matches!(default_image, crate::types::DefaultImage::Original),
+                            ..crate::types::SkillInfo::default()
+                        },
+                    },
+                    event_bonus: EventBonusHot::from_whole(1, 1),
+                    leader_honor_bonus: 0,
+                    leader_limit_bonus: 0,
+                    ep_sort_key: power_max as i64,
+                }
+            };
+        let (pool, full) = sort_and_gather(
+            vec![
+                card(121, 26, 90_000, 110, crate::types::DefaultImage::Original),
+                card(949, 17, 70_000, 150, crate::types::DefaultImage::Original),
+                card(
+                    949,
+                    17,
+                    70_000,
+                    148,
+                    crate::types::DefaultImage::SpecialTraining,
+                ),
+                card(404, 21, 80_000, 120, crate::types::DefaultImage::Original),
+            ],
+            ScoreTarget::Score,
+            true,
+            LiveType::Multi,
+            &[949],
+            &[],
+        );
+
+        assert_eq!(pool.game_id(pool.card_idx(0).unwrap()), 949);
+        assert_eq!(pool.game_id(pool.card_idx(1).unwrap()), 949);
+        assert_eq!(full[0].game_card_id, 949);
+        assert_eq!(full[1].game_card_id, 949);
+        assert!(matches!(
+            full[0].default_image,
+            crate::types::DefaultImage::SpecialTraining
+        ));
+    }
+
+    #[test]
+    fn handler_ordinary_trained_card_without_after_skill_uses_trained_art() {
+        let mut user_card = sample_user_card(1);
+        user_card.special_training_status = "done".to_string();
+        user_card.default_image = "original".to_string();
+        let master = MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: "chara_000001".to_string(),
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 100,
+            special_training_power2_bonus_fixed: 100,
+            special_training_power3_bonus_fixed: 100,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        };
+
+        assert_eq!(
+            skill_states_for_card(&user_card, &master, &BuildParams::default()),
+            vec![SkillState::AfterTraining]
+        );
+    }
+
+    #[test]
+    fn handler_non_bfes_before_after_skill_states_collapse_to_best_skill() {
+        let before = SkillResult {
+            skill_min: 120,
+            skill_max: 120,
+            full: crate::types::SkillInfo {
+                skill_id: 10,
+                is_after_training: false,
+                base_score_up: 120.0,
+                ..crate::types::SkillInfo::default()
+            },
+            ..SkillResult::default()
+        };
+        let after = SkillResult {
+            full: crate::types::SkillInfo {
+                skill_id: 11,
+                is_after_training: true,
+                ..before.full
+            },
+            ..before.clone()
+        };
+
+        let collapsed = collapse_non_bfes_skill_states(vec![
+            (SkillState::AfterTraining, after),
+            (SkillState::BeforeTraining, before),
+        ]);
+
+        assert_eq!(collapsed.len(), 1);
+        assert!(matches!(collapsed[0].0, SkillState::BeforeTraining));
     }
 
     #[test]

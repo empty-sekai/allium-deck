@@ -4,6 +4,7 @@
 //! 大文件仍从路径读取：`--masterdata`、`--music-metas`、`--user`。
 //! `--params` 保留为兼容入口；直接 flags 会在解析后覆盖 params JSON。
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -15,10 +16,15 @@ use allium_deck::handler::{
 };
 use allium_deck::pool::{CardIdx, CardPool};
 use allium_deck::search::{
-    search_instrumented, summarize_deck, DeckResult, DeckResultSummary, SearchContext, SearchParams,
+    challenge_search, search_instrumented, summarize_deck, DeckResult, DeckResultSummary,
+    SearchContext, SearchParams, SearchStats, SuffixBound,
 };
 use allium_deck::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 use serde::Serialize;
+
+const DEFAULT_CHALLENGE_MUSIC_ID: i32 = 104;
+const DEFAULT_CHALLENGE_MUSIC_DIFF: &str = "master";
+const GAME_CHARACTER_ID_RANGE: std::ops::RangeInclusive<i32> = 1..=26;
 
 #[derive(Debug, Default)]
 struct CliArgs {
@@ -28,6 +34,7 @@ struct CliArgs {
     params: Option<String>,
     top_k: Option<usize>,
     timeout_ms: Option<u64>,
+    challenge_all: bool,
     overrides: ParamOverrides,
 }
 
@@ -115,6 +122,10 @@ fn run() -> Result<(), String> {
         parse_build_params_json(&params_json).map_err(|e| format!("解析 params 失败: {e}"))?;
     apply_overrides(&mut params, args.overrides);
 
+    if args.challenge_all {
+        return run_challenge_all(&user, &game, params, timeout_ms, load_ms);
+    }
+
     let build_start = Instant::now();
     let (pool, ctx) = build_card_pool(&user, &game, &params).map_err(|e| e.to_string())?;
     let build_pool_ms = ms(build_start);
@@ -156,21 +167,7 @@ fn run() -> Result<(), String> {
             top_k: search_params.top_k,
             timeout_ms: search_params.timeout_ms,
         },
-        diagnostics: Diagnostics {
-            pool_size: pool.count(),
-            effective_live_type: format!("{:?}", ctx.effective_live_type()),
-            support_deck: SupportDeckDiagnostics::from_ctx(&ctx),
-            search: SearchDiagnostics {
-                leaf_nodes: stats.leaf_nodes,
-                ub_prunes: stats.ub_prunes,
-                leader_prunes: stats.leader_prunes,
-                ep_candidates: stats.ep_candidates,
-                ep_break_prunes: stats.ep_break_prunes,
-                ep_continue_prunes: stats.ep_continue_prunes,
-                ep_explored: stats.ep_explored,
-                mono_break_prunes: stats.mono_break_prunes,
-            },
-        },
+        diagnostics: diagnostics_from(&pool, &ctx, &stats),
         timing: Timing {
             load_ms,
             build_pool_ms,
@@ -185,6 +182,257 @@ fn run() -> Result<(), String> {
         serde_json::to_string_pretty(&response).map_err(|e| e.to_string())?
     );
     Ok(())
+}
+
+fn run_challenge_all(
+    user: &UserProfile,
+    game: &GameData<'_>,
+    mut params: BuildParams,
+    timeout_ms: u64,
+    load_ms: f64,
+) -> Result<(), String> {
+    if !matches!(
+        params.live_type,
+        LiveType::Challenge | LiveType::ChallengeAuto
+    ) {
+        params.live_type = LiveType::Challenge;
+    }
+    params.challenge_live_character_id = None;
+    if params.music_id.is_none() {
+        params.music_id = Some(DEFAULT_CHALLENGE_MUSIC_ID);
+    }
+    if params.music_diff.is_none() {
+        params.music_diff = Some(DEFAULT_CHALLENGE_MUSIC_DIFF.to_string());
+    }
+
+    let search_params = SearchParams {
+        top_k: 1,
+        timeout_ms,
+    };
+    let total_start = Instant::now();
+
+    let mut render_user = user.clone();
+    render_user.user_cards = cultivated_user_cards(user, game, &params);
+    let user_cards = render_user
+        .user_cards
+        .iter()
+        .map(|card| (card.card_id, card))
+        .collect::<HashMap<_, _>>();
+
+    let build_start = Instant::now();
+    let (pool, ctx) = build_card_pool(user, game, &params).map_err(|e| e.to_string())?;
+    let shared_build_pool_ms = ms(build_start);
+    let suffix = SuffixBound::build(&pool, &ctx);
+    eprintln!(
+        "[challenge_all:pool] build={shared_build_pool_ms:.1}ms pool={} effective_live={:?}",
+        pool.count(),
+        ctx.effective_live_type()
+    );
+
+    let character_ids = GAME_CHARACTER_ID_RANGE.collect::<Vec<_>>();
+    let mut characters = character_ids
+        .iter()
+        .map(|character_id| {
+            run_challenge_character_from_shared_pool(
+                *character_id,
+                user,
+                game,
+                &params,
+                &search_params,
+                &user_cards,
+                &pool,
+                &ctx,
+                &suffix,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let total_build_pool_ms = shared_build_pool_ms;
+    let total_search_ms = characters
+        .iter()
+        .map(|character| character.timing.search_ms)
+        .sum::<f64>();
+    let searched_characters = characters
+        .iter()
+        .filter(|character| character.diagnostics.is_some())
+        .count();
+    let errored_characters = characters
+        .iter()
+        .filter(|character| character.error.is_some())
+        .count();
+    let total_pool_size = characters
+        .iter()
+        .filter_map(|character| character.diagnostics.as_ref())
+        .map(|diagnostics| diagnostics.pool_size)
+        .sum::<usize>();
+    let total_leaf_nodes = characters
+        .iter()
+        .filter_map(|character| character.diagnostics.as_ref())
+        .map(|diagnostics| diagnostics.search.leaf_nodes)
+        .sum::<u64>();
+    let total_ub_prunes = characters
+        .iter()
+        .filter_map(|character| character.diagnostics.as_ref())
+        .map(|diagnostics| diagnostics.search.ub_prunes)
+        .sum::<u64>();
+    let total_ep_explored = characters
+        .iter()
+        .filter_map(|character| character.diagnostics.as_ref())
+        .map(|diagnostics| diagnostics.search.ep_explored)
+        .sum::<u64>();
+    let total_mono_break_prunes = characters
+        .iter()
+        .filter_map(|character| character.diagnostics.as_ref())
+        .map(|diagnostics| diagnostics.search.mono_break_prunes)
+        .sum::<u64>();
+
+    characters.sort_by(compare_challenge_character);
+    let mut next_rank = 1usize;
+    for character in &mut characters {
+        if let Some(deck) = &mut character.deck {
+            character.rank = Some(next_rank);
+            deck.rank = next_rank;
+            next_rank += 1;
+        }
+    }
+
+    let compute_wall_ms = ms(total_start);
+    let total_ms = load_ms + compute_wall_ms;
+    eprintln!(
+        "[challenge_all] characters={} ok={} error={} build_sum={total_build_pool_ms:.1}ms search_sum={total_search_ms:.1}ms compute_wall={compute_wall_ms:.1}ms total={total_ms:.1}ms",
+        characters.len(),
+        next_rank.saturating_sub(1),
+        errored_characters
+    );
+
+    let response = ChallengeAllCliResponse {
+        mode: "challenge_all",
+        effective_params: params,
+        search_params: ChallengeAllSearchParamsOut {
+            top_k_per_character: search_params.top_k,
+            timeout_ms: search_params.timeout_ms,
+        },
+        diagnostics: ChallengeAllDiagnostics {
+            character_count: characters.len(),
+            ranked_characters: next_rank.saturating_sub(1),
+            searched_characters,
+            errored_characters,
+            total_pool_size,
+            total_leaf_nodes,
+            total_ub_prunes,
+            total_ep_explored,
+            total_mono_break_prunes,
+        },
+        timing: ChallengeAllTiming {
+            load_ms,
+            compute_wall_ms,
+            total_build_pool_ms,
+            total_search_ms,
+            total_ms,
+        },
+        characters,
+    };
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&response).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+fn run_challenge_character_from_shared_pool(
+    character_id: i32,
+    user: &UserProfile,
+    game: &GameData<'_>,
+    params: &BuildParams,
+    search_params: &SearchParams,
+    user_cards: &HashMap<i32, &UserCard>,
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+) -> ChallengeCharacterOut {
+    let mut character_params = params.clone();
+    character_params.challenge_live_character_id = Some(character_id);
+
+    let search_start = Instant::now();
+    let (results, stats) =
+        challenge_search::search_character(pool, ctx, suffix, search_params, character_id as u8);
+    let search_ms = ms(search_start);
+    let candidate_count = pool
+        .indices()
+        .filter(|card| pool.char_id(*card) == character_id as u8)
+        .count();
+    let deck = results
+        .first()
+        .map(|result| DeckOut::build(1, pool, ctx, game, user, user_cards, result));
+    let error = if deck.is_some() {
+        None
+    } else {
+        Some("没有搜索结果（候选池不足 5 或被参数过滤为空）".to_string())
+    };
+
+    ChallengeCharacterOut {
+        rank: None,
+        character_id,
+        effective_params: character_params,
+        diagnostics: Some(diagnostics_from_with_pool_size(
+            candidate_count,
+            ctx,
+            &stats,
+        )),
+        timing: CharacterTiming {
+            build_pool_ms: 0.0,
+            search_ms,
+            total_ms: search_ms,
+        },
+        deck,
+        error,
+    }
+}
+
+fn diagnostics_from(pool: &CardPool, ctx: &SearchContext, stats: &SearchStats) -> Diagnostics {
+    diagnostics_from_with_pool_size(pool.count(), ctx, stats)
+}
+
+fn diagnostics_from_with_pool_size(
+    pool_size: usize,
+    ctx: &SearchContext,
+    stats: &SearchStats,
+) -> Diagnostics {
+    Diagnostics {
+        pool_size,
+        effective_live_type: format!("{:?}", ctx.effective_live_type()),
+        support_deck: SupportDeckDiagnostics::from_ctx(ctx),
+        search: SearchDiagnostics::from_stats(stats),
+    }
+}
+
+fn compare_challenge_character(
+    left: &ChallengeCharacterOut,
+    right: &ChallengeCharacterOut,
+) -> Ordering {
+    match (left.deck.as_ref(), right.deck.as_ref()) {
+        (Some(left_deck), Some(right_deck)) => right_deck
+            .target_value
+            .cmp(&left_deck.target_value)
+            .then_with(|| {
+                right_deck
+                    .total_power
+                    .unwrap_or_default()
+                    .cmp(&left_deck.total_power.unwrap_or_default())
+            })
+            .then_with(|| {
+                right_deck
+                    .multi_live_score_up
+                    .unwrap_or_default()
+                    .partial_cmp(&left_deck.multi_live_score_up.unwrap_or_default())
+                    .unwrap_or(Ordering::Equal)
+            })
+            .then_with(|| left.character_id.cmp(&right.character_id)),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => left.character_id.cmp(&right.character_id),
+    }
 }
 
 fn parse_args() -> Result<CliArgs, String> {
@@ -215,6 +463,7 @@ fn parse_args() -> Result<CliArgs, String> {
             "--params" => parsed.params = Some(value()?),
             "--top-k" => parsed.top_k = Some(parse_usize(&value()?, &flag)?),
             "--timeout-ms" => parsed.timeout_ms = Some(parse_u64(&value()?, &flag)?),
+            "--challenge-all" => parsed.challenge_all = true,
             "--region" => parsed.overrides.region = Some(value()?),
             "--event-id" => parsed.overrides.event_id = Some(parse_optional_i32(&value()?, &flag)?),
             "--event-type" => parsed.overrides.event_type = Some(parse_optional_string(value()?)),
@@ -436,6 +685,7 @@ fn print_help() {
          --event-id N --event-type marathon|cheerful_carnival|world_bloom\n\
          --music-id N --music-diff expert --live-type solo|multi|cheerful|auto|challenge|challenge_auto|mysekai\n\
          --target score|power|skill|mysekai --boost 0..10 --top-k N --timeout-ms N\n\
+         --challenge-all 逐角色搜索 challenge 最优卡组，并按分数全局排序输出 JSON\n\
          --fixed-cards 1,2 --fixed-characters 1,2 --excluded-cards 3,4\n\
          --event-unit ln --event-attr cool --filter-other-unit --unit-filter ln --attr-filter cool\n\
          --world-bloom-character-id N --world-bloom-event-turn N --challenge-live-character-id N\n\
@@ -637,8 +887,24 @@ struct CliResponse {
 }
 
 #[derive(Serialize)]
+struct ChallengeAllCliResponse {
+    mode: &'static str,
+    effective_params: BuildParams,
+    search_params: ChallengeAllSearchParamsOut,
+    diagnostics: ChallengeAllDiagnostics,
+    timing: ChallengeAllTiming,
+    characters: Vec<ChallengeCharacterOut>,
+}
+
+#[derive(Serialize)]
 struct SearchParamsOut {
     top_k: usize,
+    timeout_ms: u64,
+}
+
+#[derive(Serialize)]
+struct ChallengeAllSearchParamsOut {
+    top_k_per_character: usize,
     timeout_ms: u64,
 }
 
@@ -651,11 +917,51 @@ struct Timing {
 }
 
 #[derive(Serialize)]
+struct ChallengeAllTiming {
+    load_ms: f64,
+    compute_wall_ms: f64,
+    total_build_pool_ms: f64,
+    total_search_ms: f64,
+    total_ms: f64,
+}
+
+#[derive(Serialize)]
+struct CharacterTiming {
+    build_pool_ms: f64,
+    search_ms: f64,
+    total_ms: f64,
+}
+
+#[derive(Serialize)]
 struct Diagnostics {
     pool_size: usize,
     effective_live_type: String,
     support_deck: SupportDeckDiagnostics,
     search: SearchDiagnostics,
+}
+
+#[derive(Serialize)]
+struct ChallengeAllDiagnostics {
+    character_count: usize,
+    ranked_characters: usize,
+    searched_characters: usize,
+    errored_characters: usize,
+    total_pool_size: usize,
+    total_leaf_nodes: u64,
+    total_ub_prunes: u64,
+    total_ep_explored: u64,
+    total_mono_break_prunes: u64,
+}
+
+#[derive(Serialize)]
+struct ChallengeCharacterOut {
+    rank: Option<usize>,
+    character_id: i32,
+    effective_params: BuildParams,
+    diagnostics: Option<Diagnostics>,
+    timing: CharacterTiming,
+    deck: Option<DeckOut>,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -708,6 +1014,21 @@ struct SearchDiagnostics {
     ep_continue_prunes: u64,
     ep_explored: u64,
     mono_break_prunes: u64,
+}
+
+impl SearchDiagnostics {
+    fn from_stats(stats: &SearchStats) -> Self {
+        Self {
+            leaf_nodes: stats.leaf_nodes,
+            ub_prunes: stats.ub_prunes,
+            leader_prunes: stats.leader_prunes,
+            ep_candidates: stats.ep_candidates,
+            ep_break_prunes: stats.ep_break_prunes,
+            ep_continue_prunes: stats.ep_continue_prunes,
+            ep_explored: stats.ep_explored,
+            mono_break_prunes: stats.mono_break_prunes,
+        }
+    }
 }
 
 #[derive(Serialize)]
