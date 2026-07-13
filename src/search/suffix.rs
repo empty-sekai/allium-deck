@@ -251,6 +251,38 @@ impl SuffixBound {
                 let leader_ub = (partial.max_skill as u32).max(best_unused as u32);
                 (2 * total_skill + 8 * leader_ub) as u64
             }
+            ScoreTarget::Bonus => {
+                let total_bonus = partial.bonus
+                    + suffix_sum_u16_as_u32(
+                        &self.bonus_order,
+                        &self.bonus_vals,
+                        used_chars.bits(),
+                        slots_left,
+                    )
+                    + self.extra_bonus_ub;
+                let total_power = self.clamp_power_total(
+                    partial.power
+                        + suffix_sum_u32(
+                            &self.power_order,
+                            &self.power_vals,
+                            used_chars.bits(),
+                            slots_left,
+                        )
+                        + self.honor_bonus,
+                );
+                let total_skill = partial.skill
+                    + suffix_sum_u16_as_u32(
+                        &self.skill_order,
+                        &self.skill_vals,
+                        used_chars.bits(),
+                        slots_left,
+                    );
+                let best_unused =
+                    first_unused_val_u16(&self.skill_order, &self.skill_vals, used_chars.bits());
+                let leader_ub = (partial.max_skill as u32).max(best_unused as u32);
+                let live_score = self.calc_live_score_bound(total_power, total_skill, leader_ub);
+                (((total_bonus.saturating_mul(2)) as u64) << 32) | (live_score.max(0) as u32 as u64)
+            }
             ScoreTarget::Score => {
                 let total_power = self.clamp_power_total(
                     partial.power
@@ -404,6 +436,10 @@ impl SuffixBound {
         match self.target {
             ScoreTarget::Power => power_ub as u64,
             ScoreTarget::Skill => (2 * skill_ub + 8 * leader_ub) as u64,
+            ScoreTarget::Bonus => {
+                let live = self.calc_live_score_bound(power_ub, skill_ub, leader_ub);
+                (((bonus_total.saturating_mul(2)) as u64) << 32) | (live.max(0) as u32 as u64)
+            }
             ScoreTarget::Score => {
                 let live = self.calc_live_score_bound(power_ub, skill_ub, leader_ub);
                 let ep = self.calc_event_point_bound(live, bonus_total);

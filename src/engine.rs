@@ -77,10 +77,20 @@ pub fn recommend(
     let (pool, ctx) = crate::handler::build_card_pool(user, game, params)
         .map_err(|error| EngineError::Build(error.to_string()))?;
     let search_params = SearchParams {
-        top_k: 5,
-        timeout_ms: 0,
+        top_k: params.limit,
+        timeout_ms: params.timeout_ms,
     };
-    Ok(crate::search::search(&pool, &ctx, &search_params))
+    if params.target_bonus_list.is_empty() {
+        Ok(crate::search::search(&pool, &ctx, &search_params))
+    } else {
+        Ok(crate::search::search_bonus_targets(
+            &pool,
+            &ctx,
+            &search_params,
+            &params.target_bonus_list,
+        )
+        .0)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -255,6 +265,19 @@ pub fn parse_build_params_json(
             .unwrap_or("solo"),
     );
     params.target = parse_target(string_field(&value, "target").as_deref().unwrap_or("score"));
+    params.limit = i32_field(&value, "limit")
+        .filter(|value| *value > 0)
+        .map(|value| value as usize)
+        .unwrap_or(10);
+    params.member = i32_field(&value, "member")
+        .filter(|value| *value >= 0)
+        .map(|value| value as usize);
+    params.timeout_ms = i32_field(&value, "timeoutMs")
+        .or_else(|| i32_field(&value, "timeout_ms"))
+        .filter(|value| *value >= 0)
+        .map(|value| value as u64)
+        .unwrap_or(0);
+    params.target_bonus_list = int_array_alias(&value, "targetBonusList", "target_bonus_list");
     params.minimize = bool_field(&value, "minimize").unwrap_or(false);
     params.music_id = i32_field(&value, "musicId").or_else(|| i32_field(&value, "music_id"));
     params.music_diff =
@@ -272,6 +295,14 @@ pub fn parse_build_params_json(
         string_field(&value, "eventUnit").or_else(|| string_field(&value, "event_unit"));
     params.event_attr =
         string_field(&value, "eventAttr").or_else(|| string_field(&value, "event_attr"));
+    params.custom_bonus_character_ids = int_array_alias(
+        &value,
+        "customBonusCharacterIds",
+        "custom_bonus_character_ids",
+    );
+    params.custom_bonus_attr = string_field(&value, "customBonusAttr")
+        .or_else(|| string_field(&value, "custom_bonus_attr"));
+    params.custom_bonus_character_support_units = parse_custom_bonus_support_units(&value);
     params.filter_other_unit = bool_field(&value, "filterOtherUnit").unwrap_or(false);
     params.keep_after_training_state =
         bool_field(&value, "keepAfterTrainingState").unwrap_or(false);
@@ -393,6 +424,36 @@ fn int_array(value: &Value, key: &str) -> Vec<i32> {
         .collect()
 }
 
+fn int_array_alias(value: &Value, camel_key: &str, snake_key: &str) -> Vec<i32> {
+    let key = if value.get(camel_key).is_some() {
+        camel_key
+    } else {
+        snake_key
+    };
+    int_array(value, key)
+}
+
+fn parse_custom_bonus_support_units(value: &Value) -> Vec<crate::types::CustomSupportUnit> {
+    let Some(entries) = value
+        .get("customBonusCharacterSupportUnits")
+        .or_else(|| value.get("custom_bonus_character_support_units"))
+        .and_then(Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let mut result = entries
+        .iter()
+        .filter_map(|(character_id, unit)| {
+            Some(crate::types::CustomSupportUnit {
+                character_id: character_id.parse().ok()?,
+                unit: crate::handler::types::parse_unit_code(unit.as_str()?)?,
+            })
+        })
+        .collect::<Vec<_>>();
+    result.sort_unstable_by_key(|entry| entry.character_id);
+    result
+}
+
 fn i32_field(value: &Value, key: &str) -> Option<i32> {
     value
         .get(key)
@@ -450,6 +511,7 @@ fn parse_target(value: &str) -> ScoreTarget {
     match value.trim().to_ascii_lowercase().as_str() {
         "power" => ScoreTarget::Power,
         "skill" => ScoreTarget::Skill,
+        "bonus" => ScoreTarget::Bonus,
         "mysekai" => ScoreTarget::Mysekai,
         _ => ScoreTarget::Score,
     }
@@ -1734,6 +1796,62 @@ mod tests {
         .expect("parse");
         assert_eq!(params.live_skill_order, LiveSkillOrder::Specific);
         assert_eq!(params.specific_skill_order, Some([0, 1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn parse_build_params_reads_bonus_and_custom_event_fields() {
+        let params = parse_build_params_json(
+            r#"{
+                "target":"bonus",
+                "limit":7,
+                "member":5,
+                "timeoutMs":1234,
+                "targetBonusList":[225,250],
+                "customBonusCharacterIds":[1,5,21],
+                "customBonusAttr":"cute",
+                "customBonusCharacterSupportUnits":{"21":"street"}
+            }"#,
+        )
+        .expect("parse");
+
+        assert_eq!(params.target, ScoreTarget::Bonus);
+        assert_eq!(params.limit, 7);
+        assert_eq!(params.member, Some(5));
+        assert_eq!(params.timeout_ms, 1234);
+        assert_eq!(params.target_bonus_list, vec![225, 250]);
+        assert_eq!(params.custom_bonus_character_ids, vec![1, 5, 21]);
+        assert_eq!(params.custom_bonus_attr.as_deref(), Some("cute"));
+        assert_eq!(params.custom_bonus_character_support_units.len(), 1);
+        assert_eq!(
+            params.custom_bonus_character_support_units[0].character_id,
+            21
+        );
+        assert_eq!(
+            params.custom_bonus_character_support_units[0].unit,
+            crate::Unit::Street
+        );
+    }
+
+    #[test]
+    fn parse_build_params_reads_snake_case_bonus_and_custom_event_fields() {
+        let params = parse_build_params_json(
+            r#"{
+                "target":"bonus",
+                "target_bonus_list":[200],
+                "custom_bonus_character_ids":[2,6],
+                "custom_bonus_attr":"pure",
+                "custom_bonus_character_support_units":{"21":"idol"}
+            }"#,
+        )
+        .expect("parse");
+
+        assert_eq!(params.target_bonus_list, vec![200]);
+        assert_eq!(params.custom_bonus_character_ids, vec![2, 6]);
+        assert_eq!(params.custom_bonus_attr.as_deref(), Some("pure"));
+        assert_eq!(
+            params.custom_bonus_character_support_units[0].unit,
+            crate::Unit::Idol
+        );
     }
 
     #[test]

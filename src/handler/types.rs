@@ -111,6 +111,14 @@ pub struct BuildParams {
     pub live_type: LiveType,
     /// 搜索目标。
     pub target: ScoreTarget,
+    /// 每个目标返回的卡组数量。
+    pub limit: usize,
+    /// 兼容调用方的成员数；核心仅支持 None/5。
+    pub member: Option<usize>,
+    /// 搜索超时毫秒数，0 表示不设超时。
+    pub timeout_ms: u64,
+    /// Bonus 目标下需要精确命中的活动加成档位。
+    pub target_bonus_list: Vec<i32>,
     /// 歌曲 ID。
     pub music_id: Option<i32>,
     /// 歌曲难度。
@@ -133,6 +141,12 @@ pub struct BuildParams {
     pub event_unit: Option<String>,
     /// 模拟活动属性。
     pub event_attr: Option<String>,
+    /// 自定义混活角色集合；优先于 event_unit 展开的整团集合。
+    pub custom_bonus_character_ids: Vec<i32>,
+    /// 自定义混活属性。
+    pub custom_bonus_attr: Option<String>,
+    /// 自定义混活中 VS 角色对应的支援团约束。
+    pub custom_bonus_character_support_units: Vec<crate::types::CustomSupportUnit>,
     /// 是否过滤其他团员。
     pub filter_other_unit: bool,
     /// 吸分参考策略。
@@ -175,6 +189,10 @@ impl Default for BuildParams {
             event_type: None,
             live_type: LiveType::Solo,
             target: ScoreTarget::Score,
+            limit: 10,
+            member: None,
+            timeout_ms: 0,
+            target_bonus_list: Vec::new(),
             music_id: None,
             music_diff: None,
             card_configs: CardConfigSet::default(),
@@ -186,6 +204,9 @@ impl Default for BuildParams {
             challenge_live_character_id: None,
             event_unit: None,
             event_attr: None,
+            custom_bonus_character_ids: Vec::new(),
+            custom_bonus_attr: None,
+            custom_bonus_character_support_units: Vec::new(),
             filter_other_unit: false,
             skill_reference_strategy: SkillReferenceStrategy::Average,
             keep_after_training_state: false,

@@ -32,6 +32,17 @@ pub fn dfs_search(
     dfs_search_seeded(pool, ctx, suffix, params, None)
 }
 
+/// 单次 DFS 为每个精确活动加成档位保留独立 Top-K。
+pub fn dfs_search_bonus_targets(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+    params: &SearchParams,
+    targets: &[i32],
+) -> (Vec<DeckResult>, SearchStats) {
+    dfs_search_seeded_inner(pool, ctx, suffix, params, Vec::new(), Some(targets))
+}
+
 pub(crate) fn dfs_search_seeded(
     pool: &CardPool,
     ctx: &SearchContext,
@@ -40,7 +51,7 @@ pub(crate) fn dfs_search_seeded(
     seed: Option<DeckResult>,
 ) -> Vec<DeckResult> {
     let seeds = seed.into_iter().collect::<Vec<_>>();
-    let (results, _) = dfs_search_seeded_inner(pool, ctx, suffix, params, seeds);
+    let (results, _) = dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None);
     results
 }
 
@@ -52,7 +63,7 @@ pub fn dfs_search_instrumented(
     seed: Option<DeckResult>,
 ) -> (Vec<DeckResult>, SearchStats) {
     let seeds = seed.into_iter().collect::<Vec<_>>();
-    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds)
+    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None)
 }
 
 pub(crate) fn dfs_search_instrumented_with_seeds(
@@ -62,7 +73,7 @@ pub(crate) fn dfs_search_instrumented_with_seeds(
     params: &SearchParams,
     seeds: Vec<DeckResult>,
 ) -> (Vec<DeckResult>, SearchStats) {
-    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds)
+    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None)
 }
 
 fn dfs_search_seeded_inner(
@@ -71,6 +82,7 @@ fn dfs_search_seeded_inner(
     suffix: &SuffixBound,
     params: &SearchParams,
     seeds: Vec<DeckResult>,
+    bonus_targets: Option<&[i32]>,
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
@@ -82,7 +94,10 @@ fn dfs_search_seeded_inner(
         Some(Instant::now() + Duration::from_millis(params.timeout_ms))
     };
 
-    let mut tracker = TopKTracker::new(params.top_k, pool);
+    let mut tracker = match bonus_targets {
+        Some(targets) => SearchTracker::Bonus(BonusBucketTracker::new(params.top_k, pool, targets)),
+        None => SearchTracker::TopK(TopKTracker::new(params.top_k, pool)),
+    };
     for seed_result in seeds {
         tracker.insert(seed_result);
     }
@@ -152,7 +167,7 @@ struct SearchState<'a> {
     ctx: &'a SearchContext,
     suffix: &'a SuffixBound,
     deadline: Option<Instant>,
-    tracker: &'a mut TopKTracker,
+    tracker: &'a mut SearchTracker,
     node_count: u64,
     stats: SearchStats,
 }
@@ -177,6 +192,20 @@ impl SearchState<'_> {
                 self.tracker.insert(DeckResult::new(*deck, score));
             }
             return;
+        }
+
+        if self.tracker.is_bonus() {
+            let upper = self.suffix.upper_bound_with_depth(depth, &used, &partial);
+            // partial.bonus 是逐卡 ceil 百分比；每张卡至多高估 0.5%，
+            // 因此 2*ceil-depth 是精确 x2 bonus 的安全下界。
+            let lower_bonus_x2 = partial
+                .bonus
+                .saturating_mul(2)
+                .saturating_sub(depth as u32);
+            if self.tracker.bonus_can_prune(lower_bonus_x2, upper) {
+                self.stats.ub_prunes += 1;
+                return;
+            }
         }
 
         let threshold = self.tracker.threshold();
@@ -669,6 +698,110 @@ impl SearchState<'_> {
             }
         }
         true
+    }
+}
+
+enum SearchTracker {
+    TopK(TopKTracker),
+    Bonus(BonusBucketTracker),
+}
+
+impl SearchTracker {
+    #[inline(always)]
+    fn is_bonus(&self) -> bool {
+        matches!(self, Self::Bonus(_))
+    }
+
+    #[inline(always)]
+    fn threshold(&self) -> u64 {
+        match self {
+            Self::TopK(tracker) => tracker.threshold(),
+            Self::Bonus(_) => 0,
+        }
+    }
+
+    #[inline(always)]
+    fn bonus_can_prune(&self, lower_bonus_x2: u32, upper: u64) -> bool {
+        match self {
+            Self::Bonus(tracker) => tracker.can_prune(lower_bonus_x2, upper),
+            Self::TopK(_) => false,
+        }
+    }
+
+    #[inline(always)]
+    fn insert(&mut self, candidate: DeckResult) {
+        match self {
+            Self::TopK(tracker) => tracker.insert(candidate),
+            Self::Bonus(tracker) => tracker.insert(candidate),
+        }
+    }
+
+    fn into_vec(self) -> Vec<DeckResult> {
+        match self {
+            Self::TopK(tracker) => tracker.into_vec(),
+            Self::Bonus(tracker) => tracker.into_vec(),
+        }
+    }
+}
+
+struct BonusBucketTracker {
+    buckets: Vec<(u32, TopKTracker)>,
+}
+
+impl BonusBucketTracker {
+    fn new(top_k: usize, pool: &CardPool, targets: &[i32]) -> Self {
+        let mut target_x2 = targets
+            .iter()
+            .copied()
+            .filter(|target| *target >= 0)
+            .map(|target| (target as u32).saturating_mul(2))
+            .collect::<Vec<_>>();
+        target_x2.sort_unstable();
+        target_x2.dedup();
+        Self {
+            buckets: target_x2
+                .into_iter()
+                .map(|target| (target, TopKTracker::new(top_k, pool)))
+                .collect(),
+        }
+    }
+
+    #[inline(always)]
+    fn insert(&mut self, candidate: DeckResult) {
+        let target = (candidate.score >> 32) as u32;
+        if let Ok(index) = self
+            .buckets
+            .binary_search_by_key(&target, |(target, _)| *target)
+        {
+            self.buckets[index].1.insert(candidate);
+        }
+    }
+
+    #[inline(always)]
+    fn can_prune(&self, lower_bonus_x2: u32, upper: u64) -> bool {
+        let max_bonus_x2 = (upper >> 32) as u32;
+        let live_upper = upper as u32 as u64;
+        for (target, tracker) in &self.buckets {
+            if *target < lower_bonus_x2 {
+                continue;
+            }
+            if *target > max_bonus_x2 {
+                break;
+            }
+            let threshold = tracker.threshold();
+            if threshold == 0 || live_upper >= (threshold as u32 as u64) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn into_vec(self) -> Vec<DeckResult> {
+        self.buckets
+            .into_iter()
+            .rev()
+            .flat_map(|(_, tracker)| tracker.into_vec())
+            .collect()
     }
 }
 

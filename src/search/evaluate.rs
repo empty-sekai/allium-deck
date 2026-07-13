@@ -76,7 +76,14 @@ pub fn summarize_deck(
             } else {
                 None
             };
-            let key = summarize_key(ctx, total_power, live_score, event_point, &permutation);
+            let key = summarize_key(
+                ctx,
+                total_power,
+                total_bonus,
+                live_score,
+                event_point,
+                &permutation,
+            );
             if best.is_none() || key > best_key {
                 best_key = key;
                 best = Some(build_summary(
@@ -143,6 +150,29 @@ pub(crate) fn leaf_evaluate_checked(
                     best = encoded;
                 }
                 found = true;
+                if mask == 0 {
+                    break;
+                }
+                mask = (mask - 1) & prepared.enumerate_mask;
+            }
+            found.then_some(best)
+        }
+        ScoreTarget::Bonus => {
+            let total_bonus = resolve_total_bonus(pool, ctx, deck);
+            let prepared = prepare_skills(pool, ctx, deck);
+            let mut best = 0u64;
+            let mut found = false;
+            let mut mask = prepared.enumerate_mask;
+            loop {
+                let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
+                if permutation_satisfies_lower_bound(ctx, &permutation) {
+                    let live_score = calc_live_score(power_total, &permutation, ctx);
+                    let encoded = encode_bonus_target(total_bonus, live_score);
+                    if encoded > best {
+                        best = encoded;
+                    }
+                    found = true;
+                }
                 if mask == 0 {
                     break;
                 }
@@ -237,6 +267,7 @@ pub(crate) fn leaf_evaluate_challenge_score_checked(
 fn summarize_key(
     ctx: &SearchContext,
     total_power: u32,
+    total_bonus: f64,
     live_score: i32,
     event_point: Option<i32>,
     permutation: &EvaluatedPermutation,
@@ -245,11 +276,18 @@ fn summarize_key(
         ScoreTarget::Power => ((total_power as u64) << 32) | (live_score.max(0) as u32 as u64),
         ScoreTarget::Skill => encode_skill_target(permutation.multi_live_score_up),
         ScoreTarget::Mysekai => total_power as u64,
+        ScoreTarget::Bonus => encode_bonus_target(total_bonus, live_score),
         ScoreTarget::Score => {
             ((event_point.unwrap_or(live_score).max(0) as u64) << 32)
                 | (live_score.max(0) as u32 as u64)
         }
     }
+}
+
+#[inline(always)]
+fn encode_bonus_target(total_bonus: f64, live_score: i32) -> u64 {
+    let bonus_x2 = (total_bonus * 2.0).round().clamp(0.0, u32::MAX as f64) as u32;
+    ((bonus_x2 as u64) << 32) | (live_score.max(0) as u32 as u64)
 }
 
 fn build_summary(

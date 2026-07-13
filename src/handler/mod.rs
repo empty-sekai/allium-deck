@@ -20,7 +20,8 @@ use event_bonus::{
     build_card_event_bonus, build_event_context, build_leader_honor_bonus,
     build_leader_limit_bonus, EventContext,
 };
-use gather::{sort_and_gather, CardIntermediate, FullPrecisionCard};
+pub use gather::FullPrecisionCard;
+use gather::{sort_and_gather, CardIntermediate};
 use music::build_music_params;
 use power::{build_power, resolve_unit_mask};
 use skill::{build_skill, is_bfes_skill_pair, SkillResult, SkillState};
@@ -719,6 +720,25 @@ pub fn build_card_pool(
     game: &types::GameData<'_>,
     params: &types::BuildParams,
 ) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
+    let (pool, context, _) = build_card_pool_with_details(user, game, params)?;
+    Ok((pool, context))
+}
+
+/// 构建搜索池并保留与 dense card index 一一对应的全精度展示信息。
+pub fn build_card_pool_with_details(
+    user: &types::UserProfile,
+    game: &types::GameData<'_>,
+    params: &types::BuildParams,
+) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
+    if params
+        .member
+        .is_some_and(|member| member != crate::types::DECK_SIZE)
+    {
+        return Err(BuildError::InvalidConfig(format!(
+            "仅支持 {} 人卡组",
+            crate::types::DECK_SIZE
+        )));
+    }
     if params.multi_live_score_up_lower_bound.is_some()
         && !matches!(params.live_type, crate::types::LiveType::Multi)
     {
@@ -727,6 +747,25 @@ pub fn build_card_pool(
         ));
     }
     let event_ctx = build_event_context(game, params);
+    if !params.target_bonus_list.is_empty()
+        && !matches!(params.target, crate::types::ScoreTarget::Bonus)
+    {
+        return Err(BuildError::InvalidConfig(
+            "target_bonus_list 仅支持 bonus target".to_string(),
+        ));
+    }
+    if matches!(params.target, crate::types::ScoreTarget::Bonus) {
+        if event_ctx.is_none() {
+            return Err(BuildError::InvalidConfig(
+                "bonus target 需要活动上下文".to_string(),
+            ));
+        }
+        if params.event_id == Some(crate::types::FINAL_CHAPTER_EVENT_ID) {
+            return Err(BuildError::InvalidConfig(
+                "终章不支持 bonus target".to_string(),
+            ));
+        }
+    }
     let fixture_bonus_limit = resolve_fixture_bonus_limit(game, event_ctx.as_ref());
     let music = build_music_params(game, params);
     let configs = merged_configs(params);
@@ -926,7 +965,7 @@ pub fn build_card_pool(
         fixed_character_ids,
     );
     search_ctx.honor_bonus = compute_honor_bonus(user, game);
-    Ok((pool, search_ctx))
+    Ok((pool, search_ctx, full))
 }
 
 /// 返回应用养成配置（preset / 单卡覆盖）后的用户卡列表，养成口径与 `build_card_pool` 完全同源。
@@ -1028,6 +1067,32 @@ mod tests {
             is_virtual: false,
             has_canvas_bonus_override: None,
         }
+    }
+
+    #[test]
+    fn bonus_target_requires_non_final_event_context() {
+        let game = sample_game(&[], &[], &[], &[], &[], &[], &[], &[], &[]);
+        let user = UserProfile::default();
+
+        let no_event = BuildParams {
+            target: ScoreTarget::Bonus,
+            ..BuildParams::default()
+        };
+        assert!(matches!(
+            build_card_pool(&user, &game, &no_event),
+            Err(BuildError::InvalidConfig(reason)) if reason.contains("活动")
+        ));
+
+        let final_chapter = BuildParams {
+            target: ScoreTarget::Bonus,
+            event_id: Some(crate::types::FINAL_CHAPTER_EVENT_ID),
+            event_type: Some("world_bloom".to_string()),
+            ..BuildParams::default()
+        };
+        assert!(matches!(
+            build_card_pool(&user, &game, &final_chapter),
+            Err(BuildError::InvalidConfig(reason)) if reason.contains("终章")
+        ));
     }
 
     #[test]
@@ -2262,8 +2327,14 @@ mod tests {
             ..BuildParams::default()
         };
 
-        let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+        let (pool, ctx, details) = build_card_pool_with_details(&user, &game, &params).unwrap();
         assert_eq!(pool.count(), 3);
+        assert_eq!(details.len(), pool.count());
+        assert!(details
+            .iter()
+            .enumerate()
+            .all(|(index, detail)| detail.game_card_id
+                == pool.game_id(crate::pool::CardIdx::new(index as u16))));
         assert_eq!(ctx.music_rate_pct, 100);
         assert_eq!(ctx.target, ScoreTarget::Score);
         assert_eq!(ctx.leader_honor_bonus.len(), 3);

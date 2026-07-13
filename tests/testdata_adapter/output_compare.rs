@@ -152,10 +152,10 @@ pub fn compare(
                 "multi_live_score_up",
             )
         }
-        ScoreTarget::Mysekai => CompareResult {
+        ScoreTarget::Bonus | ScoreTarget::Mysekai => CompareResult {
             passed: false,
             category: CompareCategory::Bug,
-            detail: "manifest 不应出现 Mysekai target".to_string(),
+            detail: "manifest 不应出现 Bonus/Mysekai target".to_string(),
         },
     }
 }

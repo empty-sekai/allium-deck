@@ -76,6 +76,7 @@ pub enum ScoreTarget {
     Score = 0,
     Power = 1,
     Skill = 2,
+    Bonus = 3,
     Mysekai = 4,
 }
 

@@ -43,7 +43,7 @@ pub(crate) struct CardIntermediate {
 
 /// 排序后保留的全精度卡信息。
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct FullPrecisionCard {
+pub struct FullPrecisionCard {
     /// 原始 game card id。
     pub game_card_id: u16,
     /// 稀有度类型。
