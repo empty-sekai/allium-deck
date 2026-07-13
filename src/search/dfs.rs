@@ -198,10 +198,7 @@ impl SearchState<'_> {
             let upper = self.suffix.upper_bound_with_depth(depth, &used, &partial);
             // partial.bonus 是逐卡 ceil 百分比；每张卡至多高估 0.5%，
             // 因此 2*ceil-depth 是精确 x2 bonus 的安全下界。
-            let lower_bonus_x2 = partial
-                .bonus
-                .saturating_mul(2)
-                .saturating_sub(depth as u32);
+            let lower_bonus_x2 = partial.bonus.saturating_mul(2).saturating_sub(depth as u32);
             if self.tracker.bonus_can_prune(lower_bonus_x2, upper) {
                 self.stats.ub_prunes += 1;
                 return;
@@ -272,7 +269,6 @@ impl SearchState<'_> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     fn recurse_monotonic(

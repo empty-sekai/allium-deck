@@ -5,6 +5,11 @@ use crate::types::{
     Unit,
 };
 
+pub const MAX_BUILD_LIMIT: usize = 100;
+pub const MAX_BUILD_TIMEOUT_MS: u64 = 300_000;
+pub const MAX_TARGET_BONUS_BUCKETS: usize = 32;
+pub const MAX_TARGET_BONUS: i32 = 10_000;
+
 /// Handler 读取的 masterdata 视图。
 #[derive(Debug, Clone, Copy)]
 pub struct GameData<'a> {
@@ -115,7 +120,7 @@ pub struct BuildParams {
     pub limit: usize,
     /// 兼容调用方的成员数；核心仅支持 None/5。
     pub member: Option<usize>,
-    /// 搜索超时毫秒数，0 表示不设超时。
+    /// 搜索超时毫秒数，最大 300 秒。
     pub timeout_ms: u64,
     /// Bonus 目标下需要精确命中的活动加成档位。
     pub target_bonus_list: Vec<i32>,
@@ -191,7 +196,7 @@ impl Default for BuildParams {
             target: ScoreTarget::Score,
             limit: 10,
             member: None,
-            timeout_ms: 0,
+            timeout_ms: MAX_BUILD_TIMEOUT_MS,
             target_bonus_list: Vec::new(),
             music_id: None,
             music_diff: None,

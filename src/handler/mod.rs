@@ -55,6 +55,102 @@ impl Display for BuildError {
 
 impl Error for BuildError {}
 
+pub(crate) fn validate_build_params(params: &types::BuildParams) -> Result<(), BuildError> {
+    if !(1..=types::MAX_BUILD_LIMIT).contains(&params.limit) {
+        return Err(BuildError::InvalidConfig(format!(
+            "limit 必须在 1..={} 范围内",
+            types::MAX_BUILD_LIMIT
+        )));
+    }
+    if !(1..=types::MAX_BUILD_TIMEOUT_MS).contains(&params.timeout_ms) {
+        return Err(BuildError::InvalidConfig(format!(
+            "timeout_ms 必须在 1..={} 范围内",
+            types::MAX_BUILD_TIMEOUT_MS
+        )));
+    }
+    if params
+        .member
+        .is_some_and(|member| member != crate::types::DECK_SIZE)
+    {
+        return Err(BuildError::InvalidConfig(format!(
+            "member 仅支持 {}",
+            crate::types::DECK_SIZE
+        )));
+    }
+    if params.target_bonus_list.len() > types::MAX_TARGET_BONUS_BUCKETS {
+        return Err(BuildError::InvalidConfig(format!(
+            "target_bonus_list 最多支持 {} 个档位",
+            types::MAX_TARGET_BONUS_BUCKETS
+        )));
+    }
+    let mut bonus_targets = BTreeSet::new();
+    for &bonus in &params.target_bonus_list {
+        if !(0..=types::MAX_TARGET_BONUS).contains(&bonus) {
+            return Err(BuildError::InvalidConfig(format!(
+                "target bonus 必须在 0..={} 范围内",
+                types::MAX_TARGET_BONUS
+            )));
+        }
+        if !bonus_targets.insert(bonus) {
+            return Err(BuildError::InvalidConfig(
+                "target_bonus_list 不得包含重复档位".to_string(),
+            ));
+        }
+    }
+    if params.custom_bonus_character_ids.len() > 26 {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus character 最多支持 26 项".to_string(),
+        ));
+    }
+    let mut custom_characters = BTreeSet::new();
+    if params
+        .custom_bonus_character_ids
+        .iter()
+        .any(|id| !(1..=26).contains(id) || !custom_characters.insert(*id))
+    {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus character id 非法或重复".to_string(),
+        ));
+    }
+    if params
+        .custom_bonus_attr
+        .as_deref()
+        .is_some_and(|attr| parse_attr_code(attr).is_none())
+    {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus attr 非法".to_string(),
+        ));
+    }
+    if params.custom_bonus_character_support_units.len() > 26 {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus support unit 最多支持 26 项".to_string(),
+        ));
+    }
+    let mut support_characters = BTreeSet::new();
+    if params
+        .custom_bonus_character_support_units
+        .iter()
+        .any(|entry| {
+            !(1..=26).contains(&entry.character_id)
+                || !support_characters.insert(entry.character_id)
+                || !matches!(
+                    entry.unit,
+                    crate::types::Unit::LightSound
+                        | crate::types::Unit::Idol
+                        | crate::types::Unit::Street
+                        | crate::types::Unit::Themepark
+                        | crate::types::Unit::SchoolRefusal
+                        | crate::types::Unit::Piapro
+                )
+        })
+    {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus support unit 非法或重复".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn enrich_master(master: &types::MasterCard, game: &types::GameData<'_>) -> types::MasterCard {
     let mut master = master.clone();
     if master.max_level.is_none() || master.max_skill_level.is_none() {
@@ -730,15 +826,7 @@ pub fn build_card_pool_with_details(
     game: &types::GameData<'_>,
     params: &types::BuildParams,
 ) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
-    if params
-        .member
-        .is_some_and(|member| member != crate::types::DECK_SIZE)
-    {
-        return Err(BuildError::InvalidConfig(format!(
-            "仅支持 {} 人卡组",
-            crate::types::DECK_SIZE
-        )));
-    }
+    validate_build_params(params)?;
     if params.multi_live_score_up_lower_bound.is_some()
         && !matches!(params.live_type, crate::types::LiveType::Multi)
     {
@@ -1093,6 +1181,85 @@ mod tests {
             build_card_pool(&user, &game, &final_chapter),
             Err(BuildError::InvalidConfig(reason)) if reason.contains("终章")
         ));
+    }
+
+    #[test]
+    fn programmatic_build_params_enforce_compatibility_bounds() {
+        let game = sample_game(&[], &[], &[], &[], &[], &[], &[], &[], &[]);
+        let user = UserProfile::default();
+
+        for (params, expected) in [
+            (
+                BuildParams {
+                    limit: 0,
+                    ..BuildParams::default()
+                },
+                "limit",
+            ),
+            (
+                BuildParams {
+                    timeout_ms: 0,
+                    ..BuildParams::default()
+                },
+                "timeout",
+            ),
+            (
+                BuildParams {
+                    timeout_ms: 300_001,
+                    ..BuildParams::default()
+                },
+                "timeout",
+            ),
+            (
+                BuildParams {
+                    target_bonus_list: vec![100; 33],
+                    ..BuildParams::default()
+                },
+                "target_bonus_list",
+            ),
+            (
+                BuildParams {
+                    custom_bonus_character_ids: vec![0],
+                    ..BuildParams::default()
+                },
+                "character",
+            ),
+            (
+                BuildParams {
+                    custom_bonus_character_ids: vec![1; 27],
+                    ..BuildParams::default()
+                },
+                "character",
+            ),
+            (
+                BuildParams {
+                    custom_bonus_character_ids: vec![1, 1],
+                    ..BuildParams::default()
+                },
+                "重复",
+            ),
+            (
+                BuildParams {
+                    custom_bonus_character_support_units: vec![
+                        crate::types::CustomSupportUnit {
+                            character_id: 21,
+                            unit: crate::types::Unit::Idol,
+                        },
+                        crate::types::CustomSupportUnit {
+                            character_id: 21,
+                            unit: crate::types::Unit::Street,
+                        },
+                    ],
+                    ..BuildParams::default()
+                },
+                "重复",
+            ),
+        ] {
+            assert!(matches!(
+                build_card_pool(&user, &game, &params),
+                Err(BuildError::InvalidConfig(reason)) if reason.contains(expected)
+            ));
+        }
     }
 
     #[test]

@@ -293,11 +293,11 @@ fn custom_character_matches(master: &MasterCard, event_ctx: &EventContext) -> bo
     if matches!(required, Unit::None) {
         return true;
     }
-    master
-        .support_unit
-        .as_deref()
-        .and_then(parse_unit_code)
-        .is_none_or(|actual| actual == required)
+    match master.support_unit.as_deref() {
+        None => true,
+        Some(value) if value.trim().is_empty() || value.trim().eq_ignore_ascii_case("none") => true,
+        Some(value) => parse_unit_code(value) == Some(required),
+    }
 }
 
 /// 构建单卡的热路径活动 bonus，同时返回角色/属性轴命中标记。
@@ -439,6 +439,14 @@ mod tests {
             50
         );
         assert_eq!(load_custom_bonus_x2(&master(None, "cute"), &ctx), 100);
+        assert_eq!(
+            load_custom_bonus_x2(&master(Some("none"), "cute"), &ctx),
+            100
+        );
         assert_eq!(load_custom_bonus_x2(&master(Some("idol"), "cool"), &ctx), 0);
+        assert_eq!(
+            load_custom_bonus_x2(&master(Some("future_unknown_unit"), "cool"), &ctx),
+            0
+        );
     }
 }

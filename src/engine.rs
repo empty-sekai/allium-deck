@@ -13,7 +13,7 @@ use crate::handler::{
 };
 use crate::search::{DeckResult, SearchParams};
 use crate::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -264,20 +264,40 @@ pub fn parse_build_params_json(
             .as_deref()
             .unwrap_or("solo"),
     );
-    params.target = parse_target(string_field(&value, "target").as_deref().unwrap_or("score"));
-    params.limit = i32_field(&value, "limit")
-        .filter(|value| *value > 0)
-        .map(|value| value as usize)
-        .unwrap_or(10);
-    params.member = i32_field(&value, "member")
-        .filter(|value| *value >= 0)
-        .map(|value| value as usize);
-    params.timeout_ms = i32_field(&value, "timeoutMs")
-        .or_else(|| i32_field(&value, "timeout_ms"))
-        .filter(|value| *value >= 0)
-        .map(|value| value as u64)
-        .unwrap_or(0);
-    params.target_bonus_list = int_array_alias(&value, "targetBonusList", "target_bonus_list");
+    params.target = parse_target_checked(field_alias_checked(&value, "target", "target")?)?;
+    params.limit = bounded_usize_field(
+        &value,
+        "limit",
+        "limit",
+        1,
+        crate::handler::types::MAX_BUILD_LIMIT,
+        false,
+    )?
+    .unwrap_or(10);
+    params.member = bounded_usize_field(
+        &value,
+        "member",
+        "member",
+        crate::types::DECK_SIZE,
+        crate::types::DECK_SIZE,
+        true,
+    )?;
+    params.timeout_ms = bounded_u64_field(
+        &value,
+        "timeoutMs",
+        "timeout_ms",
+        1,
+        crate::handler::types::MAX_BUILD_TIMEOUT_MS,
+    )?
+    .unwrap_or(crate::handler::types::MAX_BUILD_TIMEOUT_MS);
+    params.target_bonus_list = bounded_int_array_alias(
+        &value,
+        "targetBonusList",
+        "target_bonus_list",
+        0,
+        crate::handler::types::MAX_TARGET_BONUS,
+        crate::handler::types::MAX_TARGET_BONUS_BUCKETS,
+    )?;
     params.minimize = bool_field(&value, "minimize").unwrap_or(false);
     params.music_id = i32_field(&value, "musicId").or_else(|| i32_field(&value, "music_id"));
     params.music_diff =
@@ -295,14 +315,17 @@ pub fn parse_build_params_json(
         string_field(&value, "eventUnit").or_else(|| string_field(&value, "event_unit"));
     params.event_attr =
         string_field(&value, "eventAttr").or_else(|| string_field(&value, "event_attr"));
-    params.custom_bonus_character_ids = int_array_alias(
+    params.custom_bonus_character_ids = bounded_int_array_alias(
         &value,
         "customBonusCharacterIds",
         "custom_bonus_character_ids",
-    );
-    params.custom_bonus_attr = string_field(&value, "customBonusAttr")
-        .or_else(|| string_field(&value, "custom_bonus_attr"));
-    params.custom_bonus_character_support_units = parse_custom_bonus_support_units(&value);
+        1,
+        26,
+        26,
+    )?;
+    params.custom_bonus_attr =
+        optional_string_alias_checked(&value, "customBonusAttr", "custom_bonus_attr")?;
+    params.custom_bonus_character_support_units = parse_custom_bonus_support_units(&value)?;
     params.filter_other_unit = bool_field(&value, "filterOtherUnit").unwrap_or(false);
     params.keep_after_training_state =
         bool_field(&value, "keepAfterTrainingState").unwrap_or(false);
@@ -339,6 +362,8 @@ pub fn parse_build_params_json(
         string_field(&value, "attrFilter").or_else(|| string_field(&value, "attr_filter"));
     params.card_configs = parse_card_config_set(&value);
     params.single_card_configs = parse_single_card_configs(&value);
+    crate::handler::validate_build_params(&params)
+        .map_err(|error| serde_json::Error::custom(error.to_string()))?;
     Ok(params)
 }
 
@@ -424,34 +449,165 @@ fn int_array(value: &Value, key: &str) -> Vec<i32> {
         .collect()
 }
 
-fn int_array_alias(value: &Value, camel_key: &str, snake_key: &str) -> Vec<i32> {
-    let key = if value.get(camel_key).is_some() {
-        camel_key
-    } else {
-        snake_key
-    };
-    int_array(value, key)
-}
-
-fn parse_custom_bonus_support_units(value: &Value) -> Vec<crate::types::CustomSupportUnit> {
-    let Some(entries) = value
-        .get("customBonusCharacterSupportUnits")
-        .or_else(|| value.get("custom_bonus_character_support_units"))
-        .and_then(Value::as_object)
+fn parse_custom_bonus_support_units(
+    value: &Value,
+) -> Result<Vec<crate::types::CustomSupportUnit>, serde_json::Error> {
+    let Some(raw) = field_alias_checked(
+        value,
+        "customBonusCharacterSupportUnits",
+        "custom_bonus_character_support_units",
+    )?
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
+    let entries = raw
+        .as_object()
+        .ok_or_else(|| serde_json::Error::custom("custom bonus support units 必须是对象"))?;
     let mut result = entries
         .iter()
-        .filter_map(|(character_id, unit)| {
-            Some(crate::types::CustomSupportUnit {
-                character_id: character_id.parse().ok()?,
-                unit: crate::handler::types::parse_unit_code(unit.as_str()?)?,
-            })
+        .map(|(character_id, unit)| {
+            let character_id = character_id
+                .parse::<i32>()
+                .map_err(|_| serde_json::Error::custom("custom bonus support character id 非法"))?;
+            let unit = unit
+                .as_str()
+                .and_then(crate::handler::types::parse_unit_code)
+                .filter(|unit| {
+                    matches!(
+                        unit,
+                        crate::types::Unit::LightSound
+                            | crate::types::Unit::Idol
+                            | crate::types::Unit::Street
+                            | crate::types::Unit::Themepark
+                            | crate::types::Unit::SchoolRefusal
+                            | crate::types::Unit::Piapro
+                    )
+                })
+                .ok_or_else(|| serde_json::Error::custom("custom bonus support unit 非法"))?;
+            Ok(crate::types::CustomSupportUnit { character_id, unit })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, serde_json::Error>>()?;
     result.sort_unstable_by_key(|entry| entry.character_id);
-    result
+    Ok(result)
+}
+
+fn field_alias_checked<'a>(
+    value: &'a Value,
+    camel_key: &str,
+    snake_key: &str,
+) -> Result<Option<&'a Value>, serde_json::Error> {
+    if camel_key == snake_key {
+        return Ok(value.get(camel_key));
+    }
+    match (value.get(camel_key), value.get(snake_key)) {
+        (Some(camel), Some(snake)) if camel != snake => Err(serde_json::Error::custom(format!(
+            "{camel_key} 与 {snake_key} 冲突"
+        ))),
+        (Some(camel), _) => Ok(Some(camel)),
+        (_, Some(snake)) => Ok(Some(snake)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn optional_string_alias_checked(
+    value: &Value,
+    camel_key: &str,
+    snake_key: &str,
+) -> Result<Option<String>, serde_json::Error> {
+    let Some(raw) = field_alias_checked(value, camel_key, snake_key)? else {
+        return Ok(None);
+    };
+    if raw.is_null() {
+        return Ok(None);
+    }
+    raw.as_str()
+        .map(|text| Some(text.to_string()))
+        .ok_or_else(|| serde_json::Error::custom(format!("{snake_key} / attr 必须是字符串")))
+}
+
+fn bounded_usize_field(
+    value: &Value,
+    camel_key: &str,
+    snake_key: &str,
+    min: usize,
+    max: usize,
+    allow_null: bool,
+) -> Result<Option<usize>, serde_json::Error> {
+    let Some(raw) = field_alias_checked(value, camel_key, snake_key)? else {
+        return Ok(None);
+    };
+    if allow_null && raw.is_null() {
+        return Ok(None);
+    }
+    let parsed = raw
+        .as_u64()
+        .and_then(|number| usize::try_from(number).ok())
+        .filter(|number| (min..=max).contains(number))
+        .ok_or_else(|| {
+            serde_json::Error::custom(format!("{snake_key} 必须在 {min}..={max} 范围内"))
+        })?;
+    Ok(Some(parsed))
+}
+
+fn bounded_u64_field(
+    value: &Value,
+    camel_key: &str,
+    snake_key: &str,
+    min: u64,
+    max: u64,
+) -> Result<Option<u64>, serde_json::Error> {
+    let Some(raw) = field_alias_checked(value, camel_key, snake_key)? else {
+        return Ok(None);
+    };
+    let parsed = raw
+        .as_u64()
+        .filter(|number| (min..=max).contains(number))
+        .ok_or_else(|| {
+            serde_json::Error::custom(format!("{snake_key} 必须在 {min}..={max} 范围内"))
+        })?;
+    Ok(Some(parsed))
+}
+
+fn bounded_int_array_alias(
+    value: &Value,
+    camel_key: &str,
+    snake_key: &str,
+    min: i32,
+    max: i32,
+    max_len: usize,
+) -> Result<Vec<i32>, serde_json::Error> {
+    let Some(raw) = field_alias_checked(value, camel_key, snake_key)? else {
+        return Ok(Vec::new());
+    };
+    let entries = raw
+        .as_array()
+        .ok_or_else(|| serde_json::Error::custom(format!("{snake_key} 必须是数组")))?;
+    if entries.len() > max_len {
+        return Err(serde_json::Error::custom(format!(
+            "{snake_key} 最多支持 {max_len} 项"
+        )));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    entries
+        .iter()
+        .map(|entry| {
+            let number = entry
+                .as_i64()
+                .and_then(|number| i32::try_from(number).ok())
+                .filter(|number| (min..=max).contains(number))
+                .ok_or_else(|| {
+                    serde_json::Error::custom(format!(
+                        "{snake_key} value 必须在 {min}..={max} 范围内"
+                    ))
+                })?;
+            if !seen.insert(number) {
+                return Err(serde_json::Error::custom(format!(
+                    "{snake_key} 不得包含重复值"
+                )));
+            }
+            Ok(number)
+        })
+        .collect()
 }
 
 fn i32_field(value: &Value, key: &str) -> Option<i32> {
@@ -507,13 +663,20 @@ fn parse_specific_skill_order(value: &Value) -> Option<[usize; 5]> {
     Some(order)
 }
 
-fn parse_target(value: &str) -> ScoreTarget {
+fn parse_target_checked(value: Option<&Value>) -> Result<ScoreTarget, serde_json::Error> {
+    let Some(value) = value else {
+        return Ok(ScoreTarget::Score);
+    };
+    let value = value
+        .as_str()
+        .ok_or_else(|| serde_json::Error::custom("target 必须是字符串"))?;
     match value.trim().to_ascii_lowercase().as_str() {
-        "power" => ScoreTarget::Power,
-        "skill" => ScoreTarget::Skill,
-        "bonus" => ScoreTarget::Bonus,
-        "mysekai" => ScoreTarget::Mysekai,
-        _ => ScoreTarget::Score,
+        "score" => Ok(ScoreTarget::Score),
+        "power" => Ok(ScoreTarget::Power),
+        "skill" => Ok(ScoreTarget::Skill),
+        "bonus" => Ok(ScoreTarget::Bonus),
+        "mysekai" => Ok(ScoreTarget::Mysekai),
+        _ => Err(serde_json::Error::custom("target 非法")),
     }
 }
 
@@ -1852,6 +2015,44 @@ mod tests {
             params.custom_bonus_character_support_units[0].unit,
             crate::Unit::Idol
         );
+    }
+
+    #[test]
+    fn parse_build_params_rejects_invalid_bounded_compat_fields() {
+        for (json, expected) in [
+            (r#"{"limit":0}"#, "limit"),
+            (r#"{"limit":101}"#, "limit"),
+            (r#"{"member":4}"#, "member"),
+            (r#"{"timeoutMs":-1}"#, "timeout"),
+            (r#"{"timeoutMs":0}"#, "timeout"),
+            (r#"{"limit":null}"#, "limit"),
+            (r#"{"timeoutMs":null}"#, "timeout"),
+            (r#"{"timeoutMs":1000,"timeout_ms":"bad"}"#, "冲突"),
+            (r#"{"target":"unknown"}"#, "target"),
+            (r#"{"targetBonusList":[100,100]}"#, "重复"),
+            (r#"{"targetBonusList":[-1]}"#, "bonus"),
+            (r#"{"customBonusCharacterIds":[0]}"#, "character"),
+            (r#"{"customBonusAttr":"unknown"}"#, "attr"),
+            (r#"{"customBonusAttr":1}"#, "attr"),
+            (
+                r#"{"customBonusCharacterSupportUnits":{"21":"unknown"}}"#,
+                "support",
+            ),
+        ] {
+            let error = parse_build_params_json(json).expect_err("invalid params must fail");
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?} in {error:?} for {json}",
+            );
+        }
+    }
+
+    #[test]
+    fn parse_build_params_preserves_null_for_optional_compat_fields() {
+        let params = parse_build_params_json(r#"{"member":null,"customBonusAttr":null}"#)
+            .expect("optional null fields are None");
+        assert_eq!(params.member, None);
+        assert_eq!(params.custom_bonus_attr, None);
     }
 
     #[test]
