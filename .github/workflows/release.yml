@@ -27,6 +27,10 @@ jobs:
             echo "CARGO_REGISTRY_TOKEN is not configured" >&2
             exit 1
           fi
+          if ! [[ "$CARGO_REGISTRY_TOKEN" =~ ^cio[[:alnum:]]{32}$ ]]; then
+            echo "CARGO_REGISTRY_TOKEN must contain only the raw crates.io token (cio + 32 characters)" >&2
+            exit 1
+          fi
           curl --fail --silent --show-error --output /dev/null \
             --header "Authorization: ${CARGO_REGISTRY_TOKEN}" \
             https://crates.io/api/v1/me
@@ -46,6 +50,7 @@ jobs:
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: 1.94.1
+          components: rustfmt, clippy
 
       - name: Verify release tag matches package versions
         if: github.event_name == 'push'
