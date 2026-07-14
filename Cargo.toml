@@ -4,6 +4,7 @@ version = "0.0.4"
 edition = "2021"
 description = "Project Sekai deck recommendation engine: DFS / branch-and-bound exact search"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/empty-sekai/allium-deck"
 include = [
     "Cargo.toml",
     "Cargo.lock",
