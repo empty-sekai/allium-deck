@@ -6,11 +6,20 @@ version = 4
 name = "allium-deck"
 version = "0.0.4"
 dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "allium-deck-wasm"
+version = "0.0.4"
+dependencies = [
+ "allium-deck",
  "console_error_panic_hook",
  "postcard",
  "serde",
  "serde_json",
- "thiserror",
  "wasm-bindgen",
 ]
 

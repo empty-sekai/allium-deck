@@ -72,7 +72,8 @@ def main() -> int:
     for optional in [
         pkg_dir / "allium_deck.d.ts",
         pkg_dir / "package.json",
-        Path("LICENSE"),
+        Path("LICENSE-MIT"),
+        Path("LICENSE-APACHE"),
     ]:
         copy_if_exists(optional, out_dir / optional.name)
 

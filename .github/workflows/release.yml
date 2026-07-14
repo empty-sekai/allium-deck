@@ -3,35 +3,18 @@ name: release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  test:
-    name: test (linux)
+  verify-registry-token:
+    name: verify crates.io token
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Verify release tag matches package version
-        shell: bash
-        run: |
-          PACKAGE_VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
-          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v${PACKAGE_VERSION}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${PACKAGE_VERSION}" >&2
-            exit 1
-          fi
-
-      - name: Verify crates.io token
-        shell: bash
+      - name: Authenticate with crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
@@ -43,29 +26,61 @@ jobs:
             --header "Authorization: ${CARGO_REGISTRY_TOKEN}" \
             https://crates.io/api/v1/me
 
-      - name: Cache cargo registry & build
-        uses: Swatinem/rust-cache@v2
+  test:
+    name: test (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Verify release tag matches package versions
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          cargo metadata --no-deps --format-version 1 | python3 -c '
+          import json, os, sys
+          packages = {item["name"]: item["version"] for item in json.load(sys.stdin)["packages"]}
+          expected = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          for name in ("allium-deck", "allium-deck-wasm"):
+              actual = packages.get(name)
+              if actual != expected:
+                  raise SystemExit(f"{name} version {actual!r} does not match tag v{expected}")
+          '
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo clippy --all-targets
+        run: cargo clippy --workspace --all-targets
 
       - name: cargo test
-        run: cargo test --lib --release
+        run: cargo test --workspace --all-targets --release
 
       - name: cargo build (bin)
         run: cargo build --release --bin recommend_cli
 
-      - name: cargo publish dry-run
-        run: cargo publish --locked --dry-run
+      - name: Verify crates.io package boundary
+        shell: bash
+        run: |
+          PACKAGE_FILES=$(cargo package --locked -p allium-deck --list)
+          if grep -Eq '(^|/)wasm/|src/(wasm|embedded)\.rs|\.postcard$' <<<"$PACKAGE_FILES"; then
+            echo "allium-deck crate package unexpectedly contains WASM files" >&2
+            exit 1
+          fi
+          cargo publish --locked --dry-run -p allium-deck
 
   build-binaries:
     name: build (${{ matrix.target }})
     needs: test
     runs-on: ${{ matrix.os }}
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -95,10 +110,10 @@ jobs:
             bin_name: recommend_cli
             asset_name: macos-x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -106,8 +121,8 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo install cross --locked
 
-      - name: Cache cargo registry & build
-        uses: Swatinem/rust-cache@v2
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           cache-on-failure: true
 
@@ -135,22 +150,26 @@ jobs:
           cp target/${{ matrix.target }}/release/${{ matrix.bin_name }} release/recommend_cli-${{ github.ref_name }}-${{ matrix.asset_name }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: recommend_cli-${{ matrix.target }}
           path: release/*
 
   build-wasm-release:
-    name: build wasm release package
+    name: build WASM npm package
     needs: test
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    outputs:
+      masterdata-version: ${{ steps.inputs.outputs.masterdata-version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Resolve WASM release inputs
+        id: inputs
         run: |
           MASTERDATA_VERSION=$(curl -sSf "https://cdn.emptysekai.com/deck-wasm/cn/latest/manifest.json" | python3 -c "import sys,json; print(json.load(sys.stdin)['masterdata_version'])")
+          WASM_ZIP="allium-deck-wasm-${GITHUB_REF_NAME}-${MASTERDATA_VERSION}-cn.zip"
+          NPM_TGZ="allium-deck-wasm-${GITHUB_REF_NAME}.tgz"
           {
             echo "REGION=cn"
             echo "CDN_BASE=https://cdn.emptysekai.com"
@@ -159,23 +178,25 @@ jobs:
             echo "MUSIC_METAS=.tmp/music_metas/cn/music_metas.json"
             echo "MASTERDATA_MANIFEST=.tmp/masterdata-manifest.json"
             echo "DIST_DIR=dist/deck-wasm"
-            echo "WASM_ZIP=allium-deck-wasm-${GITHUB_REF_NAME}-${MASTERDATA_VERSION}-cn.zip"
+            echo "WASM_ZIP=${WASM_ZIP}"
+            echo "NPM_TGZ=${NPM_TGZ}"
           } >> "$GITHUB_ENV"
+          echo "masterdata-version=${MASTERDATA_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           targets: wasm32-unknown-unknown
 
-      - name: Cache cargo registry & build
-        uses: Swatinem/rust-cache@v2
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           cache-on-failure: true
 
       - name: Install wasm-pack
         run: cargo install wasm-pack --version 0.15.0 --locked
 
-      - name: Download CN latest masterdata snapshot
+      - name: Download CN masterdata snapshot
         run: |
           python3 scripts/download_masterdata.py \
             --region "$REGION" \
@@ -187,23 +208,23 @@ jobs:
 
       - name: Build embedded gamedata
         run: |
-          cargo run --release --bin build_gamedata -- \
+          cargo run --release --manifest-path wasm/Cargo.toml --bin build_gamedata -- \
             --masterdata "$MASTERDATA_DIR" \
             --music-metas "$MUSIC_METAS" \
             --region "$REGION"
 
-      - name: Build wasm
+      - name: Build WASM npm package
         env:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
           CARGO_PROFILE_RELEASE_LTO: "fat"
           CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
           CARGO_PROFILE_RELEASE_PANIC: "abort"
-        run: wasm-pack build --target web --features wasm
+        run: wasm-pack build wasm --target web --scope empty-sekai
 
-      - name: Package WASM files
+      - name: Package release files
         run: |
           python3 scripts/package_wasm.py \
-            --pkg-dir pkg \
+            --pkg-dir wasm/pkg \
             --out-dir "$DIST_DIR" \
             --region "$REGION" \
             --version "$MASTERDATA_VERSION" \
@@ -214,46 +235,71 @@ jobs:
           mkdir -p release
           (cd "$DIST_DIR" && zip -9 -r "../../$WASM_ZIP" .)
           mv "$WASM_ZIP" release/
+          {
+            echo "allium-deck-wasm is available under either license below."
+            echo
+            echo "===== MIT ====="
+            echo
+            cat LICENSE-MIT
+            echo
+            echo "===== Apache-2.0 ====="
+            echo
+            cat LICENSE-APACHE
+          } > wasm/pkg/LICENSE
+          (cd wasm/pkg && npm pack --pack-destination ../../release)
+          mv release/empty-sekai-allium-deck-wasm-*.tgz "release/$NPM_TGZ"
 
-      - name: Upload WASM release artifact
-        uses: actions/upload-artifact@v4
+      - name: Smoke-test npm package
+        run: |
+          INSTALL_ROOT=$(mktemp -d)
+          npm install --prefix "$INSTALL_ROOT" "release/$NPM_TGZ"
+          node scripts/smoke_wasm_package.mjs "$INSTALL_ROOT"
+
+      - name: Upload WASM release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: allium-deck-wasm-${{ github.ref_name }}-cn
-          path: release/*.zip
+          path: |
+            release/*.zip
+            release/*.tgz
 
   publish-crate:
     name: publish crate
-    needs: [test, build-binaries, build-wasm-release]
+    needs: [verify-registry-token, test, build-binaries, build-wasm-release]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked
+        run: cargo publish --locked -p allium-deck
 
   release:
     name: release
-    needs: publish-crate
+    needs: [publish-crate, build-wasm-release]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
       - name: Install git-cliff
         run: cargo install git-cliff --locked
 
       - name: Generate CHANGELOG
+        env:
+          MASTERDATA_VERSION: ${{ needs.build-wasm-release.outputs.masterdata-version }}
         run: |
           PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)
           if [ -n "$PREVIOUS_TAG" ]; then
@@ -262,23 +308,23 @@ jobs:
             RANGE="${GITHUB_REF_NAME}"
           fi
           git-cliff --tag "${GITHUB_REF_NAME}" --output CHANGELOG.md --first-parent "$RANGE"
-          MASTERDATA_VERSION=$(curl -sSf "https://cdn.emptysekai.com/deck-wasm/cn/latest/manifest.json" | python3 -c "import sys,json; print(json.load(sys.stdin)['masterdata_version'])")
           {
             echo ""
             echo "### Assets"
             echo "| Asset | Description |"
             echo "|-------|------------|"
             echo "| \`recommend_cli-${GITHUB_REF_NAME}-*\` | Prebuilt CLI binaries (Linux x86_64 / musl / aarch64, Windows x86_64, macOS Intel / Apple Silicon) |"
-            echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}-${MASTERDATA_VERSION}-cn.zip\` | Browser WASM engine with embedded CN masterdata snapshot |"
+            echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}.tgz\` | Installable npm package \`@empty-sekai/allium-deck-wasm\` |"
+            echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}-${MASTERDATA_VERSION}-cn.zip\` | Browser WASM bundle with embedded CN masterdata snapshot |"
           } >> CHANGELOG.md
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
@@ -288,3 +334,4 @@ jobs:
           files: |
             artifacts/**/recommend_cli-*
             artifacts/**/allium-deck-wasm-*.zip
+            artifacts/**/allium-deck-wasm-*.tgz
