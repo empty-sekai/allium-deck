@@ -109,6 +109,10 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn('[[ "$CARGO_REGISTRY_TOKEN" =~ ^cio[[:alnum:]]{32}$ ]]', workflow)
         self.assertIn("must contain only the raw crates.io token", workflow)
 
+    def test_registry_preflight_does_not_use_cookie_only_me_endpoint(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertNotIn("https://crates.io/api/v1/me", workflow)
+
     def test_npm_smoke_uses_bare_package_import_and_requires_expected_error(self) -> None:
         smoke = (SCRIPTS / "smoke_wasm_package.mjs").read_text(encoding="utf-8")
         self.assertIn('from "@empty-sekai/allium-deck-wasm"', smoke)
