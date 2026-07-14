@@ -6,7 +6,7 @@
 
 use std::sync::OnceLock;
 
-use crate::engine::{EngineError, OwnedGameData};
+use allium_deck::engine::{EngineError, OwnedGameData};
 
 /// cn 内嵌 masterdata（postcard）。
 const GAMEDATA_CN: &[u8] = include_bytes!("embedded/gamedata_cn.postcard");

@@ -1,4 +1,6 @@
 /target/
+/dist/
+/release/
 **/*.rs.bk
 *.swp
 .DS_Store
@@ -11,5 +13,7 @@ __pycache__/
 
 # 构建期生成的 masterdata 内嵌二进制（build_gamedata / CI 重建，不入库）
 /src/embedded/*.postcard
+/wasm/src/embedded/*.postcard
 # wasm-pack 产出
 /pkg/
+/wasm/pkg/

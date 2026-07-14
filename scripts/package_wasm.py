@@ -7,13 +7,16 @@ import argparse
 import hashlib
 import json
 import mimetypes
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    instant = datetime.fromtimestamp(int(epoch), timezone.utc) if epoch else datetime.now(timezone.utc)
+    return instant.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def sha256(path: Path) -> str:
@@ -72,7 +75,8 @@ def main() -> int:
     for optional in [
         pkg_dir / "allium_deck.d.ts",
         pkg_dir / "package.json",
-        Path("LICENSE"),
+        Path("LICENSE-MIT"),
+        Path("LICENSE-APACHE"),
     ]:
         copy_if_exists(optional, out_dir / optional.name)
 

@@ -9,9 +9,11 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "src/**"
+      - "wasm/**"
       - "scripts/download_masterdata.py"
       - "scripts/package_wasm.py"
       - "scripts/resolve_wasm_inputs.py"
+      - "scripts/smoke_wasm_package.mjs"
   workflow_dispatch:
     inputs:
       region:
@@ -45,7 +47,10 @@ jobs:
     name: build wasm artifact
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set reproducible build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
 
       - name: Resolve build inputs
         run: |
@@ -96,12 +101,13 @@ jobs:
           PY
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.94.1
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           cache-on-failure: true
 
@@ -116,11 +122,12 @@ jobs:
             --out-dir "$MASTERDATA_DIR" \
             --music-metas "$MUSIC_METAS" \
             --manifest-out "$MASTERDATA_MANIFEST" \
-            --version "$MASTERDATA_VERSION"
+            --version "$MASTERDATA_VERSION" \
+            --snapshot-mode latest
 
       - name: Build embedded gamedata
         run: |
-          cargo run --release --bin build_gamedata -- \
+          cargo run --release --manifest-path wasm/Cargo.toml --bin build_gamedata -- \
             --masterdata "$MASTERDATA_DIR" \
             --music-metas "$MUSIC_METAS" \
             --region "$REGION"
@@ -131,12 +138,12 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: "fat"
           CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
           CARGO_PROFILE_RELEASE_PANIC: "abort"
-        run: wasm-pack build --target web --features wasm
+        run: wasm-pack build wasm --target web --scope empty-sekai
 
       - name: Package CDN files
         run: |
           python3 scripts/package_wasm.py \
-            --pkg-dir pkg \
+            --pkg-dir wasm/pkg \
             --out-dir "$DIST_DIR" \
             --region "$REGION" \
             --version "$MASTERDATA_VERSION" \
@@ -145,8 +152,33 @@ jobs:
             --source-revision "$GITHUB_SHA" \
             --masterdata-manifest "$MASTERDATA_MANIFEST"
 
+      - name: Pack npm package
+        run: |
+          mkdir -p dist/npm
+          {
+            echo "allium-deck-wasm is available under either license below."
+            echo
+            echo "===== MIT ====="
+            echo
+            cat LICENSE-MIT
+            echo
+            echo "===== Apache-2.0 ====="
+            echo
+            cat LICENSE-APACHE
+          } > wasm/pkg/LICENSE
+          (cd wasm/pkg && npm pack --pack-destination ../../dist/npm)
+
+      - name: Smoke-test npm package
+        run: |
+          INSTALL_ROOT=$(mktemp -d)
+          npm install --prefix "$INSTALL_ROOT" dist/npm/*.tgz
+          cp scripts/smoke_wasm_package.mjs "$INSTALL_ROOT/smoke.mjs"
+          node "$INSTALL_ROOT/smoke.mjs"
+
       - name: Upload GitHub artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: deck-wasm-${{ env.REGION }}-${{ env.MASTERDATA_VERSION }}
-          path: ${{ env.DIST_DIR }}
+          path: |
+            ${{ env.DIST_DIR }}
+            dist/npm/*.tgz

@@ -1,4 +1,6 @@
-//! wasm 浏览器入口（仅 `wasm` feature）。
+#![cfg(target_arch = "wasm32")]
+
+//! Browser WASM entry point for the standalone npm package.
 //!
 //! 薄壳：masterdata 编译期内嵌，调用方只传 user + params。内部全程复用引擎现有函数
 //! （parse_* / build_card_pool / search / summarize_deck / game_id），无任何组卡逻辑复制——
@@ -8,12 +10,14 @@ use serde::Serialize;
 use std::collections::HashMap;
 use wasm_bindgen::prelude::*;
 
-use crate::engine::{parse_build_params_json, parse_user_profile_json};
-use crate::handler::{
+mod embedded;
+
+use allium_deck::engine::{parse_build_params_json, parse_user_profile_json};
+use allium_deck::handler::{
     build_card_pool, cultivated_user_cards, GameData, MasterCard, UserCard, UserProfile,
 };
-use crate::pool::CardPool;
-use crate::search::{search, summarize_deck, DeckResult, SearchContext, SearchParams};
+use allium_deck::pool::CardPool;
+use allium_deck::search::{search, summarize_deck, DeckResult, SearchContext, SearchParams};
 
 #[wasm_bindgen]
 extern "C" {
@@ -30,7 +34,7 @@ pub fn init() {
 /// 返回 top-5 卡组 JSON（真实游戏卡 ID + 展示指标）。
 #[wasm_bindgen]
 pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, JsValue> {
-    let owned = crate::embedded::embedded_gamedata().map_err(to_js)?;
+    let owned = embedded::embedded_gamedata().map_err(to_js)?;
     let user = parse_user_profile_json(user_json).map_err(to_js)?;
     let params = parse_build_params_json(params_json).map_err(to_js)?;
     let game = owned.as_ref();
@@ -231,7 +235,7 @@ impl CardOut {
         game: &GameData<'_>,
         original_user: &UserProfile,
         user_cards: &HashMap<i32, &UserCard>,
-        card_idx: crate::pool::CardIdx,
+        card_idx: allium_deck::pool::CardIdx,
         power_total: i32,
         skill_score_up: f64,
         event_bonus: Option<f64>,
