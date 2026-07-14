@@ -301,7 +301,8 @@ jobs:
       - name: Smoke-test npm package
         run: |
           INSTALL_ROOT=$(mktemp -d)
-          npm install --prefix "$INSTALL_ROOT" "release/$NPM_TGZ"
+          NPM_PACKAGE=$(realpath "release/$NPM_TGZ")
+          npm install --prefix "$INSTALL_ROOT" "$NPM_PACKAGE"
           cp scripts/smoke_wasm_package.mjs "$INSTALL_ROOT/smoke.mjs"
           node "$INSTALL_ROOT/smoke.mjs"
 
