@@ -13,6 +13,7 @@ jobs:
   verify-registry-token:
     name: verify crates.io token
     runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - name: Authenticate with crates.io
         env:
@@ -34,8 +35,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set reproducible build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.94.1
 
       - name: Verify release tag matches package versions
         if: github.event_name == 'push'
@@ -63,17 +69,30 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --all-targets --release
 
+      - name: release packaging tests
+        run: python3 tests/test_release_packaging.py
+
       - name: cargo build (bin)
         run: cargo build --release --bin recommend_cli
 
       - name: Verify crates.io package boundary
         shell: bash
         run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "allium-deck"))')
+          CRATE="target/package/allium-deck-${VERSION}.crate"
+          rm -f "$CRATE"
+          cargo package --locked -p allium-deck
           PACKAGE_FILES=$(cargo package --locked -p allium-deck --list)
           if grep -Eq '(^|/)wasm/|src/(wasm|embedded)\.rs|\.postcard$' <<<"$PACKAGE_FILES"; then
             echo "allium-deck crate package unexpectedly contains WASM files" >&2
             exit 1
           fi
+          PACKAGE_LOCK=$(tar -xOf "$CRATE" "allium-deck-${VERSION}/Cargo.lock")
+          if grep -Eq 'name = "(allium-deck-wasm|postcard|wasm-bindgen)"' <<<"$PACKAGE_LOCK"; then
+            echo "allium-deck crate package lock unexpectedly contains WASM dependencies" >&2
+            exit 1
+          fi
+          rm -f "$CRATE"
           cargo publish --locked --dry-run -p allium-deck
 
   build-binaries:
@@ -112,14 +131,19 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Set reproducible build timestamp
+        shell: bash
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.94.1
           targets: ${{ matrix.target }}
 
       - name: Install cross
         if: matrix.os == 'ubuntu-latest'
-        run: cargo install cross --locked
+        run: cargo install cross --version 0.2.5 --locked
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
@@ -164,6 +188,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Set reproducible build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
       - name: Resolve WASM release inputs
         id: inputs
         run: |
@@ -186,6 +213,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
+          toolchain: 1.94.1
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry and build
@@ -233,8 +261,9 @@ jobs:
             --source-revision "$GITHUB_SHA" \
             --masterdata-manifest "$MASTERDATA_MANIFEST"
           mkdir -p release
-          (cd "$DIST_DIR" && zip -9 -r "../../$WASM_ZIP" .)
-          mv "$WASM_ZIP" release/
+          python3 scripts/create_reproducible_zip.py \
+            --source-dir "$DIST_DIR" \
+            --output "release/$WASM_ZIP"
           {
             echo "allium-deck-wasm is available under either license below."
             echo
@@ -265,19 +294,49 @@ jobs:
 
   publish-crate:
     name: publish crate
-    needs: [verify-registry-token, test, build-binaries, build-wasm-release]
+    needs: [test, build-binaries, build-wasm-release]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Set reproducible build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.94.1
 
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked -p allium-deck
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "allium-deck"))')
+          CRATE="target/package/allium-deck-${VERSION}.crate"
+          rm -f "$CRATE"
+          cargo package --locked -p allium-deck
+          LOCAL_CHECKSUM=$(sha256sum "$CRATE" | cut -d' ' -f1)
+          RESPONSE=$(mktemp)
+          STATUS=$(curl --silent --show-error \
+            --user-agent "allium-deck-release-ci/1.0" \
+            --output "$RESPONSE" \
+            --write-out '%{http_code}' \
+            "https://crates.io/api/v1/crates/allium-deck/${VERSION}")
+          if [ "$STATUS" = "404" ]; then
+            rm -f "$CRATE"
+            cargo publish --locked -p allium-deck
+          elif [ "$STATUS" = "200" ]; then
+            REMOTE_CHECKSUM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"]["checksum"])' "$RESPONSE")
+            if [ "$REMOTE_CHECKSUM" != "$LOCAL_CHECKSUM" ]; then
+              echo "crates.io allium-deck ${VERSION} exists with a different checksum" >&2
+              exit 1
+            fi
+            echo "crates.io allium-deck ${VERSION} already matches this package"
+          else
+            echo "crates.io version lookup failed with HTTP ${STATUS}" >&2
+            exit 1
+          fi
 
   release:
     name: release
@@ -291,11 +350,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set reproducible build timestamp
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.94.1
 
       - name: Install git-cliff
-        run: cargo install git-cliff --locked
+        run: cargo install git-cliff --version 2.13.1 --locked
 
       - name: Generate CHANGELOG
         env:

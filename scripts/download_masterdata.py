@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -46,7 +47,9 @@ CDN_TABLES = [
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    instant = datetime.fromtimestamp(int(epoch), timezone.utc) if epoch else datetime.now(timezone.utc)
+    return instant.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def sha256(data: bytes) -> str:
@@ -70,12 +73,17 @@ def parse_json(data: bytes, label: str) -> object:
         raise RuntimeError(f"{label} is not valid JSON: {exc}") from exc
 
 
-def table_url(cdn_base: str, region: str, table: str) -> str:
-    return f"{cdn_base.rstrip('/')}/masterdata/{region}/latest/{table}.json"
+def table_url(cdn_base: str, region: str, version: str, table: str) -> str:
+    return f"{cdn_base.rstrip('/')}/masterdata/{region}/{version}/{table}.json"
 
 
 def music_url(cdn_base: str, region: str) -> str:
     return f"{cdn_base.rstrip('/')}/music_metas/{region}/latest/music_metas.json"
+
+
+def ensure_same_snapshot(before: bytes, after: bytes, label: str) -> None:
+    if sha256(before) != sha256(after):
+        raise RuntimeError(f"{label} changed during download")
 
 
 def download_table(
@@ -83,11 +91,12 @@ def download_table(
     *,
     cdn_base: str,
     region: str,
+    version: str,
     out_dir: Path,
     timeout: int,
     retries: int,
 ) -> dict[str, object] | None:
-    url = table_url(cdn_base, region, table)
+    url = table_url(cdn_base, region, version, table)
     target = out_dir / f"{table}.json"
     try:
         data, headers = fetch(url, timeout, label=f"{table}.json", retries=retries)
@@ -113,6 +122,7 @@ def download_tables(
     *,
     cdn_base: str,
     region: str,
+    version: str,
     out_dir: Path,
     timeout: int,
     retries: int,
@@ -132,6 +142,7 @@ def download_tables(
                 table,
                 cdn_base=cdn_base,
                 region=region,
+                version=version,
                 out_dir=out_dir,
                 timeout=timeout,
                 retries=retries,
@@ -182,22 +193,31 @@ def main() -> int:
     music_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
+    music_data_before, music_headers = fetch(
+        music_url(args.cdn_base, args.region),
+        args.timeout,
+        label="music_metas.json (before)",
+        retries=args.retries,
+    )
+
     tables = download_tables(
         CDN_TABLES,
         cdn_base=args.cdn_base,
         region=args.region,
+        version=args.version,
         out_dir=out_dir,
         timeout=args.timeout,
         retries=args.retries,
         workers=args.workers,
     )
 
-    music_data, music_headers = fetch(
+    music_data, music_headers_after = fetch(
         music_url(args.cdn_base, args.region),
         args.timeout,
-        label="music_metas.json",
+        label="music_metas.json (after)",
         retries=args.retries,
     )
+    ensure_same_snapshot(music_data_before, music_data, "music_metas.json")
     music_rows = parse_json(music_data, "music_metas.json")
     if not isinstance(music_rows, list) or not music_rows:
         raise RuntimeError("music_metas.json is empty or not an array")
@@ -216,6 +236,8 @@ def main() -> int:
             "bytes": len(music_data),
             "sha256": sha256(music_data),
             "etag": music_headers.get("ETag") or music_headers.get("etag"),
+            "verified_etag": music_headers_after.get("ETag")
+            or music_headers_after.get("etag"),
         },
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")

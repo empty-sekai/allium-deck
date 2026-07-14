@@ -1,0 +1,5 @@
+[target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl@sha256:48da142669b71e8a4ef9f01eec80358dd9c8b174732dd672155041fe4a0f9c2d"
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:9e5d86740280e021e5f372afcad2eda7367676f33ec40085b49ee88a2652cfe5"

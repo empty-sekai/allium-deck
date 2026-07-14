@@ -17,14 +17,21 @@ const moduleUrl = pathToFileURL(path.join(packageRoot, "allium_deck.js"));
 const deck = await import(moduleUrl.href);
 const wasm = fs.readFileSync(path.join(packageRoot, "allium_deck_bg.wasm"));
 
+if (typeof deck.default !== "function") {
+  throw new Error("WASM package default initializer export is missing");
+}
+if (typeof deck.recommend_embedded !== "function") {
+  throw new Error("WASM package recommend_embedded export is missing");
+}
+
 await deck.default({ module_or_path: wasm });
 
 try {
   deck.recommend_embedded("{}", "{}");
 } catch (error) {
   const message = String(error);
-  if (message.includes("postcard") || message.includes("内嵌 masterdata")) {
-    throw new Error(`embedded masterdata failed to load: ${message}`);
+  if (message !== "候选卡池为空") {
+    throw error;
   }
 }
 
