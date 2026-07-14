@@ -11,6 +11,8 @@
       --music-metas "$MUSIC_METAS" \
       --manifest-out "$MASTERDATA_MANIFEST" \
       --version "$MASTERDATA_VERSION" \
+      --snapshot-mode "$SNAPSHOT_MODE" \
+      --expected-music-sha256 "$MUSIC_METAS_SHA256" \
       --retries "${DOWNLOAD_RETRIES:-5}" \
       --workers "${DOWNLOAD_WORKERS:-8}"
 
@@ -19,7 +21,7 @@
   script: |
     set -e
     . .tmp/cnb-wasm.env
-    cargo run --release --bin build_gamedata -- \
+    cargo run --release --manifest-path wasm/Cargo.toml --bin build_gamedata -- \
       --masterdata "$MASTERDATA_DIR" \
       --music-metas "$MUSIC_METAS" \
       --region "$REGION"
@@ -32,7 +34,7 @@
     export CARGO_PROFILE_RELEASE_LTO=fat
     export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
     export CARGO_PROFILE_RELEASE_PANIC=abort
-    wasm-pack build --target web --features wasm
+    wasm-pack build wasm --target web --scope empty-sekai
 
 .deck-wasm-package-files: &deck_wasm_package_files
   name: Package CDN files
@@ -40,7 +42,7 @@
     set -e
     . .tmp/cnb-wasm.env
     python3 scripts/package_wasm.py \
-      --pkg-dir pkg \
+      --pkg-dir wasm/pkg \
       --out-dir "$DIST_DIR" \
       --region "$REGION" \
       --version "$MASTERDATA_VERSION" \
@@ -178,7 +180,7 @@
         set -e
         . .tmp/cnb-wasm.env
         python3 scripts/package_wasm.py \
-          --pkg-dir pkg \
+          --pkg-dir wasm/pkg \
           --out-dir "$DIST_DIR" \
           --region "$REGION" \
           --version "$MASTERDATA_VERSION" \
@@ -187,8 +189,9 @@
           --source-revision "$SOURCE_REVISION" \
           --masterdata-manifest "$MASTERDATA_MANIFEST"
         mkdir -p release
-        (cd "$DIST_DIR" && zip -9 -r "../../$WASM_ZIP" .)
-        mv "$WASM_ZIP" "release/$WASM_ZIP"
+        python3 scripts/create_reproducible_zip.py \
+          --source-dir "$DIST_DIR" \
+          --output "release/$WASM_ZIP"
         cat > release/github-release-body.md <<EOF
         CNB-built WASM package for $RELEASE_TAG.
 

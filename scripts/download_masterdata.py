@@ -86,6 +86,22 @@ def ensure_same_snapshot(before: bytes, after: bytes, label: str) -> None:
         raise RuntimeError(f"{label} changed during download")
 
 
+def ensure_expected_checksum(data: bytes, expected: str, label: str) -> None:
+    expected = expected.strip().lower()
+    if len(expected) != 64 or any(character not in "0123456789abcdef" for character in expected):
+        raise RuntimeError(f"{label} expected SHA-256 is invalid")
+    actual = sha256(data)
+    if actual != expected:
+        raise RuntimeError(
+            f"{label} checksum mismatch: expected {expected}, downloaded {actual}"
+        )
+
+
+def validate_snapshot_mode(mode: str, expected_music_sha256: str) -> None:
+    if mode == "pinned" and not expected_music_sha256.strip():
+        raise RuntimeError("snapshot-mode=pinned requires --expected-music-sha256")
+
+
 def download_table(
     table: str,
     *,
@@ -176,6 +192,8 @@ def main() -> int:
     parser.add_argument("--music-metas", required=True)
     parser.add_argument("--manifest-out", required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--snapshot-mode", choices=["latest", "pinned"], required=True)
+    parser.add_argument("--expected-music-sha256", default="")
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--retries", type=int, default=DEFAULT_ATTEMPTS)
     parser.add_argument("--workers", type=int, default=8)
@@ -185,6 +203,7 @@ def main() -> int:
         raise RuntimeError("only region=cn is supported for embedded wasm builds")
     if not args.version.strip():
         raise RuntimeError("masterdata dataVersion is required for the immutable wasm release label")
+    validate_snapshot_mode(args.snapshot_mode, args.expected_music_sha256)
 
     out_dir = Path(args.out_dir)
     music_path = Path(args.music_metas)
@@ -218,6 +237,12 @@ def main() -> int:
         retries=args.retries,
     )
     ensure_same_snapshot(music_data_before, music_data, "music_metas.json")
+    if args.expected_music_sha256:
+        ensure_expected_checksum(
+            music_data,
+            args.expected_music_sha256,
+            "music_metas.json",
+        )
     music_rows = parse_json(music_data, "music_metas.json")
     if not isinstance(music_rows, list) or not music_rows:
         raise RuntimeError("music_metas.json is empty or not an array")

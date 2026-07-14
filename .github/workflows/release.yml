@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   verify-registry-token:
     name: verify crates.io token
@@ -194,13 +198,22 @@ jobs:
       - name: Resolve WASM release inputs
         id: inputs
         run: |
-          MASTERDATA_VERSION=$(curl -sSf "https://cdn.emptysekai.com/deck-wasm/cn/latest/manifest.json" | python3 -c "import sys,json; print(json.load(sys.stdin)['masterdata_version'])")
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            INPUT_FILE="release-inputs/${GITHUB_REF_NAME}.json"
+          else
+            VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "allium-deck-wasm"))')
+            INPUT_FILE="release-inputs/v${VERSION}.json"
+          fi
+          test -f "$INPUT_FILE"
+          MASTERDATA_VERSION=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["masterdata_version"])' "$INPUT_FILE")
+          MUSIC_METAS_SHA256=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["music_metas_sha256"])' "$INPUT_FILE")
           WASM_ZIP="allium-deck-wasm-${GITHUB_REF_NAME}-${MASTERDATA_VERSION}-cn.zip"
           NPM_TGZ="allium-deck-wasm-${GITHUB_REF_NAME}.tgz"
           {
             echo "REGION=cn"
             echo "CDN_BASE=https://cdn.emptysekai.com"
             echo "MASTERDATA_VERSION=${MASTERDATA_VERSION}"
+            echo "MUSIC_METAS_SHA256=${MUSIC_METAS_SHA256}"
             echo "MASTERDATA_DIR=.tmp/masterdata/cn"
             echo "MUSIC_METAS=.tmp/music_metas/cn/music_metas.json"
             echo "MASTERDATA_MANIFEST=.tmp/masterdata-manifest.json"
@@ -232,7 +245,9 @@ jobs:
             --out-dir "$MASTERDATA_DIR" \
             --music-metas "$MUSIC_METAS" \
             --manifest-out "$MASTERDATA_MANIFEST" \
-            --version "$MASTERDATA_VERSION"
+            --version "$MASTERDATA_VERSION" \
+            --snapshot-mode pinned \
+            --expected-music-sha256 "$MUSIC_METAS_SHA256"
 
       - name: Build embedded gamedata
         run: |
@@ -282,7 +297,8 @@ jobs:
         run: |
           INSTALL_ROOT=$(mktemp -d)
           npm install --prefix "$INSTALL_ROOT" "release/$NPM_TGZ"
-          node scripts/smoke_wasm_package.mjs "$INSTALL_ROOT"
+          cp scripts/smoke_wasm_package.mjs "$INSTALL_ROOT/smoke.mjs"
+          node "$INSTALL_ROOT/smoke.mjs"
 
       - name: Upload WASM release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -317,26 +333,36 @@ jobs:
           rm -f "$CRATE"
           cargo package --locked -p allium-deck
           LOCAL_CHECKSUM=$(sha256sum "$CRATE" | cut -d' ' -f1)
-          RESPONSE=$(mktemp)
-          STATUS=$(curl --silent --show-error \
-            --user-agent "allium-deck-release-ci/1.0" \
-            --output "$RESPONSE" \
-            --write-out '%{http_code}' \
-            "https://crates.io/api/v1/crates/allium-deck/${VERSION}")
-          if [ "$STATUS" = "404" ]; then
-            rm -f "$CRATE"
-            cargo publish --locked -p allium-deck
-          elif [ "$STATUS" = "200" ]; then
-            REMOTE_CHECKSUM=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"]["checksum"])' "$RESPONSE")
-            if [ "$REMOTE_CHECKSUM" != "$LOCAL_CHECKSUM" ]; then
-              echo "crates.io allium-deck ${VERSION} exists with a different checksum" >&2
-              exit 1
+          set +e
+          python3 scripts/verify_crates_checksum.py \
+            --crate allium-deck \
+            --version "$VERSION" \
+            --checksum "$LOCAL_CHECKSUM" \
+            --attempts 1
+          LOOKUP_STATUS=$?
+          set -e
+          case "$LOOKUP_STATUS" in
+            0) exit 0 ;;
+            3) ;;
+            *) exit "$LOOKUP_STATUS" ;;
+          esac
+          rm -f "$CRATE"
+          set +e
+          cargo publish --locked -p allium-deck
+          PUBLISH_STATUS=$?
+          set -e
+          if python3 scripts/verify_crates_checksum.py \
+            --crate allium-deck \
+            --version "$VERSION" \
+            --checksum "$LOCAL_CHECKSUM" \
+            --attempts 12 \
+            --delay 5; then
+            if [ "$PUBLISH_STATUS" -ne 0 ]; then
+              echo "cargo publish returned ${PUBLISH_STATUS}, but crates.io now has the matching package"
             fi
-            echo "crates.io allium-deck ${VERSION} already matches this package"
-          else
-            echo "crates.io version lookup failed with HTTP ${STATUS}" >&2
-            exit 1
+            exit 0
           fi
+          exit 1
 
   release:
     name: release

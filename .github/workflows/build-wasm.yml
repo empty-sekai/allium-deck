@@ -122,7 +122,8 @@ jobs:
             --out-dir "$MASTERDATA_DIR" \
             --music-metas "$MUSIC_METAS" \
             --manifest-out "$MASTERDATA_MANIFEST" \
-            --version "$MASTERDATA_VERSION"
+            --version "$MASTERDATA_VERSION" \
+            --snapshot-mode latest
 
       - name: Build embedded gamedata
         run: |
@@ -171,7 +172,8 @@ jobs:
         run: |
           INSTALL_ROOT=$(mktemp -d)
           npm install --prefix "$INSTALL_ROOT" dist/npm/*.tgz
-          node scripts/smoke_wasm_package.mjs "$INSTALL_ROOT"
+          cp scripts/smoke_wasm_package.mjs "$INSTALL_ROOT/smoke.mjs"
+          node "$INSTALL_ROOT/smoke.mjs"
 
       - name: Upload GitHub artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
