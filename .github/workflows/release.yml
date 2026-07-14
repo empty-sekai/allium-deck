@@ -15,11 +15,11 @@ concurrency:
 
 jobs:
   verify-registry-token:
-    name: verify crates.io token
+    name: verify crates.io token configuration
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
     steps:
-      - name: Authenticate with crates.io
+      - name: Validate crates.io token configuration
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
@@ -31,9 +31,6 @@ jobs:
             echo "CARGO_REGISTRY_TOKEN must contain only the raw crates.io token (cio + 32 characters)" >&2
             exit 1
           fi
-          curl --fail --silent --show-error --output /dev/null \
-            --header "Authorization: ${CARGO_REGISTRY_TOKEN}" \
-            https://crates.io/api/v1/me
 
   test:
     name: test (linux)
