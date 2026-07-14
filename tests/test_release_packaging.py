@@ -100,6 +100,15 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("group: release-${{ github.ref }}", workflow)
         self.assertIn("scripts/verify_crates_checksum.py", workflow)
 
+    def test_release_ci_installs_required_rust_components(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("components: rustfmt, clippy", workflow)
+
+    def test_registry_preflight_rejects_malformed_secret_without_printing_it(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn('[[ "$CARGO_REGISTRY_TOKEN" =~ ^cio[[:alnum:]]{32}$ ]]', workflow)
+        self.assertIn("must contain only the raw crates.io token", workflow)
+
     def test_npm_smoke_uses_bare_package_import_and_requires_expected_error(self) -> None:
         smoke = (SCRIPTS / "smoke_wasm_package.mjs").read_text(encoding="utf-8")
         self.assertIn('from "@empty-sekai/allium-deck-wasm"', smoke)
