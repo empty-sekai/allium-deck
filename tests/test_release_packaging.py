@@ -118,6 +118,8 @@ class ReleasePackagingTests(unittest.TestCase):
     def test_all_wasm_workflows_run_smoke_from_consumer_root(self) -> None:
         for name in ("build-wasm.yml", "release.yml"):
             workflow = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+            self.assertIn("NPM_PACKAGE=$(realpath", workflow)
+            self.assertIn('npm install --prefix "$INSTALL_ROOT" "$NPM_PACKAGE"', workflow)
             self.assertIn('cp scripts/smoke_wasm_package.mjs "$INSTALL_ROOT/smoke.mjs"', workflow)
             self.assertIn('node "$INSTALL_ROOT/smoke.mjs"', workflow)
 
