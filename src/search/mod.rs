@@ -104,6 +104,24 @@ pub fn search_instrumented(
     (expanded, stats)
 }
 
+/// 在一次 DFS 中为每个指定活动加成档位返回独立 Top-K。
+pub fn search_bonus_targets(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    targets: &[i32],
+) -> (Vec<DeckResult>, SearchStats) {
+    if params.top_k == 0
+        || pool.count() < DECK_SIZE
+        || targets.is_empty()
+        || !matches!(ctx.target, ScoreTarget::Bonus)
+    {
+        return (Vec::new(), SearchStats::default());
+    }
+    let suffix = SuffixBound::build(pool, ctx);
+    dfs::dfs_search_bonus_targets(pool, ctx, &suffix, params, targets)
+}
+
 /// Top-K 支配替代展开。
 ///
 /// dominance 裁剪对 Top-1 无损（被裁卡换成支配者分数不降），但 Top-K 下被裁卡参与的
@@ -1710,6 +1728,127 @@ mod tests {
             .unwrap_or(0);
 
         assert_eq!(best, brute_force_best(&pool, &search_ctx));
+    }
+
+    #[test]
+    fn search_bonus_targets_matches_single_pass_bruteforce_buckets() {
+        let cards = [
+            TestCard {
+                char_id: 0,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 600,
+                power: 100,
+                skill: SkillSlot::default(),
+                base_bonus: 10,
+                limited_bonus: 0,
+                power_max: 100,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 1,
+                attr: 1,
+                unit_mask: 1,
+                game_id: 601,
+                power: 110,
+                skill: SkillSlot::default(),
+                base_bonus: 20,
+                limited_bonus: 0,
+                power_max: 110,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 2,
+                attr: 2,
+                unit_mask: 1,
+                game_id: 602,
+                power: 120,
+                skill: SkillSlot::default(),
+                base_bonus: 30,
+                limited_bonus: 0,
+                power_max: 120,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 3,
+                attr: 3,
+                unit_mask: 1,
+                game_id: 603,
+                power: 130,
+                skill: SkillSlot::default(),
+                base_bonus: 40,
+                limited_bonus: 0,
+                power_max: 130,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 4,
+                attr: 4,
+                unit_mask: 1,
+                game_id: 604,
+                power: 140,
+                skill: SkillSlot::default(),
+                base_bonus: 50,
+                limited_bonus: 0,
+                power_max: 140,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 5,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 605,
+                power: 150,
+                skill: SkillSlot::default(),
+                base_bonus: 60,
+                limited_bonus: 0,
+                power_max: 150,
+                skill_max: 0,
+            },
+            TestCard {
+                char_id: 6,
+                attr: 1,
+                unit_mask: 1,
+                game_id: 606,
+                power: 160,
+                skill: SkillSlot::default(),
+                base_bonus: 70,
+                limited_bonus: 0,
+                power_max: 160,
+                skill_max: 0,
+            },
+        ];
+        let pool = build_pool(&cards);
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Bonus);
+        search_ctx.event_type = Some(crate::types::EventType::Marathon);
+        let params = SearchParams {
+            top_k: 2,
+            timeout_ms: 0,
+        };
+        let targets = [150, 250];
+
+        let default_actual = search(&pool, &search_ctx, &params);
+        let (default_expected, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_eq!(default_actual, default_expected);
+
+        let actual = search_bonus_targets(&pool, &search_ctx, &params, &targets).0;
+        let brute_params = SearchParams {
+            top_k: 100,
+            timeout_ms: 0,
+        };
+        let (all, _) = brute_force_search(&pool, &search_ctx, &brute_params);
+        let expected = targets
+            .iter()
+            .rev()
+            .flat_map(|target| {
+                all.iter()
+                    .filter(move |result| (result.score >> 32) == (*target as u64 * 2))
+                    .take(params.top_k)
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]

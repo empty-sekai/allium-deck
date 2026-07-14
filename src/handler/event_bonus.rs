@@ -1,5 +1,5 @@
 use crate::pool::EventBonusHot;
-use crate::types::{Attr, EventType, FINAL_CHAPTER_EVENT_ID};
+use crate::types::{Attr, EventType, Unit, FINAL_CHAPTER_EVENT_ID};
 
 use super::types::{
     parse_attr_code, parse_unit_code, resolve_event_type, BuildParams, EventCard,
@@ -38,6 +38,8 @@ pub(crate) struct EventContext {
     pub custom_character_ids: Vec<i32>,
     /// 自定义活动属性。
     pub custom_attr: Option<Attr>,
+    /// 自定义 VS 角色支援团约束；Unit::None 表示不限制。
+    pub custom_support_unit_by_char: [Unit; 27],
 }
 
 fn load_diff_attr_bonus(table: &[WorldBloomDiffAttrBonus]) -> [u16; 6] {
@@ -139,7 +141,11 @@ pub(crate) fn build_event_context(
     params: &BuildParams,
 ) -> Option<EventContext> {
     let event_type = resolve_event_type(game, params).or_else(|| {
-        if params.event_unit.is_some() || params.event_attr.is_some() {
+        if params.event_unit.is_some()
+            || params.event_attr.is_some()
+            || !params.custom_bonus_character_ids.is_empty()
+            || params.custom_bonus_attr.is_some()
+        {
             Some(EventType::Marathon)
         } else {
             None
@@ -189,8 +195,25 @@ pub(crate) fn build_event_context(
         support_deck_count: load_support_deck_count(world_bloom_event_turn, event_type),
         world_bloom_character_id: resolve_world_bloom_character_id(game, params),
         world_bloom_event_turn,
-        custom_character_ids: custom_character_ids(game, params.event_unit.as_deref()),
-        custom_attr: params.event_attr.as_deref().and_then(parse_attr_code),
+        custom_character_ids: if params.custom_bonus_character_ids.is_empty() {
+            custom_character_ids(game, params.event_unit.as_deref())
+        } else {
+            params.custom_bonus_character_ids.clone()
+        },
+        custom_attr: params
+            .custom_bonus_attr
+            .as_deref()
+            .or(params.event_attr.as_deref())
+            .and_then(parse_attr_code),
+        custom_support_unit_by_char: {
+            let mut units = [Unit::None; 27];
+            for entry in &params.custom_bonus_character_support_units {
+                if (1..=26).contains(&entry.character_id) {
+                    units[entry.character_id as usize] = entry.unit;
+                }
+            }
+            units
+        },
     })
 }
 
@@ -242,9 +265,7 @@ fn load_custom_bonus_x2(master: &MasterCard, event_ctx: &EventContext) -> i32 {
     if event_ctx.custom_character_ids.is_empty() && event_ctx.custom_attr.is_none() {
         return 0;
     }
-    let char_match = event_ctx
-        .custom_character_ids
-        .contains(&master.character_id);
+    let char_match = custom_character_matches(master, event_ctx);
     let attr_match = event_ctx
         .custom_attr
         .is_some_and(|attr| parse_attr_code(&master.attr) == Some(attr));
@@ -254,6 +275,28 @@ fn load_custom_bonus_x2(master: &MasterCard, event_ctx: &EventContext) -> i32 {
         50
     } else {
         0
+    }
+}
+
+fn custom_character_matches(master: &MasterCard, event_ctx: &EventContext) -> bool {
+    if !event_ctx
+        .custom_character_ids
+        .contains(&master.character_id)
+    {
+        return false;
+    }
+    let required = usize::try_from(master.character_id)
+        .ok()
+        .filter(|id| *id < event_ctx.custom_support_unit_by_char.len())
+        .map(|id| event_ctx.custom_support_unit_by_char[id])
+        .unwrap_or(Unit::None);
+    if matches!(required, Unit::None) {
+        return true;
+    }
+    match master.support_unit.as_deref() {
+        None => true,
+        Some(value) if value.trim().is_empty() || value.trim().eq_ignore_ascii_case("none") => true,
+        Some(value) => parse_unit_code(value) == Some(required),
     }
 }
 
@@ -267,9 +310,7 @@ pub(crate) fn build_card_event_bonus(
     let base_bonus_x2 = load_rarity_bonus_x2(user_card, master, event_ctx)
         + load_custom_bonus_x2(master, event_ctx);
 
-    let custom_char = event_ctx
-        .custom_character_ids
-        .contains(&master.character_id);
+    let custom_char = custom_character_matches(master, event_ctx);
     let custom_attr = event_ctx
         .custom_attr
         .is_some_and(|attr| parse_attr_code(&master.attr) == Some(attr));
@@ -338,4 +379,74 @@ pub(crate) fn build_leader_limit_bonus(master: &MasterCard, event_ctx: &EventCon
         .find(|entry| entry.card_id == master.id)
         .map(|entry| entry.leader_bonus_rate.max(0) as u16)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn custom_context() -> EventContext {
+        let mut support_units = [Unit::None; 27];
+        support_units[21] = Unit::Street;
+        EventContext {
+            event_id: 0,
+            event_type: EventType::Marathon,
+            event_cards: Vec::new(),
+            deck_bonuses: Vec::new(),
+            rarity_bonuses: Vec::new(),
+            honor_bonuses: Vec::new(),
+            skill_score_up_limit: None,
+            card_bonus_count_limit: 5,
+            diff_attr_bonus: [0; 6],
+            support_deck_count: 0,
+            world_bloom_character_id: None,
+            world_bloom_event_turn: None,
+            custom_character_ids: vec![21],
+            custom_attr: Some(Attr::Cute),
+            custom_support_unit_by_char: support_units,
+        }
+    }
+
+    fn master(support_unit: Option<&str>, attr: &str) -> MasterCard {
+        MasterCard {
+            id: 1,
+            character_id: 21,
+            attr: attr.to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: String::new(),
+            skill_id: 1,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: support_unit.map(str::to_string),
+            max_level: None,
+            max_skill_level: None,
+            max_master_rank: None,
+        }
+    }
+
+    #[test]
+    fn custom_support_unit_accepts_matching_or_none_and_rejects_other_unit() {
+        let ctx = custom_context();
+        assert_eq!(
+            load_custom_bonus_x2(&master(Some("street"), "cool"), &ctx),
+            50
+        );
+        assert_eq!(
+            load_custom_bonus_x2(&master(Some("none"), "cool"), &ctx),
+            50
+        );
+        assert_eq!(load_custom_bonus_x2(&master(None, "cute"), &ctx), 100);
+        assert_eq!(
+            load_custom_bonus_x2(&master(Some("none"), "cute"), &ctx),
+            100
+        );
+        assert_eq!(load_custom_bonus_x2(&master(Some("idol"), "cool"), &ctx), 0);
+        assert_eq!(
+            load_custom_bonus_x2(&master(Some("future_unknown_unit"), "cool"), &ctx),
+            0
+        );
+    }
 }

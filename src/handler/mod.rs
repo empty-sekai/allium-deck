@@ -20,7 +20,8 @@ use event_bonus::{
     build_card_event_bonus, build_event_context, build_leader_honor_bonus,
     build_leader_limit_bonus, EventContext,
 };
-use gather::{sort_and_gather, CardIntermediate, FullPrecisionCard};
+pub use gather::FullPrecisionCard;
+use gather::{sort_and_gather, CardIntermediate};
 use music::build_music_params;
 use power::{build_power, resolve_unit_mask};
 use skill::{build_skill, is_bfes_skill_pair, SkillResult, SkillState};
@@ -53,6 +54,102 @@ impl Display for BuildError {
 }
 
 impl Error for BuildError {}
+
+pub(crate) fn validate_build_params(params: &types::BuildParams) -> Result<(), BuildError> {
+    if !(1..=types::MAX_BUILD_LIMIT).contains(&params.limit) {
+        return Err(BuildError::InvalidConfig(format!(
+            "limit 必须在 1..={} 范围内",
+            types::MAX_BUILD_LIMIT
+        )));
+    }
+    if !(1..=types::MAX_BUILD_TIMEOUT_MS).contains(&params.timeout_ms) {
+        return Err(BuildError::InvalidConfig(format!(
+            "timeout_ms 必须在 1..={} 范围内",
+            types::MAX_BUILD_TIMEOUT_MS
+        )));
+    }
+    if params
+        .member
+        .is_some_and(|member| member != crate::types::DECK_SIZE)
+    {
+        return Err(BuildError::InvalidConfig(format!(
+            "member 仅支持 {}",
+            crate::types::DECK_SIZE
+        )));
+    }
+    if params.target_bonus_list.len() > types::MAX_TARGET_BONUS_BUCKETS {
+        return Err(BuildError::InvalidConfig(format!(
+            "target_bonus_list 最多支持 {} 个档位",
+            types::MAX_TARGET_BONUS_BUCKETS
+        )));
+    }
+    let mut bonus_targets = BTreeSet::new();
+    for &bonus in &params.target_bonus_list {
+        if !(0..=types::MAX_TARGET_BONUS).contains(&bonus) {
+            return Err(BuildError::InvalidConfig(format!(
+                "target bonus 必须在 0..={} 范围内",
+                types::MAX_TARGET_BONUS
+            )));
+        }
+        if !bonus_targets.insert(bonus) {
+            return Err(BuildError::InvalidConfig(
+                "target_bonus_list 不得包含重复档位".to_string(),
+            ));
+        }
+    }
+    if params.custom_bonus_character_ids.len() > 26 {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus character 最多支持 26 项".to_string(),
+        ));
+    }
+    let mut custom_characters = BTreeSet::new();
+    if params
+        .custom_bonus_character_ids
+        .iter()
+        .any(|id| !(1..=26).contains(id) || !custom_characters.insert(*id))
+    {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus character id 非法或重复".to_string(),
+        ));
+    }
+    if params
+        .custom_bonus_attr
+        .as_deref()
+        .is_some_and(|attr| parse_attr_code(attr).is_none())
+    {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus attr 非法".to_string(),
+        ));
+    }
+    if params.custom_bonus_character_support_units.len() > 26 {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus support unit 最多支持 26 项".to_string(),
+        ));
+    }
+    let mut support_characters = BTreeSet::new();
+    if params
+        .custom_bonus_character_support_units
+        .iter()
+        .any(|entry| {
+            !(1..=26).contains(&entry.character_id)
+                || !support_characters.insert(entry.character_id)
+                || !matches!(
+                    entry.unit,
+                    crate::types::Unit::LightSound
+                        | crate::types::Unit::Idol
+                        | crate::types::Unit::Street
+                        | crate::types::Unit::Themepark
+                        | crate::types::Unit::SchoolRefusal
+                        | crate::types::Unit::Piapro
+                )
+        })
+    {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus support unit 非法或重复".to_string(),
+        ));
+    }
+    Ok(())
+}
 
 fn enrich_master(master: &types::MasterCard, game: &types::GameData<'_>) -> types::MasterCard {
     let mut master = master.clone();
@@ -719,6 +816,17 @@ pub fn build_card_pool(
     game: &types::GameData<'_>,
     params: &types::BuildParams,
 ) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
+    let (pool, context, _) = build_card_pool_with_details(user, game, params)?;
+    Ok((pool, context))
+}
+
+/// 构建搜索池并保留与 dense card index 一一对应的全精度展示信息。
+pub fn build_card_pool_with_details(
+    user: &types::UserProfile,
+    game: &types::GameData<'_>,
+    params: &types::BuildParams,
+) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
+    validate_build_params(params)?;
     if params.multi_live_score_up_lower_bound.is_some()
         && !matches!(params.live_type, crate::types::LiveType::Multi)
     {
@@ -727,6 +835,25 @@ pub fn build_card_pool(
         ));
     }
     let event_ctx = build_event_context(game, params);
+    if !params.target_bonus_list.is_empty()
+        && !matches!(params.target, crate::types::ScoreTarget::Bonus)
+    {
+        return Err(BuildError::InvalidConfig(
+            "target_bonus_list 仅支持 bonus target".to_string(),
+        ));
+    }
+    if matches!(params.target, crate::types::ScoreTarget::Bonus) {
+        if event_ctx.is_none() {
+            return Err(BuildError::InvalidConfig(
+                "bonus target 需要活动上下文".to_string(),
+            ));
+        }
+        if params.event_id == Some(crate::types::FINAL_CHAPTER_EVENT_ID) {
+            return Err(BuildError::InvalidConfig(
+                "终章不支持 bonus target".to_string(),
+            ));
+        }
+    }
     let fixture_bonus_limit = resolve_fixture_bonus_limit(game, event_ctx.as_ref());
     let music = build_music_params(game, params);
     let configs = merged_configs(params);
@@ -926,7 +1053,7 @@ pub fn build_card_pool(
         fixed_character_ids,
     );
     search_ctx.honor_bonus = compute_honor_bonus(user, game);
-    Ok((pool, search_ctx))
+    Ok((pool, search_ctx, full))
 }
 
 /// 返回应用养成配置（preset / 单卡覆盖）后的用户卡列表，养成口径与 `build_card_pool` 完全同源。
@@ -1027,6 +1154,111 @@ mod tests {
             episodes_read: Vec::new(),
             is_virtual: false,
             has_canvas_bonus_override: None,
+        }
+    }
+
+    #[test]
+    fn bonus_target_requires_non_final_event_context() {
+        let game = sample_game(&[], &[], &[], &[], &[], &[], &[], &[], &[]);
+        let user = UserProfile::default();
+
+        let no_event = BuildParams {
+            target: ScoreTarget::Bonus,
+            ..BuildParams::default()
+        };
+        assert!(matches!(
+            build_card_pool(&user, &game, &no_event),
+            Err(BuildError::InvalidConfig(reason)) if reason.contains("活动")
+        ));
+
+        let final_chapter = BuildParams {
+            target: ScoreTarget::Bonus,
+            event_id: Some(crate::types::FINAL_CHAPTER_EVENT_ID),
+            event_type: Some("world_bloom".to_string()),
+            ..BuildParams::default()
+        };
+        assert!(matches!(
+            build_card_pool(&user, &game, &final_chapter),
+            Err(BuildError::InvalidConfig(reason)) if reason.contains("终章")
+        ));
+    }
+
+    #[test]
+    fn programmatic_build_params_enforce_compatibility_bounds() {
+        let game = sample_game(&[], &[], &[], &[], &[], &[], &[], &[], &[]);
+        let user = UserProfile::default();
+
+        for (params, expected) in [
+            (
+                BuildParams {
+                    limit: 0,
+                    ..BuildParams::default()
+                },
+                "limit",
+            ),
+            (
+                BuildParams {
+                    timeout_ms: 0,
+                    ..BuildParams::default()
+                },
+                "timeout",
+            ),
+            (
+                BuildParams {
+                    timeout_ms: 300_001,
+                    ..BuildParams::default()
+                },
+                "timeout",
+            ),
+            (
+                BuildParams {
+                    target_bonus_list: vec![100; 33],
+                    ..BuildParams::default()
+                },
+                "target_bonus_list",
+            ),
+            (
+                BuildParams {
+                    custom_bonus_character_ids: vec![0],
+                    ..BuildParams::default()
+                },
+                "character",
+            ),
+            (
+                BuildParams {
+                    custom_bonus_character_ids: vec![1; 27],
+                    ..BuildParams::default()
+                },
+                "character",
+            ),
+            (
+                BuildParams {
+                    custom_bonus_character_ids: vec![1, 1],
+                    ..BuildParams::default()
+                },
+                "重复",
+            ),
+            (
+                BuildParams {
+                    custom_bonus_character_support_units: vec![
+                        crate::types::CustomSupportUnit {
+                            character_id: 21,
+                            unit: crate::types::Unit::Idol,
+                        },
+                        crate::types::CustomSupportUnit {
+                            character_id: 21,
+                            unit: crate::types::Unit::Street,
+                        },
+                    ],
+                    ..BuildParams::default()
+                },
+                "重复",
+            ),
+        ] {
+            assert!(matches!(
+                build_card_pool(&user, &game, &params),
+                Err(BuildError::InvalidConfig(reason)) if reason.contains(expected)
+            ));
         }
     }
 
@@ -2262,8 +2494,14 @@ mod tests {
             ..BuildParams::default()
         };
 
-        let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+        let (pool, ctx, details) = build_card_pool_with_details(&user, &game, &params).unwrap();
         assert_eq!(pool.count(), 3);
+        assert_eq!(details.len(), pool.count());
+        assert!(details
+            .iter()
+            .enumerate()
+            .all(|(index, detail)| detail.game_card_id
+                == pool.game_id(crate::pool::CardIdx::new(index as u16))));
         assert_eq!(ctx.music_rate_pct, 100);
         assert_eq!(ctx.target, ScoreTarget::Score);
         assert_eq!(ctx.leader_honor_bonus.len(), 3);

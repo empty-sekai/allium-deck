@@ -395,6 +395,7 @@ fn strategy_score(pool: &CardPool, ctx: &SearchContext, strategy: Strategy, card
         Strategy::Target => match ctx.target {
             ScoreTarget::Power => pool.power_max(card) as f64,
             ScoreTarget::Skill => pool.skill_max(card) as f64,
+            ScoreTarget::Bonus => pool.event_bonus(card).total_rate(),
             ScoreTarget::Score | ScoreTarget::Mysekai => {
                 if matches!(ctx.target, ScoreTarget::Score) && !ctx.has_event() {
                     let power = pool.power_max(card) as f64;
