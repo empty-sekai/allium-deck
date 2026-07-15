@@ -400,7 +400,7 @@ jobs:
           else
             RANGE="${GITHUB_REF_NAME}"
           fi
-          git-cliff --tag "${GITHUB_REF_NAME}" --output CHANGELOG.md --first-parent "$RANGE"
+          git-cliff --tag "${GITHUB_REF_NAME}" --output CHANGELOG.md "$RANGE"
           {
             echo ""
             echo "### Assets"

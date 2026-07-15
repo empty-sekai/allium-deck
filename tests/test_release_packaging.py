@@ -100,6 +100,10 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("group: release-${{ github.ref }}", workflow)
         self.assertIn("scripts/verify_crates_checksum.py", workflow)
 
+    def test_release_changelog_uses_supported_git_cliff_arguments(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertNotIn("--first-parent", workflow)
+
     def test_release_ci_installs_required_rust_components(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("components: rustfmt, clippy", workflow)
