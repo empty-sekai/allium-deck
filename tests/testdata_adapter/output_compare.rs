@@ -249,7 +249,7 @@ fn format_actual_cards(actual: [CardIdx; 5], pool: &CardPool) -> String {
     actual
         .into_iter()
         .map(|card| {
-            let bonus = pool.event_bonus(card);
+            let bonus = pool.event_bonus_exact(card);
             format!(
                 "{}({}+{})",
                 pool.game_id(card),
@@ -267,7 +267,7 @@ fn format_expected_cards(expected: &[LegacyOutputCard], pool: &CardPool) -> Stri
         .map(
             |card| match find_card_by_game_id(pool, card.card_id as u16) {
                 Some(idx) => {
-                    let bonus = pool.event_bonus(idx);
+                    let bonus = pool.event_bonus_exact(idx);
                     format!(
                         "{}({}+{})",
                         card.card_id,

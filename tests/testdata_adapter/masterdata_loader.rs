@@ -103,6 +103,7 @@ impl OwnedGameData {
             .map(|rarity| CardRarity {
                 card_rarity_type: rarity_type_to_index(&rarity.card_rarity_type),
                 max_level: rarity.training_max_level.unwrap_or(rarity.max_level),
+                normal_max_level: rarity.max_level,
                 max_skill_level: rarity.max_skill_level,
             })
             .collect(),
@@ -317,7 +318,7 @@ impl OwnedGameData {
                         event_id,
                         card_rarity_type: rarity_type_to_index(&entry.card_rarity_type),
                         master_rank: entry.master_rank,
-                        bonus_rate_x2: (entry.bonus_rate * 2.0).round() as i32,
+                        bonus_rate_x10: (entry.bonus_rate * 10.0).round() as i32,
                     })
             })
             .collect(),

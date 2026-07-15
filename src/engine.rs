@@ -258,12 +258,12 @@ pub fn parse_build_params_json(
     params.event_id = i32_field(&value, "eventId").or_else(|| i32_field(&value, "event_id"));
     params.event_type =
         string_field(&value, "eventType").or_else(|| string_field(&value, "event_type"));
-    params.live_type = parse_live_type(
+    params.live_type = parse_live_type_checked(
         string_field(&value, "liveType")
             .or_else(|| string_field(&value, "live_type"))
             .as_deref()
             .unwrap_or("solo"),
-    );
+    )?;
     params.target = parse_target_checked(field_alias_checked(&value, "target", "target")?)?;
     params.limit = bounded_usize_field(
         &value,
@@ -304,6 +304,7 @@ pub fn parse_build_params_json(
         string_field(&value, "musicDiff").or_else(|| string_field(&value, "music_diff"));
     params.fixed_cards = int_array(&value, "fixedCards");
     params.fixed_characters = int_array(&value, "fixedCharacters");
+    params.forced_leader_character_id = i32_field(&value, "forcedLeaderCharacterId");
     params.excluded_cards = int_array(&value, "excludedCards");
     params.world_bloom_character_id = i32_field(&value, "worldBloomCharacterId")
         .or_else(|| i32_field(&value, "world_bloom_character_id"));
@@ -315,6 +316,37 @@ pub fn parse_build_params_json(
         string_field(&value, "eventUnit").or_else(|| string_field(&value, "event_unit"));
     params.event_attr =
         string_field(&value, "eventAttr").or_else(|| string_field(&value, "event_attr"));
+    validate_optional_enum(
+        params.event_type.as_deref(),
+        "event_type",
+        &[
+            "marathon",
+            "cheerful",
+            "cheerful_carnival",
+            "cheerfulcarnival",
+            "world_bloom",
+            "worldbloom",
+            "wl",
+        ],
+    )?;
+    validate_optional_enum(
+        params.event_attr.as_deref(),
+        "event_attr",
+        &["mysterious", "cute", "cool", "pure", "happy"],
+    )?;
+    validate_optional_enum(
+        params.event_unit.as_deref(),
+        "event_unit",
+        &[
+            "light_sound",
+            "idol",
+            "street",
+            "theme_park",
+            "themepark",
+            "school_refusal",
+            "piapro",
+        ],
+    )?;
     params.custom_bonus_character_ids = bounded_int_array_alias(
         &value,
         "customBonusCharacterIds",
@@ -327,23 +359,29 @@ pub fn parse_build_params_json(
         optional_string_alias_checked(&value, "customBonusAttr", "custom_bonus_attr")?;
     params.custom_bonus_character_support_units = parse_custom_bonus_support_units(&value)?;
     params.filter_other_unit = bool_field(&value, "filterOtherUnit").unwrap_or(false);
+    params.support_master_max = bool_field(&value, "supportMasterMax")
+        .or_else(|| bool_field(&value, "support_master_max"))
+        .unwrap_or(false);
+    params.support_skill_max = bool_field(&value, "supportSkillMax")
+        .or_else(|| bool_field(&value, "support_skill_max"))
+        .unwrap_or(false);
     params.keep_after_training_state =
         bool_field(&value, "keepAfterTrainingState").unwrap_or(false);
     params.best_skill_as_leader = bool_field(&value, "bestSkillAsLeader").unwrap_or(true);
-    params.skill_reference_strategy = parse_skill_reference_strategy(
+    params.skill_reference_strategy = parse_skill_reference_strategy_checked(
         string_field(&value, "skillReferenceChooseStrategy")
             .or_else(|| string_field(&value, "skillReferenceStrategy"))
             .as_deref()
             .unwrap_or("average"),
-    );
-    params.live_skill_order = parse_live_skill_order(
+    )?;
+    params.live_skill_order = parse_live_skill_order_checked(
         string_field(&value, "liveSkillOrder")
             .or_else(|| string_field(&value, "skillOrderChooseStrategy"))
             .or_else(|| string_field(&value, "skill_order_choose_strategy"))
             .as_deref()
             .unwrap_or("best"),
-    );
-    params.specific_skill_order = parse_specific_skill_order(&value);
+    )?;
+    params.specific_skill_order = parse_specific_skill_order(&value)?;
     params.multi_teammate_score_up = i32_field(&value, "multiLiveTeammateScoreUp")
         .or_else(|| i32_field(&value, "multi_teammate_score_up"));
     params.multi_teammate_power = i32_field(&value, "multiLiveTeammatePower")
@@ -427,9 +465,14 @@ fn card_rarity_config_from_value(value: &Value) -> crate::handler::CardRarityCon
     crate::handler::CardRarityConfig {
         disable: flag("disable", "disable"),
         level_max: flag("levelMax", "level_max"),
+        level: i32_field(value, "level"),
         skill_max: flag("skillMax", "skill_max"),
+        skill_level: i32_field(value, "skillLevel").or_else(|| i32_field(value, "skill_level")),
         episode_read: flag("episodeRead", "episode_read"),
+        episode_read_count: i32_field(value, "episodeReadCount")
+            .or_else(|| i32_field(value, "episode_read_count")),
         master_max: flag("masterMax", "master_max"),
+        master_rank: i32_field(value, "masterRank").or_else(|| i32_field(value, "master_rank")),
         canvas: flag("canvas", "canvas"),
     }
 }
@@ -628,22 +671,26 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn parse_live_type(value: &str) -> LiveType {
+fn parse_live_type_checked(value: &str) -> Result<LiveType, serde_json::Error> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "auto" => LiveType::Auto,
-        "multi" => LiveType::Multi,
-        "cheerful" => LiveType::Cheerful,
-        "challenge" => LiveType::Challenge,
-        "challenge_auto" | "challengeauto" => LiveType::ChallengeAuto,
-        "mysekai" => LiveType::Mysekai,
-        _ => LiveType::Solo,
+        "solo" => Ok(LiveType::Solo),
+        "auto" => Ok(LiveType::Auto),
+        "multi" => Ok(LiveType::Multi),
+        "cheerful" => Ok(LiveType::Cheerful),
+        "challenge" => Ok(LiveType::Challenge),
+        "challenge_auto" | "challengeauto" => Ok(LiveType::ChallengeAuto),
+        "mysekai" => Ok(LiveType::Mysekai),
+        _ => Err(serde_json::Error::custom("live_type 非法")),
     }
 }
 
-fn parse_specific_skill_order(value: &Value) -> Option<[usize; 5]> {
-    let entry = value
+fn parse_specific_skill_order(value: &Value) -> Result<Option<[usize; 5]>, serde_json::Error> {
+    let Some(entry) = value
         .get("specificSkillOrder")
-        .or_else(|| value.get("specific_skill_order"))?;
+        .or_else(|| value.get("specific_skill_order"))
+    else {
+        return Ok(None);
+    };
     let values = match entry {
         Value::Array(items) => items
             .iter()
@@ -653,14 +700,21 @@ fn parse_specific_skill_order(value: &Value) -> Option<[usize; 5]> {
             .split(',')
             .filter_map(|part| part.trim().parse::<usize>().ok())
             .collect::<Vec<_>>(),
-        _ => return None,
+        _ => return Err(serde_json::Error::custom("specific_skill_order 非法")),
     };
     if values.len() != 5 {
-        return None;
+        return Err(serde_json::Error::custom(
+            "specific_skill_order 必须包含 5 个索引",
+        ));
     }
     let mut order = [0usize; 5];
     order.copy_from_slice(&values[..5]);
-    Some(order)
+    if order.iter().any(|value| *value >= 5) {
+        return Err(serde_json::Error::custom(
+            "specific_skill_order 索引必须在 0..5",
+        ));
+    }
+    Ok(Some(order))
 }
 
 fn parse_target_checked(value: Option<&Value>) -> Result<ScoreTarget, serde_json::Error> {
@@ -680,21 +734,43 @@ fn parse_target_checked(value: Option<&Value>) -> Result<ScoreTarget, serde_json
     }
 }
 
-fn parse_skill_reference_strategy(value: &str) -> SkillReferenceStrategy {
+fn parse_skill_reference_strategy_checked(
+    value: &str,
+) -> Result<SkillReferenceStrategy, serde_json::Error> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "max" => SkillReferenceStrategy::Max,
-        "min" => SkillReferenceStrategy::Min,
-        _ => SkillReferenceStrategy::Average,
+        "max" => Ok(SkillReferenceStrategy::Max),
+        "min" => Ok(SkillReferenceStrategy::Min),
+        "average" => Ok(SkillReferenceStrategy::Average),
+        _ => Err(serde_json::Error::custom(
+            "skill_reference_choose_strategy 非法",
+        )),
     }
 }
 
-fn parse_live_skill_order(value: &str) -> LiveSkillOrder {
+fn parse_live_skill_order_checked(value: &str) -> Result<LiveSkillOrder, serde_json::Error> {
     match value.trim().to_ascii_lowercase().as_str() {
-        "worst" => LiveSkillOrder::Worst,
-        "average" => LiveSkillOrder::Average,
-        "specific" => LiveSkillOrder::Specific,
-        _ => LiveSkillOrder::Best,
+        "min" | "worst" => Ok(LiveSkillOrder::Worst),
+        "average" => Ok(LiveSkillOrder::Average),
+        "specific" => Ok(LiveSkillOrder::Specific),
+        "max" | "best" => Ok(LiveSkillOrder::Best),
+        _ => Err(serde_json::Error::custom(
+            "skill_order_choose_strategy 非法",
+        )),
     }
+}
+
+fn validate_optional_enum(
+    value: Option<&str>,
+    field: &str,
+    allowed: &[&str],
+) -> Result<(), serde_json::Error> {
+    if value.is_some_and(|value| {
+        let normalized = value.trim().to_ascii_lowercase();
+        !allowed.contains(&normalized.as_str())
+    }) {
+        return Err(serde_json::Error::custom(format!("{field} 非法")));
+    }
+    Ok(())
 }
 
 /// 持有 `GameData<'_>` 借用所需的所有 `Vec<T>`。
@@ -795,6 +871,7 @@ impl OwnedGameData {
                 .map(|rarity| CardRarity {
                     card_rarity_type: rarity_type_to_index(&rarity.card_rarity_type),
                     max_level: rarity.training_max_level.unwrap_or(rarity.max_level),
+                    normal_max_level: rarity.max_level,
                     max_skill_level: rarity.max_skill_level,
                 })
                 .collect(),
@@ -1016,7 +1093,7 @@ impl OwnedGameData {
                             event_id,
                             card_rarity_type: rarity_type_to_index(&entry.card_rarity_type),
                             master_rank: entry.master_rank,
-                            bonus_rate_x2: rate_to_x2_i32(entry.bonus_rate),
+                            bonus_rate_x10: rate_to_x10_i32(entry.bonus_rate),
                         })
                 })
                 .collect(),
@@ -1811,11 +1888,11 @@ struct RawEventRarityBonusRate {
     bonus_rate: f64,
 }
 
-fn rate_to_x2_i32(value: f64) -> i32 {
+fn rate_to_x10_i32(value: f64) -> i32 {
     if !value.is_finite() || value <= 0.0 {
         0
     } else {
-        (value * 2.0).round().clamp(0.0, i32::MAX as f64) as i32
+        (value * 10.0).round().clamp(0.0, i32::MAX as f64) as i32
     }
 }
 
@@ -1902,12 +1979,17 @@ mod tests {
         let json = r#"{
             "region":"cn","liveType":"solo","target":"power",
             "rarity4Config":{"levelMax":true,"skillMax":true,"masterMax":true,
-                             "episodeRead":true,"canvas":true},
+                             "episodeRead":true,"canvas":true,"level":51,
+                             "skillLevel":2,"masterRank":3,"episodeReadCount":1},
             "rarity3Config":{"disable":true}
         }"#;
         let params = parse_build_params_json(json).expect("parse");
         let r4 = &params.card_configs.rarity_4_config;
         assert!(r4.level_max && r4.skill_max && r4.master_max && r4.episode_read && r4.canvas);
+        assert_eq!(r4.level, Some(51));
+        assert_eq!(r4.skill_level, Some(2));
+        assert_eq!(r4.master_rank, Some(3));
+        assert_eq!(r4.episode_read_count, Some(1));
         assert!(params.card_configs.rarity_3_config.disable);
         // 未提供的稀有度保持默认 false。
         assert!(!params.card_configs.rarity_1_config.level_max);
@@ -1915,11 +1997,20 @@ mod tests {
 
     #[test]
     fn parse_build_params_accepts_snake_case_card_configs() {
-        let json = r#"{"rarity_4_config":{"level_max":true,"master_max":true}}"#;
+        let json = r#"{"rarity_4_config":{"level_max":true,"master_max":true,
+                     "level":52,"skill_level":3,"master_rank":2,
+                     "episode_read_count":0}}"#;
         let params = parse_build_params_json(json).expect("parse");
         assert!(params.card_configs.rarity_4_config.level_max);
         assert!(params.card_configs.rarity_4_config.master_max);
         assert!(!params.card_configs.rarity_4_config.skill_max);
+        assert_eq!(params.card_configs.rarity_4_config.level, Some(52));
+        assert_eq!(params.card_configs.rarity_4_config.skill_level, Some(3));
+        assert_eq!(params.card_configs.rarity_4_config.master_rank, Some(2));
+        assert_eq!(
+            params.card_configs.rarity_4_config.episode_read_count,
+            Some(0)
+        );
     }
 
     #[test]
@@ -1942,6 +2033,20 @@ mod tests {
         let params = parse_build_params_json(r#"{"region":"cn"}"#).expect("parse");
         assert!(!params.card_configs.rarity_4_config.level_max);
         assert!(params.single_card_configs.is_empty());
+    }
+
+    #[test]
+    fn parse_build_params_reads_world_bloom_support_max_flags() {
+        let camel = parse_build_params_json(r#"{"supportMasterMax":true,"supportSkillMax":true}"#)
+            .expect("parse camel case");
+        assert!(camel.support_master_max);
+        assert!(camel.support_skill_max);
+
+        let snake =
+            parse_build_params_json(r#"{"support_master_max":true,"support_skill_max":true}"#)
+                .expect("parse snake case");
+        assert!(snake.support_master_max);
+        assert!(snake.support_skill_max);
     }
 
     #[test]
@@ -2001,7 +2106,7 @@ mod tests {
             r#"{
                 "target":"bonus",
                 "target_bonus_list":[200],
-                "custom_bonus_character_ids":[2,6],
+                "custom_bonus_character_ids":[2,6,21],
                 "custom_bonus_attr":"pure",
                 "custom_bonus_character_support_units":{"21":"idol"}
             }"#,
@@ -2009,7 +2114,7 @@ mod tests {
         .expect("parse");
 
         assert_eq!(params.target_bonus_list, vec![200]);
-        assert_eq!(params.custom_bonus_character_ids, vec![2, 6]);
+        assert_eq!(params.custom_bonus_character_ids, vec![2, 6, 21]);
         assert_eq!(params.custom_bonus_attr.as_deref(), Some("pure"));
         assert_eq!(
             params.custom_bonus_character_support_units[0].unit,
@@ -2029,6 +2134,28 @@ mod tests {
             (r#"{"timeoutMs":null}"#, "timeout"),
             (r#"{"timeoutMs":1000,"timeout_ms":"bad"}"#, "冲突"),
             (r#"{"target":"unknown"}"#, "target"),
+            (r#"{"liveType":"unknown"}"#, "live_type"),
+            (r#"{"eventType":"unknown"}"#, "event_type"),
+            (r#"{"eventAttr":"unknown"}"#, "event_attr"),
+            (r#"{"eventUnit":"unknown"}"#, "event_unit"),
+            (
+                r#"{"skillReferenceChooseStrategy":"unknown"}"#,
+                "skill_reference",
+            ),
+            (r#"{"skillOrderChooseStrategy":"unknown"}"#, "skill_order"),
+            (
+                r#"{"skillOrderChooseStrategy":"specific"}"#,
+                "specific_skill_order",
+            ),
+            (
+                r#"{"skillOrderChooseStrategy":"specific","specificSkillOrder":[0,1]}"#,
+                "5 个索引",
+            ),
+            (r#"{"targetBonusList":[100]}"#, "bonus target"),
+            (
+                r#"{"liveType":"solo","multiLiveScoreUpLowerBound":100}"#,
+                "multi live",
+            ),
             (r#"{"targetBonusList":[100,100]}"#, "重复"),
             (r#"{"targetBonusList":[-1]}"#, "bonus"),
             (r#"{"customBonusCharacterIds":[0]}"#, "character"),
@@ -2037,6 +2164,10 @@ mod tests {
             (
                 r#"{"customBonusCharacterSupportUnits":{"21":"unknown"}}"#,
                 "support",
+            ),
+            (
+                r#"{"customBonusCharacterIds":[22],"customBonusCharacterSupportUnits":{"21":"idol"}}"#,
+                "custom bonus character",
             ),
         ] {
             let error = parse_build_params_json(json).expect_err("invalid params must fail");

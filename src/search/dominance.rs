@@ -71,6 +71,7 @@ pub fn compute_member_keep(pool: &CardPool) -> Vec<bool> {
             target: crate::types::ScoreTarget::Power,
             fixed_card_ids: Vec::new(),
             fixed_character_ids: Vec::new(),
+            forced_leader_character_id: None,
             music_rate_pct: 100,
             boost_rate_pct: 100,
             base_score: 1.0,
@@ -174,9 +175,10 @@ fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -
         return false;
     }
 
-    let lhs_bonus = pool.event_bonus(lhs);
-    let rhs_bonus = pool.event_bonus(rhs);
-    if lhs_bonus.base_x2() < rhs_bonus.base_x2() || lhs_bonus.limited_x2() < rhs_bonus.limited_x2()
+    let lhs_bonus = pool.event_bonus_exact(lhs);
+    let rhs_bonus = pool.event_bonus_exact(rhs);
+    if lhs_bonus.base_x10() < rhs_bonus.base_x10()
+        || lhs_bonus.limited_x10() < rhs_bonus.limited_x10()
     {
         return false;
     }

@@ -136,6 +136,8 @@ pub struct BuildParams {
     pub fixed_cards: Vec<i32>,
     /// 固定角色。
     pub fixed_characters: Vec<i32>,
+    /// 终章指定队长角色；非终章忽略。
+    pub forced_leader_character_id: Option<i32>,
     /// WL 角色 ID。
     pub world_bloom_character_id: Option<i32>,
     /// WL 回合。
@@ -154,6 +156,10 @@ pub struct BuildParams {
     pub custom_bonus_character_support_units: Vec<crate::types::CustomSupportUnit>,
     /// 是否过滤其他团员。
     pub filter_other_unit: bool,
+    /// 是否按满破计算 World Bloom 支援卡。
+    pub support_master_max: bool,
+    /// 是否按满技能计算 World Bloom 支援卡。
+    pub support_skill_max: bool,
     /// 吸分参考策略。
     pub skill_reference_strategy: SkillReferenceStrategy,
     /// 是否保持特训前后状态。
@@ -204,6 +210,7 @@ impl Default for BuildParams {
             single_card_configs: Vec::new(),
             fixed_cards: Vec::new(),
             fixed_characters: Vec::new(),
+            forced_leader_character_id: None,
             world_bloom_character_id: None,
             world_bloom_event_turn: None,
             challenge_live_character_id: None,
@@ -213,6 +220,8 @@ impl Default for BuildParams {
             custom_bonus_attr: None,
             custom_bonus_character_support_units: Vec::new(),
             filter_other_unit: false,
+            support_master_max: false,
+            support_skill_max: false,
             skill_reference_strategy: SkillReferenceStrategy::Average,
             keep_after_training_state: false,
             best_skill_as_leader: true,
@@ -256,12 +265,20 @@ pub struct CardRarityConfig {
     pub disable: bool,
     /// 是否视为满级。
     pub level_max: bool,
+    /// 指定等级；优先于 `level_max`。
+    pub level: Option<i32>,
     /// 是否视为满技能。
     pub skill_max: bool,
+    /// 指定技能等级；优先于 `skill_max`。
+    pub skill_level: Option<i32>,
     /// 是否视为剧情已读。
     pub episode_read: bool,
+    /// 指定已读剧情数量；优先于 `episode_read`。
+    pub episode_read_count: Option<i32>,
     /// 是否视为满破。
     pub master_max: bool,
+    /// 指定 master rank；优先于 `master_max`。
+    pub master_rank: Option<i32>,
     /// 是否启用画布。
     pub canvas: bool,
 }
@@ -332,6 +349,8 @@ pub struct CardRarity {
     pub card_rarity_type: i32,
     /// 最大等级。
     pub max_level: i32,
+    /// 特训前最大等级。
+    pub normal_max_level: i32,
     /// 最大技能等级。
     pub max_skill_level: i32,
 }
@@ -675,8 +694,8 @@ pub struct EventRarityBonusRate {
     pub card_rarity_type: i32,
     /// master rank 上界。
     pub master_rank: i32,
-    /// bonus，单位为 0.5%。
-    pub bonus_rate_x2: i32,
+    /// bonus，单位为 0.1%。
+    pub bonus_rate_x10: i32,
 }
 
 /// 称号等级。

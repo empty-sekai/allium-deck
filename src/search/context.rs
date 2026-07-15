@@ -15,6 +15,7 @@ pub struct SearchContext {
     pub target: ScoreTarget,
     pub fixed_card_ids: Vec<u16>,
     pub fixed_character_ids: Vec<u8>,
+    pub forced_leader_character_id: Option<u8>,
     pub music_rate_pct: u32,
     pub boost_rate_pct: u32,
     pub base_score: f64,
@@ -121,7 +122,7 @@ impl SearchContext {
     /// 返回搜索期生效的 leader 选择策略。
     #[inline(always)]
     pub fn effective_best_skill_as_leader(&self) -> bool {
-        self.best_skill_as_leader && !self.is_final_chapter && !self.has_fixed_leader()
+        self.best_skill_as_leader && !self.is_final_chapter && self.fixed_character_ids.is_empty()
     }
 
     /// 判断当前搜索是否走 Mysekai 路径。
@@ -140,7 +141,14 @@ impl SearchContext {
     /// 当前是否存在固定 leader 约束。
     #[inline(always)]
     pub fn has_fixed_leader(&self) -> bool {
-        !self.fixed_card_ids.is_empty() || !self.fixed_character_ids.is_empty()
+        self.forced_leader_character_id.is_some() || !self.fixed_character_ids.is_empty()
+    }
+
+    /// 返回终章生效的固定队长角色。
+    #[inline(always)]
+    pub fn final_chapter_leader_character(&self) -> Option<u8> {
+        self.forced_leader_character_id
+            .or_else(|| self.fixed_character_at(0))
     }
 
     /// 读取指定槽位固定卡 ID。

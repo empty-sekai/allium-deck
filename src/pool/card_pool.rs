@@ -4,8 +4,8 @@ use super::arena::Arena;
 use super::builder::PoolBuilder;
 use super::layout::PoolLayout;
 use super::types::{
-    CardIdx, EventBonusHot, Mask, SkillSlot, SpecialTables, ATTR_MASK_COUNT, CHAR_MASK_COUNT,
-    UNIT_MASK_COUNT,
+    CardIdx, EventBonusExact, EventBonusHot, Mask, SkillSlot, SpecialTables, ATTR_MASK_COUNT,
+    CHAR_MASK_COUNT, UNIT_MASK_COUNT,
 };
 
 /// HPC SoA 卡池。
@@ -130,6 +130,21 @@ impl CardPool {
             self.column::<EventBonusHot>(self.layout.off_event_bonus)
                 .get_unchecked(idx.raw())
         }
+    }
+
+    #[inline(always)]
+    pub fn event_bonus_exact(&self, idx: CardIdx) -> EventBonusExact {
+        let hot = *self.event_bonus(idx);
+        let limited_x10 = match hot.limited_code() {
+            0 => 0,
+            code => unsafe {
+                *self
+                    .special
+                    .limited_bonus_x10()
+                    .get_unchecked(code as usize - 1)
+            },
+        };
+        EventBonusExact::from_x10(hot.total_x10() - limited_x10, limited_x10)
     }
 
     /// 返回角色 ID。
@@ -284,6 +299,9 @@ impl CardPool {
         for skill in self.special().ref_skills().iter().copied() {
             builder.add_ref_skill(skill);
         }
+        for value in self.special().limited_bonus_x10().iter().copied() {
+            builder.add_limited_bonus(value);
+        }
 
         let mut next_idx = 0u16;
         for (dense_idx, retain) in keep.iter().copied().enumerate() {
@@ -295,7 +313,7 @@ impl CardPool {
             builder.set_power_values(next_idx, *self.power_values(src));
             builder.set_power_lut(next_idx, self.power_lut(src));
             builder.set_skill(next_idx, self.skill(src));
-            builder.set_event_bonus(next_idx, *self.event_bonus(src));
+            builder.set_event_bonus_packed(next_idx, *self.event_bonus(src));
             builder.set_char_id(next_idx, self.char_id(src));
             builder.set_attr(next_idx, self.attr(src));
             builder.set_unit_mask(next_idx, self.unit_mask_raw(src));

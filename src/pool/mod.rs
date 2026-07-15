@@ -7,14 +7,14 @@ mod types;
 pub use builder::PoolBuilder;
 pub use card_pool::CardPool;
 pub use types::{
-    CardIdx, DiffSkill, EventBonusHot, Mask, RefSkill, SkillSlot, SpecialTables, UnitCountSkill,
-    MASK_WORDS,
+    CardIdx, DiffSkill, EventBonusExact, EventBonusHot, Mask, RefSkill, SkillSlot, SpecialTables,
+    UnitCountSkill, MASK_WORDS,
 };
 
 #[cfg(test)]
 mod tests {
     use super::{
-        CardIdx, CardPool, DiffSkill, EventBonusHot, Mask, PoolBuilder, RefSkill, SkillSlot,
+        CardIdx, CardPool, DiffSkill, EventBonusExact, Mask, PoolBuilder, RefSkill, SkillSlot,
         UnitCountSkill,
     };
 
@@ -54,7 +54,7 @@ mod tests {
                 value: 1,
             },
         );
-        builder.set_event_bonus(0, EventBonusHot::from_whole(5, 9));
+        builder.set_event_bonus(0, EventBonusExact::from_whole(5, 9));
         builder.set_char_id(0, 1);
         builder.set_attr(0, 2);
         builder.set_unit_mask(0, 0b000011);
@@ -76,7 +76,7 @@ mod tests {
                 value: 1,
             },
         );
-        builder.set_event_bonus(1, EventBonusHot::from_whole(6, 10));
+        builder.set_event_bonus(1, EventBonusExact::from_whole(6, 10));
         builder.set_char_id(1, 3);
         builder.set_attr(1, 4);
         builder.set_unit_mask(1, 0b000100);
@@ -97,7 +97,7 @@ mod tests {
                 value: 1,
             },
         );
-        builder.set_event_bonus(2, EventBonusHot::from_whole(7, 11));
+        builder.set_event_bonus(2, EventBonusExact::from_whole(7, 11));
         builder.set_char_id(2, 5);
         builder.set_attr(2, 1);
         builder.set_unit_mask(2, 0b001001);
@@ -130,7 +130,12 @@ mod tests {
                 value: 1
             }
         );
-        assert_eq!(pool.event_bonus(idx0), &EventBonusHot::from_whole(5, 9));
+        assert_eq!(
+            pool.event_bonus_exact(idx0),
+            EventBonusExact::from_whole(5, 9)
+        );
+        assert_eq!(pool.event_bonus(idx0).total_x10(), 140);
+        assert_eq!(pool.event_bonus(idx0).limited_code(), 1);
         assert_eq!(pool.char_id(idx0), 1);
         assert_eq!(pool.attr(idx0), 2);
         assert_eq!(pool.unit_mask_raw(idx0), 0b000011);
@@ -157,6 +162,7 @@ mod tests {
             pool.special().ref_skills(),
             &[RefSkill { rate: 8, max: 90 }]
         );
+        assert_eq!(pool.special().limited_bonus_x10(), &[90, 100, 110]);
 
         assert!(must_mask(pool.char_mask(1)).test(0));
         assert!(must_mask(pool.unit_mask_at(0)).test(0));
@@ -188,7 +194,7 @@ mod tests {
             );
             builder.set_event_bonus(
                 idx,
-                EventBonusHot::from_whole(idx_u8, idx_u8.wrapping_add(1)),
+                EventBonusExact::from_whole((idx % 100) as u16, (idx % 4 + 1) as u16),
             );
             builder.set_char_id(idx, (idx % 27) as u8);
             builder.set_attr(idx, (idx % 5) as u8);
