@@ -10,6 +10,7 @@ pub(crate) fn calc_wb_support_bonus(
     card_rarity_type: i32,
     character_id: u8,
     unit_mask_raw: u8,
+    require_special_unit_match: bool,
     master_rank: i32,
     skill_level: i32,
 ) -> f64 {
@@ -25,7 +26,7 @@ pub(crate) fn calc_wb_support_bonus(
     else {
         return 0.0;
     };
-    if unit_mask_raw & (1u8 << special_unit) == 0 {
+    if require_special_unit_match && unit_mask_raw & (1u8 << special_unit) == 0 {
         return 0.0;
     }
 

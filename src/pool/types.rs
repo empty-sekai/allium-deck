@@ -46,93 +46,112 @@ const _: () = assert!(size_of::<SkillSlot>() == 2);
 
 /// 热路径活动加成。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
+#[repr(transparent)]
 pub struct EventBonusHot {
-    /// 活动基础加成，单位为 0.5%。
-    pub base_bonus_x2: u8,
-    /// 当期卡加成，单位为 0.5%。
-    pub limited_bonus_x2: u8,
+    /// 高 12 bit 为总加成（0.1%），低 4 bit 为限定加成查表 code。
+    packed: u16,
 }
 
 const _: () = assert!(size_of::<EventBonusHot>() == 2);
 
 impl EventBonusHot {
+    pub const MAX_TOTAL_X10: u16 = 0x0fff;
+
     #[inline(always)]
-    pub const fn from_x2(base_bonus_x2: u8, limited_bonus_x2: u8) -> Self {
+    pub const fn from_parts(total_x10: u16, limited_code: u8) -> Self {
+        assert!(total_x10 <= Self::MAX_TOTAL_X10);
+        assert!(limited_code <= 0x0f);
         Self {
-            base_bonus_x2,
-            limited_bonus_x2,
+            packed: (total_x10 << 4) | limited_code as u16,
         }
     }
 
     #[inline(always)]
-    pub fn from_rates(base_bonus: f64, limited_bonus: f64) -> Self {
-        Self {
-            base_bonus_x2: rate_to_x2(base_bonus),
-            limited_bonus_x2: rate_to_x2(limited_bonus),
-        }
+    pub const fn total_x10(self) -> u16 {
+        self.packed >> 4
     }
 
     #[inline(always)]
-    pub const fn from_whole(base_bonus: u8, limited_bonus: u8) -> Self {
-        Self {
-            base_bonus_x2: base_bonus.saturating_mul(2),
-            limited_bonus_x2: limited_bonus.saturating_mul(2),
-        }
-    }
-
-    #[inline(always)]
-    pub const fn base_x2(self) -> u32 {
-        self.base_bonus_x2 as u32
-    }
-
-    #[inline(always)]
-    pub const fn limited_x2(self) -> u32 {
-        self.limited_bonus_x2 as u32
-    }
-
-    #[inline(always)]
-    pub const fn total_x2(self) -> u32 {
-        self.base_x2() + self.limited_x2()
-    }
-
-    #[inline(always)]
-    pub const fn base_ceil(self) -> u32 {
-        self.base_x2().div_ceil(2)
-    }
-
-    #[inline(always)]
-    pub const fn limited_ceil(self) -> u32 {
-        self.limited_x2().div_ceil(2)
+    pub const fn limited_code(self) -> u8 {
+        (self.packed & 0x0f) as u8
     }
 
     #[inline(always)]
     pub const fn total_ceil(self) -> u32 {
-        self.total_x2().div_ceil(2)
-    }
-
-    #[inline(always)]
-    pub fn base_rate(self) -> f64 {
-        self.base_x2() as f64 * 0.5
-    }
-
-    #[inline(always)]
-    pub fn limited_rate(self) -> f64 {
-        self.limited_x2() as f64 * 0.5
+        (self.total_x10() as u32).div_ceil(10)
     }
 
     #[inline(always)]
     pub fn total_rate(self) -> f64 {
-        self.total_x2() as f64 * 0.5
+        self.total_x10() as f64 * 0.1
     }
 }
 
-#[inline(always)]
-fn rate_to_x2(value: f64) -> u8 {
-    if !value.is_finite() || value <= 0.0 {
-        0
-    } else {
-        (value * 2.0).round().clamp(0.0, u8::MAX as f64) as u8
+/// 构建和结果阶段使用的精确活动加成分量。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EventBonusExact {
+    pub base_x10: u16,
+    pub limited_x10: u16,
+}
+
+impl EventBonusExact {
+    #[inline(always)]
+    pub const fn from_x10(base_x10: u16, limited_x10: u16) -> Self {
+        assert!(base_x10 as u32 + limited_x10 as u32 <= EventBonusHot::MAX_TOTAL_X10 as u32);
+        Self {
+            base_x10,
+            limited_x10,
+        }
+    }
+
+    #[inline(always)]
+    pub const fn from_whole(base: u16, limited: u16) -> Self {
+        Self::from_x10(base * 10, limited * 10)
+    }
+
+    #[inline(always)]
+    pub const fn base_x10(self) -> u32 {
+        self.base_x10 as u32
+    }
+
+    #[inline(always)]
+    pub const fn limited_x10(self) -> u32 {
+        self.limited_x10 as u32
+    }
+
+    #[inline(always)]
+    pub const fn total_x10(self) -> u32 {
+        self.base_x10() + self.limited_x10()
+    }
+
+    #[inline(always)]
+    pub const fn total_ceil(self) -> u32 {
+        self.total_x10().div_ceil(10)
+    }
+
+    #[inline(always)]
+    pub const fn base_ceil(self) -> u32 {
+        self.base_x10().div_ceil(10)
+    }
+
+    #[inline(always)]
+    pub const fn limited_ceil(self) -> u32 {
+        self.limited_x10().div_ceil(10)
+    }
+
+    #[inline(always)]
+    pub fn base_rate(self) -> f64 {
+        self.base_x10() as f64 * 0.1
+    }
+
+    #[inline(always)]
+    pub fn limited_rate(self) -> f64 {
+        self.limited_x10() as f64 * 0.1
+    }
+
+    #[inline(always)]
+    pub fn total_rate(self) -> f64 {
+        self.total_x10() as f64 * 0.1
     }
 }
 
@@ -250,6 +269,7 @@ pub struct SpecialTables {
     unit_count: Vec<UnitCountSkill>,
     diff: Vec<DiffSkill>,
     ref_skills: Vec<RefSkill>,
+    limited_bonus_x10: Vec<u16>,
 }
 
 impl SpecialTables {
@@ -268,6 +288,11 @@ impl SpecialTables {
         &self.ref_skills
     }
 
+    /// 返回限定加成 code 表；code 1 对应索引 0。
+    pub fn limited_bonus_x10(&self) -> &[u16] {
+        &self.limited_bonus_x10
+    }
+
     #[inline(always)]
     pub(crate) fn push_unit_count(&mut self, skill: UnitCountSkill) {
         self.unit_count.push(skill);
@@ -281,5 +306,10 @@ impl SpecialTables {
     #[inline(always)]
     pub(crate) fn push_ref(&mut self, skill: RefSkill) {
         self.ref_skills.push(skill);
+    }
+
+    #[inline(always)]
+    pub(crate) fn push_limited_bonus(&mut self, value_x10: u16) {
+        self.limited_bonus_x10.push(value_x10);
     }
 }

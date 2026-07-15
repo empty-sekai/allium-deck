@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
+pub mod auxiliary;
 pub mod engine;
 pub mod handler;
 pub mod pool;

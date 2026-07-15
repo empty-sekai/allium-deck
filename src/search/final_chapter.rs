@@ -111,7 +111,7 @@ impl CardPartial {
         support: &SupportDeck,
         card: CardIdx,
     ) -> Self {
-        let eb = pool.event_bonus(card);
+        let eb = pool.event_bonus_exact(card);
         let mut next = *self;
         next.power += pool.power_max(card);
         next.skill += pool.skill_max(card) as u32;
@@ -185,7 +185,7 @@ pub(crate) fn search_fixed_leader(
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
     }
-    let Some(leader_char) = ctx.fixed_character_at(0) else {
+    let Some(leader_char) = ctx.final_chapter_leader_character() else {
         return (Vec::new(), SearchStats::default());
     };
     search_leaders(pool, ctx, params, Some(leader_char))
@@ -612,8 +612,8 @@ fn final_chapter_beam_candidates(
         &mut keep,
         &mut out,
         |pool, _ctx, _leader_char, card| {
-            let eb = pool.event_bonus(card);
-            eb.total_x2() as u64 * 1_000_000 + pool.power_max(card) as u64
+            let eb = pool.event_bonus_exact(card);
+            eb.total_x10() as u64 * 1_000_000 + pool.power_max(card) as u64
         },
     );
     push_final_chapter_candidates(
@@ -769,9 +769,10 @@ fn leader_dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: Car
         return false;
     }
 
-    let lhs_bonus = pool.event_bonus(lhs);
-    let rhs_bonus = pool.event_bonus(rhs);
-    if lhs_bonus.base_x2() < rhs_bonus.base_x2() || lhs_bonus.limited_x2() < rhs_bonus.limited_x2()
+    let lhs_bonus = pool.event_bonus_exact(lhs);
+    let rhs_bonus = pool.event_bonus_exact(rhs);
+    if lhs_bonus.base_x10() < rhs_bonus.base_x10()
+        || lhs_bonus.limited_x10() < rhs_bonus.limited_x10()
     {
         return false;
     }
@@ -831,7 +832,7 @@ fn build_char_groups(
             .map(|(_, card)| card)
             .collect::<Vec<_>>();
         for card in &sorted_cards {
-            let eb = pool.event_bonus(*card);
+            let eb = pool.event_bonus_exact(*card);
             best_power = best_power.max(pool.power_max(*card));
             best_skill = best_skill.max(pool.skill_max(*card) as u32);
             best_base_bonus = best_base_bonus.max(eb.base_ceil());
@@ -927,9 +928,10 @@ fn member_dominates_for_leader(
         return false;
     }
 
-    let lhs_bonus = pool.event_bonus(lhs);
-    let rhs_bonus = pool.event_bonus(rhs);
-    if lhs_bonus.base_x2() < rhs_bonus.base_x2() || lhs_bonus.limited_x2() < rhs_bonus.limited_x2()
+    let lhs_bonus = pool.event_bonus_exact(lhs);
+    let rhs_bonus = pool.event_bonus_exact(rhs);
+    if lhs_bonus.base_x10() < rhs_bonus.base_x10()
+        || lhs_bonus.limited_x10() < rhs_bonus.limited_x10()
     {
         return false;
     }
@@ -1005,8 +1007,8 @@ fn skill_dominates(pool: &CardPool, lhs: CardIdx, rhs: CardIdx) -> bool {
 }
 
 fn build_leader_const(pool: &CardPool, ctx: &SearchContext, leader: CardIdx) -> LeaderConst {
-    let eb = pool.event_bonus(leader);
-    let limited_count = (eb.limited_x2() > 0 && ctx.card_bonus_count_limit > 0) as u8;
+    let eb = pool.event_bonus_exact(leader);
+    let limited_count = (eb.limited_x10() > 0 && ctx.card_bonus_count_limit > 0) as u8;
     LeaderConst {
         leader,
         power: pool.power_max(leader),
@@ -1317,7 +1319,7 @@ fn selected_card_ceiling_with_candidate_support_ub(
     card: CardIdx,
     leader_skill: u32,
 ) -> u64 {
-    let eb = pool.event_bonus(card);
+    let eb = pool.event_bonus_exact(card);
     let power_sum = partial.power + pool.power_max(card) + plan.rem_power[chosen];
     let skill_sum = partial.skill + pool.skill_max(card) as u32 + plan.rem_skill[chosen];
     let bonus_sum = partial.base_bonus + eb.base_ceil() + plan.rem_base_bonus[chosen];
@@ -1547,9 +1549,9 @@ fn selected_contains(selected: &[u16; DECK_SIZE], selected_len: usize, game_id: 
 fn final_chapter_card_key(pool: &CardPool, card: CardIdx) -> u64 {
     let power = pool.power_max(card) as u64;
     let skill = pool.skill_max(card) as u64;
-    let eb = pool.event_bonus(card);
-    let bonus_x2 = eb.total_x2() as u64;
-    power * (256 + skill) * (200 + bonus_x2)
+    let eb = pool.event_bonus_exact(card);
+    let bonus_x10 = eb.total_x10() as u64;
+    power * (256 + skill) * (1000 + bonus_x10)
 }
 
 #[inline(always)]
@@ -1561,8 +1563,8 @@ fn final_chapter_member_key(
 ) -> u64 {
     let power = pool.power_max(card) as u64;
     let skill = pool.skill_max(card) as u64;
-    let eb = pool.event_bonus(card);
-    let card_bonus_x100 = eb.total_x2() as i64 * 50;
+    let eb = pool.event_bonus_exact(card);
+    let card_bonus_x100 = eb.total_x10() as i64 * 10;
     let support_penalty_x100 = support_penalty_x100(ctx, leader_char, pool.game_id(card)) as i64;
     let net_bonus_x100 = (card_bonus_x100 - support_penalty_x100).max(0) as u64;
     power * (256 + skill) * (10_000 + net_bonus_x100)
@@ -1746,8 +1748,8 @@ fn final_chapter_leaf_total_bonus(
 ) -> f64 {
     let mut attr_set = 0u8;
     let mut game_ids = [0u16; DECK_SIZE];
-    let mut total_bonus_x2 = 0u32;
-    let mut member_limited_x2 = [0u32; MEMBER_COUNT + 1];
+    let mut total_bonus_x10 = 0u32;
+    let mut member_limited_x10 = [0u32; MEMBER_COUNT + 1];
     let mut limited_slots_left = ctx.card_bonus_count_limit.min(DECK_SIZE);
     let mut pos = 0usize;
     while pos < DECK_SIZE {
@@ -1755,29 +1757,29 @@ fn final_chapter_leaf_total_bonus(
         attr_set |= 1u8 << pool.attr(card);
         game_ids[pos] = pool.game_id(card);
 
-        let bonus = pool.event_bonus(card);
-        total_bonus_x2 += bonus.base_x2() as u32;
+        let bonus = pool.event_bonus_exact(card);
+        total_bonus_x10 += bonus.base_x10();
 
         if pos == 0 {
-            if bonus.limited_x2() > 0 && limited_slots_left > 0 {
-                total_bonus_x2 += bonus.limited_x2() as u32;
+            if bonus.limited_x10() > 0 && limited_slots_left > 0 {
+                total_bonus_x10 += bonus.limited_x10();
                 limited_slots_left -= 1;
             }
-            total_bonus_x2 += 2 * ctx.leader_honor_bonus_at(card.raw());
-            total_bonus_x2 += 2 * ctx.leader_limit_bonus_at(card.raw());
+            total_bonus_x10 += 10 * ctx.leader_honor_bonus_at(card.raw());
+            total_bonus_x10 += 10 * ctx.leader_limit_bonus_at(card.raw());
         } else {
-            insert_topk_u32(&mut member_limited_x2, bonus.limited_x2() as u32);
+            insert_topk_u32(&mut member_limited_x10, bonus.limited_x10());
         }
         pos += 1;
     }
 
     let mut limited_slot = 0usize;
     while limited_slot < limited_slots_left {
-        total_bonus_x2 += member_limited_x2[limited_slot];
+        total_bonus_x10 += member_limited_x10[limited_slot];
         limited_slot += 1;
     }
 
-    let mut total_bonus = total_bonus_x2 as f64 / 2.0;
+    let mut total_bonus = total_bonus_x10 as f64 / 10.0;
     if ctx.is_world_bloom {
         total_bonus += ctx.diff_attr_bonus[attr_set.count_ones() as usize] as f64;
         total_bonus += final_chapter_support_bonus_exact(ctx, pool.char_id(deck[0]), &game_ids);
@@ -1816,8 +1818,8 @@ fn reorder_member_deck(pool: &CardPool, deck: &mut [CardIdx; DECK_SIZE]) {
     indices.sort_unstable_by(|left, right| {
         let left_card = deck[*left];
         let right_card = deck[*right];
-        let left_bonus = pool.event_bonus(left_card).limited_x2();
-        let right_bonus = pool.event_bonus(right_card).limited_x2();
+        let left_bonus = pool.event_bonus_exact(left_card).limited_x10();
+        let right_bonus = pool.event_bonus_exact(right_card).limited_x10();
         right_bonus
             .cmp(&left_bonus)
             .then_with(|| right_card.raw().cmp(&left_card.raw()))

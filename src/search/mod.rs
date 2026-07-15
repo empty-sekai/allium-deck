@@ -13,7 +13,9 @@ pub use bruteforce::{brute_force_search, BruteForceStats};
 pub use context::{SearchContext, SupportDeck};
 pub use dfs::{dfs_search, SearchStats};
 pub use dominance::eliminate_dominated;
-pub use evaluate::{calc_event_point, decode_u18, leaf_evaluate, summarize_deck};
+pub use evaluate::{
+    calc_event_point, decode_u18, leaf_evaluate, resolve_power_for_cards, summarize_deck,
+};
 pub use suffix::{PartialDeck, SuffixBound, UsedSet};
 pub use types::{DeckResult, DeckResultSummary, SearchParams};
 pub use warm_start::warm_start;
@@ -52,7 +54,7 @@ pub fn search_instrumented(
     let alternatives = dominance.alternatives;
     if search_ctx.is_final_chapter {
         let member_keep = dominance::compute_member_keep(&search_pool);
-        if let Some(leader_char) = search_ctx.fixed_character_at(0) {
+        if let Some(leader_char) = search_ctx.final_chapter_leader_character() {
             let keep = search_pool
                 .indices()
                 .map(|card| {
@@ -72,7 +74,7 @@ pub fn search_instrumented(
         } else {
             search_ctx.final_chapter_member_keep = member_keep;
         }
-        let (compacted_results, stats) = if search_ctx.fixed_character_at(0).is_some() {
+        let (compacted_results, stats) = if search_ctx.final_chapter_leader_character().is_some() {
             final_chapter::search_fixed_leader(&search_pool, &search_ctx, params)
         } else if !search_ctx.has_fixed_leader() {
             final_chapter::search_auto_leader(&search_pool, &search_ctx, params)
@@ -225,6 +227,15 @@ fn search_simple_target(
         return (Vec::new(), SearchStats::default());
     }
 
+    if matches!(ctx.target, ScoreTarget::Power)
+        && !ctx.minimize
+        && ctx.enforce_char_uniqueness
+        && ctx.fixed_card_ids.is_empty()
+        && ctx.fixed_character_ids.is_empty()
+    {
+        return search_power_scenarios(pool, ctx, params);
+    }
+
     let (prefix_len, per_char_cap) = match ctx.target {
         ScoreTarget::Power => (POWER_PREFIX, POWER_PER_CHAR),
         ScoreTarget::Skill => (SKILL_PREFIX, SKILL_PER_CHAR),
@@ -300,6 +311,109 @@ fn search_simple_target(
         &mut stats,
     );
 
+    (tracker.into_vec(), stats)
+}
+
+#[derive(Clone, Copy)]
+struct PowerPartial {
+    cards: [CardIdx; DECK_SIZE],
+    len: usize,
+    additive_power: u32,
+}
+
+fn search_power_scenarios(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+) -> (Vec<DeckResult>, SearchStats) {
+    // For an additive scenario, keeping the best K partial states at each
+    // cardinality is exact: every future choice is independent of the cards
+    // already processed. A discarded partial state can therefore never re-enter
+    // the final top K.
+    let state_limit = params.top_k.max(1);
+    let mut tracker = SimpleTopKTracker::new(params.top_k, false, pool);
+    let mut stats = SearchStats::default();
+
+    let mut scenarios = Vec::with_capacity(49);
+    scenarios.push((None, None));
+    for attr in 0u8..6 {
+        scenarios.push((None, Some(attr)));
+    }
+    for unit in 0usize..6 {
+        scenarios.push((Some(unit), None));
+        for attr in 0u8..6 {
+            scenarios.push((Some(unit), Some(attr)));
+        }
+    }
+
+    for (unit_all, attr_all) in scenarios {
+        let mut by_character = vec![Vec::<(u32, CardIdx)>::new(); 27];
+        for card in pool.indices() {
+            if unit_all.is_some_and(|unit| pool.unit_mask_raw(card) & (1u8 << unit) == 0) {
+                continue;
+            }
+            if attr_all.is_some_and(|attr| pool.attr(card) != attr) {
+                continue;
+            }
+            let character = usize::from(pool.char_id(card)).min(26);
+            let power =
+                evaluate::resolve_card_power_scenario(pool, card, unit_all, attr_all.is_some());
+            by_character[character].push((power, card));
+        }
+        for cards in &mut by_character {
+            cards.sort_unstable_by(|left, right| {
+                right
+                    .0
+                    .cmp(&left.0)
+                    .then_with(|| left.1.raw().cmp(&right.1.raw()))
+            });
+            cards.truncate(state_limit);
+        }
+
+        let seed = PowerPartial {
+            cards: [CardIdx::new(0); DECK_SIZE],
+            len: 0,
+            additive_power: 0,
+        };
+        let mut states = vec![Vec::<PowerPartial>::new(); DECK_SIZE + 1];
+        states[0].push(seed);
+        for choices in by_character.into_iter().skip(1) {
+            if choices.is_empty() {
+                continue;
+            }
+            let mut count = DECK_SIZE;
+            while count > 0 {
+                count -= 1;
+                if states[count].is_empty() {
+                    continue;
+                }
+                let previous = states[count].clone();
+                for state in previous {
+                    for &(power, card) in &choices {
+                        let mut next = state;
+                        next.cards[count] = card;
+                        next.len = count + 1;
+                        next.additive_power = next.additive_power.saturating_add(power);
+                        states[count + 1].push(next);
+                    }
+                }
+                states[count + 1].sort_unstable_by(|left, right| {
+                    right
+                        .additive_power
+                        .cmp(&left.additive_power)
+                        .then_with(|| left.cards.cmp(&right.cards))
+                });
+                states[count + 1].truncate(state_limit);
+            }
+        }
+
+        for state in &states[DECK_SIZE] {
+            stats.leaf_nodes += 1;
+            if let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, &state.cards) {
+                tracker.insert(DeckResult::new(state.cards, score));
+            }
+        }
+    }
     (tracker.into_vec(), stats)
 }
 
@@ -470,7 +584,9 @@ fn remap_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::{DiffSkill, EventBonusHot, PoolBuilder, RefSkill, SkillSlot, UnitCountSkill};
+    use crate::pool::{
+        DiffSkill, EventBonusExact, PoolBuilder, RefSkill, SkillSlot, UnitCountSkill,
+    };
     use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 
     #[derive(Clone, Copy)]
@@ -523,7 +639,7 @@ mod tests {
             builder.set_skill(dense, card.skill);
             builder.set_event_bonus(
                 dense,
-                EventBonusHot::from_whole(card.base_bonus, card.limited_bonus),
+                EventBonusExact::from_whole(card.base_bonus as u16, card.limited_bonus as u16),
             );
             builder.set_char_id(dense, card.char_id);
             builder.set_attr(dense, card.attr);
@@ -552,6 +668,7 @@ mod tests {
             target,
             fixed_card_ids: Vec::new(),
             fixed_character_ids: Vec::new(),
+            forced_leader_character_id: None,
             music_rate_pct: 100,
             boost_rate_pct: 100,
             base_score: 1.0,
@@ -861,6 +978,43 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    #[test]
+    fn search_power_scenarios_matches_bruteforce_with_unit_and_attr_bonuses() {
+        let mut builder = PoolBuilder::new(8);
+        for dense in 0..8u16 {
+            let grouped = dense < 5;
+            let values = if grouped {
+                [100, 200, 300, 1_000, 100, 200, 300, 1_000]
+            } else {
+                [500; 8]
+            };
+            builder.set_power_values(dense, values);
+            builder.set_power_lut(dense, 0);
+            builder.set_char_id(dense, (dense + 1) as u8);
+            builder.set_attr(dense, if grouped { 1 } else { (dense - 4) as u8 });
+            builder.set_unit_mask(dense, if grouped { 1 << 1 } else { 1 << (dense - 4) });
+            builder.set_game_id(dense, dense + 100);
+            builder.set_power_max(dense, if grouped { 1_000 } else { 500 });
+            builder.mark_char((dense + 1) as u8, dense);
+            builder.mark_attr(if grouped { 1 } else { (dense - 4) as u8 }, dense);
+            builder.mark_unit(if grouped { 1 } else { (dense - 4) as u8 }, dense);
+        }
+        let pool = builder.freeze();
+        let search_ctx = ready_ctx(&pool, ScoreTarget::Power);
+        let expected = brute_force_best(&pool, &search_ctx);
+        let actual = search(
+            &pool,
+            &search_ctx,
+            &SearchParams {
+                top_k: 3,
+                timeout_ms: 0,
+            },
+        );
+
+        assert_eq!(actual.first().map(|result| result.score), Some(expected));
+        assert_eq!(expected, 5_000);
+    }
+
     /// 暴力枚举 5 角色互异的最小 power deck（与 minimize 搜索对照）。
     fn brute_force_worst_power(pool: &CardPool, search_ctx: &SearchContext) -> u64 {
         let mut worst = u64::MAX;
@@ -983,7 +1137,7 @@ mod tests {
         let partial = PartialDeck {
             power: pool.power_max(selected),
             skill: pool.skill_max(selected) as u32,
-            bonus: pool.event_bonus(selected).base_ceil(),
+            bonus: pool.event_bonus_exact(selected).base_ceil(),
             max_skill: pool.skill_max(selected),
             limited_count: 0,
         };

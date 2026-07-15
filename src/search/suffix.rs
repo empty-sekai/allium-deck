@@ -129,7 +129,7 @@ impl SuffixBound {
             dense_power_tail,
             dense_skill_tail,
             dense_leader_tail,
-        ) = build_dense_suffix_tails(pool);
+        ) = build_dense_suffix_tails(pool, ctx.is_final_chapter);
 
         let base_rate: f64 = match ctx.effective_live_type() {
             LiveType::Auto | LiveType::ChallengeAuto => ctx.base_score_auto,
@@ -1139,6 +1139,7 @@ fn suffix_compact_u16(
 
 fn build_dense_suffix_tails(
     pool: &CardPool,
+    split_limited_bonus: bool,
 ) -> (
     Vec<[u32; DECK_SIZE + 1]>,
     Vec<[u32; DECK_SIZE + 1]>,
@@ -1165,11 +1166,17 @@ fn build_dense_suffix_tails(
     while dense > 0 {
         dense -= 1;
         let card = crate::pool::CardIdx::new(dense as u16);
-        let eb = pool.event_bonus(card);
+        let hot = *pool.event_bonus(card);
         let char_id = pool.char_id(card) as usize;
-        best_bonus_by_char[char_id] = best_bonus_by_char[char_id].max(eb.total_ceil());
-        best_base_by_char[char_id] = best_base_by_char[char_id].max(eb.base_ceil());
-        best_limited_by_char[char_id] = best_limited_by_char[char_id].max(eb.limited_ceil());
+        let total_ceil = hot.total_ceil();
+        best_bonus_by_char[char_id] = best_bonus_by_char[char_id].max(total_ceil);
+        if split_limited_bonus {
+            let exact = pool.event_bonus_exact(card);
+            best_base_by_char[char_id] = best_base_by_char[char_id].max(exact.base_ceil());
+            best_limited_by_char[char_id] = best_limited_by_char[char_id].max(exact.limited_ceil());
+        } else {
+            best_base_by_char[char_id] = best_base_by_char[char_id].max(total_ceil);
+        }
         best_power_by_char[char_id] = best_power_by_char[char_id].max(pool.power_max(card));
         best_skill_by_char[char_id] = best_skill_by_char[char_id].max(pool.skill_max(card) as u16);
         best_skill = best_skill.max(pool.skill_max(card) as u16);

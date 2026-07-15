@@ -373,8 +373,7 @@ fn card_event_bonus_for_display(
     card: CardIdx,
     is_leader: bool,
 ) -> f64 {
-    let bonus = pool.event_bonus(card);
-    let mut total = bonus.total_rate();
+    let mut total = pool.event_bonus(card).total_rate();
     if ctx.is_final_chapter && is_leader {
         total += ctx.leader_honor_bonus_at(card.raw()) as f64;
         total += ctx.leader_limit_bonus_at(card.raw()) as f64;
@@ -417,6 +416,36 @@ pub(crate) fn resolve_power_target(pool: &CardPool, deck: &[CardIdx; 5]) -> u32 
         pos += 1;
     }
     total
+}
+
+/// Resolve total card power for a partial or complete fixed deck.
+///
+/// This helper is used by auxiliary calculations only. The fixed-size DFS
+/// evaluator above remains unchanged.
+pub fn resolve_power_for_cards(pool: &CardPool, deck: &[CardIdx]) -> u32 {
+    let mut attr_counts = [0u8; 6];
+    let mut unit_counts = [0u8; 6];
+    for &card in deck {
+        let attr = pool.attr(card) as usize;
+        if attr < attr_counts.len() {
+            attr_counts[attr] = attr_counts[attr].saturating_add(1);
+        }
+        let unit_mask = pool.unit_mask_raw(card);
+        for (unit, count) in unit_counts.iter_mut().enumerate() {
+            if unit_mask & (1u8 << unit) != 0 {
+                *count = count.saturating_add(1);
+            }
+        }
+    }
+    deck.iter().fold(0u32, |total, &card| {
+        let attr = pool.attr(card) as usize;
+        total.saturating_add(resolve_card_power(
+            pool,
+            card,
+            &unit_counts,
+            attr_counts.get(attr).copied().unwrap_or(0),
+        ))
+    })
 }
 
 #[inline(always)]
@@ -522,9 +551,21 @@ pub(crate) fn resolve_total_bonus(
     ctx: &SearchContext,
     deck: &[CardIdx; 5],
 ) -> f64 {
+    if !ctx.is_final_chapter && !ctx.is_world_bloom {
+        let total_x10 = unsafe {
+            pool.event_bonus(*deck.get_unchecked(0)).total_x10() as u32
+                + pool.event_bonus(*deck.get_unchecked(1)).total_x10() as u32
+                + pool.event_bonus(*deck.get_unchecked(2)).total_x10() as u32
+                + pool.event_bonus(*deck.get_unchecked(3)).total_x10() as u32
+                + pool.event_bonus(*deck.get_unchecked(4)).total_x10() as u32
+        };
+        return total_x10 as f64 * 0.1;
+    }
+
     let mut attr_set = 0u8;
     let mut game_ids = [0u16; DECK_SIZE];
     let mut total = 0.0_f64;
+    let mut total_x10 = 0u32;
     let mut limited_count = 0usize;
     let mut pos = 0usize;
     while pos < DECK_SIZE {
@@ -534,13 +575,17 @@ pub(crate) fn resolve_total_bonus(
             *game_ids.get_unchecked_mut(pos) = pool.game_id(card);
         }
 
-        let bonus = pool.event_bonus(card);
-        total += bonus.base_rate();
-        if !ctx.is_final_chapter || bonus.limited_x2() == 0 {
-            total += bonus.limited_rate();
-        } else if limited_count < ctx.card_bonus_count_limit {
-            total += bonus.limited_rate();
-            limited_count += 1;
+        if ctx.is_final_chapter {
+            let bonus = pool.event_bonus_exact(card);
+            total += bonus.base_rate();
+            if bonus.limited_x10() == 0 {
+                total += bonus.limited_rate();
+            } else if limited_count < ctx.card_bonus_count_limit {
+                total += bonus.limited_rate();
+                limited_count += 1;
+            }
+        } else {
+            total_x10 += pool.event_bonus(card).total_x10() as u32;
         }
 
         if ctx.is_final_chapter && pos == 0 {
@@ -548,6 +593,10 @@ pub(crate) fn resolve_total_bonus(
             total += ctx.leader_limit_bonus_at(card.raw()) as f64;
         }
         pos += 1;
+    }
+
+    if !ctx.is_final_chapter {
+        total = total_x10 as f64 * 0.1;
     }
 
     if ctx.is_world_bloom {
@@ -944,6 +993,7 @@ mod tests {
             target: ScoreTarget::Score,
             fixed_card_ids: Vec::new(),
             fixed_character_ids: Vec::new(),
+            forced_leader_character_id: None,
             music_rate_pct: 100,
             boost_rate_pct: 100,
             base_score: 1.0,
@@ -1078,6 +1128,27 @@ fn resolve_card_power(
         unit += 1;
     }
     best
+}
+
+/// Resolve one card's additive power inside a fixed all-unit/all-attribute scenario.
+/// `unit_all` and `attr_all` describe deck-wide conditions, so callers can optimize
+/// power exactly without enumerating every five-card combination.
+pub(crate) fn resolve_card_power_scenario(
+    pool: &CardPool,
+    card: CardIdx,
+    unit_all: Option<usize>,
+    attr_all: bool,
+) -> u32 {
+    let mut unit_counts = [0u8; 6];
+    if let Some(unit) = unit_all.filter(|unit| *unit < unit_counts.len()) {
+        unit_counts[unit] = DECK_SIZE as u8;
+    }
+    resolve_card_power(
+        pool,
+        card,
+        &unit_counts,
+        if attr_all { DECK_SIZE as u8 } else { 0 },
+    )
 }
 
 #[inline(always)]

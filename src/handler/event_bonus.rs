@@ -1,4 +1,4 @@
-use crate::pool::EventBonusHot;
+use crate::pool::EventBonusExact;
 use crate::types::{Attr, EventType, Unit, FINAL_CHAPTER_EVENT_ID};
 
 use super::types::{
@@ -40,6 +40,25 @@ pub(crate) struct EventContext {
     pub custom_attr: Option<Attr>,
     /// 自定义 VS 角色支援团约束；Unit::None 表示不限制。
     pub custom_support_unit_by_char: [Unit; 27],
+    /// 箱活或模拟活动的统一团过滤条件。
+    pub filter_unit: Option<Unit>,
+}
+
+fn common_event_unit(bonuses: &[EventDeckBonus], fallback: Option<&str>) -> Option<Unit> {
+    let mut units = Vec::new();
+    for unit in bonuses
+        .iter()
+        .filter_map(|entry| entry.unit.as_deref().and_then(parse_unit_code))
+    {
+        if !units.contains(&unit) {
+            units.push(unit);
+        }
+    }
+    if units.len() == 1 {
+        units.into_iter().next()
+    } else {
+        fallback.and_then(parse_unit_code)
+    }
 }
 
 fn load_diff_attr_bonus(table: &[WorldBloomDiffAttrBonus]) -> [u16; 6] {
@@ -158,6 +177,32 @@ pub(crate) fn build_event_context(
         params.world_bloom_event_turn
     };
 
+    let deck_bonuses = game
+        .event_deck_bonuses
+        .iter()
+        .filter(|entry| entry.event_id == event_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let filter_unit = common_event_unit(&deck_bonuses, params.event_unit.as_deref());
+
+    let has_simulated_bonus = params.event_attr.is_some()
+        || params.event_unit.is_some()
+        || params.custom_bonus_attr.is_some()
+        || !params.custom_bonus_character_ids.is_empty();
+    let rarity_event_id = if event_id == 0 && !has_simulated_bonus {
+        None
+    } else {
+        game.event_rarity_bonus_rates
+            .iter()
+            .any(|entry| entry.event_id == event_id)
+            .then_some(event_id)
+            .or_else(|| {
+                game.event_rarity_bonus_rates
+                    .first()
+                    .map(|entry| entry.event_id)
+            })
+    };
+
     Some(EventContext {
         event_id,
         event_type,
@@ -167,16 +212,11 @@ pub(crate) fn build_event_context(
             .filter(|entry| entry.event_id == event_id)
             .cloned()
             .collect(),
-        deck_bonuses: game
-            .event_deck_bonuses
-            .iter()
-            .filter(|entry| entry.event_id == event_id)
-            .cloned()
-            .collect(),
+        deck_bonuses,
         rarity_bonuses: game
             .event_rarity_bonus_rates
             .iter()
-            .filter(|entry| entry.event_id == event_id)
+            .filter(|entry| Some(entry.event_id) == rarity_event_id)
             .cloned()
             .collect(),
         honor_bonuses: game
@@ -214,6 +254,7 @@ pub(crate) fn build_event_context(
             }
             units
         },
+        filter_unit,
     })
 }
 
@@ -246,7 +287,7 @@ fn card_matches_rule(master: &MasterCard, rule: &EventDeckBonus, game: &GameData
     character_ok && attr_ok && unit_ok
 }
 
-fn load_rarity_bonus_x2(
+fn load_rarity_bonus_x10(
     user_card: &UserCard,
     master: &MasterCard,
     event_ctx: &EventContext,
@@ -257,7 +298,7 @@ fn load_rarity_bonus_x2(
         .filter(|entry| entry.card_rarity_type == master.card_rarity_type)
         .filter(|entry| entry.master_rank <= user_card.master_rank)
         .max_by_key(|entry| entry.master_rank)
-        .map(|entry| entry.bonus_rate_x2)
+        .map(|entry| entry.bonus_rate_x10)
         .unwrap_or(0)
 }
 
@@ -306,9 +347,9 @@ pub(crate) fn build_card_event_bonus(
     master: &MasterCard,
     game: &GameData<'_>,
     event_ctx: &EventContext,
-) -> (EventBonusHot, bool, bool) {
-    let base_bonus_x2 = load_rarity_bonus_x2(user_card, master, event_ctx)
-        + load_custom_bonus_x2(master, event_ctx);
+) -> (EventBonusExact, bool, bool) {
+    let rarity_bonus_x10 = load_rarity_bonus_x10(user_card, master, event_ctx);
+    let custom_bonus_x2 = load_custom_bonus_x2(master, event_ctx);
 
     let custom_char = custom_character_matches(master, event_ctx);
     let custom_attr = event_ctx
@@ -330,18 +371,18 @@ pub(crate) fn build_card_event_bonus(
             }
         }
     }
-    let base_bonus_x2 = base_bonus_x2 + deck_bonus_x2;
-    let limited_bonus_x2 = event_ctx
+    let base_bonus_x10 = rarity_bonus_x10 + (custom_bonus_x2 + deck_bonus_x2) * 5;
+    let limited_bonus_x10 = event_ctx
         .event_cards
         .iter()
         .find(|entry| entry.card_id == master.id)
-        .map(|entry| entry.bonus_rate.saturating_mul(2))
+        .map(|entry| entry.bonus_rate.saturating_mul(10))
         .unwrap_or(0);
 
     (
-        EventBonusHot::from_x2(
-            base_bonus_x2.clamp(0, u8::MAX as i32) as u8,
-            limited_bonus_x2.clamp(0, u8::MAX as i32) as u8,
+        EventBonusExact::from_x10(
+            base_bonus_x10.clamp(0, u16::MAX as i32) as u16,
+            limited_bonus_x10.clamp(0, u16::MAX as i32) as u16,
         ),
         custom_char || deck_char,
         custom_attr || deck_attr,
@@ -404,6 +445,7 @@ mod tests {
             custom_character_ids: vec![21],
             custom_attr: Some(Attr::Cute),
             custom_support_unit_by_char: support_units,
+            filter_unit: None,
         }
     }
 
@@ -448,5 +490,66 @@ mod tests {
             load_custom_bonus_x2(&master(Some("future_unknown_unit"), "cool"), &ctx),
             0
         );
+    }
+
+    #[test]
+    fn rarity_master_rank_bonus_keeps_tenth_percent_precision() {
+        let mut ctx = custom_context();
+        ctx.custom_character_ids.clear();
+        ctx.custom_attr = None;
+        ctx.rarity_bonuses.push(EventRarityBonusRate {
+            event_id: 0,
+            card_rarity_type: 4,
+            master_rank: 2,
+            bonus_rate_x10: 2,
+        });
+        let user_card = UserCard {
+            card_id: 1,
+            level: 1,
+            skill_level: 1,
+            master_rank: 2,
+            special_training_status: "none".to_string(),
+            default_image: "original".to_string(),
+            episodes_read: Vec::new(),
+            is_virtual: false,
+            has_canvas_bonus_override: None,
+        };
+        let game = GameData {
+            cards: &[],
+            card_parameters: &[],
+            card_rarities: &[],
+            card_episodes: &[],
+            master_lessons: &[],
+            skills: &[],
+            skill_effects: &[],
+            area_item_levels: &[],
+            game_character_units: &[],
+            character_ranks: &[],
+            card_mysekai_canvas_bonuses: &[],
+            mysekai_gates: &[],
+            mysekai_gate_levels: &[],
+            events: &[],
+            event_cards: &[],
+            event_deck_bonuses: &[],
+            event_rarity_bonus_rates: &[],
+            event_honor_bonuses: &[],
+            event_card_bonus_limits: &[],
+            world_bloom_different_attribute_bonuses: &[],
+            world_blooms: &[],
+            wb_support_deck_bonuses_wl1: &[],
+            wb_support_deck_bonuses_wl2: &[],
+            wb_support_deck_bonuses_wl3: &[],
+            world_bloom_support_deck_unit_event_limited_bonuses: &[],
+            event_mysekai_fixture_performance_bonus_limits: &[],
+            event_skill_score_up_limits: &[],
+            music_metas: &[],
+            music_difficulties: &[],
+            honors: &[],
+            bonds_honors: &[],
+        };
+
+        let (bonus, _, _) = build_card_event_bonus(&user_card, &master(None, "cool"), &game, &ctx);
+        assert_eq!(bonus.base_x10(), 2);
+        assert_eq!(bonus.base_rate(), 0.2);
     }
 }

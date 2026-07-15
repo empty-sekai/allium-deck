@@ -506,8 +506,12 @@ impl SearchState<'_> {
 
             let eb = self.pool.event_bonus(card);
             let card_bonus = eb.total_ceil();
-            let card_base_bonus = eb.base_ceil();
-            let card_limited_bonus = eb.limited_ceil();
+            let (card_base_bonus, card_limited_bonus) = if self.ctx.is_final_chapter {
+                let exact = self.pool.event_bonus_exact(card);
+                (exact.base_ceil(), exact.limited_ceil())
+            } else {
+                (card_bonus, 0)
+            };
             let card_power = self.pool.power_max(card);
             let card_skill = self.pool.skill_max(card);
             let card_skill_u32 = card_skill as u32;
@@ -810,15 +814,19 @@ fn partial_bonus_add(
     limited_count: u8,
 ) -> (u32, u8) {
     let eb = pool.event_bonus(card);
-    let mut bonus = eb.base_ceil();
+    if !ctx.is_final_chapter {
+        return (eb.total_ceil(), 0);
+    }
+    let exact = pool.event_bonus_exact(card);
+    let mut bonus = exact.base_ceil();
     let mut limited_inc = 0u8;
-    if !ctx.is_final_chapter || (limited_count as usize) < ctx.card_bonus_count_limit {
-        if eb.limited_x2() > 0 {
-            bonus += eb.limited_ceil();
+    if (limited_count as usize) < ctx.card_bonus_count_limit {
+        if exact.limited_x10() > 0 {
+            bonus += exact.limited_ceil();
             limited_inc = 1;
         }
     }
-    if ctx.is_final_chapter && is_leader {
+    if is_leader {
         bonus += ctx.leader_honor_bonus_at(card.raw());
         bonus += ctx.leader_limit_bonus_at(card.raw());
     }

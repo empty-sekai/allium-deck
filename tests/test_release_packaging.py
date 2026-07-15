@@ -35,6 +35,10 @@ class ReleasePackagingTests(unittest.TestCase):
         inputs = __import__("json").loads(release_inputs.read_text(encoding="utf-8"))
         self.assertEqual(inputs["masterdata_version"], "6.0.0.36")
         self.assertRegex(inputs["music_metas_sha256"], r"^[0-9a-f]{64}$")
+        next_inputs = __import__("json").loads(
+            (ROOT / "release-inputs" / "v0.0.5.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(next_inputs, inputs)
         self.assertIn('release-inputs/${GITHUB_REF_NAME}.json', workflow)
         self.assertNotIn("deck-wasm/cn/latest/manifest.json", workflow)
 

@@ -1,4 +1,4 @@
-use crate::pool::{CardPool, EventBonusHot, PoolBuilder, SkillSlot};
+use crate::pool::{CardPool, EventBonusExact, PoolBuilder, SkillSlot};
 use crate::types::{DefaultImage, LiveType, PowerDetail, ScoreTarget, SkillInfo};
 
 use super::power::PowerResult;
@@ -19,6 +19,10 @@ pub(crate) struct CardIntermediate {
     pub unit_mask_raw: u8,
     /// 默认立绘。
     pub default_image: DefaultImage,
+    /// 卡牌培养状态是否已特训。
+    pub after_training: bool,
+    /// 立绘是否由同卡特训前后技能状态决定。
+    pub skill_state_controls_image: bool,
     /// master rank。
     pub master_rank: i32,
     /// 技能等级。
@@ -28,7 +32,7 @@ pub(crate) struct CardIntermediate {
     /// skill 全精度结果。
     pub skill: SkillResult,
     /// 热路径活动 bonus。
-    pub event_bonus: EventBonusHot,
+    pub event_bonus: EventBonusExact,
     /// 是否命中角色 bonus 轴。
     pub has_char_bonus: bool,
     /// 是否命中属性 bonus 轴。
@@ -56,6 +60,10 @@ pub struct FullPrecisionCard {
     pub unit_mask_raw: u8,
     /// 默认立绘。
     pub default_image: DefaultImage,
+    /// 卡牌培养状态是否已特训。
+    pub after_training: bool,
+    /// 立绘是否由同卡特训前后技能状态决定。
+    pub skill_state_controls_image: bool,
     /// master rank。
     pub master_rank: i32,
     /// 技能等级。
@@ -65,7 +73,7 @@ pub struct FullPrecisionCard {
     /// 全精度 skill 结果。
     pub skill: SkillInfo,
     /// 热路径活动 bonus。
-    pub event_bonus: EventBonusHot,
+    pub event_bonus: EventBonusExact,
     /// 精确 power 下界。
     pub power_min_exact: i32,
     /// 精确 power 上界。
@@ -134,8 +142,8 @@ fn compare_cards(
         ScoreTarget::Score
             if has_event && matches!(effective_live_type, LiveType::Solo | LiveType::Auto) =>
         {
-            let left_bonus = left.event_bonus.total_x2();
-            let right_bonus = right.event_bonus.total_x2();
+            let left_bonus = left.event_bonus.total_x10();
+            let right_bonus = right.event_bonus.total_x10();
             let left_key = score_noevent_sort_key(left);
             let right_key = score_noevent_sort_key(right);
             right_bonus
@@ -148,8 +156,8 @@ fn compare_cards(
         // 有 event: 按 bonus 降序（ep 乘积结构下 bonus 敏感度更高）
         // 无 event: bonus 不参与 ep → 回退 power 排序
         _ if has_event => {
-            let left_bonus = left.event_bonus.total_x2();
-            let right_bonus = right.event_bonus.total_x2();
+            let left_bonus = left.event_bonus.total_x10();
+            let right_bonus = right.event_bonus.total_x10();
             let left_key = score_noevent_sort_key(left);
             let right_key = score_noevent_sort_key(right);
             right_bonus
@@ -319,6 +327,8 @@ pub(crate) fn sort_and_gather(
             attr: card.attr,
             unit_mask_raw: card.unit_mask_raw,
             default_image: card.default_image,
+            after_training: card.after_training,
+            skill_state_controls_image: card.skill_state_controls_image,
             master_rank: card.master_rank,
             skill_level: card.skill_level,
             power: card.power.resolved,

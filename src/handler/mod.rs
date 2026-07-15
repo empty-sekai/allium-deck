@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use crate::pool::EventBonusExact;
 use crate::search::{SearchContext, SupportDeck};
 use crate::types::{DefaultImage, FINAL_CHAPTER_EVENT_ID};
 
@@ -56,6 +57,58 @@ impl Display for BuildError {
 impl Error for BuildError {}
 
 pub(crate) fn validate_build_params(params: &types::BuildParams) -> Result<(), BuildError> {
+    let configs = [
+        &params.card_configs.rarity_1_config,
+        &params.card_configs.rarity_2_config,
+        &params.card_configs.rarity_3_config,
+        &params.card_configs.rarity_4_config,
+        &params.card_configs.rarity_birthday_config,
+    ]
+    .into_iter()
+    .chain(
+        params
+            .card_configs
+            .single_card_configs
+            .iter()
+            .map(|entry| &entry.config),
+    )
+    .chain(params.single_card_configs.iter().map(|entry| &entry.config));
+    for config in configs {
+        if config.level.is_some_and(|value| value <= 0) {
+            return Err(BuildError::InvalidConfig(
+                "level must be positive".to_string(),
+            ));
+        }
+        if config.skill_level.is_some_and(|value| value <= 0) {
+            return Err(BuildError::InvalidConfig(
+                "skillLevel must be positive".to_string(),
+            ));
+        }
+        if config
+            .master_rank
+            .is_some_and(|value| !(0..=5).contains(&value))
+        {
+            return Err(BuildError::InvalidConfig(
+                "masterRank must be in 0..=5".to_string(),
+            ));
+        }
+        if config
+            .episode_read_count
+            .is_some_and(|value| !(0..=2).contains(&value))
+        {
+            return Err(BuildError::InvalidConfig(
+                "episodeReadCount must be in 0..=2".to_string(),
+            ));
+        }
+    }
+    if params
+        .forced_leader_character_id
+        .is_some_and(|id| !(1..=26).contains(&id))
+    {
+        return Err(BuildError::InvalidConfig(
+            "forcedLeaderCharacterId must be in 1..=26".to_string(),
+        ));
+    }
     if !(1..=types::MAX_BUILD_LIMIT).contains(&params.limit) {
         return Err(BuildError::InvalidConfig(format!(
             "limit 必须在 1..={} 范围内",
@@ -148,6 +201,38 @@ pub(crate) fn validate_build_params(params: &types::BuildParams) -> Result<(), B
             "custom bonus support unit 非法或重复".to_string(),
         ));
     }
+    if params
+        .custom_bonus_character_support_units
+        .iter()
+        .any(|entry| !custom_characters.contains(&entry.character_id))
+    {
+        return Err(BuildError::InvalidConfig(
+            "custom bonus support unit character 必须包含在 custom bonus character 中".to_string(),
+        ));
+    }
+    if params.multi_live_score_up_lower_bound.is_some()
+        && !matches!(params.live_type, crate::types::LiveType::Multi)
+    {
+        return Err(BuildError::InvalidConfig(
+            "multi_live_score_up_lower_bound 仅支持 multi live".to_string(),
+        ));
+    }
+    if !params.target_bonus_list.is_empty()
+        && !matches!(params.target, crate::types::ScoreTarget::Bonus)
+    {
+        return Err(BuildError::InvalidConfig(
+            "target_bonus_list 仅支持 bonus target".to_string(),
+        ));
+    }
+    if matches!(
+        params.live_skill_order,
+        crate::types::LiveSkillOrder::Specific
+    ) && params.specific_skill_order.is_none()
+    {
+        return Err(BuildError::InvalidConfig(
+            "specific_skill_order 是 specific 策略的必填项".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -236,7 +321,7 @@ fn ep_prefilter_keep(
 ) -> bool {
     // World Bloom / Final Chapter 跳过普通活动的双轴过滤，需要保留足够角色与属性覆盖。
     if is_world_bloom || is_final_chapter {
-        return card.card_rarity_type >= 3 || card.event_bonus.total_x2() > 0;
+        return card.card_rarity_type >= 3 || card.event_bonus.total_x10() > 0;
     }
     // 4星+无条件保留
     if card.card_rarity_type >= 4 {
@@ -244,13 +329,13 @@ fn ep_prefilter_keep(
     }
     // 3星：有 bonus + 双轴命中才保留
     if card.card_rarity_type == 3 {
-        if card.event_bonus.total_x2() == 0 {
+        if card.event_bonus.total_x10() == 0 {
             return false;
         }
         return card.has_char_bonus && card.has_attr_bonus;
     }
     // 1-2星：有 bonus 且双轴同时命中才保留
-    if card.event_bonus.total_x2() == 0 {
+    if card.event_bonus.total_x10() == 0 {
         return false;
     }
     card.has_char_bonus && card.has_attr_bonus
@@ -265,8 +350,8 @@ fn per_character_trim(
         return;
     }
     cards.sort_by(|a, b| {
-        let a_bonus = a.event_bonus.total_x2();
-        let b_bonus = b.event_bonus.total_x2();
+        let a_bonus = a.event_bonus.total_x10();
+        let b_bonus = b.event_bonus.total_x10();
         // 4星无bonus给虚拟bonus=1，排在有bonus卡之后但优于低星
         let a_effective_bonus = if a_bonus == 0 && a.card_rarity_type >= 4 {
             1
@@ -294,7 +379,7 @@ fn per_character_trim(
         {
             return true;
         }
-        if card.event_bonus.total_x2() >= 60 {
+        if card.event_bonus.total_x10() >= 300 {
             return true;
         }
         let ch = (card.character_id as usize).min(26);
@@ -619,6 +704,8 @@ fn build_support_deck(
     game: &types::GameData<'_>,
     event_ctx: Option<&EventContext>,
     special_character_id: Option<i32>,
+    support_master_max: bool,
+    support_skill_max: bool,
 ) -> SupportDeck {
     let Some(event_ctx) = event_ctx else {
         return SupportDeck::default();
@@ -630,6 +717,27 @@ fn build_support_deck(
 
     let mut cards: Vec<(u16, f64)> = Vec::with_capacity(full.len());
     for card in full {
+        let master = game
+            .cards
+            .iter()
+            .find(|master| master.id == card.game_card_id)
+            .map(|master| enrich_master(master, game));
+        let master_rank = if support_master_max {
+            master
+                .as_ref()
+                .and_then(|master| master.max_master_rank)
+                .unwrap_or(card.master_rank)
+        } else {
+            card.master_rank
+        };
+        let skill_level = if support_skill_max {
+            master
+                .as_ref()
+                .and_then(|master| master.max_skill_level)
+                .unwrap_or(card.skill_level)
+        } else {
+            card.skill_level
+        };
         let bonus = calc_wb_support_bonus(
             game,
             event_ctx.event_id,
@@ -639,8 +747,9 @@ fn build_support_deck(
             card.card_rarity_type,
             card.character_id,
             card.unit_mask_raw,
-            card.master_rank,
-            card.skill_level,
+            true,
+            master_rank,
+            skill_level,
         );
         if let Some((_, existing_bonus)) = cards
             .iter_mut()
@@ -659,10 +768,121 @@ fn build_support_deck(
     }
 }
 
+/// A World Bloom support card evaluated independently from the main DFS pool.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorldBloomSupportCard {
+    pub card_id: i32,
+    pub bonus: f64,
+    pub skill_level: i32,
+    pub master_rank: i32,
+    pub level: i32,
+    pub after_training: bool,
+    pub default_image: DefaultImage,
+}
+
+/// Evaluate every owned card for a World Bloom support deck.
+///
+/// This operation deliberately does not build or mutate the DFS search pool.
+pub fn world_bloom_support_cards(
+    user: &types::UserProfile,
+    game: &types::GameData<'_>,
+    params: &types::BuildParams,
+    support_master_max: bool,
+    support_skill_max: bool,
+    filter_other_unit: bool,
+) -> Result<Vec<WorldBloomSupportCard>, BuildError> {
+    let event_id = params.event_id.unwrap_or_default();
+    let turn = params.world_bloom_event_turn.or_else(|| {
+        params.event_id.and_then(|event_id| {
+            if event_id == FINAL_CHAPTER_EVENT_ID {
+                Some(2)
+            } else if event_id > 1000 {
+                Some((event_id / 100_000) % 10 + 1)
+            } else if game
+                .world_blooms
+                .iter()
+                .any(|entry| entry.event_id == event_id)
+            {
+                Some(if event_id <= 140 { 1 } else { 2 })
+            } else {
+                None
+            }
+        })
+    });
+    let Some(turn) = turn.filter(|turn| (1..=3).contains(turn)) else {
+        return Err(BuildError::InvalidConfig(
+            "world_bloom_event_turn or a World Bloom event_id is required".to_string(),
+        ));
+    };
+    let special_character_id = params.world_bloom_character_id.or_else(|| {
+        params.event_id.and_then(|event_id| {
+            game.world_blooms
+                .iter()
+                .find(|entry| entry.event_id == event_id)
+                .and_then(|entry| entry.game_character_id)
+        })
+    });
+    let Some(special_character_id) = special_character_id.filter(|id| (1..=26).contains(id)) else {
+        return Err(BuildError::InvalidConfig(
+            "world_bloom_character_id is required".to_string(),
+        ));
+    };
+
+    let mut result = Vec::with_capacity(user.user_cards.len());
+    for original in &user.user_cards {
+        let Some(master) = game.cards.iter().find(|card| card.id == original.card_id) else {
+            return Err(BuildError::InvalidConfig(format!(
+                "support deck card not found for card_id={}",
+                original.card_id
+            )));
+        };
+        let master = enrich_master(master, game);
+        let mut card = original.clone();
+        if support_master_max {
+            card.master_rank = master.max_master_rank.unwrap_or(card.master_rank);
+        }
+        if support_skill_max {
+            card.skill_level = master.max_skill_level.unwrap_or(card.skill_level);
+        }
+        let unit_mask_raw = resolve_unit_mask(&master, game);
+        let bonus = calc_wb_support_bonus(
+            game,
+            event_id,
+            Some(turn),
+            Some(special_character_id),
+            master.id.clamp(0, u16::MAX as i32) as u16,
+            master.card_rarity_type,
+            master.character_id.clamp(0, u8::MAX as i32) as u8,
+            unit_mask_raw,
+            !filter_other_unit,
+            card.master_rank,
+            card.skill_level,
+        );
+        result.push(WorldBloomSupportCard {
+            card_id: card.card_id,
+            bonus,
+            skill_level: card.skill_level,
+            master_rank: card.master_rank,
+            level: card.level,
+            after_training: is_after_training(&card.special_training_status),
+            default_image: default_image_kind(&card.default_image),
+        });
+    }
+    result.sort_by(|left, right| {
+        right
+            .bonus
+            .total_cmp(&left.bonus)
+            .then_with(|| left.card_id.cmp(&right.card_id))
+    });
+    Ok(result)
+}
+
 fn build_final_chapter_support_decks(
     full: &[CardIntermediate],
     game: &types::GameData<'_>,
     event_ctx: Option<&EventContext>,
+    support_master_max: bool,
+    support_skill_max: bool,
 ) -> Vec<SupportDeck> {
     let mut decks = vec![SupportDeck::default(); 27];
     let Some(event_ctx) = event_ctx else {
@@ -672,8 +892,14 @@ fn build_final_chapter_support_decks(
         return decks;
     }
     for character_id in 1..=26 {
-        decks[character_id as usize] =
-            build_support_deck(full, game, Some(event_ctx), Some(character_id));
+        decks[character_id as usize] = build_support_deck(
+            full,
+            game,
+            Some(event_ctx),
+            Some(character_id),
+            support_master_max,
+            support_skill_max,
+        );
     }
     decks
 }
@@ -688,9 +914,21 @@ fn build_search_context(
     fixed_card_ids: Vec<u16>,
     fixed_character_ids: Vec<u8>,
 ) -> SearchContext {
-    let support_deck = build_support_deck(support_cards, game, event_ctx, None);
-    let support_decks_by_character =
-        build_final_chapter_support_decks(support_cards, game, event_ctx);
+    let support_deck = build_support_deck(
+        support_cards,
+        game,
+        event_ctx,
+        None,
+        params.support_master_max,
+        params.support_skill_max,
+    );
+    let support_decks_by_character = build_final_chapter_support_decks(
+        support_cards,
+        game,
+        event_ctx,
+        params.support_master_max,
+        params.support_skill_max,
+    );
     let support_bonus_top_sum = support_deck
         .cards
         .iter()
@@ -720,6 +958,16 @@ fn build_search_context(
         target: params.target,
         fixed_card_ids,
         fixed_character_ids,
+        forced_leader_character_id: if event_ctx
+            .is_some_and(|ctx| ctx.event_id == FINAL_CHAPTER_EVENT_ID)
+        {
+            params
+                .forced_leader_character_id
+                .filter(|id| (1..=26).contains(id))
+                .map(|id| id as u8)
+        } else {
+            None
+        },
         music_rate_pct: music.map(|music| music.event_rate_pct).unwrap_or(100),
         boost_rate_pct: normalize_boost_rate_pct(params.boost),
         base_score: music.map(|music| music.meta.base_score).unwrap_or(1.0),
@@ -868,7 +1116,13 @@ pub fn build_card_pool_with_details(
         };
         let master = enrich_master(master, game);
         let mut user_card = original_user_card.clone();
-        if !apply_card_config(&mut user_card, &master, &configs) {
+        if !apply_card_config(
+            &mut user_card,
+            &master,
+            &configs,
+            game.card_rarities,
+            game.card_episodes,
+        ) {
             continue;
         }
 
@@ -891,7 +1145,7 @@ pub fn build_card_pool_with_details(
         let (event_bonus, has_char_bonus, has_attr_bonus) = event_ctx
             .as_ref()
             .map(|ctx| build_card_event_bonus(&user_card, &master, game, ctx))
-            .unwrap_or((Default::default(), false, false));
+            .unwrap_or((EventBonusExact::default(), false, false));
         let leader_honor_bonus = event_ctx
             .as_ref()
             .map(|ctx| build_leader_honor_bonus(user, &master, ctx))
@@ -940,6 +1194,8 @@ pub fn build_card_pool_with_details(
                 attr,
                 unit_mask_raw,
                 default_image,
+                after_training: is_after_training(&user_card.special_training_status),
+                skill_state_controls_image,
                 master_rank: user_card.master_rank,
                 skill_level: user_card.skill_level,
                 power: power.clone(),
@@ -955,6 +1211,20 @@ pub fn build_card_pool_with_details(
             support_cards.push(intermediate.clone());
             if keep_card(&intermediate, params) {
                 cards.push(intermediate);
+            }
+        }
+    }
+
+    if params.filter_other_unit {
+        if let Some(unit) = event_ctx.as_ref().and_then(|ctx| ctx.filter_unit) {
+            if let Some(unit_index) = types::unit_to_pool_index(unit) {
+                let wanted = 1u8 << unit_index;
+                let piapro = types::unit_to_pool_index(crate::types::Unit::Piapro)
+                    .map(|index| 1u8 << index)
+                    .unwrap_or(0);
+                cards.retain(|card| {
+                    card.unit_mask_raw & wanted != 0 || card.unit_mask_raw == piapro
+                });
             }
         }
     }
@@ -1083,7 +1353,13 @@ pub fn cultivated_user_cards(
         };
         let master = enrich_master(master, game);
         let mut user_card = original_user_card.clone();
-        if !apply_card_config(&mut user_card, &master, &configs) {
+        if !apply_card_config(
+            &mut user_card,
+            &master,
+            &configs,
+            game.card_rarities,
+            game.card_episodes,
+        ) {
             continue;
         }
         cultivated.push(user_card);
@@ -1094,7 +1370,7 @@ pub fn cultivated_user_cards(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pool::{EventBonusHot, RefSkill, SkillSlot};
+    use crate::pool::{RefSkill, SkillSlot};
     use crate::types::{LiveType, ScoreTarget, SkillReferenceStrategy};
 
     fn sample_game<'a>(
@@ -1258,6 +1534,35 @@ mod tests {
             assert!(matches!(
                 build_card_pool(&user, &game, &params),
                 Err(BuildError::InvalidConfig(reason)) if reason.contains(expected)
+            ));
+        }
+    }
+
+    #[test]
+    fn exact_card_config_values_validate_their_public_ranges() {
+        for config in [
+            types::CardRarityConfig {
+                level: Some(0),
+                ..Default::default()
+            },
+            types::CardRarityConfig {
+                skill_level: Some(0),
+                ..Default::default()
+            },
+            types::CardRarityConfig {
+                master_rank: Some(6),
+                ..Default::default()
+            },
+            types::CardRarityConfig {
+                episode_read_count: Some(3),
+                ..Default::default()
+            },
+        ] {
+            let mut params = BuildParams::default();
+            params.card_configs.rarity_4_config = config;
+            assert!(matches!(
+                validate_build_params(&params),
+                Err(BuildError::InvalidConfig(_))
             ));
         }
     }
@@ -1862,13 +2167,28 @@ mod tests {
             ..BuildParams::default()
         };
 
-        let (pool, _) =
-            build_card_pool(&user, &game, &params).expect("dual-skill pool should build");
+        let (pool, _, full) = build_card_pool_with_details(&user, &game, &params)
+            .expect("dual-skill pool should build");
         assert_eq!(pool.count(), 2);
+        assert!(full.iter().all(|card| card.skill_state_controls_image));
         assert_eq!(
             pool.skill_max(pool.card_idx(1).expect("before skill entry")),
             120
         );
+    }
+
+    #[test]
+    fn specialized_unit_count_skill_pair_keeps_both_image_states() {
+        let mut before = SkillResult::default();
+        before.full.skill_id = 24;
+        before.unit_count = Some(crate::pool::UnitCountSkill {
+            unit: 1,
+            score_up: [30, 60, 90, 120, 150],
+        });
+        let mut after = SkillResult::default();
+        after.full.skill_id = 22;
+
+        assert!(is_bfes_skill_pair(&before, &after));
     }
 
     #[test]
@@ -1900,14 +2220,26 @@ mod tests {
                 ..types::CardRarityConfig::default()
             },
         });
-        assert!(!apply_card_config(&mut user_card, &master, &configs));
+        assert!(!apply_card_config(
+            &mut user_card,
+            &master,
+            &configs,
+            &[],
+            &[],
+        ));
 
         let mut user_card = sample_user_card(1);
         let mut configs = CardConfigSet::default();
         configs.rarity_4_config.level_max = true;
         configs.rarity_4_config.skill_max = true;
         configs.rarity_4_config.master_max = true;
-        assert!(apply_card_config(&mut user_card, &master, &configs));
+        assert!(apply_card_config(
+            &mut user_card,
+            &master,
+            &configs,
+            &[],
+            &[],
+        ));
         assert_eq!(user_card.level, 60);
         assert_eq!(user_card.skill_level, 4);
         assert_eq!(user_card.master_rank, 5);
@@ -1939,11 +2271,104 @@ mod tests {
         let mut configs = CardConfigSet::default();
         configs.rarity_4_config.level_max = true;
 
-        assert!(apply_card_config(&mut user_card, &master, &configs));
+        assert!(apply_card_config(
+            &mut user_card,
+            &master,
+            &configs,
+            &[types::CardRarity {
+                card_rarity_type: 4,
+                max_level: 60,
+                normal_max_level: 50,
+                max_skill_level: 4,
+            }],
+            &[],
+        ));
 
         assert_eq!(user_card.level, 60);
         assert_eq!(user_card.special_training_status, "done");
         assert_eq!(user_card.default_image, "special_training");
+    }
+
+    #[test]
+    fn handler_exact_card_config_overrides_max_flags_and_uses_episode_ids() {
+        let master = MasterCard {
+            id: 7,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: "card_000007".to_string(),
+            skill_id: 10,
+            special_training_skill_id: Some(11),
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        };
+        let rarities = [types::CardRarity {
+            card_rarity_type: 4,
+            max_level: 60,
+            normal_max_level: 50,
+            max_skill_level: 4,
+        }];
+        let episodes = [
+            types::CardEpisode {
+                card_id: 7,
+                episode_no: 702,
+                power1_bonus_fixed: 0,
+                power2_bonus_fixed: 0,
+                power3_bonus_fixed: 0,
+            },
+            types::CardEpisode {
+                card_id: 7,
+                episode_no: 701,
+                power1_bonus_fixed: 0,
+                power2_bonus_fixed: 0,
+                power3_bonus_fixed: 0,
+            },
+        ];
+        let mut configs = CardConfigSet::default();
+        configs.rarity_4_config = types::CardRarityConfig {
+            level_max: true,
+            level: Some(51),
+            skill_max: true,
+            skill_level: Some(2),
+            master_max: true,
+            master_rank: Some(3),
+            episode_read: true,
+            episode_read_count: Some(1),
+            ..Default::default()
+        };
+        let mut user_card = sample_user_card(7);
+
+        assert!(apply_card_config(
+            &mut user_card,
+            &master,
+            &configs,
+            &rarities,
+            &episodes,
+        ));
+        assert_eq!(user_card.level, 51);
+        assert_eq!(user_card.skill_level, 2);
+        assert_eq!(user_card.master_rank, 3);
+        assert_eq!(user_card.episodes_read, vec![701]);
+        assert_eq!(user_card.special_training_status, "done");
+        assert_eq!(user_card.default_image, "special_training");
+
+        configs.rarity_4_config.level = Some(50);
+        let mut user_card = sample_user_card(7);
+        assert!(apply_card_config(
+            &mut user_card,
+            &master,
+            &configs,
+            &rarities,
+            &episodes,
+        ));
+        assert_eq!(user_card.special_training_status, "not_doing");
+        assert_eq!(user_card.default_image, "original");
     }
 
     #[test]
@@ -2108,6 +2533,8 @@ mod tests {
             attr: 0,
             unit_mask_raw: 1,
             default_image: crate::types::DefaultImage::Original,
+            after_training: false,
+            skill_state_controls_image: false,
             master_rank: 0,
             skill_level: 1,
             has_char_bonus: false,
@@ -2126,7 +2553,7 @@ mod tests {
                 skill_max: 2,
                 full: crate::types::SkillInfo::default(),
             },
-            event_bonus: EventBonusHot::from_whole(1, 1),
+            event_bonus: EventBonusExact::from_whole(1, 1),
             leader_honor_bonus: 0,
             leader_limit_bonus: 0,
             ep_sort_key: power_max as i64,
@@ -2156,6 +2583,11 @@ mod tests {
                     attr: 0,
                     unit_mask_raw: 1,
                     default_image,
+                    after_training: matches!(
+                        default_image,
+                        crate::types::DefaultImage::SpecialTraining
+                    ),
+                    skill_state_controls_image: false,
                     master_rank: 0,
                     skill_level: 1,
                     has_char_bonus: false,
@@ -2179,6 +2611,18 @@ mod tests {
                         skill_min: skill_max,
                         skill_max,
                         full: crate::types::SkillInfo {
+                            skill_id: if game_card_id == 949 {
+                                if matches!(
+                                    default_image,
+                                    crate::types::DefaultImage::SpecialTraining
+                                ) {
+                                    2
+                                } else {
+                                    1
+                                }
+                            } else {
+                                0
+                            },
                             is_after_training: matches!(
                                 default_image,
                                 crate::types::DefaultImage::SpecialTraining
@@ -2188,7 +2632,7 @@ mod tests {
                             ..crate::types::SkillInfo::default()
                         },
                     },
-                    event_bonus: EventBonusHot::from_whole(1, 1),
+                    event_bonus: EventBonusExact::from_whole(1, 1),
                     leader_honor_bonus: 0,
                     leader_limit_bonus: 0,
                     ep_sort_key: power_max as i64,
@@ -2222,6 +2666,8 @@ mod tests {
             full[0].default_image,
             crate::types::DefaultImage::SpecialTraining
         ));
+        assert!(full[0].after_training);
+        assert!(!full[1].after_training);
     }
 
     #[test]
@@ -2365,6 +2811,7 @@ mod tests {
         let rarities = [types::CardRarity {
             card_rarity_type: 4,
             max_level: 60,
+            normal_max_level: 50,
             max_skill_level: 4,
         }];
         let skills = [
@@ -2520,6 +2967,8 @@ mod tests {
             attr: (character_id % 5) as u8,
             unit_mask_raw: 1u8 << (character_id % 6),
             default_image: crate::types::DefaultImage::Original,
+            after_training: false,
+            skill_state_controls_image: false,
             master_rank: 0,
             skill_level: 1,
             power: power::PowerResult {
@@ -2536,7 +2985,7 @@ mod tests {
                 skill_max,
                 full: crate::types::SkillInfo::default(),
             },
-            event_bonus: EventBonusHot::from_whole(0, 0),
+            event_bonus: EventBonusExact::from_whole(0, 0),
             has_char_bonus: false,
             has_attr_bonus: false,
             leader_honor_bonus: 0,
@@ -2740,6 +3189,7 @@ mod tests {
         let rarities = [types::CardRarity {
             card_rarity_type: 4,
             max_level: 60,
+            normal_max_level: 50,
             max_skill_level: 4,
         }];
         let game = GameData {

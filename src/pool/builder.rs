@@ -4,8 +4,8 @@ use super::arena::Arena;
 use super::card_pool::CardPool;
 use super::layout::PoolLayout;
 use super::types::{
-    DiffSkill, EventBonusHot, Mask, RefSkill, SkillSlot, SpecialTables, UnitCountSkill,
-    ATTR_MASK_COUNT, CHAR_MASK_COUNT, MASK_BITS, UNIT_MASK_COUNT,
+    DiffSkill, EventBonusExact, EventBonusHot, Mask, RefSkill, SkillSlot, SpecialTables,
+    UnitCountSkill, ATTR_MASK_COUNT, CHAR_MASK_COUNT, MASK_BITS, UNIT_MASK_COUNT,
 };
 
 /// `CardPool` 的可写构建阶段。
@@ -82,8 +82,38 @@ impl PoolBuilder {
     }
 
     #[inline(always)]
-    pub(crate) fn set_event_bonus(&mut self, idx: u16, bonus: EventBonusHot) {
+    pub(crate) fn set_event_bonus_packed(&mut self, idx: u16, bonus: EventBonusHot) {
         self.column_mut::<EventBonusHot>(self.layout.off_event_bonus)[idx as usize] = bonus;
+    }
+
+    #[inline(always)]
+    pub(crate) fn set_event_bonus(&mut self, idx: u16, bonus: EventBonusExact) {
+        let limited_code = if bonus.limited_x10 == 0 {
+            0
+        } else if let Some(position) = self
+            .special
+            .limited_bonus_x10()
+            .iter()
+            .position(|value| *value == bonus.limited_x10)
+        {
+            (position + 1) as u8
+        } else {
+            assert!(
+                self.special.limited_bonus_x10().len() < 15,
+                "limited bonus side table exhausted"
+            );
+            self.special.push_limited_bonus(bonus.limited_x10);
+            self.special.limited_bonus_x10().len() as u8
+        };
+        let total_x10 = bonus.base_x10 as u32 + bonus.limited_x10 as u32;
+        assert!(
+            total_x10 <= EventBonusHot::MAX_TOTAL_X10 as u32,
+            "event bonus exceeds packed range"
+        );
+        self.set_event_bonus_packed(
+            idx,
+            EventBonusHot::from_parts(total_x10 as u16, limited_code),
+        );
     }
 
     #[inline(always)]
@@ -161,6 +191,15 @@ impl PoolBuilder {
             "ref side table exhausted"
         );
         self.special.push_ref(skill);
+    }
+
+    #[inline(always)]
+    pub(crate) fn add_limited_bonus(&mut self, value_x10: u16) {
+        assert!(
+            self.special.limited_bonus_x10().len() < 15,
+            "limited bonus side table exhausted"
+        );
+        self.special.push_limited_bonus(value_x10);
     }
 
     /// 冻结为只读 `CardPool`。

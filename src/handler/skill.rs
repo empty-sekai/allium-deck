@@ -24,7 +24,15 @@ pub(crate) struct SkillResult {
 }
 
 pub(crate) fn is_bfes_skill_pair(left: &SkillResult, right: &SkillResult) -> bool {
-    left.ref_skill.is_some() || right.ref_skill.is_some() || left.full.has_ref || right.full.has_ref
+    left.full.skill_id != right.full.skill_id
+        && (left.ref_skill.is_some()
+            || right.ref_skill.is_some()
+            || left.full.has_ref
+            || right.full.has_ref
+            || left.diff.is_some()
+            || right.diff.is_some()
+            || left.unit_count.is_some()
+            || right.unit_count.is_some())
 }
 
 /// 卡牌技能状态选择。
