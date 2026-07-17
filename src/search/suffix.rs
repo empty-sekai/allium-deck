@@ -450,6 +450,35 @@ impl SuffixBound {
     }
 
     #[inline(always)]
+    pub(crate) fn ceiling_multi_score_event(
+        &self,
+        power_ub: u32,
+        bonus_total: u32,
+        skill_ub: u32,
+        leader_ub: u32,
+    ) -> u64 {
+        let power_total = self.clamp_power_total(power_ub + self.honor_bonus);
+        let max_slot_5x = (4 * leader_ub as i64 + skill_ub as i64).max(self.teammate_su_5x);
+        let rate_1m = self.base_rate_1m + max_slot_5x * self.srs_div500_1m;
+        let power_sum = if let Some(teammate_power) = self.multi_teammate_power {
+            power_total as i64 + teammate_power as i64 * (DECK_SIZE as i64 - 1)
+        } else {
+            DECK_SIZE as i64 * power_total as i64
+        };
+        let active_1m = self.active_1m_coeff * power_sum;
+        let live_score = ((rate_1m * power_total as i64 * 4 + active_1m) / 1_000_000) as i32;
+        let other_score = if self.other_score == 0 {
+            (live_score as i64).saturating_mul(4)
+        } else {
+            self.other_score as i64
+        };
+        let base_score = 110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
+        let inner = base_score * self.music_rate_pct as i64 * (bonus_total as i64 + 100) / 10_000;
+        let event_point = (inner * self.boost_rate_pct as i64 / 100) as i32;
+        ((event_point as u64) << 32) | (live_score as u32 as u64)
+    }
+
+    #[inline(always)]
     fn calc_live_score_bound(&self, power_total: u32, skill_total: u32, leader_ub: u32) -> i32 {
         let rate_1m = match self.effective_live_type {
             LiveType::Multi | LiveType::Cheerful => {
@@ -548,6 +577,41 @@ impl SuffixBound {
     }
 
     #[inline(always)]
+    pub(crate) fn dense_suffix_ceiling_multi_score_event(
+        &self,
+        dense_start: usize,
+        partial: &PartialDeck,
+        slots: usize,
+    ) -> u64 {
+        let tail_bonus = self
+            .dense_bonus_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let tail_power = self
+            .dense_power_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let tail_skill = self
+            .dense_skill_tail
+            .get(dense_start)
+            .map(|tail| tail[slots])
+            .unwrap_or(0);
+        let tail_leader = self
+            .dense_leader_tail
+            .get(dense_start)
+            .copied()
+            .unwrap_or(0) as u32;
+        self.ceiling_multi_score_event(
+            partial.power + tail_power,
+            partial.bonus + tail_bonus + self.extra_bonus_ub,
+            partial.skill + tail_skill,
+            (partial.max_skill as u32).max(tail_leader),
+        )
+    }
+
+    #[inline(always)]
     pub(crate) fn dense_suffix_ceiling_with_extra(
         &self,
         dense_start: usize,
@@ -621,6 +685,41 @@ impl SuffixBound {
             .unwrap_or(0);
         let tail_leader = self.dense_leader_tail.get(next_start).copied().unwrap_or(0) as u32;
         self.ceiling(
+            partial.power + card_power + tail_power,
+            partial.bonus + card_bonus + tail_bonus + self.extra_bonus_ub,
+            partial.skill + card_skill + tail_skill,
+            (partial.max_skill as u32).max(card_skill).max(tail_leader),
+        )
+    }
+
+    #[inline(always)]
+    pub(crate) fn dense_candidate_ceiling_multi_score_event(
+        &self,
+        next_start: usize,
+        partial: &PartialDeck,
+        card_power: u32,
+        card_bonus: u32,
+        card_skill: u32,
+        slots: usize,
+    ) -> u64 {
+        let rest = slots.saturating_sub(1);
+        let tail_bonus = self
+            .dense_bonus_tail
+            .get(next_start)
+            .map(|tail| tail[rest])
+            .unwrap_or(0);
+        let tail_power = self
+            .dense_power_tail
+            .get(next_start)
+            .map(|tail| tail[rest])
+            .unwrap_or(0);
+        let tail_skill = self
+            .dense_skill_tail
+            .get(next_start)
+            .map(|tail| tail[rest])
+            .unwrap_or(0);
+        let tail_leader = self.dense_leader_tail.get(next_start).copied().unwrap_or(0) as u32;
+        self.ceiling_multi_score_event(
             partial.power + card_power + tail_power,
             partial.bonus + card_bonus + tail_bonus + self.extra_bonus_ub,
             partial.skill + card_skill + tail_skill,

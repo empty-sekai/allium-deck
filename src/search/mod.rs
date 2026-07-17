@@ -5,6 +5,7 @@ pub mod dfs;
 pub mod dominance;
 pub mod evaluate;
 mod final_chapter;
+mod simd;
 pub mod suffix;
 pub mod types;
 pub mod warm_start;
@@ -96,9 +97,7 @@ pub fn search_instrumented(
         return (expanded, stats);
     }
     let suffix = SuffixBound::build(&search_pool, &search_ctx);
-    let seeds = warm_start::warm_start_best(&search_pool, &search_ctx)
-        .into_iter()
-        .collect();
+    let seeds = warm_start::warm_start_seeds(&search_pool, &search_ctx, params.top_k);
     let (compacted_results, stats) =
         dfs::dfs_search_instrumented_with_seeds(&search_pool, &search_ctx, &suffix, params, seeds);
     let remapped = remap_results(compacted_results, &original_indices);

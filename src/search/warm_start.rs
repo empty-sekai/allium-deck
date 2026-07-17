@@ -1,5 +1,5 @@
 use crate::pool::{CardIdx, CardPool};
-use crate::types::{ScoreTarget, DECK_SIZE};
+use crate::types::{LiveType, ScoreTarget, DECK_SIZE};
 
 use super::context::SearchContext;
 use super::evaluate::{card_proxy_bonus, leaf_evaluate_checked};
@@ -9,6 +9,7 @@ const FINAL_CHAPTER_WARM_START_LEADERS: usize = 20;
 const SCORE_EVENT_SOLO_WARM_START_PREFIX: usize = 16;
 const FINAL_CHAPTER_EXACT_LEADERS: usize = 8;
 const FINAL_CHAPTER_EXACT_PREFIX: usize = 24;
+const MULTI_ONE_SWAP_CANDIDATE_LIMIT: usize = 8;
 #[derive(Clone, Copy)]
 enum Strategy {
     Power,
@@ -62,6 +63,54 @@ pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<De
         }
     }
     best
+}
+
+pub(crate) fn warm_start_seeds(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    top_k: usize,
+) -> Vec<DeckResult> {
+    if top_k == 0
+        || !matches!(ctx.target, ScoreTarget::Score)
+        || !ctx.has_event()
+        || !matches!(
+            ctx.effective_live_type(),
+            LiveType::Multi | LiveType::Cheerful
+        )
+        || ctx.is_final_chapter
+    {
+        return warm_start_best(pool, ctx).into_iter().collect();
+    }
+
+    let mut seeds = Vec::with_capacity(64);
+    for strategy in [Strategy::Power, Strategy::Skill, Strategy::Target] {
+        let Some(deck) = greedy_select(pool, ctx, strategy, None) else {
+            continue;
+        };
+        let improved = one_swap_improve_collect(pool, ctx, deck, None, Some(&mut seeds));
+        if let Some(score) = leaf_evaluate_checked(pool, ctx, &improved) {
+            seeds.push(DeckResult::new(improved, score));
+        }
+    }
+
+    seeds.sort_unstable_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.cards.cmp(&right.cards))
+    });
+    let mut keys = Vec::with_capacity(top_k);
+    seeds.retain(|seed| {
+        let key = seed.game_card_set_key(pool);
+        if keys.contains(&key) {
+            false
+        } else {
+            keys.push(key);
+            true
+        }
+    });
+    seeds.truncate(top_k);
+    seeds
 }
 
 fn warm_start_final_chapter(pool: &CardPool, ctx: &SearchContext) -> Option<DeckResult> {
@@ -306,13 +355,34 @@ fn greedy_select(
 fn one_swap_improve(
     pool: &CardPool,
     ctx: &SearchContext,
+    deck: [CardIdx; 5],
+    fixed_leader: Option<CardIdx>,
+) -> [CardIdx; 5] {
+    one_swap_improve_collect(pool, ctx, deck, fixed_leader, None)
+}
+
+fn one_swap_improve_collect(
+    pool: &CardPool,
+    ctx: &SearchContext,
     mut deck: [CardIdx; 5],
     fixed_leader: Option<CardIdx>,
+    mut seeds: Option<&mut Vec<DeckResult>>,
 ) -> [CardIdx; 5] {
     let Some(mut best_score) = leaf_evaluate_checked(pool, ctx, &deck) else {
         return deck;
     };
+    if let Some(seeds) = seeds.as_deref_mut() {
+        seeds.push(DeckResult::new(deck, best_score));
+    }
     let start_slot = if fixed_leader.is_some() { 1 } else { 0 };
+    let candidate_limit = if matches!(
+        ctx.effective_live_type(),
+        LiveType::Multi | LiveType::Cheerful
+    ) {
+        MULTI_ONE_SWAP_CANDIDATE_LIMIT
+    } else {
+        usize::MAX
+    };
 
     loop {
         let mut improved = false;
@@ -325,7 +395,7 @@ fn one_swap_improve(
             let original = unsafe { *deck.get_unchecked(slot) };
             let mut best_card = original;
             let mut best_slot_score = best_score;
-            for candidate in pool.indices() {
+            for candidate in pool.indices().take(candidate_limit) {
                 if candidate == original || fixed_leader.is_some_and(|leader| leader == candidate) {
                     continue;
                 }
@@ -361,6 +431,9 @@ fn one_swap_improve(
                     }
                     continue;
                 };
+                if let Some(seeds) = seeds.as_deref_mut() {
+                    seeds.push(DeckResult::new(deck, score));
+                }
                 if score > best_slot_score {
                     best_slot_score = score;
                     best_card = candidate;

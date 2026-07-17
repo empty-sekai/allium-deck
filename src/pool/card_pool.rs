@@ -158,6 +158,11 @@ impl CardPool {
         }
     }
 
+    #[inline(always)]
+    pub(crate) fn char_ids(&self) -> &[u8] {
+        self.column::<u8>(self.layout.off_char_ids)
+    }
+
     /// 返回属性 ID。
     #[inline(always)]
     pub fn attr(&self, idx: CardIdx) -> u8 {
