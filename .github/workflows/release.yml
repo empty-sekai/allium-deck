@@ -53,27 +53,29 @@ jobs:
         if: github.event_name == 'push'
         shell: bash
         run: |
-          cargo metadata --no-deps --format-version 1 | python3 -c '
-          import json, os, sys
-          packages = {item["name"]: item["version"] for item in json.load(sys.stdin)["packages"]}
-          expected = os.environ["GITHUB_REF_NAME"].removeprefix("v")
-          for name in ("allium-deck", "allium-deck-wasm"):
-              actual = packages.get(name)
-              if actual != expected:
-                  raise SystemExit(f"{name} version {actual!r} does not match tag v{expected}")
-          '
+          EXPECTED="${GITHUB_REF_NAME#v}"
+          DECK_VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          WASM_VERSION=$(cargo metadata --manifest-path wasm/Cargo.toml --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          test "$DECK_VERSION" = "$EXPECTED"
+          test "$WASM_VERSION" = "$EXPECTED"
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: cargo fmt
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt -- --check
+          cargo fmt --manifest-path wasm/Cargo.toml -- --check
 
       - name: cargo clippy
-        run: cargo clippy --workspace --all-targets
+        run: |
+          cargo clippy --all-targets
+          cargo clippy --manifest-path wasm/Cargo.toml --all-targets
 
       - name: cargo test
-        run: cargo test --workspace --all-targets --release
+        run: |
+          cargo test --all-targets --release
+          cargo test --manifest-path wasm/Cargo.toml --all-targets --release
 
       - name: release packaging tests
         run: python3 tests/test_release_packaging.py
@@ -203,7 +205,7 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             INPUT_FILE="release-inputs/${GITHUB_REF_NAME}.json"
           else
-            VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "allium-deck-wasm"))')
+            VERSION=$(cargo metadata --manifest-path wasm/Cargo.toml --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
             INPUT_FILE="release-inputs/v${VERSION}.json"
           fi
           test -f "$INPUT_FILE"

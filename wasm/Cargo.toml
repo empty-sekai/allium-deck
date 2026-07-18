@@ -7,6 +7,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/empty-sekai/allium-deck"
 publish = false
 
+[workspace]
+resolver = "2"
+
 [lib]
 name = "allium_deck"
 crate-type = ["cdylib"]
