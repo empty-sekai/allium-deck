@@ -58,6 +58,8 @@ pub(crate) struct PoolIndexes {
     skill_by_id_level: HashMap<(i32, i32), Skill>,
     effects_by_skill_level: HashMap<(i32, i32), Vec<PreparedSkillEffect>>,
     honor_bonus_by_id_level: HashMap<(i32, i32), u32>,
+    character_bonus_by_rank: Vec<(i32, f64)>,
+    max_card_id: usize,
 }
 
 impl PoolIndexes {
@@ -255,6 +257,34 @@ impl PoolIndexes {
             }
         }
 
+        // Character-rank rows and the maximum card id are immutable masterdata.
+        // Keep their compact lookup form in the shared snapshot instead of
+        // rescanning the master tables for every account build.
+        let mut character_bonus_by_rank = game
+            .character_ranks
+            .iter()
+            .map(|entry| (entry.character_rank, entry.power_bonus_rate))
+            .collect::<Vec<_>>();
+        character_bonus_by_rank.sort_by_key(|entry| entry.0);
+        let mut unique_character_bonuses = Vec::with_capacity(character_bonus_by_rank.len());
+        for entry in character_bonus_by_rank {
+            if unique_character_bonuses
+                .last()
+                .is_some_and(|previous: &(i32, f64)| previous.0 == entry.0)
+            {
+                *unique_character_bonuses.last_mut().unwrap() = entry;
+            } else {
+                unique_character_bonuses.push(entry);
+            }
+        }
+        let max_card_id = game
+            .cards
+            .iter()
+            .map(|card| card.id)
+            .filter(|id| *id >= 0)
+            .max()
+            .unwrap_or(0) as usize;
+
         Self {
             card_by_id,
             episodes_by_card,
@@ -264,6 +294,8 @@ impl PoolIndexes {
             skill_by_id_level,
             effects_by_skill_level,
             honor_bonus_by_id_level,
+            character_bonus_by_rank: unique_character_bonuses,
+            max_card_id,
         }
     }
 
@@ -348,5 +380,21 @@ impl PoolIndexes {
             .get(&(honor_id, level))
             .copied()
             .unwrap_or(0)
+    }
+
+    #[inline]
+    pub(crate) fn character_bonus_rate(&self, rank: i32) -> f64 {
+        let index = self
+            .character_bonus_by_rank
+            .partition_point(|entry| entry.0 <= rank);
+        index
+            .checked_sub(1)
+            .map(|index| self.character_bonus_by_rank[index].1)
+            .unwrap_or(0.0)
+    }
+
+    #[inline]
+    pub(crate) fn max_card_id(&self) -> usize {
+        self.max_card_id
     }
 }

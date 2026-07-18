@@ -932,18 +932,24 @@ pub(crate) fn config_for_rarity(
 
 /// 返回卡牌默认立绘枚举。
 pub(crate) fn default_image_kind(value: &str) -> DefaultImage {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "special_training" | "trained" | "after_training" => DefaultImage::SpecialTraining,
-        _ => DefaultImage::Original,
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("special_training")
+        || value.eq_ignore_ascii_case("trained")
+        || value.eq_ignore_ascii_case("after_training")
+    {
+        DefaultImage::SpecialTraining
+    } else {
+        DefaultImage::Original
     }
 }
 
 /// 判断卡是否已特训。
 pub(crate) fn is_after_training(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "done" | "special_training" | "trained" | "after_training"
-    )
+    let value = value.trim();
+    value.eq_ignore_ascii_case("done")
+        || value.eq_ignore_ascii_case("special_training")
+        || value.eq_ignore_ascii_case("trained")
+        || value.eq_ignore_ascii_case("after_training")
 }
 
 /// 将活动类型字符串转换为枚举。

@@ -29,6 +29,8 @@ pub(crate) struct EventContext {
     deck_bonuses: Vec<PreparedEventDeckBonus>,
     /// 稀有度 bonus 规则。
     pub rarity_bonuses: Vec<EventRarityBonusRate>,
+    /// 常见合法稀有度/master-rank 的无分支查表；手工测试上下文可留空回退原逻辑。
+    rarity_bonus_x10: Option<[[i32; 6]; 6]>,
     /// leader honor bonus 规则。
     pub honor_bonuses: Vec<EventHonorBonus>,
     /// 技能上限。
@@ -226,6 +228,25 @@ pub(crate) fn build_event_context(
             })
     };
 
+    let rarity_bonuses = game
+        .event_rarity_bonus_rates
+        .iter()
+        .filter(|entry| Some(entry.event_id) == rarity_event_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut rarity_bonus_x10 = [[0i32; 6]; 6];
+    for rarity in 0..rarity_bonus_x10.len() {
+        for rank in 0..rarity_bonus_x10[rarity].len() {
+            rarity_bonus_x10[rarity][rank] = rarity_bonuses
+                .iter()
+                .filter(|entry| entry.card_rarity_type == rarity as i32)
+                .filter(|entry| entry.master_rank <= rank as i32)
+                .max_by_key(|entry| entry.master_rank)
+                .map(|entry| entry.bonus_rate_x10)
+                .unwrap_or(0);
+        }
+    }
+
     Some(EventContext {
         event_id,
         event_type,
@@ -236,12 +257,8 @@ pub(crate) fn build_event_context(
             .cloned()
             .collect(),
         deck_bonuses,
-        rarity_bonuses: game
-            .event_rarity_bonus_rates
-            .iter()
-            .filter(|entry| Some(entry.event_id) == rarity_event_id)
-            .cloned()
-            .collect(),
+        rarity_bonuses,
+        rarity_bonus_x10: Some(rarity_bonus_x10),
         honor_bonuses: game
             .event_honor_bonuses
             .iter()
@@ -308,6 +325,16 @@ fn load_rarity_bonus_x10(
     master: &MasterCard,
     event_ctx: &EventContext,
 ) -> i32 {
+    if let Some(table) = event_ctx.rarity_bonus_x10.as_ref() {
+        if let (Ok(rarity), Ok(rank)) = (
+            usize::try_from(master.card_rarity_type),
+            usize::try_from(user_card.master_rank),
+        ) {
+            if let Some(value) = table.get(rarity).and_then(|row| row.get(rank)) {
+                return *value;
+            }
+        }
+    }
     event_ctx
         .rarity_bonuses
         .iter()
@@ -318,6 +345,7 @@ fn load_rarity_bonus_x10(
         .unwrap_or(0)
 }
 
+#[cfg(test)]
 fn load_custom_bonus_x2(
     master: &MasterCard,
     card_attr: u8,
@@ -377,20 +405,19 @@ pub(crate) fn build_card_event_bonus(
     event_ctx: &EventContext,
 ) -> (EventBonusExact, bool, bool) {
     let rarity_bonus_x10 = load_rarity_bonus_x10(user_card, master, event_ctx);
-    let custom_bonus_x2 = load_custom_bonus_x2(
-        master,
-        card_attr,
-        support_unit,
-        support_unit_unrestricted,
-        event_ctx,
-    );
-
     let custom_char =
         custom_character_matches(master, support_unit, support_unit_unrestricted, event_ctx);
     let custom_attr = event_ctx
         .custom_attr
         .and_then(attr_to_pool_index)
         .is_some_and(|attr| card_attr == attr);
+    let custom_bonus_x2 = if custom_char && custom_attr {
+        100
+    } else if custom_char || custom_attr {
+        50
+    } else {
+        0
+    };
 
     // 活动 deck bonus：多条规则命中时取最大值（与 C++/TS 一致）。
     let mut deck_bonus_x2 = 0i32;
@@ -471,6 +498,7 @@ mod tests {
             event_cards: Vec::new(),
             deck_bonuses: Vec::new(),
             rarity_bonuses: Vec::new(),
+            rarity_bonus_x10: None,
             honor_bonuses: Vec::new(),
             skill_score_up_limit: None,
             card_bonus_count_limit: 5,
@@ -546,6 +574,9 @@ mod tests {
             master_rank: 2,
             bonus_rate_x10: 2,
         });
+        let mut fast = [[0i32; 6]; 6];
+        fast[4][2] = 2;
+        ctx.rarity_bonus_x10 = Some(fast);
         let user_card = UserCard {
             card_id: 1,
             level: 1,

@@ -27,7 +27,7 @@ pub use gather::FullPrecisionCard;
 use gather::{sort_and_gather, CardIntermediate, GatheredContext};
 use music::build_music_params;
 use power::{
-    build_power_batch_into, resolve_unit_mask, PowerInput, PowerResult, PreparedPowerContext,
+    build_power_batch_from_fn, resolve_unit_mask, PowerInput, PowerResult, PreparedPowerContext,
 };
 use skill::{build_skill, is_bfes_skill_pair, SkillResult, SkillState};
 use support_bonus::calc_wb_support_bonus;
@@ -359,6 +359,21 @@ const GENERAL_TRIM_THRESHOLD: usize = 400;
 const GENERAL_PER_CHAR_KEEP: usize = 10;
 const CHALLENGE_ALL_PER_CHAR_KEEP: usize = 19;
 
+struct PreparedCardSeed<'a> {
+    master: &'a types::MasterCard,
+    user_card: Cow<'a, types::UserCard>,
+    unit_mask: u8,
+    attr: u8,
+    default_image_kind: DefaultImage,
+    default_image: DefaultImage,
+    after_training: bool,
+    event_bonus: EventBonusExact,
+    has_char_bonus: bool,
+    has_attr_bonus: bool,
+    leader_honor_bonus: u16,
+    leader_limit_bonus: u16,
+}
+
 struct PreparedCardBuild<'a> {
     master: &'a types::MasterCard,
     user_card: Cow<'a, types::UserCard>,
@@ -382,6 +397,7 @@ pub struct PreparedPoolBuild<'a> {
     music: Option<music::MusicParams>,
     power_ctx: PreparedPowerContext,
     cards: Vec<PreparedCardBuild<'a>>,
+    ep_prefilter_applied: bool,
     honor_bonus: u32,
     power_scratch: std::sync::Mutex<Vec<PowerResult>>,
 }
@@ -433,7 +449,7 @@ impl<'a> PreparedPoolBuild<'a> {
         let card_count = normalized_cards
             .as_ref()
             .map_or(user.user_cards.len(), Vec::len);
-        let mut cards = Vec::with_capacity(card_count);
+        let mut seeds = Vec::with_capacity(card_count);
 
         let mut prepare_card = |mut user_card: Cow<'a, types::UserCard>| {
             let Some(card_data) = indexes.card_data(user_card.card_id) else {
@@ -487,35 +503,12 @@ impl<'a> PreparedPoolBuild<'a> {
                 .as_ref()
                 .map(|ctx| build_leader_limit_bonus(master, ctx))
                 .unwrap_or(0);
-            let character_rank = power_ctx.character_rank(master.character_id);
-            let (skill_states, skill_state_count) =
-                skill_states_for_card(default_image_kind, after_training, master, params);
-            let mut skill_options: [Option<(SkillState, SkillResult)>; 2] = [None, None];
-            for (slot, &skill_state) in skill_options
-                .iter_mut()
-                .zip(skill_states.iter())
-                .take(skill_state_count)
-            {
-                *slot = Some((
-                    skill_state,
-                    build_skill(
-                        user_card.as_ref(),
-                        master,
-                        game,
-                        indexes,
-                        character_rank,
-                        event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
-                        skill_state,
-                    ),
-                ));
-            }
-            let skill_state_controls_image =
-                collapse_non_bfes_skill_states(&mut skill_options, skill_state_count);
-            cards.push(PreparedCardBuild {
+            seeds.push(PreparedCardSeed {
                 master,
                 user_card,
                 unit_mask: card_data.unit_mask,
                 attr,
+                default_image_kind,
                 default_image,
                 after_training,
                 event_bonus,
@@ -523,8 +516,6 @@ impl<'a> PreparedPoolBuild<'a> {
                 has_attr_bonus,
                 leader_honor_bonus,
                 leader_limit_bonus,
-                skill_options,
-                skill_state_controls_image,
             });
         };
         if let Some(normalized_cards) = normalized_cards {
@@ -537,6 +528,81 @@ impl<'a> PreparedPoolBuild<'a> {
             }
         }
 
+        let is_final_chapter = event_ctx
+            .as_ref()
+            .is_some_and(|ctx| ctx.event_id == FINAL_CHAPTER_EVENT_ID);
+        let can_prefilter_before_power = event_ctx.as_ref().is_some_and(|ctx| {
+            ctx.support_deck_count == 0 && ctx.event_id != FINAL_CHAPTER_EVENT_ID
+        }) && !matches!(
+            params.target,
+            crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
+        );
+        let mut ep_prefilter_applied = false;
+        if can_prefilter_before_power {
+            seeds.retain(|card| {
+                prepared_keep_card(card, params)
+                    && prepared_post_event_unit_filter(card, params, event_ctx.as_ref())
+            });
+        }
+        if can_prefilter_before_power
+            && seeds.len() > EP_PREFILTER_MIN_POOL
+            && seeds
+                .iter()
+                .any(|card| prepared_ep_prefilter_keep(card, false, is_final_chapter))
+        {
+            seeds.retain(|card| {
+                prepared_ep_prefilter_keep_with_params(card, params, false, is_final_chapter)
+            });
+            ep_prefilter_applied = true;
+        }
+
+        let mut cards = Vec::with_capacity(seeds.len());
+        for seed in seeds {
+            let character_rank = power_ctx.character_rank(seed.master.character_id);
+            let (skill_states, skill_state_count) = skill_states_for_card(
+                seed.default_image_kind,
+                seed.after_training,
+                seed.master,
+                params,
+            );
+            let mut skill_options = [None, None];
+            for (slot, &skill_state) in skill_options
+                .iter_mut()
+                .zip(skill_states.iter())
+                .take(skill_state_count)
+            {
+                *slot = Some((
+                    skill_state,
+                    build_skill(
+                        seed.user_card.as_ref(),
+                        seed.master,
+                        game,
+                        indexes,
+                        character_rank,
+                        event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
+                        skill_state,
+                    ),
+                ));
+            }
+            let skill_state_controls_image =
+                collapse_non_bfes_skill_states(&mut skill_options, skill_state_count);
+            cards.push(PreparedCardBuild {
+                master: seed.master,
+                user_card: seed.user_card,
+                unit_mask: seed.unit_mask,
+                attr: seed.attr,
+                default_image: seed.default_image,
+                after_training: seed.after_training,
+                event_bonus: seed.event_bonus,
+                has_char_bonus: seed.has_char_bonus,
+                has_attr_bonus: seed.has_attr_bonus,
+                leader_honor_bonus: seed.leader_honor_bonus,
+                leader_limit_bonus: seed.leader_limit_bonus,
+                skill_options,
+                skill_state_controls_image,
+            });
+        }
+
         Ok(Self {
             params: params.clone(),
             event_ctx,
@@ -544,9 +610,103 @@ impl<'a> PreparedPoolBuild<'a> {
             power_ctx,
             power_scratch: std::sync::Mutex::new(Vec::with_capacity(cards.len())),
             cards,
+            ep_prefilter_applied,
             honor_bonus: compute_honor_bonus(user, indexes),
         })
     }
+}
+
+fn prepared_ep_prefilter_keep(
+    card: &PreparedCardSeed<'_>,
+    is_world_bloom: bool,
+    is_final_chapter: bool,
+) -> bool {
+    if is_world_bloom || is_final_chapter {
+        return card.master.card_rarity_type >= 3 || card.event_bonus.total_x10() > 0;
+    }
+    if card.master.card_rarity_type >= 4 {
+        return true;
+    }
+    card.event_bonus.total_x10() > 0 && card.has_char_bonus && card.has_attr_bonus
+}
+
+fn prepared_ep_prefilter_keep_with_params(
+    card: &PreparedCardSeed<'_>,
+    params: &types::BuildParams,
+    is_world_bloom: bool,
+    is_final_chapter: bool,
+) -> bool {
+    if params.fixed_cards.contains(&card.master.id)
+        || params.fixed_characters.contains(&card.master.character_id)
+    {
+        return true;
+    }
+    prepared_ep_prefilter_keep(card, is_world_bloom, is_final_chapter)
+}
+
+fn prepared_keep_card(card: &PreparedCardSeed<'_>, params: &types::BuildParams) -> bool {
+    let is_fixed_card = params.fixed_cards.contains(&card.master.id);
+    if params.excluded_cards.contains(&card.master.id) {
+        return false;
+    }
+    if !is_fixed_card {
+        if let Some(unit) = params
+            .unit_filter
+            .as_deref()
+            .and_then(parse_unit_code)
+            .and_then(types::unit_to_pool_index)
+        {
+            if card.unit_mask & (1u8 << unit) == 0 {
+                return false;
+            }
+        }
+        if let Some(attr) = params
+            .attr_filter
+            .as_deref()
+            .and_then(parse_attr_code)
+            .and_then(attr_to_pool_index)
+        {
+            if card.attr != attr {
+                return false;
+            }
+        }
+        if params.filter_other_unit {
+            if let Some(unit) = params
+                .event_unit
+                .as_deref()
+                .and_then(parse_unit_code)
+                .and_then(types::unit_to_pool_index)
+            {
+                if card.unit_mask & (1u8 << unit) == 0 {
+                    return false;
+                }
+            }
+        }
+    }
+    params
+        .challenge_live_character_id
+        .is_none_or(|character_id| card.master.character_id == character_id)
+}
+
+fn prepared_post_event_unit_filter(
+    card: &PreparedCardSeed<'_>,
+    params: &types::BuildParams,
+    event_ctx: Option<&EventContext>,
+) -> bool {
+    if !params.filter_other_unit {
+        return true;
+    }
+    let Some(unit) = event_ctx.and_then(|ctx| ctx.filter_unit) else {
+        return true;
+    };
+    let Some(unit_index) = types::unit_to_pool_index(unit) else {
+        return true;
+    };
+    let wanted = 1u8 << unit_index;
+    let piapro = types::unit_to_pool_index(crate::types::Unit::Piapro)
+        .map(|index| 1u8 << index)
+        .unwrap_or(0);
+    card.unit_mask & wanted != 0 || card.unit_mask == piapro
 }
 
 fn ep_prefilter_keep(
@@ -584,7 +744,9 @@ fn per_character_trim(
     if cards.len() <= EP_PREFILTER_MIN_POOL {
         return;
     }
-    cards.sort_by(|a, b| {
+    debug_assert!(per_char_keep <= FINAL_CHAPTER_PER_CHAR_KEEP);
+
+    let compare = |a: &CardIntermediate, b: &CardIntermediate| {
         let a_bonus = a.event_bonus.total_x10();
         let b_bonus = b.event_bonus.total_x10();
         // 4星无bonus给虚拟bonus=1，排在有bonus卡之后但优于低星
@@ -604,26 +766,54 @@ fn per_character_trim(
             .cmp(&a_effective_bonus)
             .then_with(|| b.card_rarity_type.cmp(&a.card_rarity_type))
             .then_with(|| b_key.cmp(&a_key))
-    });
-    let mut counts = [0u8; 27];
-    cards.retain(|card| {
+    };
+
+    // Only the best K non-exempt cards per character are needed. Sorting the
+    // entire vector moves large CardIntermediate values O(n log n) times.
+    // Maintain 27 tiny, stable top-K index lists instead; equal keys stay in
+    // their original order, matching stable-sort selection semantics.
+    let mut selected = [[usize::MAX; FINAL_CHAPTER_PER_CHAR_KEEP]; 27];
+    let mut counts = [0usize; 27];
+    let mut keep = vec![false; cards.len()];
+    for (index, card) in cards.iter().enumerate() {
         if params.fixed_cards.contains(&card.game_card_id)
             || params
                 .fixed_characters
                 .contains(&(card.character_id as i32))
+            || card.event_bonus.total_x10() >= 300
         {
-            return true;
-        }
-        if card.event_bonus.total_x10() >= 300 {
-            return true;
+            keep[index] = true;
+            continue;
         }
         let ch = (card.character_id as usize).min(26);
-        if (counts[ch] as usize) < per_char_keep {
-            counts[ch] += 1;
-            true
-        } else {
-            false
+        let count = counts[ch];
+        let mut insert = 0usize;
+        while insert < count
+            && compare(card, &cards[selected[ch][insert]]) != std::cmp::Ordering::Less
+        {
+            insert += 1;
         }
+        if insert >= per_char_keep {
+            continue;
+        }
+        let new_count = (count + 1).min(per_char_keep);
+        if count == per_char_keep {
+            keep[selected[ch][per_char_keep - 1]] = false;
+        }
+        let mut slot = new_count - 1;
+        while slot > insert {
+            selected[ch][slot] = selected[ch][slot - 1];
+            slot -= 1;
+        }
+        selected[ch][insert] = index;
+        counts[ch] = new_count;
+        keep[index] = true;
+    }
+    let mut index = 0usize;
+    cards.retain(|_| {
+        let result = keep[index];
+        index += 1;
+        result
     });
 }
 
@@ -1335,18 +1525,22 @@ fn build_card_pool_fully_prepared_internal(
         Vec::new()
     };
 
-    let power_inputs = prepared_cards
-        .iter()
-        .map(|card| PowerInput {
-            user_card: card.user_card.as_ref(),
-            master: card.master,
-            unit_mask: card.unit_mask,
-            attr: card.attr,
-        })
-        .collect::<Vec<_>>();
     let mut powers = build.power_scratch.lock().unwrap();
-    build_power_batch_into(&power_inputs, &build.power_ctx, indexes, &mut powers);
-    drop(power_inputs);
+    build_power_batch_from_fn(
+        prepared_cards.len(),
+        |index| {
+            let card = &prepared_cards[index];
+            PowerInput {
+                user_card: card.user_card.as_ref(),
+                master: card.master,
+                unit_mask: card.unit_mask,
+                attr: card.attr,
+            }
+        },
+        &build.power_ctx,
+        indexes,
+        &mut powers,
+    );
 
     for (prepared_card, power) in prepared_cards.iter().zip(powers.drain(..)) {
         let master = prepared_card.master;
@@ -1420,7 +1614,9 @@ fn build_card_pool_fully_prepared_internal(
     let is_world_bloom =
         event_ctx.is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom));
     let is_final_chapter = event_ctx.is_some_and(|ctx| ctx.event_id == FINAL_CHAPTER_EVENT_ID);
-    if event_ctx.is_some()
+    if build.ep_prefilter_applied {
+        per_character_trim(&mut cards, params, PER_CHAR_KEEP);
+    } else if event_ctx.is_some()
         && !matches!(
             params.target,
             crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill

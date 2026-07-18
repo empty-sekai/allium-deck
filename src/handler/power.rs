@@ -83,13 +83,7 @@ impl PreparedPowerContext {
         }
         let mut character_bonus_rate = [0.0; 27];
         for (character_id, &rank) in character_rank.iter().enumerate() {
-            character_bonus_rate[character_id as usize] = game
-                .character_ranks
-                .iter()
-                .filter(|entry| entry.character_rank <= rank)
-                .max_by_key(|entry| entry.character_rank)
-                .map(|entry| entry.power_bonus_rate)
-                .unwrap_or(0.0);
+            character_bonus_rate[character_id] = idx.character_bonus_rate(rank);
         }
 
         let mut fixture_rate = [0; 27];
@@ -127,13 +121,7 @@ impl PreparedPowerContext {
             }
         }
 
-        let max_canvas_id = game
-            .cards
-            .iter()
-            .map(|card| card.id)
-            .filter(|id| *id >= 0)
-            .max()
-            .unwrap_or(0) as usize;
+        let max_canvas_id = idx.max_card_id();
         let mut canvas_cards = vec![0u64; (max_canvas_id >> 6) + 1];
         for &card_id in &user.user_mysekai_canvas_bonus_cards {
             if card_id >= 0 && card_id as usize <= max_canvas_id {
@@ -385,16 +373,28 @@ pub(crate) fn build_power_batch(
     results
 }
 
+#[cfg(test)]
 pub(crate) fn build_power_batch_into(
     inputs: &[PowerInput<'_>],
     ctx: &PreparedPowerContext,
     idx: &PoolIndexes,
     results: &mut Vec<PowerResult>,
 ) {
+    build_power_batch_from_fn(inputs.len(), |index| inputs[index], ctx, idx, results);
+}
+
+pub(crate) fn build_power_batch_from_fn<'a>(
+    input_count: usize,
+    mut input_at: impl FnMut(usize) -> PowerInput<'a>,
+    ctx: &PreparedPowerContext,
+    idx: &PoolIndexes,
+    results: &mut Vec<PowerResult>,
+) {
     results.clear();
-    results.reserve(inputs.len());
+    results.reserve(input_count);
     let backend = SimdBackend::detect();
-    for block in inputs.chunks(16) {
+    for block_start in (0..input_count).step_by(16) {
+        let block_len = (input_count - block_start).min(16);
         let mut base_dims = [[0i32; 16]; 3];
         let mut base_sum = [0i32; 16];
         let mut character_rates = [0f32; 16];
@@ -407,8 +407,8 @@ pub(crate) fn build_power_batch_into(
         let mut primary_unit_lanes = 0u16;
         let mut secondary_unit_lanes = 0u16;
         let mut lane = 0usize;
-        while lane < block.len() {
-            let input = block[lane];
+        while lane < block_len {
+            let input = input_at(block_start + lane);
             let base = base_power_dims(input.user_card, input.master, ctx, idx);
             base_dims[0][lane] = base[0];
             base_dims[1][lane] = base[1];
@@ -438,7 +438,7 @@ pub(crate) fn build_power_batch_into(
                 &character_rates,
                 &fixture_rates,
                 &gate_rates,
-                block.len(),
+                block_len,
             )
         };
         let mut primary_area_sums = [[0i32; 16]; 4];
@@ -472,8 +472,8 @@ pub(crate) fn build_power_batch_into(
             member_key += 1;
         }
         lane = 0;
-        while lane < block.len() {
-            let input = block[lane];
+        while lane < block_len {
+            let input = input_at(block_start + lane);
             let character_sum = common.character_bonus[lane];
             let fixture = common.fixture_bonus[lane];
             let gate = common.gate_bonus[lane];
