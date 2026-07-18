@@ -10,6 +10,22 @@ use super::types::{DeckResult, SearchParams};
 use super::warm_start::sorted_final_chapter_leaders;
 
 const EP_DENSE_BREAK_STRIDE: usize = 4;
+const EP_SHADOW_BLOCK_WIDTH: usize = 16;
+const EP_SHADOW_MIN_DEPTH: usize = 3;
+
+#[derive(Clone, Copy)]
+struct EpShadowBlock {
+    upper_bounds: [u64; EP_SHADOW_BLOCK_WIDTH],
+}
+
+impl EpShadowBlock {
+    #[inline(always)]
+    const fn new() -> Self {
+        Self {
+            upper_bounds: [0; EP_SHADOW_BLOCK_WIDTH],
+        }
+    }
+}
 
 /// DFS 搜索统计。
 #[derive(Clone, Debug, Default)]
@@ -112,7 +128,7 @@ fn dfs_search_seeded_inner(
         tracker: &mut tracker,
         node_count: 0,
         stats: SearchStats::default(),
-        avx512_candidate_mask: super::simd::avx512_candidate_mask_available(),
+        avx512_candidate_mask: crate::simd::avx512_available(),
     };
     let mut deck = [CardIdx::new(0); DECK_SIZE];
 
@@ -486,6 +502,13 @@ impl SearchState<'_> {
             && self.ctx.enforce_char_uniqueness
             && self.ctx.fixed_card_ids.is_empty()
             && self.ctx.fixed_character_ids.is_empty();
+        if use_multi_score_event_fast_path
+            && use_avx512_candidate_mask
+            && depth >= EP_SHADOW_MIN_DEPTH
+        {
+            self.recurse_ep_multi_shadow(depth, start, deck, used, partial, slots, threshold);
+            return;
+        }
         let mut mask_block_start = usize::MAX;
         let mut mask_block = 0u16;
         let mut dense = start;
@@ -524,7 +547,7 @@ impl SearchState<'_> {
                     mask_block_start = block_start;
                     if block_start + 16 <= self.pool.count() {
                         mask_block = unsafe {
-                            super::simd::unused_character_mask_16(
+                            crate::simd::unused_character_mask_16_avx512_unchecked(
                                 self.pool.char_ids().as_ptr().add(block_start),
                                 used.bits(),
                             )
@@ -565,14 +588,26 @@ impl SearchState<'_> {
             self.stats.ep_candidates += 1;
 
             let dense_ub_global = if use_multi_score_event_fast_path {
-                self.suffix.dense_candidate_ceiling_multi_score_event(
+                let dense_upper = self.suffix.dense_candidate_ceiling_multi_score_event(
                     dense,
                     &partial,
                     card_power,
                     card_bonus,
                     card_skill_u32,
                     slots,
-                )
+                );
+                if dense_upper <= threshold || slots < 3 {
+                    dense_upper
+                } else {
+                    dense_upper.min(self.suffix.dense_candidate_joint_ceiling_multi_score_event(
+                        dense,
+                        &partial,
+                        card_power,
+                        card_bonus,
+                        card_skill_u32,
+                        slots,
+                    ))
+                }
             } else {
                 self.suffix.dense_candidate_ceiling(
                     dense,
@@ -684,6 +719,207 @@ impl SearchState<'_> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn recurse_ep_multi_shadow(
+        &mut self,
+        depth: usize,
+        start: usize,
+        deck: &mut [CardIdx; DECK_SIZE],
+        used: UsedSet,
+        partial: PartialDeck,
+        slots: usize,
+        mut threshold: u64,
+    ) {
+        let count = self.pool.count();
+        let mut dense = start;
+        while dense < count {
+            if self.timed_out() {
+                return;
+            }
+
+            let block_len = (count - dense).min(EP_SHADOW_BLOCK_WIDTH);
+            let mut legal_mask = if block_len == EP_SHADOW_BLOCK_WIDTH {
+                unsafe {
+                    crate::simd::unused_character_mask_16_avx512_unchecked(
+                        self.pool.char_ids().as_ptr().add(dense),
+                        used.bits(),
+                    )
+                }
+            } else {
+                let mut mask = 0u16;
+                let mut lane = 0usize;
+                while lane < block_len {
+                    let card = CardIdx::new((dense + lane) as u16);
+                    if !used.contains(self.pool.char_id(card)) {
+                        mask |= 1u16 << lane;
+                    }
+                    lane += 1;
+                }
+                mask
+            };
+            let mut block = EpShadowBlock::new();
+            let block_start = dense;
+            let mut lane = 0usize;
+            while lane < block_len {
+                if lane % EP_DENSE_BREAK_STRIDE == 0 {
+                    let ceil = self.suffix.dense_suffix_ceiling_multi_score_event(
+                        block_start + lane,
+                        &partial,
+                        slots,
+                    );
+                    if ceil <= threshold {
+                        self.stats.mono_break_prunes += 1;
+                        legal_mask &= (1u16 << lane).wrapping_sub(1);
+                        break;
+                    }
+                }
+
+                if legal_mask & (1u16 << lane) != 0 {
+                    let candidate_dense = block_start + lane;
+                    let card = CardIdx::new(candidate_dense as u16);
+                    let card_power = self.pool.power_max(card);
+                    let card_skill = self.pool.skill_max(card);
+                    let card_bonus = self.pool.event_bonus(card).total_ceil();
+                    block.upper_bounds[lane] =
+                        self.suffix.dense_candidate_ceiling_multi_score_event(
+                            candidate_dense + 1,
+                            &partial,
+                            card_power,
+                            card_bonus,
+                            card_skill as u32,
+                            slots,
+                        );
+                    self.stats.ep_candidates += 1;
+                }
+                lane += 1;
+            }
+
+            if legal_mask == 0 {
+                if lane < block_len {
+                    break;
+                }
+                dense += block_len;
+                continue;
+            }
+
+            let mut surviving = legal_mask
+                & unsafe {
+                    crate::simd::upper_bound_mask_16_avx512_unchecked(
+                        block.upper_bounds.as_ptr(),
+                        threshold,
+                    )
+                };
+            self.stats.ep_continue_prunes += (legal_mask ^ surviving).count_ones() as u64;
+
+            if surviving != 0 {
+                let first_lane = highest_upper_bound_lane(&block.upper_bounds, surviving);
+                surviving &= !(1u16 << first_lane);
+                self.explore_ep_shadow_lane(
+                    depth,
+                    deck,
+                    used,
+                    partial,
+                    block_start,
+                    first_lane,
+                    slots,
+                );
+                threshold = threshold.max(self.tracker.threshold());
+
+                let refreshed = unsafe {
+                    crate::simd::upper_bound_mask_16_avx512_unchecked(
+                        block.upper_bounds.as_ptr(),
+                        threshold,
+                    )
+                };
+                let filtered = surviving & !refreshed;
+                self.stats.ep_continue_prunes += filtered.count_ones() as u64;
+                surviving &= refreshed;
+
+                while surviving != 0 {
+                    let next_lane = surviving.trailing_zeros() as usize;
+                    surviving &= surviving - 1;
+                    self.explore_ep_shadow_lane(
+                        depth,
+                        deck,
+                        used,
+                        partial,
+                        block_start,
+                        next_lane,
+                        slots,
+                    );
+                    let new_threshold = self.tracker.threshold();
+                    if new_threshold > threshold {
+                        threshold = new_threshold;
+                        let refreshed = unsafe {
+                            crate::simd::upper_bound_mask_16_avx512_unchecked(
+                                block.upper_bounds.as_ptr(),
+                                threshold,
+                            )
+                        };
+                        let filtered = surviving & !refreshed;
+                        self.stats.ep_continue_prunes += filtered.count_ones() as u64;
+                        surviving &= refreshed;
+                    }
+                }
+            }
+
+            if lane < block_len {
+                break;
+            }
+            dense += block_len;
+        }
+    }
+
+    #[inline(always)]
+    fn explore_ep_shadow_lane(
+        &mut self,
+        depth: usize,
+        deck: &mut [CardIdx; DECK_SIZE],
+        used: UsedSet,
+        partial: PartialDeck,
+        block_start: usize,
+        lane: usize,
+        slots: usize,
+    ) {
+        self.stats.ep_explored += 1;
+        let candidate_dense = block_start + lane;
+        let card = CardIdx::new(candidate_dense as u16);
+        unsafe {
+            *deck.get_unchecked_mut(depth) = card;
+        }
+
+        if slots == 1 {
+            self.stats.leaf_nodes += 1;
+            if let Some(score) = leaf_evaluate_checked(self.pool, self.ctx, deck) {
+                self.tracker.insert(DeckResult::new(*deck, score));
+            }
+            return;
+        }
+
+        let char_id = self.pool.char_id(card);
+        let mut next_used = used;
+        next_used.insert(char_id);
+        let card_power = self.pool.power_max(card);
+        let card_skill = self.pool.skill_max(card);
+        let card_bonus = self.pool.event_bonus(card).total_ceil();
+        let next_partial = PartialDeck {
+            power: partial.power + card_power,
+            skill: partial.skill + card_skill as u32,
+            bonus: partial.bonus + card_bonus,
+            max_skill: partial.max_skill.max(card_skill),
+            limited_count: partial.limited_count,
+        };
+        self.recurse(
+            depth + 1,
+            candidate_dense + 1,
+            deck,
+            next_used,
+            next_partial,
+            None,
+        );
+    }
+
     #[inline(always)]
     fn recurse_simple(
         &mut self,
@@ -735,12 +971,14 @@ impl SearchState<'_> {
 
     #[inline(always)]
     fn timed_out(&mut self) -> bool {
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
         self.node_count = self.node_count.wrapping_add(1);
         if self.node_count & 1023 != 0 {
             return false;
         }
-        self.deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
+        Instant::now() >= deadline
     }
 
     #[inline(always)]
@@ -904,6 +1142,24 @@ pub(super) struct TopKTracker {
     keys: Vec<[u16; DECK_SIZE]>,
 }
 
+#[inline(always)]
+fn highest_upper_bound_lane(upper_bounds: &[u64; EP_SHADOW_BLOCK_WIDTH], mask: u16) -> usize {
+    let mut remaining = mask;
+    let mut best_lane = remaining.trailing_zeros() as usize;
+    let mut best = upper_bounds[best_lane];
+    remaining &= remaining - 1;
+    while remaining != 0 {
+        let lane = remaining.trailing_zeros() as usize;
+        let upper = upper_bounds[lane];
+        if upper > best {
+            best = upper;
+            best_lane = lane;
+        }
+        remaining &= remaining - 1;
+    }
+    best_lane
+}
+
 impl TopKTracker {
     pub(super) fn new(top_k: usize, pool: &CardPool) -> Self {
         Self {
@@ -923,6 +1179,11 @@ impl TopKTracker {
     }
 
     pub(super) fn insert(&mut self, candidate: DeckResult) {
+        if self.results.len() >= self.top_k
+            && !deck_result_cmp(&candidate, self.results.last().unwrap()).is_lt()
+        {
+            return;
+        }
         let candidate_key = self.game_card_set_key(&candidate);
         if let Some(existing_pos) = self.keys.iter().position(|key| *key == candidate_key) {
             if !deck_result_cmp(&candidate, &self.results[existing_pos]).is_lt() {

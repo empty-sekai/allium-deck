@@ -14,11 +14,6 @@ include = [
     "/data/**",
 ]
 
-[workspace]
-members = ["wasm"]
-default-members = ["."]
-resolver = "2"
-
 [lib]
 crate-type = ["rlib"]
 

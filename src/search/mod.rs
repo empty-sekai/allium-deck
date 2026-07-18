@@ -5,7 +5,6 @@ pub mod dfs;
 pub mod dominance;
 pub mod evaluate;
 mod final_chapter;
-mod simd;
 pub mod suffix;
 pub mod types;
 pub mod warm_start;
@@ -23,6 +22,80 @@ pub use warm_start::warm_start;
 
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{ScoreTarget, DECK_SIZE};
+
+/// Reusable immutable search data for one `CardPool` / `SearchContext` pair.
+///
+/// Preparing performs dominance compaction, suffix-table construction and warm
+/// seeding once. Callers that already cache the pool can keep this beside it and
+/// execute repeated exact searches without rebuilding those structures.
+pub struct PreparedSearch {
+    pool: CardPool,
+    ctx: SearchContext,
+    original_indices: Vec<CardIdx>,
+    alternatives: Vec<Vec<CardIdx>>,
+    suffix: SuffixBound,
+    warm_seeds: Vec<DeckResult>,
+    max_top_k: usize,
+}
+
+impl PreparedSearch {
+    /// Prepares the standard character-unique DFS path.
+    ///
+    /// Specialized Power/Skill, challenge and Final Chapter searches keep their
+    /// existing entry points and return `None` here.
+    pub fn build(pool: &CardPool, ctx: &SearchContext, max_top_k: usize) -> Option<Self> {
+        if max_top_k == 0
+            || pool.count() < DECK_SIZE
+            || matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill)
+            || !ctx.enforce_char_uniqueness
+            || ctx.is_final_chapter
+        {
+            return None;
+        }
+
+        let dominance = eliminate_dominated(pool, ctx);
+        let suffix = SuffixBound::build_prepared(&dominance.pool, &dominance.ctx);
+        let warm_seeds = warm_start::warm_start_seeds(&dominance.pool, &dominance.ctx, max_top_k);
+        Some(Self {
+            pool: dominance.pool,
+            ctx: dominance.ctx,
+            original_indices: dominance.original_indices,
+            alternatives: dominance.alternatives,
+            suffix,
+            warm_seeds,
+            max_top_k,
+        })
+    }
+
+    /// Executes an exact search when `params.top_k` is covered by this plan.
+    pub fn search_instrumented(
+        &self,
+        original_pool: &CardPool,
+        original_ctx: &SearchContext,
+        params: &SearchParams,
+    ) -> Option<(Vec<DeckResult>, SearchStats)> {
+        if params.top_k == 0 || params.top_k > self.max_top_k {
+            return None;
+        }
+        let seeds = self.warm_seeds.iter().copied().take(params.top_k).collect();
+        let (compacted_results, stats) = dfs::dfs_search_instrumented_with_seeds(
+            &self.pool,
+            &self.ctx,
+            &self.suffix,
+            params,
+            seeds,
+        );
+        let remapped = remap_results(compacted_results, &self.original_indices);
+        let expanded = expand_dominated_alternatives(
+            original_pool,
+            original_ctx,
+            &self.alternatives,
+            params,
+            remapped,
+        );
+        Some((expanded, stats))
+    }
+}
 
 /// 执行完整搜索流水线：dominance 裁剪、上界构建、热启动、DFS/B&B。
 pub fn search(pool: &CardPool, ctx: &SearchContext, params: &SearchParams) -> Vec<DeckResult> {
@@ -586,7 +659,7 @@ mod tests {
     use crate::pool::{
         DiffSkill, EventBonusExact, PoolBuilder, RefSkill, SkillSlot, UnitCountSkill,
     };
-    use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
+    use crate::types::{EventType, LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 
     #[derive(Clone, Copy)]
     struct TestCard {
@@ -857,6 +930,75 @@ mod tests {
 
         let score_value = leaf_evaluate(&pool, &ctx(ScoreTarget::Score), &deck);
         assert_eq!(score_value, ((6000u64) << 32) | 6000u64);
+    }
+
+    #[test]
+    fn prepared_multi_event_search_matches_standard_pipeline() {
+        let mut cards = five_unique_cards().to_vec();
+        cards.extend([
+            TestCard {
+                char_id: 5,
+                attr: 1,
+                unit_mask: 1,
+                game_id: 150,
+                power: 650,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 65,
+                },
+                base_bonus: 20,
+                limited_bonus: 0,
+                power_max: 650,
+                skill_max: 65,
+            },
+            TestCard {
+                char_id: 6,
+                attr: 2,
+                unit_mask: 1,
+                game_id: 151,
+                power: 625,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 72,
+                },
+                base_bonus: 35,
+                limited_bonus: 0,
+                power_max: 625,
+                skill_max: 72,
+            },
+            TestCard {
+                char_id: 0,
+                attr: 3,
+                unit_mask: 1,
+                game_id: 152,
+                power: 620,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: 60,
+                },
+                base_bonus: 45,
+                limited_bonus: 0,
+                power_max: 620,
+                skill_max: 60,
+            },
+        ]);
+        let pool = build_pool(&cards);
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Score);
+        search_ctx.live_type = LiveType::Multi;
+        search_ctx.event_type = Some(EventType::Marathon);
+        search_ctx.skill_scores[1] = [10.0; DECK_SIZE + 1];
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
+
+        let expected = search(&pool, &search_ctx, &params);
+        let prepared = PreparedSearch::build(&pool, &search_ctx, params.top_k).unwrap();
+        let (actual, _) = prepared
+            .search_instrumented(&pool, &search_ctx, &params)
+            .unwrap();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]

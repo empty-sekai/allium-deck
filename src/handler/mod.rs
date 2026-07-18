@@ -8,9 +8,11 @@ mod skill;
 mod support_bonus;
 pub mod types;
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
 use crate::pool::EventBonusExact;
 use crate::search::{SearchContext, SupportDeck};
@@ -24,7 +26,9 @@ use event_bonus::{
 pub use gather::FullPrecisionCard;
 use gather::{sort_and_gather, CardIntermediate};
 use music::build_music_params;
-use power::{build_power, resolve_unit_mask};
+use power::{
+    build_power_batch_into, resolve_unit_mask, PowerInput, PowerResult, PreparedPowerContext,
+};
 use skill::{build_skill, is_bfes_skill_pair, SkillResult, SkillState};
 use support_bonus::calc_wb_support_bonus;
 use types::{
@@ -55,6 +59,47 @@ impl Display for BuildError {
 }
 
 impl Error for BuildError {}
+
+/// Reusable masterdata indexes for repeated pool builds.
+///
+/// Construct this once for an immutable `GameData` snapshot, then reuse it
+/// across accounts and parameter sets to avoid rebuilding masterdata indexes.
+#[derive(Clone)]
+pub struct PreparedGameIndexes {
+    indexes: Arc<index::PoolIndexes>,
+}
+
+impl PreparedGameIndexes {
+    pub fn new(game: &types::GameData<'_>) -> Self {
+        Self {
+            indexes: Arc::new(index::PoolIndexes::build(game)),
+        }
+    }
+}
+
+pub struct PreparedGameData<'a> {
+    game: types::GameData<'a>,
+    indexes: Arc<index::PoolIndexes>,
+}
+
+impl<'a> PreparedGameData<'a> {
+    pub fn new(game: types::GameData<'a>) -> Self {
+        let indexes = PreparedGameIndexes::new(&game);
+        Self::with_indexes(game, &indexes)
+    }
+
+    pub fn with_indexes(game: types::GameData<'a>, indexes: &PreparedGameIndexes) -> Self {
+        Self {
+            game,
+            indexes: Arc::clone(&indexes.indexes),
+        }
+    }
+
+    #[inline]
+    pub fn game(&self) -> &types::GameData<'a> {
+        &self.game
+    }
+}
 
 pub(crate) fn validate_build_params(params: &types::BuildParams) -> Result<(), BuildError> {
     let configs = [
@@ -314,6 +359,196 @@ const GENERAL_TRIM_THRESHOLD: usize = 400;
 const GENERAL_PER_CHAR_KEEP: usize = 10;
 const CHALLENGE_ALL_PER_CHAR_KEEP: usize = 19;
 
+struct PreparedCardBuild<'a> {
+    master: &'a types::MasterCard,
+    user_card: Cow<'a, types::UserCard>,
+    unit_mask: u8,
+    attr: u8,
+    default_image: DefaultImage,
+    after_training: bool,
+    event_bonus: EventBonusExact,
+    has_char_bonus: bool,
+    has_attr_bonus: bool,
+    leader_honor_bonus: u16,
+    leader_limit_bonus: u16,
+    skill_options: [Option<(SkillState, SkillResult)>; 2],
+    skill_state_controls_image: bool,
+}
+
+/// Reusable user and parameter preparation for repeated pool builds.
+pub struct PreparedPoolBuild<'a> {
+    params: types::BuildParams,
+    event_ctx: Option<EventContext>,
+    music: Option<music::MusicParams>,
+    power_ctx: PreparedPowerContext,
+    cards: Vec<PreparedCardBuild<'a>>,
+    honor_bonus: u32,
+    power_scratch: std::sync::Mutex<Vec<PowerResult>>,
+}
+
+impl<'a> PreparedPoolBuild<'a> {
+    pub fn new(
+        user: &'a types::UserProfile,
+        prepared: &'a PreparedGameData<'_>,
+        params: &types::BuildParams,
+    ) -> Result<Self, BuildError> {
+        let game = prepared.game();
+        let indexes = prepared.indexes.as_ref();
+        validate_build_params(params)?;
+        if params.multi_live_score_up_lower_bound.is_some()
+            && !matches!(params.live_type, crate::types::LiveType::Multi)
+        {
+            return Err(BuildError::InvalidConfig(
+                "multi_live_score_up_lower_bound 仅支持 multi live".to_string(),
+            ));
+        }
+        let event_ctx = build_event_context(game, params);
+        if !params.target_bonus_list.is_empty()
+            && !matches!(params.target, crate::types::ScoreTarget::Bonus)
+        {
+            return Err(BuildError::InvalidConfig(
+                "target_bonus_list 仅支持 bonus target".to_string(),
+            ));
+        }
+        if matches!(params.target, crate::types::ScoreTarget::Bonus) {
+            if event_ctx.is_none() {
+                return Err(BuildError::InvalidConfig(
+                    "bonus target 需要活动上下文".to_string(),
+                ));
+            }
+            if params.event_id == Some(crate::types::FINAL_CHAPTER_EVENT_ID) {
+                return Err(BuildError::InvalidConfig(
+                    "终章不支持 bonus target".to_string(),
+                ));
+            }
+        }
+
+        let fixture_bonus_limit = resolve_fixture_bonus_limit(game, event_ctx.as_ref());
+        let music = build_music_params(game, params);
+        let configs = merged_configs(params);
+        let normalized_cards =
+            (!params.fixed_cards.is_empty()).then(|| normalize_user_cards(user, params, game));
+        let configs_are_noop = configs == types::CardConfigSet::default();
+        let power_ctx = PreparedPowerContext::new(user, game, indexes, fixture_bonus_limit);
+        let card_count = normalized_cards
+            .as_ref()
+            .map_or(user.user_cards.len(), Vec::len);
+        let mut cards = Vec::with_capacity(card_count);
+
+        let mut prepare_card = |mut user_card: Cow<'a, types::UserCard>| {
+            let Some(card_data) = indexes.card_data(user_card.card_id) else {
+                return;
+            };
+            let master = &card_data.master;
+            if !configs_are_noop {
+                if !apply_card_config(
+                    user_card.to_mut(),
+                    master,
+                    &configs,
+                    game.card_rarities,
+                    game.card_episodes,
+                ) {
+                    return;
+                }
+            }
+            if card_data.unit_mask == 0 {
+                return;
+            }
+            let Some(attr) = card_data.attr else {
+                return;
+            };
+            let default_image_kind = default_image_kind(&user_card.default_image);
+            let after_training = is_after_training(&user_card.special_training_status);
+            let default_image =
+                if matches!(default_image_kind, DefaultImage::SpecialTraining) || after_training {
+                    DefaultImage::SpecialTraining
+                } else {
+                    DefaultImage::Original
+                };
+            let (event_bonus, has_char_bonus, has_attr_bonus) = event_ctx
+                .as_ref()
+                .map(|ctx| {
+                    build_card_event_bonus(
+                        user_card.as_ref(),
+                        master,
+                        attr,
+                        card_data.primary_unit,
+                        card_data.support_unit,
+                        card_data.support_unit_unrestricted,
+                        ctx,
+                    )
+                })
+                .unwrap_or((EventBonusExact::default(), false, false));
+            let leader_honor_bonus = event_ctx
+                .as_ref()
+                .map(|ctx| build_leader_honor_bonus(user, master, ctx))
+                .unwrap_or(0);
+            let leader_limit_bonus = event_ctx
+                .as_ref()
+                .map(|ctx| build_leader_limit_bonus(master, ctx))
+                .unwrap_or(0);
+            let character_rank = power_ctx.character_rank(master.character_id);
+            let (skill_states, skill_state_count) =
+                skill_states_for_card(default_image_kind, after_training, master, params);
+            let mut skill_options: [Option<(SkillState, SkillResult)>; 2] = [None, None];
+            for (slot, &skill_state) in skill_options
+                .iter_mut()
+                .zip(skill_states.iter())
+                .take(skill_state_count)
+            {
+                *slot = Some((
+                    skill_state,
+                    build_skill(
+                        user_card.as_ref(),
+                        master,
+                        game,
+                        indexes,
+                        character_rank,
+                        event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
+                        skill_state,
+                    ),
+                ));
+            }
+            let skill_state_controls_image =
+                collapse_non_bfes_skill_states(&mut skill_options, skill_state_count);
+            cards.push(PreparedCardBuild {
+                master,
+                user_card,
+                unit_mask: card_data.unit_mask,
+                attr,
+                default_image,
+                after_training,
+                event_bonus,
+                has_char_bonus,
+                has_attr_bonus,
+                leader_honor_bonus,
+                leader_limit_bonus,
+                skill_options,
+                skill_state_controls_image,
+            });
+        };
+        if let Some(normalized_cards) = normalized_cards {
+            for user_card in normalized_cards {
+                prepare_card(Cow::Owned(user_card));
+            }
+        } else {
+            for user_card in &user.user_cards {
+                prepare_card(Cow::Borrowed(user_card));
+            }
+        }
+
+        Ok(Self {
+            params: params.clone(),
+            event_ctx,
+            music,
+            power_ctx,
+            power_scratch: std::sync::Mutex::new(Vec::with_capacity(cards.len())),
+            cards,
+            honor_bonus: compute_honor_bonus(user, indexes),
+        })
+    }
+}
+
 fn ep_prefilter_keep(
     card: &CardIntermediate,
     is_world_bloom: bool,
@@ -398,10 +633,11 @@ fn ep_prefilter_keep_with_params(
     is_world_bloom: bool,
     is_final_chapter: bool,
 ) -> bool {
-    if params.fixed_cards.contains(&card.game_card_id)
-        || params
-            .fixed_characters
-            .contains(&(card.character_id as i32))
+    if (!params.fixed_cards.is_empty() && params.fixed_cards.contains(&card.game_card_id))
+        || (!params.fixed_characters.is_empty()
+            && params
+                .fixed_characters
+                .contains(&(card.character_id as i32)))
     {
         return true;
     }
@@ -617,38 +853,24 @@ fn validate_fixed_constraints(
     Ok((fixed_card_ids, fixed_character_ids))
 }
 
-fn user_character_rank(user: &types::UserProfile, character_id: i32) -> i32 {
-    user.user_characters
-        .iter()
-        .find(|entry| entry.character_id == character_id)
-        .map(|entry| entry.character_rank)
-        .unwrap_or(0)
-}
-
 fn skill_states_for_card(
-    user_card: &types::UserCard,
+    default_image_kind: DefaultImage,
+    after_training: bool,
     master: &types::MasterCard,
     params: &types::BuildParams,
-) -> Vec<SkillState> {
+) -> ([SkillState; 2], usize) {
     if params.keep_after_training_state {
-        if matches!(
-            default_image_kind(&user_card.default_image),
-            DefaultImage::SpecialTraining
-        ) {
-            vec![SkillState::AfterTraining]
+        if matches!(default_image_kind, DefaultImage::SpecialTraining) {
+            ([SkillState::AfterTraining, SkillState::AfterTraining], 1)
         } else {
-            vec![SkillState::BeforeTraining]
+            ([SkillState::BeforeTraining, SkillState::BeforeTraining], 1)
         }
     } else if master.special_training_skill_id.is_some() {
-        vec![SkillState::AfterTraining, SkillState::BeforeTraining]
-    } else if matches!(
-        default_image_kind(&user_card.default_image),
-        DefaultImage::SpecialTraining
-    ) || is_after_training(&user_card.special_training_status)
-    {
-        vec![SkillState::AfterTraining]
+        ([SkillState::AfterTraining, SkillState::BeforeTraining], 2)
+    } else if matches!(default_image_kind, DefaultImage::SpecialTraining) || after_training {
+        ([SkillState::AfterTraining, SkillState::AfterTraining], 1)
     } else {
-        vec![SkillState::BeforeTraining]
+        ([SkillState::BeforeTraining, SkillState::BeforeTraining], 1)
     }
 }
 
@@ -661,42 +883,22 @@ fn card_can_special_train(master: &types::MasterCard) -> bool {
 }
 
 fn collapse_non_bfes_skill_states(
-    mut states: Vec<(SkillState, SkillResult)>,
-) -> Vec<(SkillState, SkillResult)> {
-    if states.len() != 2 {
-        return states;
+    states: &mut [Option<(SkillState, SkillResult)>; 2],
+    state_count: usize,
+) -> bool {
+    if state_count != 2 {
+        return false;
     }
-    let after_pos = states
-        .iter()
-        .position(|(state, _)| matches!(state, SkillState::AfterTraining));
-    let before_pos = states
-        .iter()
-        .position(|(state, _)| matches!(state, SkillState::BeforeTraining));
-    let (Some(after_pos), Some(before_pos)) = (after_pos, before_pos) else {
-        return states;
-    };
-    if is_bfes_skill_pair(&states[after_pos].1, &states[before_pos].1) {
-        return states;
+    let is_bfes = is_bfes_skill_pair(
+        &states[0].as_ref().unwrap().1,
+        &states[1].as_ref().unwrap().1,
+    );
+    if !is_bfes {
+        let keep_after =
+            states[0].as_ref().unwrap().1.skill_max > states[1].as_ref().unwrap().1.skill_max;
+        states[usize::from(keep_after)] = None;
     }
-    let keep_pos = if states[after_pos].1.skill_max > states[before_pos].1.skill_max {
-        after_pos
-    } else {
-        before_pos
-    };
-    let selected = states.swap_remove(keep_pos);
-    vec![selected]
-}
-
-fn default_image_for_user_card(user_card: &types::UserCard) -> DefaultImage {
-    if matches!(
-        default_image_kind(&user_card.default_image),
-        DefaultImage::SpecialTraining
-    ) || is_after_training(&user_card.special_training_status)
-    {
-        DefaultImage::SpecialTraining
-    } else {
-        DefaultImage::Original
-    }
+    is_bfes
 }
 
 fn build_support_deck(
@@ -1036,14 +1238,10 @@ fn build_search_context(
     }
 }
 
-fn compute_honor_bonus(user: &types::UserProfile, game: &types::GameData<'_>) -> u32 {
+fn compute_honor_bonus(user: &types::UserProfile, indexes: &index::PoolIndexes) -> u32 {
     user.user_honors
         .iter()
-        .filter_map(|uh| {
-            let honor = game.honors.iter().find(|h| h.id == uh.honor_id)?;
-            let level = honor.levels.iter().find(|lv| lv.level == uh.level)?;
-            Some(level.bonus.max(0) as u32)
-        })
+        .map(|honor| indexes.honor_bonus(honor.honor_id, honor.level))
         .sum()
 }
 
@@ -1064,7 +1262,17 @@ pub fn build_card_pool(
     game: &types::GameData<'_>,
     params: &types::BuildParams,
 ) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
-    let (pool, context, _) = build_card_pool_with_details(user, game, params)?;
+    let prepared = PreparedGameData::new(*game);
+    build_card_pool_prepared(user, &prepared, params)
+}
+
+/// Build a search pool while reusing immutable masterdata indexes.
+pub fn build_card_pool_prepared(
+    user: &types::UserProfile,
+    prepared: &PreparedGameData<'_>,
+    params: &types::BuildParams,
+) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
+    let (pool, context, _) = build_card_pool_with_details_prepared(user, prepared, params)?;
     Ok((pool, context))
 }
 
@@ -1074,115 +1282,77 @@ pub fn build_card_pool_with_details(
     game: &types::GameData<'_>,
     params: &types::BuildParams,
 ) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
-    validate_build_params(params)?;
-    if params.multi_live_score_up_lower_bound.is_some()
-        && !matches!(params.live_type, crate::types::LiveType::Multi)
-    {
-        return Err(BuildError::InvalidConfig(
-            "multi_live_score_up_lower_bound 仅支持 multi live".to_string(),
-        ));
-    }
-    let event_ctx = build_event_context(game, params);
-    if !params.target_bonus_list.is_empty()
-        && !matches!(params.target, crate::types::ScoreTarget::Bonus)
-    {
-        return Err(BuildError::InvalidConfig(
-            "target_bonus_list 仅支持 bonus target".to_string(),
-        ));
-    }
-    if matches!(params.target, crate::types::ScoreTarget::Bonus) {
-        if event_ctx.is_none() {
-            return Err(BuildError::InvalidConfig(
-                "bonus target 需要活动上下文".to_string(),
-            ));
-        }
-        if params.event_id == Some(crate::types::FINAL_CHAPTER_EVENT_ID) {
-            return Err(BuildError::InvalidConfig(
-                "终章不支持 bonus target".to_string(),
-            ));
-        }
-    }
-    let fixture_bonus_limit = resolve_fixture_bonus_limit(game, event_ctx.as_ref());
-    let music = build_music_params(game, params);
-    let configs = merged_configs(params);
-    let normalized_cards = normalize_user_cards(user, params, game);
-    let indexes = index::PoolIndexes::build(game);
-    let mut cards = Vec::new();
-    let mut support_cards = Vec::new();
+    let prepared = PreparedGameData::new(*game);
+    build_card_pool_with_details_prepared(user, &prepared, params)
+}
 
-    for original_user_card in normalized_cards {
-        let Some(master) = indexes.card(original_user_card.card_id) else {
-            continue;
-        };
-        let master = enrich_master(master, game);
-        let mut user_card = original_user_card.clone();
-        if !apply_card_config(
-            &mut user_card,
-            &master,
-            &configs,
-            game.card_rarities,
-            game.card_episodes,
-        ) {
-            continue;
-        }
+/// Build a search pool with display details while reusing masterdata indexes.
+pub fn build_card_pool_with_details_prepared(
+    user: &types::UserProfile,
+    prepared: &PreparedGameData<'_>,
+    params: &types::BuildParams,
+) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
+    let build = PreparedPoolBuild::new(user, prepared, params)?;
+    build_card_pool_with_details_fully_prepared(prepared, &build)
+}
 
-        let unit_mask_raw = resolve_unit_mask(&master, game);
-        if unit_mask_raw == 0 {
-            continue;
-        }
-        let Some(attr) = parse_attr_code(&master.attr).and_then(attr_to_pool_index) else {
-            continue;
-        };
+/// Build a search pool from reusable user, parameter, and masterdata preparation.
+pub fn build_card_pool_fully_prepared(
+    prepared: &PreparedGameData<'_>,
+    build: &PreparedPoolBuild<'_>,
+) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
+    let (pool, context, _) = build_card_pool_with_details_fully_prepared(prepared, build)?;
+    Ok((pool, context))
+}
 
-        let power = build_power(
-            &user_card,
-            &master,
-            game,
-            user,
-            &indexes,
-            fixture_bonus_limit,
-        );
-        let (event_bonus, has_char_bonus, has_attr_bonus) = event_ctx
-            .as_ref()
-            .map(|ctx| build_card_event_bonus(&user_card, &master, game, ctx))
-            .unwrap_or((EventBonusExact::default(), false, false));
-        let leader_honor_bonus = event_ctx
-            .as_ref()
-            .map(|ctx| build_leader_honor_bonus(user, &master, ctx))
-            .unwrap_or(0);
-        let leader_limit_bonus = event_ctx
-            .as_ref()
-            .map(|ctx| build_leader_limit_bonus(&master, ctx))
-            .unwrap_or(0);
-        let character_rank = user_character_rank(user, master.character_id);
+/// Build a pool with display details from reusable preparation.
+pub fn build_card_pool_with_details_fully_prepared(
+    prepared: &PreparedGameData<'_>,
+    build: &PreparedPoolBuild<'_>,
+) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
+    let game = prepared.game();
+    let indexes = prepared.indexes.as_ref();
+    let params = &build.params;
+    let event_ctx = build.event_ctx.as_ref();
+    let music = build.music.as_ref();
+    let prepared_cards = &build.cards;
+    let mut cards = Vec::with_capacity(prepared_cards.len());
+    let mut support_cards = Vec::with_capacity(prepared_cards.len());
 
-        let skill_options = skill_states_for_card(&user_card, &master, params)
-            .into_iter()
-            .map(|skill_state| {
-                let skill = build_skill(
-                    &user_card,
-                    &master,
-                    game,
-                    &indexes,
-                    character_rank,
-                    event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
-                    skill_state,
-                );
-                (skill_state, skill)
-            })
-            .collect::<Vec<_>>();
-        let skill_state_controls_image = skill_options.len() == 2
-            && is_bfes_skill_pair(&skill_options[0].1, &skill_options[1].1);
-        let user_default_image = default_image_for_user_card(&user_card);
+    let power_inputs = prepared_cards
+        .iter()
+        .map(|card| PowerInput {
+            user_card: card.user_card.as_ref(),
+            master: card.master,
+            unit_mask: card.unit_mask,
+            attr: card.attr,
+        })
+        .collect::<Vec<_>>();
+    let mut powers = build.power_scratch.lock().unwrap();
+    build_power_batch_into(&power_inputs, &build.power_ctx, indexes, &mut powers);
+    drop(power_inputs);
 
-        for (skill_state, skill) in collapse_non_bfes_skill_states(skill_options) {
+    for (prepared_card, power) in prepared_cards.iter().zip(powers.drain(..)) {
+        let master = prepared_card.master;
+        let user_card = prepared_card.user_card.as_ref();
+        let unit_mask_raw = prepared_card.unit_mask;
+        let attr = prepared_card.attr;
+        let event_bonus = prepared_card.event_bonus.clone();
+        let has_char_bonus = prepared_card.has_char_bonus;
+        let has_attr_bonus = prepared_card.has_attr_bonus;
+        let leader_honor_bonus = prepared_card.leader_honor_bonus;
+        let leader_limit_bonus = prepared_card.leader_limit_bonus;
+        let skill_options = prepared_card.skill_options.clone();
+        let skill_state_controls_image = prepared_card.skill_state_controls_image;
+
+        for (skill_state, skill) in skill_options.into_iter().flatten() {
             let default_image = if skill_state_controls_image {
                 match skill_state {
                     SkillState::BeforeTraining => DefaultImage::Original,
                     SkillState::AfterTraining => DefaultImage::SpecialTraining,
                 }
             } else {
-                user_default_image
+                prepared_card.default_image
             };
 
             let ep_sort_key =
@@ -1194,7 +1364,7 @@ pub fn build_card_pool_with_details(
                 attr,
                 unit_mask_raw,
                 default_image,
-                after_training: is_after_training(&user_card.special_training_status),
+                after_training: prepared_card.after_training,
                 skill_state_controls_image,
                 master_rank: user_card.master_rank,
                 skill_level: user_card.skill_level,
@@ -1216,7 +1386,7 @@ pub fn build_card_pool_with_details(
     }
 
     if params.filter_other_unit {
-        if let Some(unit) = event_ctx.as_ref().and_then(|ctx| ctx.filter_unit) {
+        if let Some(unit) = event_ctx.and_then(|ctx| ctx.filter_unit) {
             if let Some(unit_index) = types::unit_to_pool_index(unit) {
                 let wanted = 1u8 << unit_index;
                 let piapro = types::unit_to_pool_index(crate::types::Unit::Piapro)
@@ -1229,12 +1399,9 @@ pub fn build_card_pool_with_details(
         }
     }
 
-    let is_world_bloom = event_ctx
-        .as_ref()
-        .is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom));
-    let is_final_chapter = event_ctx
-        .as_ref()
-        .is_some_and(|ctx| ctx.event_id == FINAL_CHAPTER_EVENT_ID);
+    let is_world_bloom =
+        event_ctx.is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom));
+    let is_final_chapter = event_ctx.is_some_and(|ctx| ctx.event_id == FINAL_CHAPTER_EVENT_ID);
     if event_ctx.is_some()
         && !matches!(
             params.target,
@@ -1297,7 +1464,6 @@ pub fn build_card_pool_with_details(
 
     let effective_live_type = if matches!(params.live_type, crate::types::LiveType::Multi)
         && event_ctx
-            .as_ref()
             .is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::CheerfulCarnival))
     {
         crate::types::LiveType::Cheerful
@@ -1317,12 +1483,12 @@ pub fn build_card_pool_with_details(
         &support_cards,
         game,
         params,
-        event_ctx.as_ref(),
-        music.as_ref(),
+        event_ctx,
+        music,
         fixed_card_ids,
         fixed_character_ids,
     );
-    search_ctx.honor_bonus = compute_honor_bonus(user, game);
+    search_ctx.honor_bonus = build.honor_bonus;
     Ok((pool, search_ctx, full))
 }
 
@@ -1707,7 +1873,24 @@ mod tests {
         };
 
         let idx = index::PoolIndexes::build(&game);
-        let result = build_power(&sample_user_card(1), &cards[0], &game, &user, &idx, None);
+        let power_ctx = PreparedPowerContext::new(&user, &game, &idx, None);
+        let result = power::build_power(
+            &sample_user_card(1),
+            &cards[0],
+            &power_ctx,
+            &idx,
+            idx.unit_mask(cards[0].id),
+            idx.attr(cards[0].id).unwrap(),
+        );
+        let scalar = power::build_power_scalar_reference(
+            &sample_user_card(1),
+            &cards[0],
+            &power_ctx,
+            &idx,
+            idx.unit_mask(cards[0].id),
+            idx.attr(cards[0].id).unwrap(),
+        );
+        assert_eq!(result, scalar);
         assert_eq!(result.resolved[1][0].area_item_bonus, 6);
         assert_eq!(result.resolved[1][0].total, 309);
     }
@@ -2694,8 +2877,13 @@ mod tests {
         };
 
         assert_eq!(
-            skill_states_for_card(&user_card, &master, &BuildParams::default()),
-            vec![SkillState::AfterTraining]
+            skill_states_for_card(
+                DefaultImage::Original,
+                is_after_training(&user_card.special_training_status),
+                &master,
+                &BuildParams::default(),
+            ),
+            ([SkillState::AfterTraining, SkillState::AfterTraining], 1)
         );
     }
 
@@ -2721,10 +2909,12 @@ mod tests {
             ..before.clone()
         };
 
-        let collapsed = collapse_non_bfes_skill_states(vec![
-            (SkillState::AfterTraining, after),
-            (SkillState::BeforeTraining, before),
-        ]);
+        let mut collapsed = [
+            Some((SkillState::AfterTraining, after)),
+            Some((SkillState::BeforeTraining, before)),
+        ];
+        assert!(!collapse_non_bfes_skill_states(&mut collapsed, 2));
+        let collapsed = collapsed.into_iter().flatten().collect::<Vec<_>>();
 
         assert_eq!(collapsed.len(), 1);
         assert!(matches!(collapsed[0].0, SkillState::BeforeTraining));
@@ -2942,6 +3132,19 @@ mod tests {
         };
 
         let (pool, ctx, details) = build_card_pool_with_details(&user, &game, &params).unwrap();
+        let shared_indexes = PreparedGameIndexes::new(&game);
+        let prepared = PreparedGameData::with_indexes(game, &shared_indexes);
+        let (prepared_pool, prepared_ctx, prepared_details) =
+            build_card_pool_with_details_prepared(&user, &prepared, &params).unwrap();
+        let prepared_build = PreparedPoolBuild::new(&user, &prepared, &params).unwrap();
+        let (fully_prepared_pool, fully_prepared_ctx, fully_prepared_details) =
+            build_card_pool_with_details_fully_prepared(&prepared, &prepared_build).unwrap();
+        assert_eq!(prepared_pool.count(), pool.count());
+        assert_eq!(prepared_ctx, ctx);
+        assert_eq!(prepared_details, details);
+        assert_eq!(fully_prepared_pool.count(), pool.count());
+        assert_eq!(fully_prepared_ctx, ctx);
+        assert_eq!(fully_prepared_details, details);
         assert_eq!(pool.count(), 3);
         assert_eq!(details.len(), pool.count());
         assert!(details

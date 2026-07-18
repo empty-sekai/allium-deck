@@ -826,29 +826,67 @@ pub struct UserHonor {
 
 /// 将单位代码转换为 allium `Unit`。
 pub(crate) fn parse_unit_code(code: &str) -> Option<Unit> {
-    match code.trim().to_ascii_lowercase().as_str() {
-        "light_sound" | "lightsound" | "ln" | "leo_need" | "leoneed" => Some(Unit::LightSound),
-        "idol" | "mmj" | "more_more_jump" | "moremorejump" => Some(Unit::Idol),
-        "street" | "vbs" | "vivids_bad_squad" | "vividsbadsquad" => Some(Unit::Street),
-        "themepark" | "theme_park" | "wonderlands_x_showtime" | "wxs" => Some(Unit::Themepark),
-        "school_refusal" | "schoolrefusal" | "25ji" | "nightcord" => Some(Unit::SchoolRefusal),
-        "piapro" | "virtual_singer" | "vs" => Some(Unit::Piapro),
-        "any" => Some(Unit::Any),
-        "ref" => Some(Unit::Ref),
-        "diff" => Some(Unit::Diff),
-        _ => None,
+    let code = code.trim();
+    let matches = |value: &str| code.eq_ignore_ascii_case(value);
+    if matches("light_sound")
+        || matches("lightsound")
+        || matches("ln")
+        || matches("leo_need")
+        || matches("leoneed")
+    {
+        Some(Unit::LightSound)
+    } else if matches("idol")
+        || matches("mmj")
+        || matches("more_more_jump")
+        || matches("moremorejump")
+    {
+        Some(Unit::Idol)
+    } else if matches("street")
+        || matches("vbs")
+        || matches("vivids_bad_squad")
+        || matches("vividsbadsquad")
+    {
+        Some(Unit::Street)
+    } else if matches("themepark")
+        || matches("theme_park")
+        || matches("wonderlands_x_showtime")
+        || matches("wxs")
+    {
+        Some(Unit::Themepark)
+    } else if matches("school_refusal")
+        || matches("schoolrefusal")
+        || matches("25ji")
+        || matches("nightcord")
+    {
+        Some(Unit::SchoolRefusal)
+    } else if matches("piapro") || matches("virtual_singer") || matches("vs") {
+        Some(Unit::Piapro)
+    } else if matches("any") {
+        Some(Unit::Any)
+    } else if matches("ref") {
+        Some(Unit::Ref)
+    } else if matches("diff") {
+        Some(Unit::Diff)
+    } else {
+        None
     }
 }
 
 /// 将属性代码转换为 allium `Attr`。
 pub(crate) fn parse_attr_code(code: &str) -> Option<Attr> {
-    match code.trim().to_ascii_lowercase().as_str() {
-        "cool" => Some(Attr::Cool),
-        "cute" => Some(Attr::Cute),
-        "happy" => Some(Attr::Happy),
-        "pure" => Some(Attr::Pure),
-        "mysterious" | "mystery" => Some(Attr::Mysterious),
-        _ => None,
+    let code = code.trim();
+    if code.eq_ignore_ascii_case("cool") {
+        Some(Attr::Cool)
+    } else if code.eq_ignore_ascii_case("cute") {
+        Some(Attr::Cute)
+    } else if code.eq_ignore_ascii_case("happy") {
+        Some(Attr::Happy)
+    } else if code.eq_ignore_ascii_case("pure") {
+        Some(Attr::Pure)
+    } else if code.eq_ignore_ascii_case("mysterious") || code.eq_ignore_ascii_case("mystery") {
+        Some(Attr::Mysterious)
+    } else {
+        None
     }
 }
 
@@ -873,19 +911,6 @@ pub(crate) fn unit_to_pool_index(unit: Unit) -> Option<u8> {
         Unit::Themepark => Some(3),
         Unit::SchoolRefusal => Some(4),
         Unit::Piapro => Some(5),
-        _ => None,
-    }
-}
-
-/// 将 pool 6 团索引映射回 `Unit`。
-pub(crate) fn pool_index_to_unit(index: u8) -> Option<Unit> {
-    match index {
-        0 => Some(Unit::LightSound),
-        1 => Some(Unit::Idol),
-        2 => Some(Unit::Street),
-        3 => Some(Unit::Themepark),
-        4 => Some(Unit::SchoolRefusal),
-        5 => Some(Unit::Piapro),
         _ => None,
     }
 }

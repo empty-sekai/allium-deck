@@ -6,6 +6,8 @@ use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, DECK_SIZE};
 use super::context::SearchContext;
 use super::evaluate::calc_mysekai_internal;
 
+const JOINT_SUPPORT_BUCKET: u32 = 1024;
+
 /// 已选角色集合。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UsedSet {
@@ -93,9 +95,13 @@ pub struct SuffixBound {
     dense_power_tail: Vec<[u32; DECK_SIZE + 1]>,
     dense_skill_tail: Vec<[u32; DECK_SIZE + 1]>,
     dense_leader_tail: Vec<u16>,
+    dense_power_bonus_512_tail: Vec<[u32; DECK_SIZE + 1]>,
+    dense_power_bonus_1024_tail: Vec<[u32; DECK_SIZE + 1]>,
+    joint_ep_512: Vec<u32>,
+    joint_ep_1024: Vec<u32>,
 }
 
-const _: () = assert!(size_of::<SuffixBound>() <= 600);
+const _: () = assert!(size_of::<SuffixBound>() <= 704);
 
 impl SuffixBound {
     /// 基于卡池构建一次性后缀上界数据。
@@ -202,7 +208,20 @@ impl SuffixBound {
             dense_power_tail,
             dense_skill_tail,
             dense_leader_tail,
+            dense_power_bonus_512_tail: Vec::new(),
+            dense_power_bonus_1024_tail: Vec::new(),
+            joint_ep_512: Vec::new(),
+            joint_ep_1024: Vec::new(),
         }
+    }
+
+    pub(crate) fn build_prepared(pool: &CardPool, ctx: &SearchContext) -> Self {
+        let mut bound = Self::build(pool, ctx);
+        bound.dense_power_bonus_512_tail = build_dense_power_bonus_tail(pool, 512);
+        bound.dense_power_bonus_1024_tail = build_dense_power_bonus_tail(pool, 1024);
+        bound.joint_ep_512 = bound.build_joint_ep_table(512);
+        bound.joint_ep_1024 = bound.build_joint_ep_table(1024);
+        bound
     }
 
     /// 对标准 5 卡搜索计算上界。
@@ -725,6 +744,195 @@ impl SuffixBound {
             partial.skill + card_skill + tail_skill,
             (partial.max_skill as u32).max(card_skill).max(tail_leader),
         )
+    }
+
+    #[inline(always)]
+    pub(crate) fn dense_candidate_joint_ceiling_multi_score_event(
+        &self,
+        next_start: usize,
+        partial: &PartialDeck,
+        card_power: u32,
+        card_bonus: u32,
+        _card_skill: u32,
+        slots: usize,
+    ) -> u64 {
+        if self.joint_ep_512.is_empty() || self.joint_ep_1024.is_empty() {
+            return u64::MAX;
+        }
+        let rest = slots.saturating_sub(1);
+        let support_512 = partial
+            .power
+            .saturating_add(card_power)
+            .saturating_add(
+                self.dense_power_bonus_512_tail
+                    .get(next_start)
+                    .map(|tail| tail[rest])
+                    .unwrap_or(0),
+            )
+            .saturating_add(self.honor_bonus)
+            .saturating_add(
+                512u32.saturating_mul(
+                    partial
+                        .bonus
+                        .saturating_add(card_bonus)
+                        .saturating_add(self.extra_bonus_ub),
+                ),
+            );
+        let support_1024 = partial
+            .power
+            .saturating_add(card_power)
+            .saturating_add(
+                self.dense_power_bonus_1024_tail
+                    .get(next_start)
+                    .map(|tail| tail[rest])
+                    .unwrap_or(0),
+            )
+            .saturating_add(self.honor_bonus)
+            .saturating_add(
+                1024u32.saturating_mul(
+                    partial
+                        .bonus
+                        .saturating_add(card_bonus)
+                        .saturating_add(self.extra_bonus_ub),
+                ),
+            );
+        let ep_512 = joint_ep_lookup(&self.joint_ep_512, support_512);
+        let ep_1024 = joint_ep_lookup(&self.joint_ep_1024, support_1024);
+        ((ep_512.min(ep_1024) as u64) << 32) | u32::MAX as u64
+    }
+
+    fn build_joint_ep_table(&self, bonus_weight: u32) -> Vec<u32> {
+        let support_tail = if bonus_weight == 512 {
+            &self.dense_power_bonus_512_tail
+        } else {
+            &self.dense_power_bonus_1024_tail
+        };
+        let max_support = support_tail
+            .first()
+            .map(|tail| tail[DECK_SIZE])
+            .unwrap_or(0)
+            .saturating_add(self.honor_bonus)
+            .saturating_add(bonus_weight.saturating_mul(self.extra_bonus_ub));
+        let max_power = self.clamp_power_total(
+            self.dense_power_tail
+                .first()
+                .map(|tail| tail[DECK_SIZE])
+                .unwrap_or(0)
+                .saturating_add(self.honor_bonus),
+        );
+        let max_bonus = self
+            .dense_bonus_tail
+            .first()
+            .map(|tail| tail[DECK_SIZE])
+            .unwrap_or(0)
+            .saturating_add(self.extra_bonus_ub);
+        let max_skill = self
+            .dense_skill_tail
+            .first()
+            .map(|tail| tail[DECK_SIZE])
+            .unwrap_or(0);
+        let max_leader = self.dense_leader_tail.first().copied().unwrap_or(0) as u32;
+        let bucket_count = max_support.div_ceil(JOINT_SUPPORT_BUCKET) as usize;
+        let mut table = Vec::with_capacity(bucket_count + 1);
+        let mut bucket = 0usize;
+        while bucket <= bucket_count {
+            let support = (bucket as u32).saturating_mul(JOINT_SUPPORT_BUCKET);
+            table.push(self.joint_event_point_upper(
+                max_power.min(support),
+                max_bonus.min(support / bonus_weight),
+                max_skill,
+                max_leader,
+                support,
+                bonus_weight,
+            ));
+            bucket += 1;
+        }
+        table
+    }
+
+    #[inline(always)]
+    fn joint_event_point_upper(
+        &self,
+        power_ub: u32,
+        bonus_ub: u32,
+        skill_ub: u32,
+        leader_ub: u32,
+        support_ub: u32,
+        bonus_weight: u32,
+    ) -> u32 {
+        let max_slot_5x = (4 * leader_ub as i64 + skill_ub as i64).max(self.teammate_su_5x);
+        let rate_1m = self.base_rate_1m + max_slot_5x * self.srs_div500_1m;
+        let (power_multiplier, power_constant) = match self.multi_teammate_power {
+            Some(teammate_power) => (1i128, teammate_power as i128 * (DECK_SIZE as i128 - 1)),
+            None => (DECK_SIZE as i128, 0),
+        };
+        let live_power_coeff =
+            4i128 * rate_1m as i128 + self.active_1m_coeff as i128 * power_multiplier;
+        let live_constant = self.active_1m_coeff as i128 * power_constant;
+
+        let capped_power = self
+            .power_total_cap
+            .map_or(power_ub, |cap| power_ub.min(cap));
+        let support_ub = self.power_total_cap.map_or(support_ub, |cap| {
+            support_ub.min(cap.saturating_add(bonus_weight.saturating_mul(bonus_ub)))
+        });
+
+        let capped_other = if self.other_score == 0 {
+            13i128
+        } else {
+            (self.other_score as i128 / 340_000).min(13)
+        };
+        let capped_bound = maximize_joint_event_numerator(
+            capped_power,
+            bonus_ub,
+            support_ub,
+            bonus_weight,
+            123,
+            17_000_000_000,
+            live_power_coeff,
+            live_constant,
+            1,
+        );
+        let capped_ep = ceil_div_i128(
+            capped_bound * self.music_rate_pct as i128 * self.boost_rate_pct as i128,
+            17_000_000_000i128 * 1_000_000,
+        );
+
+        let selected_ep = if self.other_score == 0 {
+            let uncapped_bound = maximize_joint_event_numerator(
+                capped_power,
+                bonus_ub,
+                support_ub,
+                bonus_weight,
+                110,
+                85_000_000_000,
+                live_power_coeff,
+                live_constant,
+                6,
+            );
+            let uncapped_ep = ceil_div_i128(
+                uncapped_bound * self.music_rate_pct as i128 * self.boost_rate_pct as i128,
+                85_000_000_000i128 * 1_000_000,
+            );
+            capped_ep.min(uncapped_ep)
+        } else {
+            let fixed_other_bound = maximize_joint_event_numerator(
+                capped_power,
+                bonus_ub,
+                support_ub,
+                bonus_weight,
+                110 + capped_other as i64,
+                17_000_000_000,
+                live_power_coeff,
+                live_constant,
+                1,
+            );
+            ceil_div_i128(
+                fixed_other_bound * self.music_rate_pct as i128 * self.boost_rate_pct as i128,
+                17_000_000_000i128 * 1_000_000,
+            )
+        };
+        selected_ep.clamp(0, u32::MAX as i128) as u32
     }
 
     /// 当前候选 + dense suffix 的 ceiling，调用方传入更紧的额外 bonus 上界。
@@ -1317,6 +1525,96 @@ fn build_dense_suffix_tails(
         dense_skill_tail,
         dense_leader_tail,
     )
+}
+
+fn build_dense_power_bonus_tail(pool: &CardPool, bonus_weight: u32) -> Vec<[u32; DECK_SIZE + 1]> {
+    let count = pool.count();
+    let mut tails = vec![[0u32; DECK_SIZE + 1]; count + 1];
+    let mut best_by_char = [0u32; CHAR_MASK_COUNT];
+    let mut dense = count;
+    while dense > 0 {
+        dense -= 1;
+        let card = crate::pool::CardIdx::new(dense as u16);
+        let char_id = pool.char_id(card) as usize;
+        let support = pool
+            .power_max(card)
+            .saturating_add(bonus_weight.saturating_mul(pool.event_bonus(card).total_ceil()));
+        best_by_char[char_id] = best_by_char[char_id].max(support);
+
+        let mut top = [0u32; DECK_SIZE];
+        let mut ch = 0usize;
+        while ch < CHAR_MASK_COUNT {
+            insert_topk_u32(&mut top, best_by_char[ch]);
+            ch += 1;
+        }
+        let mut slot = 0usize;
+        while slot < DECK_SIZE {
+            tails[dense][slot + 1] = tails[dense][slot].saturating_add(top[slot]);
+            slot += 1;
+        }
+    }
+    tails
+}
+
+#[inline(always)]
+fn joint_ep_lookup(table: &[u32], support: u32) -> u32 {
+    let bucket = support.div_ceil(JOINT_SUPPORT_BUCKET) as usize;
+    table.get(bucket).copied().unwrap_or(u32::MAX)
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn maximize_joint_event_numerator(
+    power_ub: u32,
+    bonus_ub: u32,
+    support_ub: u32,
+    bonus_weight: u32,
+    base_constant: i64,
+    base_denominator: i128,
+    live_power_coeff: i128,
+    live_constant: i128,
+    live_multiplier: i128,
+) -> i128 {
+    let max_bonus = bonus_ub.min(support_ub / bonus_weight);
+    let linear_power = live_multiplier * live_power_coeff;
+    let linear_constant =
+        base_constant as i128 * base_denominator + live_multiplier * live_constant;
+
+    let evaluate = |bonus: u32| -> i128 {
+        let supported_power = support_ub.saturating_sub(bonus_weight.saturating_mul(bonus));
+        let power = power_ub.min(supported_power) as i128;
+        (linear_constant + linear_power * power) * (bonus as i128 + 100)
+    };
+
+    let mut best = evaluate(0).max(evaluate(max_bonus));
+    if support_ub > power_ub {
+        let flat_end = ((support_ub - power_ub) / bonus_weight).min(max_bonus);
+        best = best.max(evaluate(flat_end));
+        if flat_end < max_bonus {
+            best = best.max(evaluate(flat_end + 1));
+        }
+    }
+
+    let quadratic = linear_power * bonus_weight as i128;
+    if quadratic > 0 {
+        let vertex_numerator =
+            linear_constant + linear_power * support_ub as i128 - quadratic * 100;
+        if vertex_numerator > 0 {
+            let vertex = vertex_numerator / (2 * quadratic);
+            for candidate in [vertex - 1, vertex, vertex + 1] {
+                if candidate >= 0 && candidate <= max_bonus as i128 {
+                    best = best.max(evaluate(candidate as u32));
+                }
+            }
+        }
+    }
+    best
+}
+
+#[inline(always)]
+fn ceil_div_i128(numerator: i128, denominator: i128) -> i128 {
+    debug_assert!(numerator >= 0 && denominator > 0);
+    numerator.saturating_add(denominator - 1) / denominator
 }
 
 #[inline(always)]

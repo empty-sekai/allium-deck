@@ -5,6 +5,7 @@ pub mod engine;
 pub mod handler;
 pub mod pool;
 pub mod search;
+pub(crate) mod simd;
 pub mod types;
 
 pub use types::*;

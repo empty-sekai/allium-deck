@@ -1,8 +1,8 @@
 use crate::pool::{DiffSkill, RefSkill, SkillSlot, UnitCountSkill};
 use crate::types::SkillInfo;
 
-use super::index::PoolIndexes;
-use super::types::{parse_unit_code, unit_to_pool_index, GameData, MasterCard, UserCard};
+use super::index::{PoolIndexes, PreparedSkillEffectKind};
+use super::types::{unit_to_pool_index, GameData, MasterCard, UserCard};
 
 /// 技能预计算结果。
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -60,7 +60,7 @@ pub(crate) fn build_skill(
     user_card: &UserCard,
     master: &MasterCard,
     _game: &GameData<'_>,
-    idx: &PoolIndexes<'_>,
+    idx: &PoolIndexes,
     character_rank: i32,
     skill_limit: Option<u32>,
     skill_state: SkillState,
@@ -74,7 +74,7 @@ pub(crate) fn build_skill(
         return SkillResult::default();
     };
 
-    let effects = idx.skill_effects(skill_id, skill.level).iter().copied();
+    let effects = idx.skill_effects(skill_id, skill.level).iter();
 
     let mut base_score_up = 0i32;
     let mut life_recovery = 0i32;
@@ -86,12 +86,12 @@ pub(crate) fn build_skill(
     let mut ref_max = 0i32;
 
     for effect in effects {
-        match effect.effect_type.trim().to_ascii_lowercase().as_str() {
-            "score_up" | "score_up_condition_life" | "score_up_keep" => {
+        match effect.kind {
+            PreparedSkillEffectKind::ScoreUp => {
                 base_score_up = base_score_up.max(effect.value);
             }
-            "life_recovery" => life_recovery += effect.value,
-            "score_up_character_rank" => {
+            PreparedSkillEffectKind::LifeRecovery => life_recovery += effect.value,
+            PreparedSkillEffectKind::CharacterRank => {
                 if effect
                     .activate_character_rank
                     .is_some_and(|rank| rank <= character_rank)
@@ -99,8 +99,8 @@ pub(crate) fn build_skill(
                     character_rank_bonus = character_rank_bonus.max(effect.value);
                 }
             }
-            "score_up_unit_count" => {
-                unit_count_unit = effect.unit.as_deref().and_then(parse_unit_code);
+            PreparedSkillEffectKind::UnitCount => {
+                unit_count_unit = effect.unit;
                 if let Some(count) = effect.unit_member_count {
                     if (1..=5).contains(&count) {
                         unit_count_values[(count - 1) as usize] =
@@ -108,13 +108,13 @@ pub(crate) fn build_skill(
                     }
                 }
             }
-            "score_up_diff" => {
+            PreparedSkillEffectKind::Diff => {
                 diff = Some(DiffSkill {
                     base: clamp_score(effect.value, skill_limit),
                     increment: clamp_score(effect.additional_value.unwrap_or(0), None),
                 });
             }
-            "score_up_reference" => {
+            PreparedSkillEffectKind::Reference => {
                 ref_rate = effect.value;
                 ref_max = effect.additional_value.unwrap_or(0);
             }

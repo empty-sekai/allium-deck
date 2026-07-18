@@ -89,14 +89,18 @@ pub struct FullPrecisionCard {
 }
 
 fn encode_power(card: &CardIntermediate) -> ([u16; 8], u32) {
-    let mut units = Vec::new();
-    for bit in 0..6u8 {
-        if card.unit_mask_raw & (1u8 << bit) != 0 {
-            units.push(bit as usize);
-        }
-    }
-    let primary = units.first().copied().unwrap_or(0);
-    let secondary = units.get(1).copied().unwrap_or(primary);
+    let unit_mask = card.unit_mask_raw;
+    let primary = if unit_mask == 0 {
+        0
+    } else {
+        unit_mask.trailing_zeros().min(5) as usize
+    };
+    let remaining = unit_mask & !(1u8 << primary);
+    let secondary = if remaining == 0 {
+        primary
+    } else {
+        remaining.trailing_zeros().min(5) as usize
+    };
     let mut values = [0u16; 8];
     let mut packed = 0u32;
 
@@ -111,9 +115,8 @@ fn encode_power(card: &CardIntermediate) -> ([u16; 8], u32) {
         packed |= ((secondary_value >> 16) & 0b11) << (slot * 2);
     }
 
-    for unit in units {
-        let slot = if unit == secondary { 1u32 } else { 0u32 };
-        packed |= slot << (16 + unit);
+    if secondary != primary {
+        packed |= 1u32 << (16 + secondary);
     }
 
     (values, packed)

@@ -2,10 +2,19 @@ use crate::pool::EventBonusExact;
 use crate::types::{Attr, EventType, Unit, FINAL_CHAPTER_EVENT_ID};
 
 use super::types::{
-    parse_attr_code, parse_unit_code, resolve_event_type, BuildParams, EventCard,
-    EventCardBonusLimit, EventDeckBonus, EventHonorBonus, EventRarityBonusRate,
+    attr_to_pool_index, parse_attr_code, parse_unit_code, resolve_event_type, BuildParams,
+    EventCard, EventCardBonusLimit, EventDeckBonus, EventHonorBonus, EventRarityBonusRate,
     EventSkillScoreUpLimit, GameData, MasterCard, UserCard, UserProfile, WorldBloomDiffAttrBonus,
 };
+
+#[derive(Debug, Clone, PartialEq)]
+struct PreparedEventDeckBonus {
+    character_id: Option<i32>,
+    attr: Option<u8>,
+    unit: Option<Unit>,
+    bonus_rate: i32,
+    has_attr_rule: bool,
+}
 
 /// Handler 构建阶段使用的活动上下文。
 #[derive(Debug, Clone, PartialEq)]
@@ -17,7 +26,7 @@ pub(crate) struct EventContext {
     /// 当期卡表。
     pub event_cards: Vec<EventCard>,
     /// deck bonus 规则。
-    pub deck_bonuses: Vec<EventDeckBonus>,
+    deck_bonuses: Vec<PreparedEventDeckBonus>,
     /// 稀有度 bonus 规则。
     pub rarity_bonuses: Vec<EventRarityBonusRate>,
     /// leader honor bonus 规则。
@@ -177,13 +186,27 @@ pub(crate) fn build_event_context(
         params.world_bloom_event_turn
     };
 
-    let deck_bonuses = game
+    let raw_deck_bonuses = game
         .event_deck_bonuses
         .iter()
         .filter(|entry| entry.event_id == event_id)
         .cloned()
         .collect::<Vec<_>>();
-    let filter_unit = common_event_unit(&deck_bonuses, params.event_unit.as_deref());
+    let filter_unit = common_event_unit(&raw_deck_bonuses, params.event_unit.as_deref());
+    let deck_bonuses = raw_deck_bonuses
+        .into_iter()
+        .map(|rule| PreparedEventDeckBonus {
+            character_id: rule.character_id,
+            attr: rule
+                .attr
+                .as_deref()
+                .and_then(parse_attr_code)
+                .and_then(attr_to_pool_index),
+            unit: rule.unit.as_deref().and_then(parse_unit_code),
+            bonus_rate: rule.bonus_rate,
+            has_attr_rule: rule.attr.is_some(),
+        })
+        .collect();
 
     let has_simulated_bonus = params.event_attr.is_some()
         || params.event_unit.is_some()
@@ -258,30 +281,23 @@ pub(crate) fn build_event_context(
     })
 }
 
-fn card_matches_rule(master: &MasterCard, rule: &EventDeckBonus, game: &GameData<'_>) -> bool {
+fn card_matches_rule(
+    master: &MasterCard,
+    card_attr: u8,
+    primary_unit: Option<Unit>,
+    support_unit: Option<Unit>,
+    rule: &PreparedEventDeckBonus,
+) -> bool {
     let character_ok = rule
         .character_id
         .is_none_or(|character_id| character_id == master.character_id);
-    let attr_ok = rule
-        .attr
-        .as_deref()
-        .and_then(parse_attr_code)
-        .is_none_or(|attr| parse_attr_code(&master.attr) == Some(attr));
-    let unit_ok = match rule.unit.as_deref().and_then(parse_unit_code) {
-        Some(unit) => game
-            .game_character_units
-            .iter()
-            .find(|entry| entry.game_character_id == master.character_id)
-            .and_then(|entry| parse_unit_code(&entry.unit))
-            .is_some_and(|card_unit| {
-                card_unit == unit
-                    || (matches!(card_unit, crate::types::Unit::Piapro)
-                        && master
-                            .support_unit
-                            .as_deref()
-                            .and_then(parse_unit_code)
-                            .is_none_or(|support_unit| support_unit == unit))
-            }),
+    let attr_ok = rule.attr.is_none_or(|attr| card_attr == attr);
+    let unit_ok = match rule.unit {
+        Some(unit) => primary_unit.is_some_and(|card_unit| {
+            card_unit == unit
+                || (matches!(card_unit, crate::types::Unit::Piapro)
+                    && support_unit.is_none_or(|support_unit| support_unit == unit))
+        }),
         None => true,
     };
     character_ok && attr_ok && unit_ok
@@ -302,14 +318,22 @@ fn load_rarity_bonus_x10(
         .unwrap_or(0)
 }
 
-fn load_custom_bonus_x2(master: &MasterCard, event_ctx: &EventContext) -> i32 {
+fn load_custom_bonus_x2(
+    master: &MasterCard,
+    card_attr: u8,
+    support_unit: Option<Unit>,
+    support_unit_unrestricted: bool,
+    event_ctx: &EventContext,
+) -> i32 {
     if event_ctx.custom_character_ids.is_empty() && event_ctx.custom_attr.is_none() {
         return 0;
     }
-    let char_match = custom_character_matches(master, event_ctx);
+    let char_match =
+        custom_character_matches(master, support_unit, support_unit_unrestricted, event_ctx);
     let attr_match = event_ctx
         .custom_attr
-        .is_some_and(|attr| parse_attr_code(&master.attr) == Some(attr));
+        .and_then(attr_to_pool_index)
+        .is_some_and(|attr| card_attr == attr);
     if char_match && attr_match {
         100
     } else if char_match || attr_match {
@@ -319,7 +343,12 @@ fn load_custom_bonus_x2(master: &MasterCard, event_ctx: &EventContext) -> i32 {
     }
 }
 
-fn custom_character_matches(master: &MasterCard, event_ctx: &EventContext) -> bool {
+fn custom_character_matches(
+    master: &MasterCard,
+    support_unit: Option<Unit>,
+    support_unit_unrestricted: bool,
+    event_ctx: &EventContext,
+) -> bool {
     if !event_ctx
         .custom_character_ids
         .contains(&master.character_id)
@@ -334,39 +363,46 @@ fn custom_character_matches(master: &MasterCard, event_ctx: &EventContext) -> bo
     if matches!(required, Unit::None) {
         return true;
     }
-    match master.support_unit.as_deref() {
-        None => true,
-        Some(value) if value.trim().is_empty() || value.trim().eq_ignore_ascii_case("none") => true,
-        Some(value) => parse_unit_code(value) == Some(required),
-    }
+    support_unit_unrestricted || support_unit == Some(required)
 }
 
 /// 构建单卡的热路径活动 bonus，同时返回角色/属性轴命中标记。
 pub(crate) fn build_card_event_bonus(
     user_card: &UserCard,
     master: &MasterCard,
-    game: &GameData<'_>,
+    card_attr: u8,
+    primary_unit: Option<Unit>,
+    support_unit: Option<Unit>,
+    support_unit_unrestricted: bool,
     event_ctx: &EventContext,
 ) -> (EventBonusExact, bool, bool) {
     let rarity_bonus_x10 = load_rarity_bonus_x10(user_card, master, event_ctx);
-    let custom_bonus_x2 = load_custom_bonus_x2(master, event_ctx);
+    let custom_bonus_x2 = load_custom_bonus_x2(
+        master,
+        card_attr,
+        support_unit,
+        support_unit_unrestricted,
+        event_ctx,
+    );
 
-    let custom_char = custom_character_matches(master, event_ctx);
+    let custom_char =
+        custom_character_matches(master, support_unit, support_unit_unrestricted, event_ctx);
     let custom_attr = event_ctx
         .custom_attr
-        .is_some_and(|attr| parse_attr_code(&master.attr) == Some(attr));
+        .and_then(attr_to_pool_index)
+        .is_some_and(|attr| card_attr == attr);
 
     // 活动 deck bonus：多条规则命中时取最大值（与 C++/TS 一致）。
     let mut deck_bonus_x2 = 0i32;
     let mut deck_char = false;
     let mut deck_attr = false;
     for rule in &event_ctx.deck_bonuses {
-        if card_matches_rule(master, rule, game) {
+        if card_matches_rule(master, card_attr, primary_unit, support_unit, rule) {
             deck_bonus_x2 = deck_bonus_x2.max(rule.bonus_rate.saturating_mul(2));
             if rule.character_id.is_some() {
                 deck_char = true;
             }
-            if rule.attr.is_some() {
+            if rule.has_attr_rule {
                 deck_attr = true;
             }
         }
@@ -469,25 +505,32 @@ mod tests {
         }
     }
 
+    fn custom_bonus(master: &MasterCard, ctx: &EventContext) -> i32 {
+        let support_unit = master.support_unit.as_deref().and_then(parse_unit_code);
+        let support_unit_unrestricted = master.support_unit.as_deref().is_none_or(|value| {
+            value.trim().is_empty() || value.trim().eq_ignore_ascii_case("none")
+        });
+        load_custom_bonus_x2(
+            master,
+            parse_attr_code(&master.attr)
+                .and_then(attr_to_pool_index)
+                .unwrap_or(u8::MAX),
+            support_unit,
+            support_unit_unrestricted,
+            ctx,
+        )
+    }
+
     #[test]
     fn custom_support_unit_accepts_matching_or_none_and_rejects_other_unit() {
         let ctx = custom_context();
+        assert_eq!(custom_bonus(&master(Some("street"), "cool"), &ctx), 50);
+        assert_eq!(custom_bonus(&master(Some("none"), "cool"), &ctx), 50);
+        assert_eq!(custom_bonus(&master(None, "cute"), &ctx), 100);
+        assert_eq!(custom_bonus(&master(Some("none"), "cute"), &ctx), 100);
+        assert_eq!(custom_bonus(&master(Some("idol"), "cool"), &ctx), 0);
         assert_eq!(
-            load_custom_bonus_x2(&master(Some("street"), "cool"), &ctx),
-            50
-        );
-        assert_eq!(
-            load_custom_bonus_x2(&master(Some("none"), "cool"), &ctx),
-            50
-        );
-        assert_eq!(load_custom_bonus_x2(&master(None, "cute"), &ctx), 100);
-        assert_eq!(
-            load_custom_bonus_x2(&master(Some("none"), "cute"), &ctx),
-            100
-        );
-        assert_eq!(load_custom_bonus_x2(&master(Some("idol"), "cool"), &ctx), 0);
-        assert_eq!(
-            load_custom_bonus_x2(&master(Some("future_unknown_unit"), "cool"), &ctx),
+            custom_bonus(&master(Some("future_unknown_unit"), "cool"), &ctx),
             0
         );
     }
@@ -514,7 +557,7 @@ mod tests {
             is_virtual: false,
             has_canvas_bonus_override: None,
         };
-        let game = GameData {
+        let _game = GameData {
             cards: &[],
             card_parameters: &[],
             card_rarities: &[],
@@ -548,7 +591,8 @@ mod tests {
             bonds_honors: &[],
         };
 
-        let (bonus, _, _) = build_card_event_bonus(&user_card, &master(None, "cool"), &game, &ctx);
+        let (bonus, _, _) =
+            build_card_event_bonus(&user_card, &master(None, "cool"), 0, None, None, true, &ctx);
         assert_eq!(bonus.base_x10(), 2);
         assert_eq!(bonus.base_rate(), 0.2);
     }

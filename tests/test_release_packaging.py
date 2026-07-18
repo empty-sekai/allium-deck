@@ -111,6 +111,8 @@ class ReleasePackagingTests(unittest.TestCase):
     def test_release_ci_installs_required_rust_components(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         self.assertIn("components: rustfmt, clippy", workflow)
+        self.assertIn("cargo clippy --manifest-path wasm/Cargo.toml --all-targets", workflow)
+        self.assertIn("cargo test --manifest-path wasm/Cargo.toml --all-targets --release", workflow)
 
     def test_registry_preflight_rejects_malformed_secret_without_printing_it(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")

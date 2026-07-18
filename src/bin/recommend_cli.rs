@@ -11,13 +11,14 @@ use std::time::Instant;
 
 use allium_deck::engine::{parse_build_params_json, parse_user_profile_json, OwnedGameData};
 use allium_deck::handler::{
-    build_card_pool, cultivated_user_cards, BuildParams, CardRarityConfig, GameData, MasterCard,
-    SingleCardConfig, UserCard, UserProfile,
+    build_card_pool, build_card_pool_fully_prepared, cultivated_user_cards, BuildParams,
+    CardRarityConfig, GameData, MasterCard, PreparedGameData, PreparedPoolBuild, SingleCardConfig,
+    UserCard, UserProfile,
 };
 use allium_deck::pool::{CardIdx, CardPool};
 use allium_deck::search::{
     challenge_search, search_instrumented, summarize_deck, DeckResult, DeckResultSummary,
-    SearchContext, SearchParams, SearchStats, SuffixBound,
+    PreparedSearch, SearchContext, SearchParams, SearchStats, SuffixBound,
 };
 use allium_deck::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 use serde::Serialize;
@@ -34,6 +35,8 @@ struct CliArgs {
     params: Option<String>,
     top_k: Option<usize>,
     timeout_ms: Option<u64>,
+    search_repeats: Option<usize>,
+    build_repeats: Option<usize>,
     challenge_all: bool,
     overrides: ParamOverrides,
 }
@@ -106,10 +109,13 @@ fn run() -> Result<(), String> {
         .ok_or_else(|| "缺少参数 --user".to_string())?;
     let top_k = args.top_k.unwrap_or(5);
     let timeout_ms = args.timeout_ms.unwrap_or(30_000);
+    let search_repeats = args.search_repeats.unwrap_or(1).max(1);
+    let build_repeats = args.build_repeats.unwrap_or(1).max(1);
 
     let load_start = Instant::now();
     let owned = OwnedGameData::load(&PathBuf::from(masterdata), &PathBuf::from(music_metas))?;
     let game = owned.as_ref();
+    let prepared_game = PreparedGameData::new(game);
     let load_ms = ms(load_start);
     eprintln!("[load] masterdata+music_metas: {load_ms:.1}ms");
 
@@ -126,9 +132,22 @@ fn run() -> Result<(), String> {
         return run_challenge_all(&user, &game, params, timeout_ms, load_ms);
     }
 
+    let prepare_start = Instant::now();
+    let prepared_build =
+        PreparedPoolBuild::new(&user, &prepared_game, &params).map_err(|e| e.to_string())?;
+    let prepare_pool_ms = ms(prepare_start);
+    eprintln!("[prepare_pool] {prepare_pool_ms:.1}ms");
+
     let build_start = Instant::now();
-    let (pool, ctx) = build_card_pool(&user, &game, &params).map_err(|e| e.to_string())?;
-    let build_pool_ms = ms(build_start);
+    let mut build_output = None;
+    for _ in 0..build_repeats {
+        build_output = Some(
+            build_card_pool_fully_prepared(&prepared_game, &prepared_build)
+                .map_err(|e| e.to_string())?,
+        );
+    }
+    let (pool, ctx) = build_output.expect("build_repeats is non-zero");
+    let build_pool_ms = ms(build_start) / build_repeats as f64;
     eprintln!(
         "[build_pool] {build_pool_ms:.1}ms  pool={} effective_live={:?}",
         pool.count(),
@@ -136,14 +155,29 @@ fn run() -> Result<(), String> {
     );
 
     let search_params = SearchParams { top_k, timeout_ms };
+    let prepared_search = (search_repeats > 1)
+        .then(|| PreparedSearch::build(&pool, &ctx, top_k))
+        .flatten();
     let search_start = Instant::now();
-    let (results, stats) = search_instrumented(&pool, &ctx, &search_params);
-    let search_ms = ms(search_start);
+    let mut search_output = None;
+    for _ in 0..search_repeats {
+        search_output = Some(match prepared_search.as_ref() {
+            Some(prepared) => prepared
+                .search_instrumented(&pool, &ctx, &search_params)
+                .expect("prepared search covers requested top_k"),
+            None => search_instrumented(&pool, &ctx, &search_params),
+        });
+    }
+    let (results, stats) = search_output.expect("search_repeats is non-zero");
+    let search_ms = ms(search_start) / search_repeats as f64;
     eprintln!(
         "[search] {search_ms:.1}ms  leaf={} ub_prunes={} ep_explored={} mono_break={}",
         stats.leaf_nodes, stats.ub_prunes, stats.ep_explored, stats.mono_break_prunes
     );
-    eprintln!("[total] {:.1}ms", load_ms + build_pool_ms + search_ms);
+    eprintln!(
+        "[total] {:.1}ms",
+        load_ms + prepare_pool_ms + build_pool_ms + search_ms
+    );
 
     let mut render_user = user.clone();
     render_user.user_cards = cultivated_user_cards(&user, &game, &params);
@@ -170,9 +204,10 @@ fn run() -> Result<(), String> {
         diagnostics: diagnostics_from(&pool, &ctx, &stats),
         timing: Timing {
             load_ms,
+            prepare_pool_ms,
             build_pool_ms,
             search_ms,
-            total_ms: load_ms + build_pool_ms + search_ms,
+            total_ms: load_ms + prepare_pool_ms + build_pool_ms + search_ms,
         },
         decks,
     };
@@ -463,6 +498,8 @@ fn parse_args() -> Result<CliArgs, String> {
             "--params" => parsed.params = Some(value()?),
             "--top-k" => parsed.top_k = Some(parse_usize(&value()?, &flag)?),
             "--timeout-ms" => parsed.timeout_ms = Some(parse_u64(&value()?, &flag)?),
+            "--search-repeats" => parsed.search_repeats = Some(parse_usize(&value()?, &flag)?),
+            "--build-repeats" => parsed.build_repeats = Some(parse_usize(&value()?, &flag)?),
             "--challenge-all" => parsed.challenge_all = true,
             "--region" => parsed.overrides.region = Some(value()?),
             "--event-id" => parsed.overrides.event_id = Some(parse_optional_i32(&value()?, &flag)?),
@@ -684,7 +721,7 @@ fn print_help() {
          常用 flags:\n\
          --event-id N --event-type marathon|cheerful_carnival|world_bloom\n\
          --music-id N --music-diff expert --live-type solo|multi|cheerful|auto|challenge|challenge_auto|mysekai\n\
-         --target score|power|skill|mysekai --boost 0..10 --top-k N --timeout-ms N\n\
+         --target score|power|skill|mysekai --boost 0..10 --top-k N --timeout-ms N --search-repeats N --build-repeats N\n\
          --challenge-all 逐角色搜索 challenge 最优卡组，并按分数全局排序输出 JSON\n\
          --fixed-cards 1,2 --fixed-characters 1,2 --excluded-cards 3,4\n\
          --event-unit ln --event-attr cool --filter-other-unit --unit-filter ln --attr-filter cool\n\
@@ -911,6 +948,7 @@ struct ChallengeAllSearchParamsOut {
 #[derive(Serialize)]
 struct Timing {
     load_ms: f64,
+    prepare_pool_ms: f64,
     build_pool_ms: f64,
     search_ms: f64,
     total_ms: f64,
