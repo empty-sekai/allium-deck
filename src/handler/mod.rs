@@ -24,7 +24,7 @@ use event_bonus::{
     build_leader_limit_bonus, EventContext,
 };
 pub use gather::FullPrecisionCard;
-use gather::{sort_and_gather, CardIntermediate};
+use gather::{sort_and_gather, CardIntermediate, GatheredContext};
 use music::build_music_params;
 use power::{
     build_power_batch_into, resolve_unit_mask, PowerInput, PowerResult, PreparedPowerContext,
@@ -1107,7 +1107,7 @@ fn build_final_chapter_support_decks(
 }
 
 fn build_search_context(
-    full: &[FullPrecisionCard],
+    gathered: GatheredContext,
     support_cards: &[CardIntermediate],
     game: &types::GameData<'_>,
     params: &types::BuildParams,
@@ -1116,6 +1116,7 @@ fn build_search_context(
     fixed_card_ids: Vec<u16>,
     fixed_character_ids: Vec<u8>,
 ) -> SearchContext {
+    let card_count = gathered.skill_max.len();
     let support_deck = build_support_deck(
         support_cards,
         game,
@@ -1149,12 +1150,19 @@ fn build_search_context(
         .fold(0.0_f64, f64::max)
         .ceil() as u32;
     let diff_attr_bonus = event_ctx.map(|ctx| ctx.diff_attr_bonus).unwrap_or([0; 6]);
-    let mut skill_values = full
-        .iter()
-        .map(|card| card.skill_max_exact as u32)
-        .collect::<Vec<_>>();
-    skill_values.sort_unstable_by(|left, right| right.cmp(left));
-    let skill_ub_global = skill_values.into_iter().take(5).sum::<u32>();
+    let mut top_skill_values = [0u8; 5];
+    for &value in &gathered.skill_max {
+        if value <= top_skill_values[4] {
+            continue;
+        }
+        top_skill_values[4] = value;
+        let mut slot = 4;
+        while slot > 0 && top_skill_values[slot] > top_skill_values[slot - 1] {
+            top_skill_values.swap(slot, slot - 1);
+            slot -= 1;
+        }
+    }
+    let skill_ub_global = top_skill_values.into_iter().map(u32::from).sum::<u32>();
 
     SearchContext {
         target: params.target,
@@ -1224,17 +1232,11 @@ fn build_search_context(
                 None
             }
         }),
-        leader_honor_bonus: full.iter().map(|card| card.leader_honor_bonus).collect(),
-        leader_limit_bonus: full.iter().map(|card| card.leader_limit_bonus).collect(),
-        final_chapter_member_keep: vec![true; full.len()],
-        skill_is_after_training: full
-            .iter()
-            .map(|card| card.skill.is_after_training)
-            .collect(),
-        trained_to_special_image: full
-            .iter()
-            .map(|card| matches!(card.default_image, DefaultImage::SpecialTraining))
-            .collect(),
+        leader_honor_bonus: gathered.leader_honor_bonus,
+        leader_limit_bonus: gathered.leader_limit_bonus,
+        final_chapter_member_keep: vec![true; card_count],
+        skill_is_after_training: gathered.skill_is_after_training,
+        trained_to_special_image: gathered.trained_to_special_image,
     }
 }
 
@@ -1272,8 +1274,8 @@ pub fn build_card_pool_prepared(
     prepared: &PreparedGameData<'_>,
     params: &types::BuildParams,
 ) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
-    let (pool, context, _) = build_card_pool_with_details_prepared(user, prepared, params)?;
-    Ok((pool, context))
+    let build = PreparedPoolBuild::new(user, prepared, params)?;
+    build_card_pool_fully_prepared(prepared, &build)
 }
 
 /// 构建搜索池并保留与 dense card index 一一对应的全精度展示信息。
@@ -1301,7 +1303,7 @@ pub fn build_card_pool_fully_prepared(
     prepared: &PreparedGameData<'_>,
     build: &PreparedPoolBuild<'_>,
 ) -> Result<(crate::pool::CardPool, SearchContext), BuildError> {
-    let (pool, context, _) = build_card_pool_with_details_fully_prepared(prepared, build)?;
+    let (pool, context, _) = build_card_pool_fully_prepared_internal(prepared, build, false)?;
     Ok((pool, context))
 }
 
@@ -1310,6 +1312,14 @@ pub fn build_card_pool_with_details_fully_prepared(
     prepared: &PreparedGameData<'_>,
     build: &PreparedPoolBuild<'_>,
 ) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
+    build_card_pool_fully_prepared_internal(prepared, build, true)
+}
+
+fn build_card_pool_fully_prepared_internal(
+    prepared: &PreparedGameData<'_>,
+    build: &PreparedPoolBuild<'_>,
+    include_details: bool,
+) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
     let game = prepared.game();
     let indexes = prepared.indexes.as_ref();
     let params = &build.params;
@@ -1317,7 +1327,13 @@ pub fn build_card_pool_with_details_fully_prepared(
     let music = build.music.as_ref();
     let prepared_cards = &build.cards;
     let mut cards = Vec::with_capacity(prepared_cards.len());
-    let mut support_cards = Vec::with_capacity(prepared_cards.len());
+    let needs_support_cards = event_ctx
+        .is_some_and(|ctx| ctx.support_deck_count > 0 || ctx.event_id == FINAL_CHAPTER_EVENT_ID);
+    let mut support_cards = if needs_support_cards {
+        Vec::with_capacity(prepared_cards.len())
+    } else {
+        Vec::new()
+    };
 
     let power_inputs = prepared_cards
         .iter()
@@ -1378,7 +1394,9 @@ pub fn build_card_pool_with_details_fully_prepared(
                 ep_sort_key,
             };
 
-            support_cards.push(intermediate.clone());
+            if needs_support_cards {
+                support_cards.push(intermediate.clone());
+            }
             if keep_card(&intermediate, params) {
                 cards.push(intermediate);
             }
@@ -1470,16 +1488,17 @@ pub fn build_card_pool_with_details_fully_prepared(
     } else {
         params.live_type
     };
-    let (pool, full) = sort_and_gather(
+    let (pool, full, gathered) = sort_and_gather(
         cards,
         params.target,
         event_ctx.is_some(),
         effective_live_type,
         &fixed_card_ids,
         &fixed_character_ids,
+        include_details,
     );
     let mut search_ctx = build_search_context(
-        &full,
+        gathered,
         &support_cards,
         game,
         params,
@@ -1891,8 +1910,10 @@ mod tests {
             idx.attr(cards[0].id).unwrap(),
         );
         assert_eq!(result, scalar);
-        assert_eq!(result.resolved[1][0].area_item_bonus, 6);
-        assert_eq!(result.resolved[1][0].total, 309);
+        assert_eq!(result.detail(1, 0).area_item_bonus, 6);
+        assert_eq!(result.detail(1, 0).total, 309);
+        assert_eq!(result.detail(0, 0), crate::types::PowerDetail::default());
+        assert!(std::mem::size_of::<power::PowerResult>() <= 128);
     }
 
     #[test]
@@ -2723,9 +2744,9 @@ mod tests {
             has_char_bonus: false,
             has_attr_bonus: false,
             power: power::PowerResult {
-                resolved: [[crate::types::PowerDetail::default(); 4]; 6],
                 power_min: power_max - 10,
                 power_max,
+                ..power::PowerResult::default()
             },
             skill: skill::SkillResult {
                 slot: SkillSlot::default(),
@@ -2741,13 +2762,14 @@ mod tests {
             leader_limit_bonus: 0,
             ep_sort_key: power_max as i64,
         };
-        let (pool, _) = sort_and_gather(
+        let (pool, _, _) = sort_and_gather(
             vec![card(1, 100), card(3, 300), card(2, 200)],
             ScoreTarget::Power,
             false,
             LiveType::Solo,
             &[],
             &[],
+            false,
         );
         assert_eq!(pool.count(), 3);
         assert_eq!(pool.game_id(pool.card_idx(0).unwrap()), 3);
@@ -2776,9 +2798,9 @@ mod tests {
                     has_char_bonus: false,
                     has_attr_bonus: false,
                     power: power::PowerResult {
-                        resolved: [[crate::types::PowerDetail::default(); 4]; 6],
                         power_min: power_max - 10,
                         power_max,
+                        ..power::PowerResult::default()
                     },
                     skill: skill::SkillResult {
                         slot: SkillSlot::default(),
@@ -2821,7 +2843,7 @@ mod tests {
                     ep_sort_key: power_max as i64,
                 }
             };
-        let (pool, full) = sort_and_gather(
+        let (pool, full, _) = sort_and_gather(
             vec![
                 card(121, 26, 90_000, 110, crate::types::DefaultImage::Original),
                 card(949, 17, 70_000, 150, crate::types::DefaultImage::Original),
@@ -2839,6 +2861,7 @@ mod tests {
             LiveType::Multi,
             &[949],
             &[],
+            true,
         );
 
         assert_eq!(pool.game_id(pool.card_idx(0).unwrap()), 949);
@@ -3175,9 +3198,9 @@ mod tests {
             master_rank: 0,
             skill_level: 1,
             power: power::PowerResult {
-                resolved: [[crate::types::PowerDetail::default(); 4]; 6],
                 power_min: power_max - 10,
                 power_max,
+                ..power::PowerResult::default()
             },
             skill: skill::SkillResult {
                 slot: SkillSlot::default(),

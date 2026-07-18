@@ -8,14 +8,45 @@ use super::types::{
 use crate::simd::{PowerAreaItem, SimdBackend};
 
 /// 卡牌综合力构建结果。
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct PowerResult {
-    /// 按 real unit × member_key 预计算的综合力。
-    pub resolved: [[PowerDetail; 4]; 6],
+    pub unit_mask: u8,
+    pub base: i32,
+    pub character_bonus: i32,
+    pub fixture_bonus: i32,
+    pub gate_bonus: i32,
+    /// 按 real unit × member_key 保存唯一变化的 area item 分量。
+    pub area_item_bonus: [[i32; 4]; 6],
     /// 精确最小综合力。
     pub power_min: i32,
     /// 精确最大综合力。
     pub power_max: i32,
+}
+
+impl PowerResult {
+    #[inline(always)]
+    pub(crate) fn detail(&self, unit: usize, member_key: usize) -> PowerDetail {
+        if self.unit_mask & (1u8 << unit) == 0 {
+            return PowerDetail::default();
+        }
+        let area_item_bonus = self.area_item_bonus[unit][member_key];
+        PowerDetail {
+            base: self.base,
+            area_item_bonus,
+            character_bonus: self.character_bonus,
+            fixture_bonus: self.fixture_bonus,
+            gate_bonus: self.gate_bonus,
+            total: self.base
+                + area_item_bonus
+                + self.character_bonus
+                + self.fixture_bonus
+                + self.gate_bonus,
+        }
+    }
+
+    pub(crate) fn resolved(&self) -> [[PowerDetail; 4]; 6] {
+        std::array::from_fn(|unit| std::array::from_fn(|member_key| self.detail(unit, member_key)))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -446,7 +477,14 @@ pub(crate) fn build_power_batch_into(
             let character_sum = common.character_bonus[lane];
             let fixture = common.fixture_bonus[lane];
             let gate = common.gate_bonus[lane];
-            let mut result = PowerResult::default();
+            let mut result = PowerResult {
+                unit_mask: input.unit_mask,
+                base: base_sum[lane],
+                character_bonus: character_sum,
+                fixture_bonus: fixture,
+                gate_bonus: gate,
+                ..PowerResult::default()
+            };
             let mut min_value = i32::MAX;
             let mut max_value = i32::MIN;
             let unit_count = input.unit_mask.count_ones();
@@ -456,14 +494,7 @@ pub(crate) fn build_power_batch_into(
                 while member_key < 4 {
                     let area_sum = primary_area_sums[member_key][lane];
                     let total = base_sum[lane] + character_sum + area_sum + fixture + gate;
-                    result.resolved[pool_index][member_key] = PowerDetail {
-                        base: base_sum[lane],
-                        area_item_bonus: area_sum,
-                        character_bonus: character_sum,
-                        fixture_bonus: fixture,
-                        gate_bonus: gate,
-                        total,
-                    };
+                    result.area_item_bonus[pool_index][member_key] = area_sum;
                     min_value = min_value.min(total);
                     max_value = max_value.max(total);
                     member_key += 1;
@@ -475,14 +506,7 @@ pub(crate) fn build_power_batch_into(
                 while member_key < 4 {
                     let area_sum = secondary_area_sums[member_key][lane];
                     let total = base_sum[lane] + character_sum + area_sum + fixture + gate;
-                    result.resolved[pool_index][member_key] = PowerDetail {
-                        base: base_sum[lane],
-                        area_item_bonus: area_sum,
-                        character_bonus: character_sum,
-                        fixture_bonus: fixture,
-                        gate_bonus: gate,
-                        total,
-                    };
+                    result.area_item_bonus[pool_index][member_key] = area_sum;
                     min_value = min_value.min(total);
                     max_value = max_value.max(total);
                     member_key += 1;
@@ -506,14 +530,7 @@ pub(crate) fn build_power_batch_into(
                         );
                         let area_sum = area_bonus[0] + area_bonus[1] + area_bonus[2];
                         let total = base_sum[lane] + character_sum + area_sum + fixture + gate;
-                        result.resolved[pool_index as usize][member_key] = PowerDetail {
-                            base: base_sum[lane],
-                            area_item_bonus: area_sum,
-                            character_bonus: character_sum,
-                            fixture_bonus: fixture,
-                            gate_bonus: gate,
-                            total,
-                        };
+                        result.area_item_bonus[pool_index as usize][member_key] = area_sum;
                         min_value = min_value.min(total);
                         max_value = max_value.max(total);
                         member_key += 1;
@@ -546,11 +563,18 @@ pub(crate) fn build_power_scalar_reference(
     let character_bonus = character_bonus_dims(master, ctx, base);
     let base_sum = base[0] + base[1] + base[2];
     let character_sum = character_bonus[0] + character_bonus[1] + character_bonus[2];
-    let mut result = PowerResult::default();
-    let mut min_value = i32::MAX;
-    let mut max_value = i32::MIN;
     let fixture = ctx.fixture_bonus(base_sum, master.character_id);
     let gate = ctx.gate_bonus(base_sum, unit_mask);
+    let mut result = PowerResult {
+        unit_mask,
+        base: base_sum,
+        character_bonus: character_sum,
+        fixture_bonus: fixture,
+        gate_bonus: gate,
+        ..PowerResult::default()
+    };
+    let mut min_value = i32::MAX;
+    let mut max_value = i32::MIN;
 
     for pool_index in 0..6u8 {
         if unit_mask & (1u8 << pool_index) == 0 {
@@ -574,7 +598,7 @@ pub(crate) fn build_power_scalar_reference(
                 gate_bonus: gate,
                 total,
             };
-            result.resolved[pool_index as usize][member_key] = detail;
+            result.area_item_bonus[pool_index as usize][member_key] = detail.area_item_bonus;
             min_value = min_value.min(total);
             max_value = max_value.max(total);
         }
