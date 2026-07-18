@@ -1179,10 +1179,12 @@ impl TopKTracker {
     }
 
     pub(super) fn insert(&mut self, candidate: DeckResult) {
-        if self.results.len() >= self.top_k
-            && !deck_result_cmp(&candidate, self.results.last().unwrap()).is_lt()
-        {
-            return;
+        if self.results.len() >= self.top_k {
+            if let Some(last) = self.results.last() {
+                if !deck_result_cmp(&candidate, last).is_lt() {
+                    return;
+                }
+            }
         }
         let candidate_key = self.game_card_set_key(&candidate);
         if let Some(existing_pos) = self.keys.iter().position(|key| *key == candidate_key) {

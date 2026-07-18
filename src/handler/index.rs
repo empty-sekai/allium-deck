@@ -272,7 +272,9 @@ impl PoolIndexes {
                 .last()
                 .is_some_and(|previous: &(i32, f64)| previous.0 == entry.0)
             {
-                *unique_character_bonuses.last_mut().unwrap() = entry;
+                if let Some(previous) = unique_character_bonuses.last_mut() {
+                    *previous = entry;
+                }
             } else {
                 unique_character_bonuses.push(entry);
             }

@@ -235,9 +235,9 @@ pub(crate) fn build_event_context(
         .cloned()
         .collect::<Vec<_>>();
     let mut rarity_bonus_x10 = [[0i32; 6]; 6];
-    for rarity in 0..rarity_bonus_x10.len() {
-        for rank in 0..rarity_bonus_x10[rarity].len() {
-            rarity_bonus_x10[rarity][rank] = rarity_bonuses
+    for (rarity, row) in rarity_bonus_x10.iter_mut().enumerate() {
+        for (rank, value) in row.iter_mut().enumerate() {
+            *value = rarity_bonuses
                 .iter()
                 .filter(|entry| entry.card_rarity_type == rarity as i32)
                 .filter(|entry| entry.master_rank <= rank as i32)

@@ -162,7 +162,7 @@ pub(crate) unsafe fn upper_bound_mask_16(upper_bounds: *const u64, threshold: u6
     upper_bound_mask_16_scalar(upper_bounds, threshold)
 }
 
-#[cfg(test)]
+#[cfg(any(test, not(target_arch = "x86_64")))]
 #[inline(always)]
 unsafe fn unused_character_mask_16_scalar(char_ids: *const u8, used_chars: u32) -> u16 {
     let mut mask = 0u16;
@@ -175,7 +175,7 @@ unsafe fn unused_character_mask_16_scalar(char_ids: *const u8, used_chars: u32) 
     mask
 }
 
-#[cfg(test)]
+#[cfg(any(test, not(target_arch = "x86_64")))]
 #[inline(always)]
 unsafe fn upper_bound_mask_16_scalar(upper_bounds: *const u64, threshold: u64) -> u16 {
     let mut mask = 0u16;

@@ -1079,13 +1079,15 @@ fn collapse_non_bfes_skill_states(
     if state_count != 2 {
         return false;
     }
-    let is_bfes = is_bfes_skill_pair(
-        &states[0].as_ref().unwrap().1,
-        &states[1].as_ref().unwrap().1,
-    );
+    let Some((_, first)) = states[0].as_ref() else {
+        return false;
+    };
+    let Some((_, second)) = states[1].as_ref() else {
+        return false;
+    };
+    let is_bfes = is_bfes_skill_pair(first, second);
     if !is_bfes {
-        let keep_after =
-            states[0].as_ref().unwrap().1.skill_max > states[1].as_ref().unwrap().1.skill_max;
+        let keep_after = first.skill_max > second.skill_max;
         states[usize::from(keep_after)] = None;
     }
     is_bfes
@@ -1525,7 +1527,10 @@ fn build_card_pool_fully_prepared_internal(
         Vec::new()
     };
 
-    let mut powers = build.power_scratch.lock().unwrap();
+    let mut powers = build
+        .power_scratch
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     build_power_batch_from_fn(
         prepared_cards.len(),
         |index| {
@@ -1547,7 +1552,7 @@ fn build_card_pool_fully_prepared_internal(
         let user_card = prepared_card.user_card.as_ref();
         let unit_mask_raw = prepared_card.unit_mask;
         let attr = prepared_card.attr;
-        let event_bonus = prepared_card.event_bonus.clone();
+        let event_bonus = prepared_card.event_bonus;
         let has_char_bonus = prepared_card.has_char_bonus;
         let has_attr_bonus = prepared_card.has_attr_bonus;
         let leader_honor_bonus = prepared_card.leader_honor_bonus;
@@ -1578,7 +1583,7 @@ fn build_card_pool_fully_prepared_internal(
                 skill_state_controls_image,
                 master_rank: user_card.master_rank,
                 skill_level: user_card.skill_level,
-                power: power.clone(),
+                power,
                 skill,
                 event_bonus,
                 has_char_bonus,
