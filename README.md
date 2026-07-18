@@ -13,11 +13,11 @@ Project Sekai 组卡推荐引擎的 Rust 实现，专攻 **DFS / 分支限界（
 - **建池（pool building）**：对 masterdata 一次性建立 by-id 索引，把逐卡 O(N) 的线性扫描降为 O(1) 查表。
 - **搜索（search）**：SoA 卡池 + 512-bit 候选位图、综合力压成 u18×8 槽位 + 查找表、逐角色支配裁剪、角色感知后缀上界、贪心 + 1-swap warm start 下界，使分支限界尽早剪枝。
 
-`CardPool` 采用列式 SoA 布局，每列 64 字节对齐。典型候选池（130–260 张卡）整体 **~7–12 KB**，加上 `SearchContext`、`SuffixBound` 等搜索期结构，**全部热路径数据落在 L1 data cache 内**（EPYC 9K85 单核 L1d = 32 KB）。叶子评估遍历卡组时，访问模式是逐列顺序扫描，每次只碰当前列的一个 cache line——无 TLB miss，无跨行颠簸。
+`CardPool` 采用列式 SoA 布局，每列 64 字节对齐。典型候选池（130–260 张卡）整体 **~7–12 KB**，加上 `SearchContext`、`SuffixBound` 等搜索期结构，热路径数据适合驻留在现代服务器 CPU 的 L1 data cache 内（EPYC 9K85 每核 L1d = 48 KiB）。叶子评估遍历卡组时按列顺序访问，尽量减少无关 cache line 和 TLB 压力。
 
-> 性能（生产环境实测，AMD EPYC 9K85 单核，release profile：`opt-level=3` / `lto="fat"` / `codegen-units=1` / `target-cpu=znver5`）：
-> 典型账号单次**建池约 6 ms**（结果可缓存命中），**搜索亚毫秒级**。
-> 数值随账号规模、目标（综合力/技能/分数）与活动类型波动。
+> 性能（AMD EPYC 9K85，固定单核，release profile：`opt-level=3` / `lto="fat"` / `codegen-units=1` / `target-cpu=znver5`）：masterdata 常驻内存时，完整建池 cache miss（包含当前用户和参数的准备）典型约为 **0.6 ms**。10 个不同账号的多人活动 Top-8 搜索中，账号均值的纯算术平均为 **0.3270 ms**，范围为 **0.1017–0.8369 ms**。在这一典型场景中，`v0.0.6` 相比 `v0.0.5` 的建池约快 **20×**，搜索约快 **5–10×**。
+>
+> 建池数字不包含 masterdata 文件读取或 JSON 解析。x86-64 在运行时检测 AVX-512F/BW；不支持的 CPU 和其他架构自动使用 scalar fallback。实际耗时会随账号规模、活动规则、目标和候选池变化；20× 建池和 5–10× 搜索提升描述仅针对典型多人活动组卡，不是所有模式的性能保证。
 
 ## 对外 API
 
@@ -95,7 +95,7 @@ cargo build --release
 ```bash
 # 方式1: 下载预编译二进制 (以 linux-x86_64 为例)
 curl -L -o recommend_cli \
-  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.3/recommend_cli-v0.0.3-linux-x86_64
+  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.6/recommend_cli-v0.0.6-linux-x86_64
 chmod +x recommend_cli
 ./recommend_cli [OPTIONS]
 
@@ -247,4 +247,4 @@ Top-K（`top_k > 1`）下被支配卡参与的组合本身可能是合法的次�
 
 ## 许可证
 
-[MIT](./LICENSE-MIT) OR [Apache-2.0](./LICENSE-APACHE)。Copyright (C) allium / emptysekai。
+[MIT](./LICENSE-MIT) OR [Apache-2.0](./LICENSE-APACHE)。
