@@ -49,20 +49,20 @@ pub(crate) struct PreparedSkillEffect {
 }
 
 /// 建池期只读查表索引。
-pub(crate) struct PoolIndexes<'a> {
+pub(crate) struct PoolIndexes {
     card_by_id: HashMap<i32, PreparedCardIndex>,
-    episodes_by_card: HashMap<i32, Vec<&'a CardEpisode>>,
-    lessons_by_rarity: HashMap<i32, Vec<&'a MasterLesson>>,
-    canvas_by_rarity: HashMap<i32, &'a CardMysekaiCanvasBonus>,
+    episodes_by_card: HashMap<i32, Vec<CardEpisode>>,
+    lessons_by_rarity: HashMap<i32, Vec<MasterLesson>>,
+    canvas_by_rarity: HashMap<i32, CardMysekaiCanvasBonus>,
     area_by_item_level: HashMap<(i32, i32), Vec<PowerAreaItem>>,
-    skill_by_id_level: HashMap<(i32, i32), &'a Skill>,
+    skill_by_id_level: HashMap<(i32, i32), Skill>,
     effects_by_skill_level: HashMap<(i32, i32), Vec<PreparedSkillEffect>>,
     honor_bonus_by_id_level: HashMap<(i32, i32), u32>,
 }
 
-impl<'a> PoolIndexes<'a> {
+impl PoolIndexes {
     /// 对 masterdata 各表建一次索引。
-    pub(crate) fn build(game: &GameData<'a>) -> Self {
+    pub(crate) fn build(game: &GameData<'_>) -> Self {
         let mut primary_unit_by_character = HashMap::new();
         for entry in game.game_character_units {
             primary_unit_by_character
@@ -149,20 +149,20 @@ impl<'a> PoolIndexes<'a> {
             card.base_power_by_level = by_level;
         }
 
-        let mut episodes_by_card: HashMap<i32, Vec<&CardEpisode>> = HashMap::new();
+        let mut episodes_by_card: HashMap<i32, Vec<CardEpisode>> = HashMap::new();
         for entry in game.card_episodes {
             episodes_by_card
                 .entry(entry.card_id)
                 .or_default()
-                .push(entry);
+                .push(entry.clone());
         }
 
-        let mut lessons_by_rarity: HashMap<i32, Vec<&MasterLesson>> = HashMap::new();
+        let mut lessons_by_rarity: HashMap<i32, Vec<MasterLesson>> = HashMap::new();
         for entry in game.master_lessons {
             lessons_by_rarity
                 .entry(entry.card_rarity_type)
                 .or_default()
-                .push(entry);
+                .push(entry.clone());
         }
 
         // 原逻辑用 `.find`（取第一个匹配），故索引保留首个出现的项。
@@ -170,7 +170,7 @@ impl<'a> PoolIndexes<'a> {
         for entry in game.card_mysekai_canvas_bonuses {
             canvas_by_rarity
                 .entry(entry.card_rarity_type)
-                .or_insert(entry);
+                .or_insert_with(|| entry.clone());
         }
 
         let mut area_by_item_level: HashMap<(i32, i32), Vec<PowerAreaItem>> = HashMap::new();
@@ -202,7 +202,7 @@ impl<'a> PoolIndexes<'a> {
         for entry in game.skills {
             skill_by_id_level
                 .entry((entry.id, entry.level))
-                .or_insert(entry);
+                .or_insert_with(|| entry.clone());
         }
 
         let mut effects_by_skill_level: HashMap<(i32, i32), Vec<PreparedSkillEffect>> =
@@ -301,7 +301,7 @@ impl<'a> PoolIndexes<'a> {
     }
 
     #[inline]
-    pub(crate) fn card_episodes(&self, card_id: i32) -> &[&'a CardEpisode] {
+    pub(crate) fn card_episodes(&self, card_id: i32) -> &[CardEpisode] {
         self.episodes_by_card
             .get(&card_id)
             .map(Vec::as_slice)
@@ -309,7 +309,7 @@ impl<'a> PoolIndexes<'a> {
     }
 
     #[inline]
-    pub(crate) fn master_lessons(&self, rarity: i32) -> &[&'a MasterLesson] {
+    pub(crate) fn master_lessons(&self, rarity: i32) -> &[MasterLesson] {
         self.lessons_by_rarity
             .get(&rarity)
             .map(Vec::as_slice)
@@ -317,8 +317,8 @@ impl<'a> PoolIndexes<'a> {
     }
 
     #[inline]
-    pub(crate) fn canvas_bonus(&self, rarity: i32) -> Option<&'a CardMysekaiCanvasBonus> {
-        self.canvas_by_rarity.get(&rarity).copied()
+    pub(crate) fn canvas_bonus(&self, rarity: i32) -> Option<&CardMysekaiCanvasBonus> {
+        self.canvas_by_rarity.get(&rarity)
     }
 
     #[inline]
@@ -330,10 +330,8 @@ impl<'a> PoolIndexes<'a> {
     }
 
     #[inline]
-    pub(crate) fn skill(&self, skill_id: i32, skill_level: i32) -> Option<&'a Skill> {
-        self.skill_by_id_level
-            .get(&(skill_id, skill_level))
-            .copied()
+    pub(crate) fn skill(&self, skill_id: i32, skill_level: i32) -> Option<&Skill> {
+        self.skill_by_id_level.get(&(skill_id, skill_level))
     }
 
     #[inline]

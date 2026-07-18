@@ -12,6 +12,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::sync::Arc;
 
 use crate::pool::EventBonusExact;
 use crate::search::{SearchContext, SupportDeck};
@@ -63,15 +64,35 @@ impl Error for BuildError {}
 ///
 /// Construct this once for an immutable `GameData` snapshot, then reuse it
 /// across accounts and parameter sets to avoid rebuilding masterdata indexes.
+#[derive(Clone)]
+pub struct PreparedGameIndexes {
+    indexes: Arc<index::PoolIndexes>,
+}
+
+impl PreparedGameIndexes {
+    pub fn new(game: &types::GameData<'_>) -> Self {
+        Self {
+            indexes: Arc::new(index::PoolIndexes::build(game)),
+        }
+    }
+}
+
 pub struct PreparedGameData<'a> {
     game: types::GameData<'a>,
-    indexes: index::PoolIndexes<'a>,
+    indexes: Arc<index::PoolIndexes>,
 }
 
 impl<'a> PreparedGameData<'a> {
     pub fn new(game: types::GameData<'a>) -> Self {
-        let indexes = index::PoolIndexes::build(&game);
-        Self { game, indexes }
+        let indexes = PreparedGameIndexes::new(&game);
+        Self::with_indexes(game, &indexes)
+    }
+
+    pub fn with_indexes(game: types::GameData<'a>, indexes: &PreparedGameIndexes) -> Self {
+        Self {
+            game,
+            indexes: Arc::clone(&indexes.indexes),
+        }
     }
 
     #[inline]
@@ -372,7 +393,7 @@ impl<'a> PreparedPoolBuild<'a> {
         params: &types::BuildParams,
     ) -> Result<Self, BuildError> {
         let game = prepared.game();
-        let indexes = &prepared.indexes;
+        let indexes = prepared.indexes.as_ref();
         validate_build_params(params)?;
         if params.multi_live_score_up_lower_bound.is_some()
             && !matches!(params.live_type, crate::types::LiveType::Multi)
@@ -1217,7 +1238,7 @@ fn build_search_context(
     }
 }
 
-fn compute_honor_bonus(user: &types::UserProfile, indexes: &index::PoolIndexes<'_>) -> u32 {
+fn compute_honor_bonus(user: &types::UserProfile, indexes: &index::PoolIndexes) -> u32 {
     user.user_honors
         .iter()
         .map(|honor| indexes.honor_bonus(honor.honor_id, honor.level))
@@ -1290,7 +1311,7 @@ pub fn build_card_pool_with_details_fully_prepared(
     build: &PreparedPoolBuild<'_>,
 ) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
     let game = prepared.game();
-    let indexes = &prepared.indexes;
+    let indexes = prepared.indexes.as_ref();
     let params = &build.params;
     let event_ctx = build.event_ctx.as_ref();
     let music = build.music.as_ref();
@@ -3111,7 +3132,8 @@ mod tests {
         };
 
         let (pool, ctx, details) = build_card_pool_with_details(&user, &game, &params).unwrap();
-        let prepared = PreparedGameData::new(game);
+        let shared_indexes = PreparedGameIndexes::new(&game);
+        let prepared = PreparedGameData::with_indexes(game, &shared_indexes);
         let (prepared_pool, prepared_ctx, prepared_details) =
             build_card_pool_with_details_prepared(&user, &prepared, &params).unwrap();
         let prepared_build = PreparedPoolBuild::new(&user, &prepared, &params).unwrap();

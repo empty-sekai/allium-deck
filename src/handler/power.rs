@@ -41,7 +41,7 @@ impl PreparedPowerContext {
     pub(crate) fn new(
         user: &UserProfile,
         game: &GameData<'_>,
-        idx: &PoolIndexes<'_>,
+        idx: &PoolIndexes,
         fixture_bonus_limit: Option<i32>,
     ) -> Self {
         let mut character_rank = [0; 27];
@@ -199,7 +199,7 @@ fn base_power_dims(
     user_card: &UserCard,
     master: &MasterCard,
     ctx: &PreparedPowerContext,
-    idx: &PoolIndexes<'_>,
+    idx: &PoolIndexes,
 ) -> [i32; 3] {
     let level = user_card.level.max(1);
     let mut base = idx.base_power(master.id, level);
@@ -328,7 +328,7 @@ pub(crate) fn build_power(
     user_card: &UserCard,
     master: &MasterCard,
     ctx: &PreparedPowerContext,
-    idx: &PoolIndexes<'_>,
+    idx: &PoolIndexes,
     unit_mask: u8,
     card_attr: u8,
 ) -> PowerResult {
@@ -347,7 +347,7 @@ pub(crate) fn build_power(
 pub(crate) fn build_power_batch(
     inputs: &[PowerInput<'_>],
     ctx: &PreparedPowerContext,
-    idx: &PoolIndexes<'_>,
+    idx: &PoolIndexes,
 ) -> Vec<PowerResult> {
     let mut results = Vec::with_capacity(inputs.len());
     build_power_batch_into(inputs, ctx, idx, &mut results);
@@ -357,7 +357,7 @@ pub(crate) fn build_power_batch(
 pub(crate) fn build_power_batch_into(
     inputs: &[PowerInput<'_>],
     ctx: &PreparedPowerContext,
-    idx: &PoolIndexes<'_>,
+    idx: &PoolIndexes,
     results: &mut Vec<PowerResult>,
 ) {
     results.clear();
@@ -538,7 +538,7 @@ pub(crate) fn build_power_scalar_reference(
     user_card: &UserCard,
     master: &MasterCard,
     ctx: &PreparedPowerContext,
-    idx: &PoolIndexes<'_>,
+    idx: &PoolIndexes,
     unit_mask: u8,
     card_attr: u8,
 ) -> PowerResult {

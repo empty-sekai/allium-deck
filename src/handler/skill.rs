@@ -60,7 +60,7 @@ pub(crate) fn build_skill(
     user_card: &UserCard,
     master: &MasterCard,
     _game: &GameData<'_>,
-    idx: &PoolIndexes<'_>,
+    idx: &PoolIndexes,
     character_rank: i32,
     skill_limit: Option<u32>,
     skill_state: SkillState,
