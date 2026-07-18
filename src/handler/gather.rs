@@ -88,6 +88,14 @@ pub struct FullPrecisionCard {
     pub leader_limit_bonus: u16,
 }
 
+pub(crate) struct GatheredContext {
+    pub(crate) skill_max: Vec<u8>,
+    pub(crate) leader_honor_bonus: Vec<u16>,
+    pub(crate) leader_limit_bonus: Vec<u16>,
+    pub(crate) skill_is_after_training: Vec<bool>,
+    pub(crate) trained_to_special_image: Vec<bool>,
+}
+
 fn encode_power(card: &CardIntermediate) -> ([u16; 8], u32) {
     let unit_mask = card.unit_mask_raw;
     let primary = if unit_mask == 0 {
@@ -105,11 +113,11 @@ fn encode_power(card: &CardIntermediate) -> ([u16; 8], u32) {
     let mut packed = 0u32;
 
     for member_key in 0..4usize {
-        let primary_value = card.power.resolved[primary][member_key].total.max(0) as u32;
+        let primary_value = card.power.detail(primary, member_key).total.max(0) as u32;
         values[member_key] = primary_value as u16;
         packed |= ((primary_value >> 16) & 0b11) << (member_key * 2);
 
-        let secondary_value = card.power.resolved[secondary][member_key].total.max(0) as u32;
+        let secondary_value = card.power.detail(secondary, member_key).total.max(0) as u32;
         let slot = 4 + member_key;
         values[slot] = secondary_value as u16;
         packed |= ((secondary_value >> 16) & 0b11) << (slot * 2);
@@ -251,7 +259,8 @@ pub(crate) fn sort_and_gather(
     effective_live_type: LiveType,
     fixed_card_ids: &[u16],
     fixed_character_ids: &[u8],
-) -> (CardPool, Vec<FullPrecisionCard>) {
+    include_details: bool,
+) -> (CardPool, Vec<FullPrecisionCard>, GatheredContext) {
     if fixed_card_ids.is_empty() && fixed_character_ids.is_empty() {
         cards.sort_by(|left, right| {
             compare_cards(left, right, target, has_event, effective_live_type)
@@ -274,7 +283,18 @@ pub(crate) fn sort_and_gather(
     let mut unit_count_idx = 0u8;
     let mut diff_idx = 0u8;
     let mut ref_idx = 0u8;
-    let mut full = Vec::with_capacity(cards.len());
+    let mut full = if include_details {
+        Vec::with_capacity(cards.len())
+    } else {
+        Vec::new()
+    };
+    let mut gathered = GatheredContext {
+        skill_max: Vec::with_capacity(cards.len()),
+        leader_honor_bonus: Vec::with_capacity(cards.len()),
+        leader_limit_bonus: Vec::with_capacity(cards.len()),
+        skill_is_after_training: Vec::with_capacity(cards.len()),
+        trained_to_special_image: Vec::with_capacity(cards.len()),
+    };
 
     for (dense, card) in cards.into_iter().enumerate() {
         let dense = dense as u16;
@@ -323,28 +343,39 @@ pub(crate) fn sort_and_gather(
             }
         }
 
-        full.push(FullPrecisionCard {
-            game_card_id: card.game_card_id.max(0).min(u16::MAX as i32) as u16,
-            card_rarity_type: card.card_rarity_type,
-            character_id: card.character_id,
-            attr: card.attr,
-            unit_mask_raw: card.unit_mask_raw,
-            default_image: card.default_image,
-            after_training: card.after_training,
-            skill_state_controls_image: card.skill_state_controls_image,
-            master_rank: card.master_rank,
-            skill_level: card.skill_level,
-            power: card.power.resolved,
-            skill: card.skill.full,
-            event_bonus: card.event_bonus,
-            power_min_exact: card.power.power_min,
-            power_max_exact: card.power.power_max,
-            skill_min_exact: card.skill.skill_min,
-            skill_max_exact: card.skill.skill_max,
-            leader_honor_bonus: card.leader_honor_bonus,
-            leader_limit_bonus: card.leader_limit_bonus,
-        });
+        gathered.skill_max.push(card.skill.skill_max);
+        gathered.leader_honor_bonus.push(card.leader_honor_bonus);
+        gathered.leader_limit_bonus.push(card.leader_limit_bonus);
+        gathered
+            .skill_is_after_training
+            .push(card.skill.full.is_after_training);
+        gathered
+            .trained_to_special_image
+            .push(matches!(card.default_image, DefaultImage::SpecialTraining));
+        if include_details {
+            full.push(FullPrecisionCard {
+                game_card_id: card.game_card_id.max(0).min(u16::MAX as i32) as u16,
+                card_rarity_type: card.card_rarity_type,
+                character_id: card.character_id,
+                attr: card.attr,
+                unit_mask_raw: card.unit_mask_raw,
+                default_image: card.default_image,
+                after_training: card.after_training,
+                skill_state_controls_image: card.skill_state_controls_image,
+                master_rank: card.master_rank,
+                skill_level: card.skill_level,
+                power: card.power.resolved(),
+                skill: card.skill.full,
+                event_bonus: card.event_bonus,
+                power_min_exact: card.power.power_min,
+                power_max_exact: card.power.power_max,
+                skill_min_exact: card.skill.skill_min,
+                skill_max_exact: card.skill.skill_max,
+                leader_honor_bonus: card.leader_honor_bonus,
+                leader_limit_bonus: card.leader_limit_bonus,
+            });
+        }
     }
 
-    (builder.freeze(), full)
+    (builder.freeze(), full, gathered)
 }
