@@ -88,6 +88,14 @@ cargo build --release
 
 性能数字应在 release profile 下测量。`src/bin/recommend_cli.rs` 提供 standalone CLI（`cargo install allium-deck` 出来后命令名 `recommend_cli`），打印分阶段耗时（建池 vs 搜索），方便快速迭代验证。
 
+## 语言绑定
+
+| 语言 | 位置 | 说明 |
+| --- | --- | --- |
+| Rust | 本仓库（crates.io `allium-deck`） | 引擎本体 |
+| JavaScript / 浏览器 | [`wasm/`](wasm)（npm `@empty-sekai/allium-deck-wasm`） | WASM 绑定，可附带内嵌 masterdata |
+| Python | [`allium-deck-python`](https://github.com/empty-sekai/allium-deck-python)（PyPI `allium-sekai-deck`） | 预编译 abi3 wheel，含 `allium_deck` API 与 LunaBot 兼容门面，无需本地 Rust 工具链 |
+
 ## CLI
 
 `recommend_cli` 是可独立运行的组卡推荐命令行工具，可从 [GitHub Releases](https://github.com/empty-sekai/allium-deck/releases) 下载预编译二进制，或从源码安装。
