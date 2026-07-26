@@ -8,7 +8,7 @@ Thumbs.db
 __pycache__/
 *.py[cod]
 .tmp/
-/docs/
+/docs/superpowers/
 /.worktrees/
 
 # 构建期生成的 masterdata 内嵌二进制（build_gamedata / CI 重建，不入库）
