@@ -4,7 +4,7 @@ use crate::types::{Attr, EventType, Unit, FINAL_CHAPTER_EVENT_ID};
 use super::types::{
     attr_to_pool_index, parse_attr_code, parse_unit_code, resolve_event_type, BuildParams,
     EventCard, EventCardBonusLimit, EventDeckBonus, EventHonorBonus, EventRarityBonusRate,
-    EventSkillScoreUpLimit, GameData, MasterCard, UserCard, UserProfile, WorldBloomDiffAttrBonus,
+    EventSkillScoreUpLimit, GameData, MasterCard, UserCard, WorldBloomDiffAttrBonus,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -402,6 +402,7 @@ pub(crate) fn build_card_event_bonus(
     primary_unit: Option<Unit>,
     support_unit: Option<Unit>,
     support_unit_unrestricted: bool,
+    limited_bonus_x10: i32,
     event_ctx: &EventContext,
 ) -> (EventBonusExact, bool, bool) {
     let rarity_bonus_x10 = load_rarity_bonus_x10(user_card, master, event_ctx);
@@ -435,12 +436,6 @@ pub(crate) fn build_card_event_bonus(
         }
     }
     let base_bonus_x10 = rarity_bonus_x10 + (custom_bonus_x2 + deck_bonus_x2) * 5;
-    let limited_bonus_x10 = event_ctx
-        .event_cards
-        .iter()
-        .find(|entry| entry.card_id == master.id)
-        .map(|entry| entry.bonus_rate.saturating_mul(10))
-        .unwrap_or(0);
 
     (
         EventBonusExact::from_x10(
@@ -450,39 +445,6 @@ pub(crate) fn build_card_event_bonus(
         custom_char || deck_char,
         custom_attr || deck_attr,
     )
-}
-
-/// 构建终章 leader honor bonus。
-pub(crate) fn build_leader_honor_bonus(
-    user: &UserProfile,
-    master: &MasterCard,
-    event_ctx: &EventContext,
-) -> u16 {
-    if event_ctx.event_id != FINAL_CHAPTER_EVENT_ID {
-        return 0;
-    }
-    let total = event_ctx
-        .honor_bonuses
-        .iter()
-        .filter(|entry| entry.leader_game_character_id == master.character_id)
-        .filter(|entry| {
-            user.user_honors
-                .iter()
-                .any(|honor| honor.honor_id == entry.honor_id)
-        })
-        .map(|entry| entry.bonus_rate.max(0) as u16)
-        .sum::<u16>();
-    total
-}
-
-/// 构建终章 leader 限定卡 bonus。
-pub(crate) fn build_leader_limit_bonus(master: &MasterCard, event_ctx: &EventContext) -> u16 {
-    event_ctx
-        .event_cards
-        .iter()
-        .find(|entry| entry.card_id == master.id)
-        .map(|entry| entry.leader_bonus_rate.max(0) as u16)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -622,8 +584,16 @@ mod tests {
             bonds_honors: &[],
         };
 
-        let (bonus, _, _) =
-            build_card_event_bonus(&user_card, &master(None, "cool"), 0, None, None, true, &ctx);
+        let (bonus, _, _) = build_card_event_bonus(
+            &user_card,
+            &master(None, "cool"),
+            0,
+            None,
+            None,
+            true,
+            0,
+            &ctx,
+        );
         assert_eq!(bonus.base_x10(), 2);
         assert_eq!(bonus.base_rate(), 0.2);
     }
