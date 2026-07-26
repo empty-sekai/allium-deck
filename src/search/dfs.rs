@@ -233,6 +233,14 @@ impl SearchState<'_> {
                         self.suffix
                             .dense_suffix_ceiling(start, &partial, DECK_SIZE - depth);
                     global.min(dense)
+                } else if matches!(self.ctx.target, ScoreTarget::Score) {
+                    self.suffix.upper_bound_score_noevent(
+                        self.pool,
+                        &deck[..depth],
+                        &used,
+                        &partial,
+                        DECK_SIZE - depth,
+                    )
                 } else {
                     self.suffix.upper_bound_with_depth(depth, &used, &partial)
                 };

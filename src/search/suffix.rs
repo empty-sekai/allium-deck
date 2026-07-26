@@ -1,6 +1,6 @@
 use std::mem::size_of;
 
-use crate::pool::CardPool;
+use crate::pool::{CardIdx, CardPool};
 use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, DECK_SIZE};
 
 use super::context::SearchContext;
@@ -99,9 +99,12 @@ pub struct SuffixBound {
     dense_power_bonus_1024_tail: Vec<[u32; DECK_SIZE + 1]>,
     joint_ep_512: Vec<u32>,
     joint_ep_1024: Vec<u32>,
+    /// Score/no-event 场景表：[allowed_unit_subset(64) * 7 + attr_opt] -> per-char max。
+    /// attr_opt: 0..6 = 全同属性 attr id，6 = 无全同属性。空表示未启用。
+    noev_tables: Vec<[u32; CHAR_MASK_COUNT]>,
 }
 
-const _: () = assert!(size_of::<SuffixBound>() <= 704);
+const _: () = assert!(size_of::<SuffixBound>() <= 736);
 
 impl SuffixBound {
     /// 基于卡池构建一次性后缀上界数据。
@@ -212,7 +215,149 @@ impl SuffixBound {
             dense_power_bonus_1024_tail: Vec::new(),
             joint_ep_512: Vec::new(),
             joint_ep_1024: Vec::new(),
+            noev_tables: if matches!(ctx.target, ScoreTarget::Score) && !ctx.has_event() {
+                build_noev_tables(pool)
+            } else {
+                Vec::new()
+            },
         }
+    }
+
+    /// Score/no-event：场景感知上界。`chosen` 为已选卡（deck 前缀）。
+    ///
+    /// 场景 = (allowed, attr_opt)：allowed 为仍可能全员同 unit 的 unit 集合
+    /// （已选卡 unit_mask 的 AND），attr_opt 为仍可能全同的属性。对每个场景，
+    /// 已选卡取该场景下的精确综合力，剩余槽取每角色场景最大值 top-k。
+    /// 任意补全的真实 full-unit 集合是 allowed 的子集且场景值单调，故可采纳。
+    #[inline(always)]
+    pub(crate) fn upper_bound_score_noevent(
+        &self,
+        pool: &CardPool,
+        chosen: &[CardIdx],
+        used_chars: &UsedSet,
+        partial: &PartialDeck,
+        slots_left: usize,
+    ) -> u64 {
+        if self.noev_tables.is_empty() {
+            return self.upper_bound_for_slots(slots_left, used_chars, partial);
+        }
+        let mut allowed = 0x3fu8;
+        let mut attr_uniform = 0xffu8;
+        let mut idx = 0usize;
+        while idx < chosen.len() {
+            let card = chosen[idx];
+            allowed &= pool.unit_mask_raw(card);
+            let attr = pool.attr(card);
+            if idx == 0 {
+                attr_uniform = attr;
+            } else if attr_uniform != attr {
+                attr_uniform = 0xff;
+            }
+            idx += 1;
+        }
+
+        let total_skill = partial.skill
+            + suffix_sum_u16_as_u32(
+                &self.skill_order,
+                &self.skill_vals,
+                used_chars.bits(),
+                slots_left,
+            );
+        let best_unused =
+            first_unused_val_u16(&self.skill_order, &self.skill_vals, used_chars.bits());
+        let leader_ub = (partial.max_skill as u32).max(best_unused as u32);
+
+        let mut best = self.noev_scenario_ceiling(
+            pool,
+            chosen,
+            allowed,
+            6,
+            used_chars.bits(),
+            slots_left,
+            total_skill,
+            leader_ub,
+        );
+        if chosen.is_empty() {
+            let mut attr = 0usize;
+            while attr < 6 {
+                let ub = self.noev_scenario_ceiling(
+                    pool,
+                    chosen,
+                    allowed,
+                    attr,
+                    used_chars.bits(),
+                    slots_left,
+                    total_skill,
+                    leader_ub,
+                );
+                if ub > best {
+                    best = ub;
+                }
+                attr += 1;
+            }
+        } else if attr_uniform != 0xff {
+            let ub = self.noev_scenario_ceiling(
+                pool,
+                chosen,
+                allowed,
+                attr_uniform as usize,
+                used_chars.bits(),
+                slots_left,
+                total_skill,
+                leader_ub,
+            );
+            if ub > best {
+                best = ub;
+            }
+        }
+        best
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn noev_scenario_ceiling(
+        &self,
+        pool: &CardPool,
+        chosen: &[CardIdx],
+        allowed: u8,
+        attr_opt: usize,
+        used: u32,
+        slots_left: usize,
+        total_skill: u32,
+        leader_ub: u32,
+    ) -> u64 {
+        let attr_full = attr_opt < 6;
+        let mut power = 0u32;
+        let mut idx = 0usize;
+        while idx < chosen.len() {
+            power += card_scenario_power(pool, chosen[idx], allowed, attr_full);
+            idx += 1;
+        }
+        power += self.noev_tail(allowed, attr_opt, used, slots_left);
+        self.ceiling(power, 0, total_skill, leader_ub)
+    }
+
+    #[inline(always)]
+    fn noev_tail(&self, allowed: u8, attr_opt: usize, used: u32, slots_left: usize) -> u32 {
+        if slots_left == 0 {
+            return 0;
+        }
+        let vals = &self.noev_tables[allowed as usize * 7 + attr_opt];
+        let mut top = [0u32; DECK_SIZE];
+        let mut ch = 0usize;
+        while ch < CHAR_MASK_COUNT {
+            if used & (1u32 << ch) == 0 {
+                insert_topk_u32_n(&mut top, vals[ch], slots_left);
+            }
+            ch += 1;
+        }
+        let mut sum = 0u32;
+        let mut slot = 0usize;
+        while slot < slots_left {
+            sum += top[slot];
+            slot += 1;
+        }
+        sum
     }
 
     pub(crate) fn build_prepared(pool: &CardPool, ctx: &SearchContext) -> Self {
@@ -512,7 +657,12 @@ impl SuffixBound {
                     + skill_total as i64 * self.avg_sum5_1m / 500
                     + leader_ub as i64 * self.avg_leader_rate_1m / 100
             }
-            _ => self.base_rate_1m + 5 * skill_total as i64 * self.srs_div500_1m,
+            _ => {
+                // 每个技能槽的 score_up 不超过全队最大技能 L（含 leader 复发槽），
+                // 因此 Σ su_i·r_i ≤ L·Σr_i = L·srs。旧值 5*skill_total(=S·srs/100)
+                // 对 Solo/Auto 高估约 5 倍。
+                self.base_rate_1m + 5 * (leader_ub as i64) * self.srs_div500_1m
+            }
         };
         let power_sum: i64 = if let Some(tp) = self.multi_teammate_power {
             power_total as i64 + tp as i64 * (DECK_SIZE as i64 - 1)
@@ -1617,6 +1767,73 @@ fn maximize_joint_event_numerator(
 fn ceil_div_i128(numerator: i128, denominator: i128) -> i128 {
     debug_assert!(numerator >= 0 && denominator > 0);
     numerator.saturating_add(denominator - 1) / denominator
+}
+
+/// 单卡在场景 (allowed_full_units, attr_full) 下的综合力上界（对该场景精确）。
+#[inline(always)]
+pub(crate) fn card_scenario_power(
+    pool: &CardPool,
+    card: CardIdx,
+    allowed: u8,
+    attr_full: bool,
+) -> u32 {
+    let mask = pool.unit_mask_raw(card);
+    let lut = pool.power_lut(card);
+    let values = pool.power_values(card);
+    let mut best = 0u32;
+    let mut unit = 0usize;
+    while unit < 6 {
+        if mask & (1u8 << unit) != 0 {
+            let slot = ((lut >> (16 + unit)) & 1) as usize;
+            let unit_all = (allowed & (1u8 << unit) != 0) as usize;
+            let key = unit_all * 2 + attr_full as usize;
+            let value = super::evaluate::decode_u18(values, lut, slot * 4 + key);
+            if value > best {
+                best = value;
+            }
+        }
+        unit += 1;
+    }
+    best
+}
+
+fn build_noev_tables(pool: &CardPool) -> Vec<[u32; CHAR_MASK_COUNT]> {
+    let mut tables = vec![[0u32; CHAR_MASK_COUNT]; 64 * 7];
+    for card in pool.indices() {
+        let ch = pool.char_id(card) as usize;
+        let card_attr = pool.attr(card) as usize;
+        for allowed in 0..64usize {
+            for attr_opt in 0..7usize {
+                if attr_opt < 6 && card_attr != attr_opt {
+                    // 全同属性 attr_opt 的卡组不可能包含此卡
+                    continue;
+                }
+                let value = card_scenario_power(pool, card, allowed as u8, attr_opt < 6);
+                let entry = &mut tables[allowed * 7 + attr_opt][ch];
+                if value > *entry {
+                    *entry = value;
+                }
+            }
+        }
+    }
+    tables
+}
+
+#[inline(always)]
+fn insert_topk_u32_n(values: &mut [u32; DECK_SIZE], value: u32, len: usize) {
+    let mut slot = 0usize;
+    while slot < len {
+        if value > values[slot] {
+            let mut shift = len - 1;
+            while shift > slot {
+                values[shift] = values[shift - 1];
+                shift -= 1;
+            }
+            values[slot] = value;
+            break;
+        }
+        slot += 1;
+    }
 }
 
 #[inline(always)]
