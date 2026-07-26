@@ -20,24 +20,10 @@ pub struct DominanceResult {
 /// WL 同样走支配裁剪：被裁的卡仍在独立的 support_cards 里参与支援计算（支援与主搜索池解耦），
 /// 且 `dominates` 要求 attr 相同，异色变体全部保留，diff_attr_bonus 无损。
 pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceResult {
-    let (keep, dominated_by) = compute_keep_mask_with_winners(pool, ctx);
+    let (keep, dominated_by) = compute_keep_mask_with_winners(pool, ctx, None);
     let before = pool.count();
     let after = keep.iter().copied().filter(|keep| *keep).count();
-
-    // 链压缩：被裁卡沿「被谁裁掉」链走到存活根。支配关系逐维度比较、可传递，
-    // 因此根支配它链上的每一张被裁卡。
-    let mut alternatives = vec![Vec::new(); before];
-    let mut dense = 0usize;
-    while dense < before {
-        if !keep[dense] {
-            let mut root = dominated_by[dense] as usize;
-            while !keep[root] {
-                root = dominated_by[root] as usize;
-            }
-            alternatives[root].push(CardIdx::new(dense as u16));
-        }
-        dense += 1;
-    }
+    let alternatives = chain_compress_alternatives(&keep, &dominated_by);
 
     let original_indices = keep
         .iter()
@@ -63,13 +49,82 @@ pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceRes
     }
 }
 
-/// 仅供终章 member 搜索使用的支配保留位图。
-pub fn compute_member_keep(pool: &CardPool) -> Vec<bool> {
-    compute_keep_mask(
+/// 链压缩：被裁卡沿「被谁裁掉」链走到存活根。支配关系逐维度比较、可传递，
+/// 因此根支配它链上的每一张被裁卡。
+fn chain_compress_alternatives(keep: &[bool], dominated_by: &[u16]) -> Vec<Vec<CardIdx>> {
+    let mut alternatives = vec![Vec::new(); keep.len()];
+    let mut dense = 0usize;
+    while dense < keep.len() {
+        if !keep[dense] {
+            let mut root = dominated_by[dense] as usize;
+            while !keep[root] {
+                root = dominated_by[root] as usize;
+            }
+            alternatives[root].push(CardIdx::new(dense as u16));
+        }
+        dense += 1;
+    }
+    alternatives
+}
+
+/// 终章 member 位支配裁剪的保留位图与替代记录。
+pub struct MemberDominance {
+    pub keep: Vec<bool>,
+    /// member 位存活根 -> 被其（直接或经链传递）member 位支配裁掉的索引列表。
+    pub alternatives: Vec<Vec<CardIdx>>,
+}
+
+/// WL 终章 member 位支配的支援惩罚维度：支援表内的卡编入队伍会损失其支援加成
+/// （评估把在队卡从支援总和中排除），惩罚更大的卡作支配者时「被裁卡换成支配根」
+/// 不再分数单调，回换保证失效。逐队长角色取惩罚（支援表按队长角色独立），
+/// 支配要求对每个队长角色惩罚都不劣。
+fn member_support_penalties(pool: &CardPool, ctx: &SearchContext) -> Option<Vec<[i32; 27]>> {
+    if !ctx.is_world_bloom {
+        return None;
+    }
+    let mut dense_by_game_id = std::collections::HashMap::new();
+    for card in pool.indices() {
+        dense_by_game_id.insert(pool.game_id(card), card.raw());
+    }
+    let mut penalties = vec![[0i32; 27]; pool.count()];
+    let mut any = false;
+    let mut char_id = 0u8;
+    while (char_id as usize) < 27 {
+        let support = ctx.support_deck_for_leader(char_id);
+        let count = support.count as usize;
+        if count > 0 {
+            let replacement = support
+                .cards
+                .get(count)
+                .map(|(_, bonus)| *bonus)
+                .unwrap_or(0.0);
+            for &(game_id, bonus) in support.cards.iter().take(count) {
+                let penalty = ((bonus - replacement).max(0.0) * 100.0).round() as i32;
+                if penalty == 0 {
+                    continue;
+                }
+                if let Some(&dense) = dense_by_game_id.get(&game_id) {
+                    penalties[dense][char_id as usize] = penalty;
+                    any = true;
+                }
+            }
+        }
+        char_id += 1;
+    }
+    any.then_some(penalties)
+}
+
+/// 终章 member 位支配裁剪：用中性 ctx（忽略队长专属称号/当期加成）逐角色比较，
+/// 裁掉仅剩队长价值的卡的 member 用途。固定卡从真实 ctx 继承、永不被裁；
+/// WL 支援惩罚从真实 ctx 计入支配维度。被裁卡记录到存活根的 alternatives，
+/// 供 Top-K 搜索后按 member 槽位回换（issue #7）。
+pub fn compute_member_dominance(pool: &CardPool, ctx: &SearchContext) -> MemberDominance {
+    let penalties = member_support_penalties(pool, ctx);
+    let (keep, dominated_by) = compute_keep_mask_with_winners(
         pool,
         &SearchContext {
             target: crate::types::ScoreTarget::Power,
-            fixed_card_ids: Vec::new(),
+            fixed_card_ids: ctx.fixed_card_ids.clone(),
             fixed_character_ids: Vec::new(),
             forced_leader_character_id: None,
             music_rate_pct: 100,
@@ -110,16 +165,20 @@ pub fn compute_member_keep(pool: &CardPool) -> Vec<bool> {
             skill_is_after_training: vec![false; pool.count()],
             trained_to_special_image: vec![false; pool.count()],
         },
-    )
-}
-
-fn compute_keep_mask(pool: &CardPool, ctx: &SearchContext) -> Vec<bool> {
-    compute_keep_mask_with_winners(pool, ctx).0
+        penalties.as_deref(),
+    );
+    let alternatives = chain_compress_alternatives(&keep, &dominated_by);
+    MemberDominance { keep, alternatives }
 }
 
 /// 返回保留位图与「被谁裁掉」映射：dominated_by[dense] 仅在 keep[dense]=false 时有意义，
 /// 记录裁掉该卡的卡的 dense 索引（裁剪者之后仍可能被裁，使用前需链压缩到存活根）。
-fn compute_keep_mask_with_winners(pool: &CardPool, ctx: &SearchContext) -> (Vec<bool>, Vec<u16>) {
+/// `support_penalties` 存在时，支配额外要求逐队长角色的支援惩罚不劣。
+fn compute_keep_mask_with_winners(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    support_penalties: Option<&[[i32; 27]]>,
+) -> (Vec<bool>, Vec<u16>) {
     let mut keep = vec![true; pool.count()];
     let mut dominated_by = vec![0u16; pool.count()];
     let mut char_id = 0u8;
@@ -142,6 +201,7 @@ fn compute_keep_mask_with_winners(pool: &CardPool, ctx: &SearchContext) -> (Vec<
                     if keep[b.raw()]
                         && !ctx.is_fixed_game_id(pool.game_id(b))
                         && dominates(pool, ctx, a, b)
+                        && support_penalty_not_worse(support_penalties, a, b)
                     {
                         keep[b.raw()] = false;
                         dominated_by[b.raw()] = a.raw() as u16;
@@ -154,6 +214,27 @@ fn compute_keep_mask_with_winners(pool: &CardPool, ctx: &SearchContext) -> (Vec<
         char_id += 1;
     }
     (keep, dominated_by)
+}
+
+#[inline(always)]
+fn support_penalty_not_worse(
+    support_penalties: Option<&[[i32; 27]]>,
+    lhs: CardIdx,
+    rhs: CardIdx,
+) -> bool {
+    let Some(penalties) = support_penalties else {
+        return true;
+    };
+    let lhs_pen = &penalties[lhs.raw()];
+    let rhs_pen = &penalties[rhs.raw()];
+    let mut char_id = 0usize;
+    while char_id < 27 {
+        if lhs_pen[char_id] > rhs_pen[char_id] {
+            return false;
+        }
+        char_id += 1;
+    }
+    true
 }
 
 fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -> bool {

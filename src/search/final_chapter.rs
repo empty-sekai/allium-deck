@@ -5,7 +5,6 @@ use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, DECK_SIZE};
 
 use super::context::{SearchContext, SupportDeck};
 use super::dfs::SearchStats;
-use super::dominance;
 use super::evaluate::{calc_event_point, decode_u18, leaf_evaluate_checked, resolve_power_target};
 use super::suffix::SuffixBound;
 use super::types::{DeckResult, SearchParams};
@@ -217,7 +216,9 @@ fn search_leaders(
     };
     let deadline = requested_deadline;
     let suffix = SuffixBound::build(pool, ctx);
-    let member_keep = dominance::compute_member_keep(pool);
+    // member 位图由 search_instrumented 统一计算（含支援惩罚维度与替代记录），
+    // 经 ctx 透传；空位图等价全保留。
+    let member_keep = ctx.final_chapter_member_keep.clone();
     let mut tracker = TopKTracker::new(params.top_k, pool);
     let mut stats = SearchStats::default();
     if leader_char_filter.is_none() {
@@ -242,7 +243,7 @@ fn search_leaders(
     }
 
     for leader_char in leader_chars {
-        let groups = build_char_groups(pool, ctx, leader_char, &member_keep);
+        let groups = build_char_groups(pool, ctx, leader_char, &member_keep, params.top_k);
         if groups.len() < MEMBER_COUNT {
             continue;
         }
@@ -299,7 +300,7 @@ fn search_leaders(
 fn search_auto_leaders_two_phase(
     pool: &CardPool,
     ctx: &SearchContext,
-    _params: &SearchParams,
+    params: &SearchParams,
     suffix: &SuffixBound,
     member_keep: &[bool],
     deadline: Option<Instant>,
@@ -311,7 +312,7 @@ fn search_auto_leaders_two_phase(
     let mut jobs = Vec::new();
     let mut group_sets = Vec::new();
     for leader_char in 1..=26 {
-        let groups = build_char_groups(pool, ctx, leader_char, member_keep);
+        let groups = build_char_groups(pool, ctx, leader_char, member_keep, params.top_k);
         if groups.len() < MEMBER_COUNT {
             continue;
         }
@@ -794,6 +795,7 @@ fn build_char_groups(
     ctx: &SearchContext,
     leader_char: u8,
     member_keep: &[bool],
+    top_k: usize,
 ) -> Vec<CharGroup> {
     let mut by_char = vec![Vec::<CardIdx>::new(); 27];
     for card in pool.indices() {
@@ -816,7 +818,13 @@ fn build_char_groups(
         let mut best_skill = 0u32;
         let mut best_base_bonus = 0u32;
         let mut best_limited_bonus = 0u32;
-        let member_cards = filter_member_variants_for_leader(pool, ctx, leader_char, cards);
+        // 逐队长过滤不记录替代（支援惩罚使其可裁掉全局 member 轮保留的卡），
+        // Top-K 下禁用，否则被裁卡的次优卡组无法回换。
+        let member_cards = if top_k > 1 {
+            cards
+        } else {
+            filter_member_variants_for_leader(pool, ctx, leader_char, cards)
+        };
         let mut keyed_cards = member_cards
             .into_iter()
             .map(|card| (final_chapter_member_key(pool, ctx, leader_char, card), card))
@@ -882,13 +890,15 @@ fn filter_member_variants_for_leader(
         while right < cards.len() {
             if left != right && keep[right] {
                 let rhs = cards[right];
-                if member_dominates_for_leader(
-                    pool,
-                    lhs,
-                    rhs,
-                    support_penalties[left],
-                    support_penalties[right],
-                ) {
+                if !ctx.is_fixed_game_id(pool.game_id(rhs))
+                    && member_dominates_for_leader(
+                        pool,
+                        lhs,
+                        rhs,
+                        support_penalties[left],
+                        support_penalties[right],
+                    )
+                {
                     keep[right] = false;
                 }
             }

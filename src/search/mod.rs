@@ -127,7 +127,23 @@ pub fn search_instrumented(
     let mut original_indices = dominance.original_indices;
     let alternatives = dominance.alternatives;
     if search_ctx.is_final_chapter {
-        let member_keep = dominance::compute_member_keep(&search_pool);
+        let member = dominance::compute_member_dominance(&search_pool, &search_ctx);
+        // member 裁剪的替代记录映射回原始索引，并与第一轮 alternatives 做跨轮链闭包：
+        // 真实次优卡组的 member 位可能是第一轮就被裁的卡（根 x），而 x 又被 member 轮
+        // 裁掉（根 r）——从 r 出发必须能一步回换到它们（issue #7）。
+        let mut member_alternatives = vec![Vec::new(); pool.count()];
+        for (dense, alts) in member.alternatives.iter().enumerate() {
+            if alts.is_empty() {
+                continue;
+            }
+            let root = original_indices[dense].raw();
+            for &alt_dense in alts {
+                let alt = original_indices[alt_dense.raw()];
+                member_alternatives[root].push(alt);
+                member_alternatives[root].extend_from_slice(&alternatives[alt.raw()]);
+            }
+        }
+        let member_keep = member.keep;
         if let Some(leader_char) = search_ctx.final_chapter_leader_character() {
             let keep = search_pool
                 .indices()
@@ -166,7 +182,14 @@ pub fn search_instrumented(
             )
         };
         let remapped = remap_results(compacted_results, &original_indices);
-        let expanded = expand_dominated_alternatives(pool, ctx, &alternatives, params, remapped);
+        let expanded = expand_alternatives(
+            pool,
+            ctx,
+            &alternatives,
+            &member_alternatives,
+            params,
+            remapped,
+        );
         return (expanded, stats);
     }
     let suffix = SuffixBound::build(&search_pool, &search_ctx);
@@ -213,16 +236,38 @@ fn expand_dominated_alternatives(
     params: &SearchParams,
     results: Vec<DeckResult>,
 ) -> Vec<DeckResult> {
+    expand_alternatives(pool, ctx, alternatives, &[], params, results)
+}
+
+/// `member_alternatives` 仅在 member 槽位（slot >= 1）参与回换：终章 member 裁剪
+/// 忽略队长专属加成，被裁卡作队长仍可能更优，不能回换进队长槽。
+///
+/// 终章额外从每个结果的队长轮换出发展开：Top-K tracker 按卡集合去重、只保留最优
+/// 排列，若某替代根恰是自身集合的最佳队长，它在结果里只出现在队长槽，直接回换
+/// 永远不触发；轮换把根移回 member 槽后再回换，并顺带修正集合在其它队长下的
+/// 最优排列分数。轮换按固定槽约束过滤，逐一精确评估后并入 tracker。
+fn expand_alternatives(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    alternatives: &[Vec<CardIdx>],
+    member_alternatives: &[Vec<CardIdx>],
+    params: &SearchParams,
+    results: Vec<DeckResult>,
+) -> Vec<DeckResult> {
     if params.top_k <= 1 {
         return results;
     }
+    let rotate_leader = ctx.is_final_chapter;
     let has_alternatives = results.iter().any(|result| {
-        result
-            .cards
-            .iter()
-            .any(|card| !alternatives[card.raw()].is_empty())
+        result.cards.iter().enumerate().any(|(slot, card)| {
+            !alternatives[card.raw()].is_empty()
+                || ((slot > 0 || rotate_leader)
+                    && member_alternatives
+                        .get(card.raw())
+                        .is_some_and(|alts| !alts.is_empty()))
+        })
     });
-    if !has_alternatives {
+    if !has_alternatives && !rotate_leader {
         return results;
     }
 
@@ -236,22 +281,78 @@ fn expand_dominated_alternatives(
             pool,
             ctx,
             alternatives,
+            member_alternatives,
             &mut deck,
             result.score,
             0,
             &mut tracker,
         );
+        if !rotate_leader {
+            continue;
+        }
+        let mut slot = 1usize;
+        while slot < DECK_SIZE {
+            let mut rotated = result.cards;
+            rotated.swap(0, slot);
+            slot += 1;
+            if !deck_matches_fixed_slots(pool, ctx, &rotated) {
+                continue;
+            }
+            let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, &rotated) else {
+                continue;
+            };
+            tracker.insert(DeckResult::new(rotated, score));
+            expand_substitutions(
+                pool,
+                ctx,
+                alternatives,
+                member_alternatives,
+                &mut rotated,
+                score,
+                0,
+                &mut tracker,
+            );
+        }
     }
     tracker.into_vec()
+}
+
+/// 判断卡组每个槽位是否满足固定卡/固定角色约束（队长轮换用）。
+fn deck_matches_fixed_slots(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; DECK_SIZE],
+) -> bool {
+    let mut slot = 0usize;
+    while slot < DECK_SIZE {
+        if ctx
+            .fixed_card_at(slot)
+            .is_some_and(|game_id| pool.game_id(deck[slot]) != game_id)
+        {
+            return false;
+        }
+        if ctx
+            .fixed_character_at(slot)
+            .is_some_and(|character_id| pool.char_id(deck[slot]) != character_id)
+        {
+            return false;
+        }
+        slot += 1;
+    }
+    true
 }
 
 /// 自 `from_slot` 起逐槽尝试把支配者回换成其支配的卡（多槽组合经递归覆盖）。
 /// `node_score` 是当前替换组合的分数；再多换任何一张分数不会更高，因此 tracker
 /// 满且 node_score 严格低于阈值时整棵子树可剪（同分仍展开，保住 tie-break 名次）。
+/// member 替代经支援惩罚维度保证该单调性；第一轮支配在 WL 下未比较支援惩罚，
+/// 其替代的单调性与裁剪本身的支援盲区是同一个既有问题，独立跟踪。
+#[allow(clippy::too_many_arguments)]
 fn expand_substitutions(
     pool: &CardPool,
     ctx: &SearchContext,
     alternatives: &[Vec<CardIdx>],
+    member_alternatives: &[Vec<CardIdx>],
     deck: &mut [CardIdx; DECK_SIZE],
     node_score: u64,
     from_slot: usize,
@@ -269,14 +370,31 @@ fn expand_substitutions(
             continue;
         }
         let original = deck[slot];
-        for &alt in &alternatives[original.raw()] {
+        let member_alts: &[CardIdx] = if slot > 0 {
+            member_alternatives
+                .get(original.raw())
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+        } else {
+            &[]
+        };
+        for &alt in alternatives[original.raw()].iter().chain(member_alts) {
             deck[slot] = alt;
             // 支配卡与被支配卡同角色，角色唯一性与固定角色槽位约束自然保持。
             let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) else {
                 continue;
             };
             tracker.insert(DeckResult::new(*deck, score));
-            expand_substitutions(pool, ctx, alternatives, deck, score, slot + 1, tracker);
+            expand_substitutions(
+                pool,
+                ctx,
+                alternatives,
+                member_alternatives,
+                deck,
+                score,
+                slot + 1,
+                tracker,
+            );
         }
         deck[slot] = original;
         slot += 1;
@@ -2480,6 +2598,240 @@ mod tests {
             last_game_ids.contains(&801) && last_game_ids.contains(&803),
             "rank 3 should substitute both dominated cards, got {last_game_ids:?}",
         );
+    }
+
+    /// 终章 member 裁剪回归测试共用卡池（issue #7）：
+    /// char0 三张变体 —— X(900, 300, 队长称号加成 5) 第一轮靠称号幸存但 member 轮被
+    /// W(902, 305) 支配；Y(901, 295) 第一轮就被 X 支配。真实 Top-3 是 W/X/Y 各自成队。
+    fn final_chapter_member_cards() -> [TestCard; 7] {
+        [
+            dominance_pair_card(900, 0, 300),
+            dominance_pair_card(901, 0, 295),
+            dominance_pair_card(902, 0, 305),
+            dominance_pair_card(903, 1, 400),
+            dominance_pair_card(904, 2, 410),
+            dominance_pair_card(905, 3, 420),
+            dominance_pair_card(906, 5, 200),
+        ]
+    }
+
+    fn final_chapter_ctx(pool: &CardPool) -> SearchContext {
+        let mut search_ctx = ready_ctx(pool, ScoreTarget::Score);
+        search_ctx.is_final_chapter = true;
+        search_ctx.live_type = LiveType::Multi;
+        search_ctx.live_skill_order = LiveSkillOrder::Average;
+        search_ctx.best_skill_as_leader = false;
+        search_ctx.leader_honor_bonus[0] = 5;
+        search_ctx
+    }
+
+    #[test]
+    fn search_final_chapter_fixed_leader_top_k_recovers_member_pruned_alternatives() {
+        let pool = build_pool(&final_chapter_member_cards());
+        let mut search_ctx = final_chapter_ctx(&pool);
+        search_ctx.fixed_character_ids = vec![5];
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
+
+        // 前提：Y 第一轮被裁；X 第一轮幸存、member 轮被 W 支配。
+        let dominance = eliminate_dominated(&pool, &search_ctx);
+        assert_eq!(dominance.after, dominance.before - 1);
+        let member = dominance::compute_member_dominance(&dominance.pool, &dominance.ctx);
+        assert!(!member.keep[0], "X should be member-dominated by W");
+        assert_eq!(member.alternatives[1], vec![CardIdx::new(0)]);
+
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+        assert!(
+            results[1]
+                .cards
+                .iter()
+                .any(|card| pool.game_id(*card) == 900),
+            "rank 1 should contain the member-pruned card 900",
+        );
+        assert!(
+            results[2]
+                .cards
+                .iter()
+                .any(|card| pool.game_id(*card) == 901),
+            "rank 2 should contain the chained first-pass card 901",
+        );
+    }
+
+    #[test]
+    fn search_final_chapter_auto_leader_top_k_recovers_member_pruned_alternatives() {
+        let pool = build_pool(&final_chapter_member_cards());
+        let search_ctx = final_chapter_ctx(&pool);
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
+
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+    }
+
+    #[test]
+    fn search_final_chapter_fixed_leader_card_top_k_recovers_member_pruned_alternatives() {
+        // 固定队长卡 + 固定成员角色走 DFS 子路径（member 裁剪经 ctx 位图生效）。
+        let pool = build_pool(&final_chapter_member_cards());
+        let mut search_ctx = final_chapter_ctx(&pool);
+        search_ctx.fixed_card_ids = vec![906];
+        search_ctx.fixed_character_ids = vec![1];
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
+
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+    }
+
+    fn skill_card(game_id: u16, char_id: u8, power: u32, skill: u8) -> TestCard {
+        TestCard {
+            char_id,
+            attr: 0,
+            unit_mask: 1,
+            game_id,
+            power,
+            skill: SkillSlot {
+                skill_type: 0,
+                value: skill,
+            },
+            base_bonus: 0,
+            limited_bonus: 0,
+            power_max: power,
+            skill_max: skill,
+        }
+    }
+
+    #[test]
+    fn search_final_chapter_top_k_restores_member_alternative_behind_leader_dedup() {
+        // W(922) member 位支配 X(921)，且 W 是自身集合的最佳队长（技能 90）：
+        // tracker 按集合去重后 W 只出现在队长槽，member 替代必须经队长轮换才能触发。
+        // 集合 B={Y,X,fillers} 的最优排列是 Y 作队长（称号 6）、X 作队员。
+        let cards = [
+            skill_card(920, 2, 300, 10),
+            skill_card(921, 1, 300, 10),
+            skill_card(922, 1, 305, 90),
+            skill_card(923, 3, 400, 10),
+            skill_card(924, 4, 410, 10),
+            skill_card(925, 5, 420, 10),
+        ];
+        let pool = build_pool(&cards);
+        let mut search_ctx = final_chapter_ctx(&pool);
+        search_ctx.leader_honor_bonus[0] = 6;
+        search_ctx.leader_honor_bonus[1] = 5;
+        search_ctx.event_type = Some(EventType::Marathon);
+        search_ctx.skill_scores[1] = [10.0; 6];
+        let params = SearchParams {
+            top_k: 2,
+            timeout_ms: 0,
+        };
+
+        // 前提：X 第一轮靠称号幸存，member 轮被 W 支配。
+        let dominance = eliminate_dominated(&pool, &search_ctx);
+        assert_eq!(dominance.after, dominance.before);
+        let member = dominance::compute_member_dominance(&dominance.pool, &dominance.ctx);
+        assert!(!member.keep[1], "X should be member-dominated by W");
+
+        let results = search(&pool, &search_ctx, &params);
+        assert_eq!(results.len(), 2);
+        let expected_deck = [
+            CardIdx::new(0),
+            CardIdx::new(1),
+            CardIdx::new(3),
+            CardIdx::new(4),
+            CardIdx::new(5),
+        ];
+        let expected = evaluate::leaf_evaluate_checked(&pool, &search_ctx, &expected_deck)
+            .expect("expected arrangement must evaluate");
+        let rank1_game_ids = {
+            let mut ids = results[1].cards.map(|card| pool.game_id(card));
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(rank1_game_ids, [920, 921, 923, 924, 925]);
+        assert_eq!(
+            results[1].score, expected,
+            "rank 1 must carry the best arrangement score (Y leader, X member)",
+        );
+    }
+
+    #[test]
+    fn search_final_chapter_world_bloom_support_penalty_keeps_member_candidates() {
+        // A(900) 在队长支援表内（编入队伍损失 4.0 支援加成）：member 裁剪若不比较
+        // 支援惩罚会裁掉 B(901)，而 A 卡组因支援损失跌出 Top-K，B 的真实次优卡组
+        // 无从回换。支配加入支援惩罚维度后 B 保留在候选池，与暴力枚举一致。
+        let cards = [
+            skill_card(906, 7, 430, 10),
+            skill_card(900, 0, 300, 10),
+            skill_card(901, 0, 295, 10),
+            skill_card(902, 1, 400, 10),
+            skill_card(903, 2, 410, 10),
+            skill_card(904, 3, 420, 10),
+            skill_card(905, 4, 296, 10),
+            skill_card(907, 5, 294, 10),
+            skill_card(908, 6, 293, 10),
+        ];
+        let pool = build_pool(&cards);
+        let mut search_ctx = final_chapter_ctx(&pool);
+        search_ctx.is_world_bloom = true;
+        search_ctx.event_type = Some(EventType::WorldBloom);
+        search_ctx.fixed_character_ids = vec![7];
+        search_ctx.leader_limit_bonus[2] = 1;
+        let mut support = SupportDeck::default();
+        support.cards = vec![(900, 5.0), (998, 1.0)];
+        support.count = 1;
+        search_ctx.support_decks_by_character = vec![SupportDeck::default(); 8];
+        search_ctx.support_decks_by_character[7] = support;
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
+
+        // 前提：B 第一轮靠当期加成幸存；member 轮因支援惩罚不得裁 B。
+        let dominance = eliminate_dominated(&pool, &search_ctx);
+        assert_eq!(dominance.after, dominance.before);
+        let member = dominance::compute_member_dominance(&dominance.pool, &dominance.ctx);
+        assert!(
+            member.keep[2],
+            "support-listed A must not member-dominate B",
+        );
+
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+        assert!(
+            results
+                .iter()
+                .any(|result| result.cards.iter().any(|card| pool.game_id(*card) == 901)),
+            "top-k must contain a deck with B (901)",
+        );
+    }
+
+    #[test]
+    fn compute_member_dominance_protects_fixed_cards() {
+        let cards = [
+            dominance_pair_card(950, 0, 300),
+            dominance_pair_card(951, 0, 295),
+            dominance_pair_card(952, 1, 400),
+        ];
+        let pool = build_pool(&cards);
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Score);
+
+        let member = dominance::compute_member_dominance(&pool, &search_ctx);
+        assert!(!member.keep[1]);
+        assert_eq!(member.alternatives[0], vec![CardIdx::new(1)]);
+
+        search_ctx.fixed_card_ids = vec![951];
+        let member = dominance::compute_member_dominance(&pool, &search_ctx);
+        assert!(member.keep[1], "fixed cards must survive member pruning");
     }
 
     #[test]
