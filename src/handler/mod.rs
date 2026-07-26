@@ -19,10 +19,7 @@ use crate::search::{SearchContext, SupportDeck};
 use crate::types::{DefaultImage, FINAL_CHAPTER_EVENT_ID};
 
 use card_config::apply_card_config;
-use event_bonus::{
-    build_card_event_bonus, build_event_context, build_leader_honor_bonus,
-    build_leader_limit_bonus, EventContext,
-};
+use event_bonus::{build_card_event_bonus, build_event_context, EventContext};
 pub use gather::FullPrecisionCard;
 use gather::{sort_and_gather, CardIntermediate, GatheredContext};
 use music::build_music_params;
@@ -395,11 +392,10 @@ pub struct PreparedPoolBuild<'a> {
     params: types::BuildParams,
     event_ctx: Option<EventContext>,
     music: Option<music::MusicParams>,
-    power_ctx: PreparedPowerContext,
+    powers: Vec<PowerResult>,
     cards: Vec<PreparedCardBuild<'a>>,
     ep_prefilter_applied: bool,
     honor_bonus: u32,
-    power_scratch: std::sync::Mutex<Vec<PowerResult>>,
 }
 
 impl<'a> PreparedPoolBuild<'a> {
@@ -451,6 +447,40 @@ impl<'a> PreparedPoolBuild<'a> {
             .map_or(user.user_cards.len(), Vec::len);
         let mut seeds = Vec::with_capacity(card_count);
 
+        // (bonus_rate, leader_bonus_rate) of the first event-card row per card id.
+        let limited_bonus_by_card: std::collections::HashMap<i32, (i32, i32)> = event_ctx
+            .as_ref()
+            .map(|ctx| {
+                let mut map = std::collections::HashMap::with_capacity(ctx.event_cards.len());
+                for entry in &ctx.event_cards {
+                    map.entry(entry.card_id)
+                        .or_insert((entry.bonus_rate, entry.leader_bonus_rate));
+                }
+                map
+            })
+            .unwrap_or_default();
+        let leader_honor_by_char: [u16; 27] = {
+            let mut result = [0u16; 27];
+            if let Some(ctx) = event_ctx.as_ref() {
+                if ctx.event_id == FINAL_CHAPTER_EVENT_ID && !ctx.honor_bonuses.is_empty() {
+                    let owned_honors: std::collections::HashSet<i32> = user
+                        .user_honors
+                        .iter()
+                        .map(|honor| honor.honor_id)
+                        .collect();
+                    for entry in &ctx.honor_bonuses {
+                        if let Ok(ch) = usize::try_from(entry.leader_game_character_id) {
+                            if ch < 27 && owned_honors.contains(&entry.honor_id) {
+                                result[ch] =
+                                    result[ch].wrapping_add(entry.bonus_rate.max(0) as u16);
+                            }
+                        }
+                    }
+                }
+            }
+            result
+        };
+
         let mut prepare_card = |mut user_card: Cow<'a, types::UserCard>| {
             let Some(card_data) = indexes.card_data(user_card.card_id) else {
                 return;
@@ -481,6 +511,7 @@ impl<'a> PreparedPoolBuild<'a> {
                 } else {
                     DefaultImage::Original
                 };
+            let limited_entry = limited_bonus_by_card.get(&master.id).copied();
             let (event_bonus, has_char_bonus, has_attr_bonus) = event_ctx
                 .as_ref()
                 .map(|ctx| {
@@ -491,18 +522,29 @@ impl<'a> PreparedPoolBuild<'a> {
                         card_data.primary_unit,
                         card_data.support_unit,
                         card_data.support_unit_unrestricted,
+                        limited_entry
+                            .map(|(bonus, _)| bonus.saturating_mul(10))
+                            .unwrap_or(0),
                         ctx,
                     )
                 })
                 .unwrap_or((EventBonusExact::default(), false, false));
-            let leader_honor_bonus = event_ctx
-                .as_ref()
-                .map(|ctx| build_leader_honor_bonus(user, master, ctx))
-                .unwrap_or(0);
-            let leader_limit_bonus = event_ctx
-                .as_ref()
-                .map(|ctx| build_leader_limit_bonus(master, ctx))
-                .unwrap_or(0);
+            let leader_honor_bonus = if event_ctx.is_some() {
+                usize::try_from(master.character_id)
+                    .ok()
+                    .filter(|ch| *ch < 27)
+                    .map(|ch| leader_honor_by_char[ch])
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let leader_limit_bonus = if event_ctx.is_some() {
+                limited_entry
+                    .map(|(_, leader)| leader.max(0) as u16)
+                    .unwrap_or(0)
+            } else {
+                0
+            };
             seeds.push(PreparedCardSeed {
                 master,
                 user_card,
@@ -603,12 +645,29 @@ impl<'a> PreparedPoolBuild<'a> {
             });
         }
 
+        // 综合力只依赖冻结在 prepare 里的输入，一次算好缓存；build 阶段零重算。
+        let mut powers = Vec::with_capacity(cards.len());
+        build_power_batch_from_fn(
+            cards.len(),
+            |index| {
+                let card = &cards[index];
+                PowerInput {
+                    user_card: card.user_card.as_ref(),
+                    master: card.master,
+                    unit_mask: card.unit_mask,
+                    attr: card.attr,
+                }
+            },
+            &power_ctx,
+            indexes,
+            &mut powers,
+        );
+
         Ok(Self {
             params: params.clone(),
             event_ctx,
             music,
-            power_ctx,
-            power_scratch: std::sync::Mutex::new(Vec::with_capacity(cards.len())),
+            powers,
             cards,
             ep_prefilter_applied,
             honor_bonus: compute_honor_bonus(user, indexes),
@@ -1093,77 +1152,6 @@ fn collapse_non_bfes_skill_states(
     is_bfes
 }
 
-fn build_support_deck(
-    full: &[CardIntermediate],
-    game: &types::GameData<'_>,
-    event_ctx: Option<&EventContext>,
-    special_character_id: Option<i32>,
-    support_master_max: bool,
-    support_skill_max: bool,
-) -> SupportDeck {
-    let Some(event_ctx) = event_ctx else {
-        return SupportDeck::default();
-    };
-    if event_ctx.support_deck_count == 0 {
-        return SupportDeck::default();
-    }
-    let special_character_id = special_character_id.or(event_ctx.world_bloom_character_id);
-
-    let mut cards: Vec<(u16, f64)> = Vec::with_capacity(full.len());
-    for card in full {
-        let master = game
-            .cards
-            .iter()
-            .find(|master| master.id == card.game_card_id)
-            .map(|master| enrich_master(master, game));
-        let master_rank = if support_master_max {
-            master
-                .as_ref()
-                .and_then(|master| master.max_master_rank)
-                .unwrap_or(card.master_rank)
-        } else {
-            card.master_rank
-        };
-        let skill_level = if support_skill_max {
-            master
-                .as_ref()
-                .and_then(|master| master.max_skill_level)
-                .unwrap_or(card.skill_level)
-        } else {
-            card.skill_level
-        };
-        let bonus = calc_wb_support_bonus(
-            game,
-            event_ctx.event_id,
-            event_ctx.world_bloom_event_turn,
-            special_character_id,
-            card.game_card_id.max(0).min(u16::MAX as i32) as u16,
-            card.card_rarity_type,
-            card.character_id,
-            card.unit_mask_raw,
-            true,
-            master_rank,
-            skill_level,
-        );
-        if let Some((_, existing_bonus)) = cards
-            .iter_mut()
-            .find(|(game_card_id, _)| *game_card_id as i32 == card.game_card_id)
-        {
-            *existing_bonus = existing_bonus.max(bonus);
-        } else {
-            cards.push((card.game_card_id.max(0).min(u16::MAX as i32) as u16, bonus));
-        }
-    }
-    cards.sort_by(|left, right| right.1.total_cmp(&left.1));
-
-    SupportDeck {
-        cards,
-        count: event_ctx.support_deck_count,
-    }
-}
-
-/// A World Bloom support card evaluated independently from the main DFS pool.
-#[derive(Debug, Clone, PartialEq)]
 pub struct WorldBloomSupportCard {
     pub card_id: i32,
     pub bonus: f64,
@@ -1271,12 +1259,233 @@ pub fn world_bloom_support_cards(
     Ok(result)
 }
 
-fn build_final_chapter_support_decks(
-    full: &[CardIntermediate],
-    game: &types::GameData<'_>,
-    event_ctx: Option<&EventContext>,
+/// Slim per-card support-deck seed (deduped by card id).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SupportSeedSlim {
+    card_id: u16,
+    rarity: i32,
+    character_id: u8,
+    unit_mask: u8,
+    master_rank: i32,
+    skill_level: i32,
+}
+
+pub(crate) fn support_seed_from_intermediate(
+    card: &CardIntermediate,
+    indexes: &index::PoolIndexes,
     support_master_max: bool,
     support_skill_max: bool,
+) -> SupportSeedSlim {
+    let master = indexes
+        .card_data(card.game_card_id)
+        .map(|entry| &entry.master);
+    let master_rank = if support_master_max {
+        master
+            .and_then(|master| master.max_master_rank)
+            .unwrap_or(card.master_rank)
+    } else {
+        card.master_rank
+    };
+    let skill_level = if support_skill_max {
+        master
+            .and_then(|master| master.max_skill_level)
+            .unwrap_or(card.skill_level)
+    } else {
+        card.skill_level
+    };
+    SupportSeedSlim {
+        card_id: card.game_card_id.max(0).min(u16::MAX as i32) as u16,
+        rarity: card.card_rarity_type,
+        character_id: card.character_id,
+        unit_mask: card.unit_mask_raw,
+        master_rank,
+        skill_level,
+    }
+}
+
+/// Precomputed per-(event, turn, special-character) support bonus rate tables.
+struct SupportRateTables {
+    valid: bool,
+    special_character_id: i32,
+    special_unit_mask: u8,
+    row_present: [bool; 6],
+    char_specific: [f64; 6],
+    char_others: [f64; 6],
+    mr_bonus: [[f64; 8]; 6],
+    sl_bonus: [[f64; 8]; 6],
+    limited_by_card: std::collections::HashMap<i32, f64>,
+}
+
+impl SupportRateTables {
+    fn new(
+        game: &types::GameData<'_>,
+        event_id: i32,
+        turn: Option<i32>,
+        special_character_id: Option<i32>,
+    ) -> Self {
+        let mut tables = Self {
+            valid: false,
+            special_character_id: 0,
+            special_unit_mask: 0,
+            row_present: [false; 6],
+            char_specific: [0.0; 6],
+            char_others: [0.0; 6],
+            mr_bonus: [[0.0; 8]; 6],
+            sl_bonus: [[0.0; 8]; 6],
+            limited_by_card: std::collections::HashMap::new(),
+        };
+        let Some(special_character_id) = special_character_id.filter(|id| *id > 0) else {
+            return tables;
+        };
+        let Some(special_unit) = game
+            .game_character_units
+            .iter()
+            .find(|entry| entry.game_character_id == special_character_id)
+            .and_then(|entry| parse_unit_code(&entry.unit))
+            .and_then(types::unit_to_pool_index)
+        else {
+            return tables;
+        };
+        tables.valid = true;
+        tables.special_character_id = special_character_id;
+        tables.special_unit_mask = 1u8 << special_unit;
+
+        let table = match turn {
+            Some(1) => game.wb_support_deck_bonuses_wl1,
+            Some(2) => game.wb_support_deck_bonuses_wl2,
+            Some(3) => game.wb_support_deck_bonuses_wl3,
+            _ => &[],
+        };
+        for rarity in 1..6usize {
+            let Some(row) = table
+                .iter()
+                .find(|entry| support_rarity_matches(&entry.card_rarity_type, rarity as i32))
+            else {
+                continue;
+            };
+            tables.row_present[rarity] = true;
+            tables.char_specific[rarity] = support_char_bonus(row, "specific");
+            tables.char_others[rarity] = support_char_bonus(row, "others");
+            for mr in 0..8i32 {
+                tables.mr_bonus[rarity][mr as usize] = row
+                    .world_bloom_support_deck_master_rank_bonuses
+                    .iter()
+                    .find(|entry| entry.master_rank == mr)
+                    .map(|entry| entry.bonus_rate)
+                    .unwrap_or(0.0);
+            }
+            for sl in 0..8i32 {
+                tables.sl_bonus[rarity][sl as usize] = row
+                    .world_bloom_support_deck_skill_level_bonuses
+                    .iter()
+                    .find(|entry| entry.skill_level == sl)
+                    .map(|entry| entry.bonus_rate)
+                    .unwrap_or(0.0);
+            }
+        }
+        for bonus in game.world_bloom_support_deck_unit_event_limited_bonuses {
+            if bonus.event_id == event_id && bonus.game_character_id == special_character_id {
+                *tables.limited_by_card.entry(bonus.card_id).or_insert(0.0) += bonus.bonus_rate;
+            }
+        }
+        tables
+    }
+
+    #[inline]
+    fn bonus(&self, seed: &SupportSeedSlim) -> f64 {
+        if !self.valid {
+            return 0.0;
+        }
+        if seed.unit_mask & self.special_unit_mask == 0 {
+            return 0.0;
+        }
+        let rarity = seed.rarity;
+        if !(1..6).contains(&rarity) || !self.row_present[rarity as usize] {
+            return 0.0;
+        }
+        let rarity = rarity as usize;
+        let mut total = if seed.character_id as i32 == self.special_character_id {
+            self.char_specific[rarity]
+        } else {
+            self.char_others[rarity]
+        };
+        if (0..8).contains(&seed.master_rank) {
+            total += self.mr_bonus[rarity][seed.master_rank as usize];
+        }
+        if (0..8).contains(&seed.skill_level) {
+            total += self.sl_bonus[rarity][seed.skill_level as usize];
+        }
+        if let Some(limited) = self.limited_by_card.get(&(seed.card_id as i32)) {
+            total += *limited;
+        }
+        if !total.is_finite() || total <= 0.0 {
+            0.0
+        } else {
+            total
+        }
+    }
+}
+
+fn support_rarity_matches(code: &str, card_rarity_type: i32) -> bool {
+    let trimmed = code.trim();
+    let matches_ascii = |target: &str| trimmed.eq_ignore_ascii_case(target);
+    match card_rarity_type {
+        1 => matches_ascii("rarity_1") || matches_ascii("1"),
+        2 => matches_ascii("rarity_2") || matches_ascii("2"),
+        3 => matches_ascii("rarity_3") || matches_ascii("3"),
+        4 => matches_ascii("rarity_4") || matches_ascii("4"),
+        5 => matches_ascii("rarity_birthday") || matches_ascii("birthday") || matches_ascii("5"),
+        _ => false,
+    }
+}
+
+fn support_char_bonus(table: &types::WBSupportDeckBonus, character_type: &str) -> f64 {
+    table
+        .world_bloom_support_deck_character_bonuses
+        .iter()
+        .find(|entry| {
+            entry
+                .world_bloom_support_deck_character_type
+                .eq_ignore_ascii_case(character_type)
+        })
+        .map(|entry| entry.bonus_rate)
+        .unwrap_or(0.0)
+}
+
+fn build_support_deck_fast(
+    seeds: &[SupportSeedSlim],
+    game: &types::GameData<'_>,
+    event_ctx: Option<&EventContext>,
+    special_character_id: Option<i32>,
+) -> SupportDeck {
+    let Some(event_ctx) = event_ctx else {
+        return SupportDeck::default();
+    };
+    if event_ctx.support_deck_count == 0 {
+        return SupportDeck::default();
+    }
+    let special_character_id = special_character_id.or(event_ctx.world_bloom_character_id);
+    let tables = SupportRateTables::new(
+        game,
+        event_ctx.event_id,
+        event_ctx.world_bloom_event_turn,
+        special_character_id,
+    );
+    let mut cards: Vec<(u16, f64)> = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        cards.push((seed.card_id, tables.bonus(seed)));
+    }
+    cards.sort_by(|left, right| right.1.total_cmp(&left.1));
+    SupportDeck {
+        cards,
+        count: event_ctx.support_deck_count,
+    }
+}
+
+fn build_final_chapter_support_decks_fast(
+    seeds: &[SupportSeedSlim],
+    game: &types::GameData<'_>,
+    event_ctx: Option<&EventContext>,
 ) -> Vec<SupportDeck> {
     let mut decks = vec![SupportDeck::default(); 27];
     let Some(event_ctx) = event_ctx else {
@@ -1286,21 +1495,15 @@ fn build_final_chapter_support_decks(
         return decks;
     }
     for character_id in 1..=26 {
-        decks[character_id as usize] = build_support_deck(
-            full,
-            game,
-            Some(event_ctx),
-            Some(character_id),
-            support_master_max,
-            support_skill_max,
-        );
+        decks[character_id as usize] =
+            build_support_deck_fast(seeds, game, Some(event_ctx), Some(character_id));
     }
     decks
 }
 
 fn build_search_context(
     gathered: GatheredContext,
-    support_cards: &[CardIntermediate],
+    support_seeds: &[SupportSeedSlim],
     game: &types::GameData<'_>,
     params: &types::BuildParams,
     event_ctx: Option<&EventContext>,
@@ -1309,21 +1512,9 @@ fn build_search_context(
     fixed_character_ids: Vec<u8>,
 ) -> SearchContext {
     let card_count = gathered.skill_max.len();
-    let support_deck = build_support_deck(
-        support_cards,
-        game,
-        event_ctx,
-        None,
-        params.support_master_max,
-        params.support_skill_max,
-    );
-    let support_decks_by_character = build_final_chapter_support_decks(
-        support_cards,
-        game,
-        event_ctx,
-        params.support_master_max,
-        params.support_skill_max,
-    );
+    let support_deck = build_support_deck_fast(support_seeds, game, event_ctx, None);
+    let support_decks_by_character =
+        build_final_chapter_support_decks_fast(support_seeds, game, event_ctx);
     let support_bonus_top_sum = support_deck
         .cards
         .iter()
@@ -1521,33 +1712,18 @@ fn build_card_pool_fully_prepared_internal(
     let mut cards = Vec::with_capacity(prepared_cards.len());
     let needs_support_cards = event_ctx
         .is_some_and(|ctx| ctx.support_deck_count > 0 || ctx.event_id == FINAL_CHAPTER_EVENT_ID);
-    let mut support_cards = if needs_support_cards {
+    let mut support_seeds: Vec<SupportSeedSlim> = if needs_support_cards {
         Vec::with_capacity(prepared_cards.len())
     } else {
         Vec::new()
     };
+    let mut support_seen: std::collections::HashSet<u16> = if needs_support_cards {
+        std::collections::HashSet::with_capacity(prepared_cards.len())
+    } else {
+        std::collections::HashSet::new()
+    };
 
-    let mut powers = build
-        .power_scratch
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    build_power_batch_from_fn(
-        prepared_cards.len(),
-        |index| {
-            let card = &prepared_cards[index];
-            PowerInput {
-                user_card: card.user_card.as_ref(),
-                master: card.master,
-                unit_mask: card.unit_mask,
-                attr: card.attr,
-            }
-        },
-        &build.power_ctx,
-        indexes,
-        &mut powers,
-    );
-
-    for (prepared_card, power) in prepared_cards.iter().zip(powers.drain(..)) {
+    for (prepared_card, power) in prepared_cards.iter().zip(build.powers.iter().copied()) {
         let master = prepared_card.master;
         let user_card = prepared_card.user_card.as_ref();
         let unit_mask_raw = prepared_card.unit_mask;
@@ -1594,7 +1770,15 @@ fn build_card_pool_fully_prepared_internal(
             };
 
             if needs_support_cards {
-                support_cards.push(intermediate.clone());
+                let seed = support_seed_from_intermediate(
+                    &intermediate,
+                    indexes,
+                    params.support_master_max,
+                    params.support_skill_max,
+                );
+                if support_seen.insert(seed.card_id) {
+                    support_seeds.push(seed);
+                }
             }
             if keep_card(&intermediate, params) {
                 cards.push(intermediate);
@@ -1700,7 +1884,7 @@ fn build_card_pool_fully_prepared_internal(
     );
     let mut search_ctx = build_search_context(
         gathered,
-        &support_cards,
+        &support_seeds,
         game,
         params,
         event_ctx,

@@ -127,6 +127,7 @@ fn dfs_search_seeded_inner(
         deadline,
         tracker: &mut tracker,
         node_count: 0,
+        deadline_hit: false,
         stats: SearchStats::default(),
         avx512_candidate_mask: crate::simd::avx512_available(),
     };
@@ -187,6 +188,7 @@ struct SearchState<'a> {
     deadline: Option<Instant>,
     tracker: &'a mut SearchTracker,
     node_count: u64,
+    deadline_hit: bool,
     stats: SearchStats,
     avx512_candidate_mask: bool,
 }
@@ -233,6 +235,14 @@ impl SearchState<'_> {
                         self.suffix
                             .dense_suffix_ceiling(start, &partial, DECK_SIZE - depth);
                     global.min(dense)
+                } else if matches!(self.ctx.target, ScoreTarget::Score) {
+                    self.suffix.upper_bound_score_noevent(
+                        self.pool,
+                        &deck[..depth],
+                        &used,
+                        &partial,
+                        DECK_SIZE - depth,
+                    )
                 } else {
                     self.suffix.upper_bound_with_depth(depth, &used, &partial)
                 };
@@ -970,6 +980,11 @@ impl SearchState<'_> {
 
     #[inline(always)]
     fn timed_out(&mut self) -> bool {
+        // 粘性中止：一旦过线，后续所有调用都立刻返回 true，整棵搜索树逐层退出；
+        // 否则 1024 抽检里未命中的调用会继续推进搜索，timeout_ms 形同虚设。
+        if self.deadline_hit {
+            return true;
+        }
         let Some(deadline) = self.deadline else {
             return false;
         };
@@ -977,7 +992,11 @@ impl SearchState<'_> {
         if self.node_count & 1023 != 0 {
             return false;
         }
-        Instant::now() >= deadline
+        if Instant::now() >= deadline {
+            self.deadline_hit = true;
+            return true;
+        }
+        false
     }
 
     #[inline(always)]
