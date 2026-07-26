@@ -25,7 +25,7 @@ mod tests {
         }
     }
 
-    fn must_mask<'a>(mask: Option<&'a Mask>) -> &'a Mask {
+    fn must_mask(mask: Option<&Mask>) -> &Mask {
         match mask {
             Some(mask) => mask,
             None => panic!("missing mask"),
@@ -192,10 +192,7 @@ mod tests {
                     value: idx_u8,
                 },
             );
-            builder.set_event_bonus(
-                idx,
-                EventBonusExact::from_whole((idx % 100) as u16, (idx % 4 + 1) as u16),
-            );
+            builder.set_event_bonus(idx, EventBonusExact::from_whole(idx % 100, idx % 4 + 1));
             builder.set_char_id(idx, (idx % 27) as u8);
             builder.set_attr(idx, (idx % 5) as u8);
             builder.set_unit_mask(idx, 1u8 << (idx % 6));

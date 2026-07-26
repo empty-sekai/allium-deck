@@ -456,16 +456,16 @@ impl<'a> PreparedPoolBuild<'a> {
                 return;
             };
             let master = &card_data.master;
-            if !configs_are_noop {
-                if !apply_card_config(
+            if !configs_are_noop
+                && !apply_card_config(
                     user_card.to_mut(),
                     master,
                     &configs,
                     game.card_rarities,
                     game.card_episodes,
-                ) {
-                    return;
-                }
+                )
+            {
+                return;
             }
             if card_data.unit_mask == 0 {
                 return;
@@ -2735,16 +2735,18 @@ mod tests {
                 power3_bonus_fixed: 0,
             },
         ];
-        let mut configs = CardConfigSet::default();
-        configs.rarity_4_config = types::CardRarityConfig {
-            level_max: true,
-            level: Some(51),
-            skill_max: true,
-            skill_level: Some(2),
-            master_max: true,
-            master_rank: Some(3),
-            episode_read: true,
-            episode_read_count: Some(1),
+        let mut configs = CardConfigSet {
+            rarity_4_config: types::CardRarityConfig {
+                level_max: true,
+                level: Some(51),
+                skill_max: true,
+                skill_level: Some(2),
+                master_max: true,
+                master_rank: Some(3),
+                episode_read: true,
+                episode_read_count: Some(1),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut user_card = sample_user_card(7);
@@ -3391,7 +3393,7 @@ mod tests {
             game_card_id,
             card_rarity_type: 4,
             character_id,
-            attr: (character_id % 5) as u8,
+            attr: (character_id % 5),
             unit_mask_raw: 1u8 << (character_id % 6),
             default_image: crate::types::DefaultImage::Original,
             after_training: false,
@@ -3574,7 +3576,7 @@ mod tests {
                     card_rarity_type: 4,
                     rarity: "".to_string(),
                     asset_bundle_name: "chara_000001".to_string(),
-                    skill_id: card_id as i32 * 10,
+                    skill_id: card_id * 10,
                     special_training_skill_id: None,
                     special_training_power1_bonus_fixed: 0,
                     special_training_power2_bonus_fixed: 0,

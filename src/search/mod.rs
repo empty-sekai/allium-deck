@@ -345,8 +345,7 @@ fn deck_matches_fixed_slots(
 /// 自 `from_slot` 起逐槽尝试把支配者回换成其支配的卡（多槽组合经递归覆盖）。
 /// `node_score` 是当前替换组合的分数；再多换任何一张分数不会更高，因此 tracker
 /// 满且 node_score 严格低于阈值时整棵子树可剪（同分仍展开，保住 tie-break 名次）。
-/// member 替代经支援惩罚维度保证该单调性；第一轮支配在 WL 下未比较支援惩罚，
-/// 其替代的单调性与裁剪本身的支援盲区是同一个既有问题，独立跟踪。
+/// 两轮支配都含支援惩罚维度（issue #23/#7），该单调性在 WL 下同样成立。
 #[allow(clippy::too_many_arguments)]
 fn expand_substitutions(
     pool: &CardPool,
@@ -456,12 +455,12 @@ fn search_simple_target(
     for &card in &cards {
         let gid = pool.game_id(card);
         let cid = pool.char_id(card);
-        if ctx.fixed_card_ids.contains(&gid) || ctx.fixed_character_ids.contains(&cid) {
-            if !in_prefix[card.raw() as usize] {
-                in_prefix[card.raw() as usize] = true;
-                char_counts[(cid as usize).min(26)] += 1;
-                prefix.push(card);
-            }
+        if (ctx.fixed_card_ids.contains(&gid) || ctx.fixed_character_ids.contains(&cid))
+            && !in_prefix[card.raw()]
+        {
+            in_prefix[card.raw()] = true;
+            char_counts[(cid as usize).min(26)] += 1;
+            prefix.push(card);
         }
     }
 
@@ -469,7 +468,7 @@ fn search_simple_target(
         if prefix.len() >= prefix_len {
             break;
         }
-        if in_prefix[card.raw() as usize] {
+        if in_prefix[card.raw()] {
             continue;
         }
         let ch = (pool.char_id(card) as usize).min(26);
@@ -477,7 +476,7 @@ fn search_simple_target(
             continue;
         }
         char_counts[ch] += 1;
-        in_prefix[card.raw() as usize] = true;
+        in_prefix[card.raw()] = true;
         prefix.push(card);
     }
 
@@ -556,6 +555,19 @@ fn search_power_scenarios(
                     .0
                     .cmp(&left.0)
                     .then_with(|| left.1.raw().cmp(&right.1.raw()))
+            });
+            // 同一 game_id 的养成变体互斥（同一张卡），只保留场景值最高的一个：
+            // 变体占多个名额会在每角色候选与 DP 状态里挤出真正不同的次优集合，
+            // 令 Top-K 丢解（issue #24 的 mass_099712 案例）。
+            let mut seen_game_ids = Vec::with_capacity(cards.len());
+            cards.retain(|(_, card)| {
+                let game_id = pool.game_id(*card);
+                if seen_game_ids.contains(&game_id) {
+                    false
+                } else {
+                    seen_game_ids.push(game_id);
+                    true
+                }
             });
             cards.truncate(state_limit);
         }
@@ -2785,9 +2797,10 @@ mod tests {
         search_ctx.event_type = Some(EventType::WorldBloom);
         search_ctx.fixed_character_ids = vec![7];
         search_ctx.leader_limit_bonus[2] = 1;
-        let mut support = SupportDeck::default();
-        support.cards = vec![(900, 5.0), (998, 1.0)];
-        support.count = 1;
+        let support = SupportDeck {
+            cards: vec![(900, 5.0), (998, 1.0)],
+            count: 1,
+        };
         search_ctx.support_decks_by_character = vec![SupportDeck::default(); 8];
         search_ctx.support_decks_by_character[7] = support;
         let params = SearchParams {
@@ -2812,6 +2825,81 @@ mod tests {
                 .iter()
                 .any(|result| result.cards.iter().any(|card| pool.game_id(*card) == 901)),
             "top-k must contain a deck with B (901)",
+        );
+    }
+
+    #[test]
+    fn search_power_top_k_dedups_cultivation_variants() {
+        // 同一 game_id 的两个养成变体不得挤占每角色候选/DP 状态名额：
+        // 否则 701 进不了候选，含它的真实次优卡组从 Top-K 消失（issue #24）。
+        let cards = [
+            dominance_pair_card(700, 1, 300),
+            dominance_pair_card(700, 1, 300),
+            dominance_pair_card(701, 1, 295),
+            dominance_pair_card(702, 2, 400),
+            dominance_pair_card(703, 3, 410),
+            dominance_pair_card(704, 4, 420),
+            dominance_pair_card(705, 5, 430),
+        ];
+        let pool = build_pool(&cards);
+        let search_ctx = ready_ctx(&pool, ScoreTarget::Power);
+        let params = SearchParams {
+            top_k: 2,
+            timeout_ms: 0,
+        };
+
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+        assert!(
+            results[1]
+                .cards
+                .iter()
+                .any(|card| pool.game_id(*card) == 701),
+            "rank 1 must contain 701, not a duplicate variant of 700",
+        );
+    }
+
+    #[test]
+    fn search_world_bloom_support_penalty_blocks_first_pass_domination() {
+        // 非终章 WL（issue #23）：A(900) 在支援表内，编入队伍损失 4.0 支援加成；
+        // 第一轮支配若支援盲会裁掉 B(901)，而真实 Top-1 是 B 卡组。
+        let cards = [
+            skill_card(900, 0, 300, 10),
+            skill_card(901, 0, 295, 10),
+            skill_card(902, 1, 400, 10),
+            skill_card(903, 2, 410, 10),
+            skill_card(904, 3, 420, 10),
+            skill_card(905, 4, 296, 10),
+            skill_card(906, 5, 294, 10),
+        ];
+        let pool = build_pool(&cards);
+        let mut search_ctx = ready_ctx(&pool, ScoreTarget::Score);
+        search_ctx.is_world_bloom = true;
+        search_ctx.event_type = Some(EventType::WorldBloom);
+        search_ctx.live_type = LiveType::Multi;
+        search_ctx.live_skill_order = LiveSkillOrder::Average;
+        search_ctx.best_skill_as_leader = false;
+        search_ctx.support_deck.cards = vec![(900, 5.0), (998, 1.0)];
+        search_ctx.support_deck.count = 1;
+        let params = SearchParams {
+            top_k: 1,
+            timeout_ms: 0,
+        };
+
+        // 前提：支援惩罚阻止 A 支配 B，第一轮不得裁任何卡。
+        let dominance = eliminate_dominated(&pool, &search_ctx);
+        assert_eq!(dominance.after, dominance.before);
+
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+        assert!(
+            results[0]
+                .cards
+                .iter()
+                .any(|card| pool.game_id(*card) == 901),
+            "top-1 must contain B (901): the support-listed dominator forfeits its bonus in deck",
         );
     }
 

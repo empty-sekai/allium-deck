@@ -592,7 +592,7 @@ fn final_chapter_beam_candidates(
         limit,
         &mut keep,
         &mut out,
-        |pool, ctx, leader_char, card| final_chapter_member_key(pool, ctx, leader_char, card),
+        final_chapter_member_key,
     );
     push_final_chapter_candidates(
         pool,

@@ -613,6 +613,30 @@ pub(crate) fn build_power_scalar_reference(
     result
 }
 
+/// 解析卡的 unit bitmask。
+pub(crate) fn resolve_unit_mask(master: &MasterCard, game: &GameData<'_>) -> u8 {
+    let primary = game
+        .game_character_units
+        .iter()
+        .find(|entry| entry.game_character_id == master.character_id)
+        .and_then(|entry| parse_unit_code(&entry.unit));
+    let mut mask = primary
+        .and_then(unit_to_pool_index)
+        .map_or(0, |unit| 1u8 << unit);
+    if matches!(primary, Some(Unit::Piapro)) {
+        if let Some(secondary) = master
+            .support_unit
+            .as_deref()
+            .and_then(parse_unit_code)
+            .filter(|unit| !matches!(unit, Unit::Piapro))
+            .and_then(unit_to_pool_index)
+        {
+            mask |= 1u8 << secondary;
+        }
+    }
+    mask
+}
+
 #[cfg(test)]
 mod tests {
     use super::{PoolIndexes, PreparedPowerContext};
@@ -735,28 +759,4 @@ mod tests {
         assert_eq!(ctx.gate_bonus(10_000, 1 << 0), 150);
         assert_eq!(ctx.gate_bonus(10_000, 1 << 1), 0);
     }
-}
-
-/// 解析卡的 unit bitmask。
-pub(crate) fn resolve_unit_mask(master: &MasterCard, game: &GameData<'_>) -> u8 {
-    let primary = game
-        .game_character_units
-        .iter()
-        .find(|entry| entry.game_character_id == master.character_id)
-        .and_then(|entry| parse_unit_code(&entry.unit));
-    let mut mask = primary
-        .and_then(unit_to_pool_index)
-        .map_or(0, |unit| 1u8 << unit);
-    if matches!(primary, Some(Unit::Piapro)) {
-        if let Some(secondary) = master
-            .support_unit
-            .as_deref()
-            .and_then(parse_unit_code)
-            .filter(|unit| !matches!(unit, Unit::Piapro))
-            .and_then(unit_to_pool_index)
-        {
-            mask |= 1u8 << secondary;
-        }
-    }
-    mask
 }

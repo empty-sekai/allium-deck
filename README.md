@@ -36,6 +36,8 @@ let result_json = recommend_json(
 
 内部走两阶段：`handler::build_card_pool`（建池）→ `search::search`（搜索）。结构体入口 `engine::recommend` 可绕过 JSON 序列化。
 
+完整参数契约（全部字段、默认值、取值范围）与**逐模式精确性矩阵**（哪些模式对暴力枚举精确、哪些是启发式）见 [docs/parameters.md](docs/parameters.md)。
+
 ## 模块地图
 
 | 模块 | 职责 |

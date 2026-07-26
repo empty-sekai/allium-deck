@@ -312,11 +312,7 @@ fn format_expected_card_power(expected: &[LegacyOutputCard], pool: &CardPool) ->
         .iter()
         .filter_map(|card| {
             let idx = find_card_by_game_id(pool, card.card_id as u16)?;
-            Some(format!(
-                "{}:{}",
-                card.card_id,
-                pool.power_max(idx) as u32 * 4
-            ))
+            Some(format!("{}:{}", card.card_id, pool.power_max(idx) * 4))
         })
         .collect::<Vec<_>>()
         .join(",")
@@ -329,7 +325,7 @@ fn precise_support_bonus(ctx: &SearchContext, deck_game_ids: &[u16; 5]) -> u32 {
         if picked >= ctx.support_deck.count {
             break;
         }
-        if deck_game_ids.iter().any(|deck_id| *deck_id == game_id) {
+        if deck_game_ids.contains(&game_id) {
             continue;
         }
         total += bonus as u32;
