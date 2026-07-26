@@ -329,7 +329,7 @@ fn precise_support_bonus(ctx: &SearchContext, deck_game_ids: &[u16; 5]) -> u32 {
         if picked >= ctx.support_deck.count {
             break;
         }
-        if deck_game_ids.iter().any(|deck_id| *deck_id == game_id) {
+        if deck_game_ids.contains(&game_id) {
             continue;
         }
         total += bonus as u32;

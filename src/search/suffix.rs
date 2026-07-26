@@ -1444,15 +1444,17 @@ fn suffix_compact_u16(
     (sum, set, raw)
 }
 
+type SuffixTail = Vec<[u32; DECK_SIZE + 1]>;
+
 fn build_dense_suffix_tails(
     pool: &CardPool,
     split_limited_bonus: bool,
 ) -> (
-    Vec<[u32; DECK_SIZE + 1]>,
-    Vec<[u32; DECK_SIZE + 1]>,
-    Vec<[u32; DECK_SIZE + 1]>,
-    Vec<[u32; DECK_SIZE + 1]>,
-    Vec<[u32; DECK_SIZE + 1]>,
+    SuffixTail,
+    SuffixTail,
+    SuffixTail,
+    SuffixTail,
+    SuffixTail,
     Vec<u16>,
 ) {
     let count = pool.count();

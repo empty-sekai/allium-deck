@@ -177,7 +177,6 @@ fn dfs_search_seeded_inner(
     }
 
     let stats = state.stats.clone();
-    drop(state);
     (tracker.into_vec(), stats)
 }
 
@@ -518,7 +517,7 @@ impl SearchState<'_> {
             }
             if threshold != 0
                 && matches!(self.ctx.target, ScoreTarget::Score)
-                && (dense - start) % EP_DENSE_BREAK_STRIDE == 0
+                && (dense - start).is_multiple_of(EP_DENSE_BREAK_STRIDE)
             {
                 let ceil = if use_multi_score_event_fast_path {
                     self.suffix
@@ -762,7 +761,7 @@ impl SearchState<'_> {
             let block_start = dense;
             let mut lane = 0usize;
             while lane < block_len {
-                if lane % EP_DENSE_BREAK_STRIDE == 0 {
+                if lane.is_multiple_of(EP_DENSE_BREAK_STRIDE) {
                     let ceil = self.suffix.dense_suffix_ceiling_multi_score_event(
                         block_start + lane,
                         &partial,
@@ -1122,11 +1121,9 @@ fn partial_bonus_add(
     let exact = pool.event_bonus_exact(card);
     let mut bonus = exact.base_ceil();
     let mut limited_inc = 0u8;
-    if (limited_count as usize) < ctx.card_bonus_count_limit {
-        if exact.limited_x10() > 0 {
-            bonus += exact.limited_ceil();
-            limited_inc = 1;
-        }
+    if (limited_count as usize) < ctx.card_bonus_count_limit && exact.limited_x10() > 0 {
+        bonus += exact.limited_ceil();
+        limited_inc = 1;
     }
     if is_leader {
         bonus += ctx.leader_honor_bonus_at(card.raw());

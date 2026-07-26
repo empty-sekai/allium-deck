@@ -142,11 +142,11 @@ impl PoolIndexes {
                 .unwrap_or(0);
             let mut by_level = vec![[0; 3]; max_level + 1];
             let mut current = [0; 3];
-            for level in 0..=max_level {
+            for (level, slot) in by_level.iter_mut().enumerate() {
                 for entry in params.iter().filter(|entry| entry.level == level as i32) {
                     current = [entry.param1, entry.param2, entry.param3];
                 }
-                by_level[level] = current;
+                *slot = current;
             }
             card.base_power_by_level = by_level;
         }

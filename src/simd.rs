@@ -481,6 +481,7 @@ pub(crate) unsafe fn upper_bound_mask_16_avx512_unchecked(
     let upper_mask = _mm512_cmp_epu64_mask::<6>(upper, threshold) as u16;
     lower_mask | (upper_mask << 8)
 }
+use std::sync::OnceLock;
 
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
@@ -652,4 +653,3 @@ mod tests {
         }
     }
 }
-use std::sync::OnceLock;
