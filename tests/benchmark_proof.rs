@@ -594,11 +594,11 @@ fn restrict_user_to_top_per_char(
     for cards in by_char.values() {
         // 三个维度各取 top-N
         let mut by_power = cards.clone();
-        by_power.sort_by(|a, b| b.1.cmp(&a.1));
+        by_power.sort_by_key(|entry| std::cmp::Reverse(entry.1));
         let mut by_skill = cards.clone();
-        by_skill.sort_by(|a, b| b.2.cmp(&a.2));
+        by_skill.sort_by_key(|entry| std::cmp::Reverse(entry.2));
         let mut by_bonus = cards.clone();
-        by_bonus.sort_by(|a, b| b.3.cmp(&a.3));
+        by_bonus.sort_by_key(|entry| std::cmp::Reverse(entry.3));
         for ranked in [&by_power, &by_skill, &by_bonus] {
             for entry in ranked.iter().take(per_char_keep) {
                 keep_game_ids.insert(entry.0);

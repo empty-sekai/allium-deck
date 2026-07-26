@@ -312,11 +312,7 @@ fn format_expected_card_power(expected: &[LegacyOutputCard], pool: &CardPool) ->
         .iter()
         .filter_map(|card| {
             let idx = find_card_by_game_id(pool, card.card_id as u16)?;
-            Some(format!(
-                "{}:{}",
-                card.card_id,
-                pool.power_max(idx) as u32 * 4
-            ))
+            Some(format!("{}:{}", card.card_id, pool.power_max(idx) * 4))
         })
         .collect::<Vec<_>>()
         .join(",")
