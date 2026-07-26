@@ -20,7 +20,10 @@ pub struct DominanceResult {
 /// WL 同样走支配裁剪：被裁的卡仍在独立的 support_cards 里参与支援计算（支援与主搜索池解耦），
 /// 且 `dominates` 要求 attr 相同，异色变体全部保留，diff_attr_bonus 无损。
 pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceResult {
-    let (keep, dominated_by) = compute_keep_mask_with_winners(pool, ctx, None);
+    // WL 下支配还需支援惩罚不劣（issue #23）：支援表内的卡编入队伍会损失支援加成，
+    // 支援盲的支配会裁掉真实最优卡组里的卡，Top-1 都可能出错。
+    let penalties = support_penalties(pool, ctx);
+    let (keep, dominated_by) = compute_keep_mask_with_winners(pool, ctx, penalties.as_deref());
     let before = pool.count();
     let after = keep.iter().copied().filter(|keep| *keep).count();
     let alternatives = chain_compress_alternatives(&keep, &dominated_by);
@@ -74,11 +77,12 @@ pub struct MemberDominance {
     pub alternatives: Vec<Vec<CardIdx>>,
 }
 
-/// WL 终章 member 位支配的支援惩罚维度：支援表内的卡编入队伍会损失其支援加成
-/// （评估把在队卡从支援总和中排除），惩罚更大的卡作支配者时「被裁卡换成支配根」
-/// 不再分数单调，回换保证失效。逐队长角色取惩罚（支援表按队长角色独立），
-/// 支配要求对每个队长角色惩罚都不劣。
-fn member_support_penalties(pool: &CardPool, ctx: &SearchContext) -> Option<Vec<[i32; 27]>> {
+/// WL 支配裁剪的支援惩罚维度：支援表内的卡编入队伍会损失其支援加成
+/// （评估把在队卡从支援总和中排除），惩罚更大的卡作支配者时裁剪不再分数安全、
+/// 「被裁卡换成支配根」也不再分数单调。逐队长角色取惩罚（终章支援表按队长角色
+/// 独立；非终章回落到全局支援表，各角色列相同），支配要求对每个队长角色都不劣。
+/// 第一轮 `eliminate_dominated`（issue #23）与终章 member 轮（issue #7）共用。
+fn support_penalties(pool: &CardPool, ctx: &SearchContext) -> Option<Vec<[i32; 27]>> {
     if !ctx.is_world_bloom {
         return None;
     }
@@ -119,7 +123,7 @@ fn member_support_penalties(pool: &CardPool, ctx: &SearchContext) -> Option<Vec<
 /// WL 支援惩罚从真实 ctx 计入支配维度。被裁卡记录到存活根的 alternatives，
 /// 供 Top-K 搜索后按 member 槽位回换（issue #7）。
 pub fn compute_member_dominance(pool: &CardPool, ctx: &SearchContext) -> MemberDominance {
-    let penalties = member_support_penalties(pool, ctx);
+    let penalties = support_penalties(pool, ctx);
     let (keep, dominated_by) = compute_keep_mask_with_winners(
         pool,
         &SearchContext {

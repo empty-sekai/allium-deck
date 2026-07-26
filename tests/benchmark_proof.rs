@@ -785,13 +785,33 @@ fn assert_same_results(
             describe_results(pool, exact),
             describe_results(pool, brute),
         );
-        assert_eq!(
-            left.game_card_set_key(pool),
-            right.game_card_set_key(pool),
-            "{case_name}: card set differs at rank {idx}: exact={:?}, brute={:?}",
-            game_cards(pool, left),
-            game_cards(pool, right),
-        );
+        // 同分卡组互为等价最优解，两侧的代表集选择不必一致（issue #24）；
+        // 集合相等仅在该名次分数可唯一确定集合时要求：分数在 brute 结果内唯一，
+        // 且不是最后一名（第 K 名可能与未返回的第 K+1 名同分）。
+        let score_unique_in_brute = brute
+            .iter()
+            .enumerate()
+            .all(|(other, result)| other == idx || result.score != right.score);
+        if score_unique_in_brute && idx + 1 < brute.len() {
+            assert_eq!(
+                left.game_card_set_key(pool),
+                right.game_card_set_key(pool),
+                "{case_name}: card set differs at rank {idx}: exact={:?}, brute={:?}",
+                game_cards(pool, left),
+                game_cards(pool, right),
+            );
+        }
+    }
+    // Top-K 内不得出现重复集合。
+    for (a, left) in exact.iter().enumerate() {
+        for right in exact.iter().skip(a + 1) {
+            assert_ne!(
+                left.game_card_set_key(pool),
+                right.game_card_set_key(pool),
+                "{case_name}: duplicate card set in exact results: {:?}",
+                describe_results(pool, exact),
+            );
+        }
     }
 }
 
@@ -827,8 +847,7 @@ fn reference_path(root: &Path, output_path: &str) -> PathBuf {
 }
 
 fn tag_value<'a>(tags: &'a [String], values: &[&str]) -> Option<&'a String> {
-    tags.iter()
-        .find(|tag| values.iter().any(|value| tag.as_str() == *value))
+    tags.iter().find(|tag| values.contains(&tag.as_str()))
 }
 
 fn is_success_case(case: &ManifestCase) -> bool {

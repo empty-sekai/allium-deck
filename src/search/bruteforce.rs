@@ -25,7 +25,7 @@ pub fn brute_force_search(
     let mut tracker = BruteForceTopK::new(params.top_k, minimize, pool);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     let mut stats = BruteForceStats::default();
-    recurse(pool, ctx, 0, 0, 0, &mut deck, &mut tracker, &mut stats);
+    recurse(pool, ctx, 0, 0, &mut deck, &mut tracker, &mut stats);
     (tracker.into_vec(), stats)
 }
 
@@ -34,7 +34,6 @@ fn recurse(
     ctx: &SearchContext,
     depth: usize,
     min_free_idx: usize,
-    used_cards: u64,
     deck: &mut [CardIdx; DECK_SIZE],
     tracker: &mut BruteForceTopK,
     stats: &mut BruteForceStats,
@@ -57,13 +56,12 @@ fn recurse(
         if !is_fixed && pool.count() - dense < remaining {
             break;
         }
-        let card_bit = 1u64 << dense;
-        if used_cards & card_bit != 0 {
-            dense += 1;
-            continue;
-        }
         let card = CardIdx::new(dense as u16);
         dense += 1;
+        // 已选卡直接扫 deck 前缀（<= 4 项），不受池大小限制（issue #24 的 u64 位图溢出）。
+        if selected_card_idx(deck, depth, card) {
+            continue;
+        }
 
         if !slot_matches(pool, ctx, depth, card) {
             continue;
@@ -84,17 +82,20 @@ fn recurse(
 
         deck[depth] = card;
         let next_min_free = if is_fixed { min_free_idx } else { dense };
-        recurse(
-            pool,
-            ctx,
-            depth + 1,
-            next_min_free,
-            used_cards | card_bit,
-            deck,
-            tracker,
-            stats,
-        );
+        recurse(pool, ctx, depth + 1, next_min_free, deck, tracker, stats);
     }
+}
+
+#[inline(always)]
+fn selected_card_idx(deck: &[CardIdx; DECK_SIZE], depth: usize, card: CardIdx) -> bool {
+    let mut idx = 0usize;
+    while idx < depth {
+        if deck[idx] == card {
+            return true;
+        }
+        idx += 1;
+    }
+    false
 }
 
 #[inline(always)]
