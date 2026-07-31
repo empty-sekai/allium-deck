@@ -60,7 +60,7 @@ MSYS_NO_PATHCONV=1 docker run --rm \
 e2e（`tests/e2e_regression.rs`）需要外部 masterdata + testdata，通过环境变量注入：
 
 ```bash
-ALLIUM_MASTERDATA_CN=/abs/masterdata_cn \
+ALLIUM_MASTERDATA_CN=<workspace>/local/masterdata/cn \
 ALLIUM_MASTERDATA_JP=/abs/masterdata_jp \
 ALLIUM_MUSIC_METAS=/abs/music_metas.json \
 ALLIUM_TESTDATA=/abs/testdata/real \
