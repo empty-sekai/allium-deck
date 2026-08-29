@@ -1161,21 +1161,48 @@ impl OwnedGameData {
 }
 
 fn flatten_card_parameters(card: &RawCard) -> Vec<CardParameter> {
-    let len = card
-        .card_parameters
-        .param1
-        .len()
-        .min(card.card_parameters.param2.len())
-        .min(card.card_parameters.param3.len());
-    (0..len)
-        .map(|index| CardParameter {
-            card_id: card.id,
-            level: index as i32 + 1,
-            param1: card.card_parameters.param1[index],
-            param2: card.card_parameters.param2[index],
-            param3: card.card_parameters.param3[index],
-        })
-        .collect()
+    match &card.card_parameters {
+        RawCardParameters::Grouped(grouped) => {
+            let len = grouped
+                .param1
+                .len()
+                .min(grouped.param2.len())
+                .min(grouped.param3.len());
+            (0..len)
+                .map(|index| CardParameter {
+                    card_id: card.id,
+                    level: index as i32 + 1,
+                    param1: grouped.param1[index],
+                    param2: grouped.param2[index],
+                    param3: grouped.param3[index],
+                })
+                .collect()
+        }
+        RawCardParameters::Rows(rows) => {
+            let mut by_level: BTreeMap<i32, [Option<i32>; 3]> = BTreeMap::new();
+            for row in rows {
+                let slot = match row.card_parameter_type.as_str() {
+                    "param1" => 0,
+                    "param2" => 1,
+                    "param3" => 2,
+                    _ => continue,
+                };
+                by_level.entry(row.card_level).or_default()[slot] = Some(row.power);
+            }
+            by_level
+                .into_iter()
+                .filter_map(|(level, [param1, param2, param3])| {
+                    Some(CardParameter {
+                        card_id: card.id,
+                        level,
+                        param1: param1?,
+                        param2: param2?,
+                        param3: param3?,
+                    })
+                })
+                .collect()
+        }
+    }
 }
 
 fn flatten_area_item_levels(raw: Vec<RawAreaItemLevel>) -> Vec<crate::handler::AreaItemLevel> {
@@ -1571,14 +1598,38 @@ struct RawCard {
     card_parameters: RawCardParameters,
 }
 
+/// `cardParameters` 有两种编码形式，两者都要能读：
+/// 按参数名分组的等级数组，或每行一个 `(cardLevel, cardParameterType, power)`
+/// 的行式表。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum RawCardParameters {
+    Grouped(RawGroupedCardParameters),
+    Rows(Vec<RawCardParameterRow>),
+}
+
+impl Default for RawCardParameters {
+    fn default() -> Self {
+        Self::Grouped(RawGroupedCardParameters::default())
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
-struct RawCardParameters {
+struct RawGroupedCardParameters {
     #[serde(default)]
     param1: Vec<i32>,
     #[serde(default)]
     param2: Vec<i32>,
     #[serde(default)]
     param3: Vec<i32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCardParameterRow {
+    card_level: i32,
+    card_parameter_type: String,
+    power: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2247,6 +2298,96 @@ mod tests {
             serde_json::to_vec(&via_load).unwrap(),
             serde_json::to_vec(&via_sources).unwrap(),
             "from_sources 与 load 产出不一致"
+        );
+    }
+    #[test]
+    fn card_parameters_accept_both_grouped_and_row_encodings() {
+        let grouped: RawCard = serde_json::from_str(
+            r#"{
+                "id": 7,
+                "characterId": 1,
+                "cardRarityType": "rarity_4",
+                "attr": "cool",
+                "skillId": 3,
+                "cardParameters": {
+                    "param1": [10, 11],
+                    "param2": [20, 21],
+                    "param3": [30, 31]
+                }
+            }"#,
+        )
+        .expect("grouped card");
+        let rows: RawCard = serde_json::from_str(
+            r#"{
+                "id": 7,
+                "characterId": 1,
+                "cardRarityType": "rarity_4",
+                "attr": "cool",
+                "skillId": 3,
+                "cardParameters": [
+                    {"cardLevel": 2, "cardParameterType": "param3", "power": 31},
+                    {"cardLevel": 1, "cardParameterType": "param1", "power": 10},
+                    {"cardLevel": 1, "cardParameterType": "param2", "power": 20},
+                    {"cardLevel": 2, "cardParameterType": "param1", "power": 11},
+                    {"cardLevel": 1, "cardParameterType": "param3", "power": 30},
+                    {"cardLevel": 2, "cardParameterType": "param2", "power": 21}
+                ]
+            }"#,
+        )
+        .expect("row card");
+
+        let expected = vec![
+            CardParameter {
+                card_id: 7,
+                level: 1,
+                param1: 10,
+                param2: 20,
+                param3: 30,
+            },
+            CardParameter {
+                card_id: 7,
+                level: 2,
+                param1: 11,
+                param2: 21,
+                param3: 31,
+            },
+        ];
+        assert_eq!(flatten_card_parameters(&grouped), expected);
+        assert_eq!(
+            flatten_card_parameters(&rows),
+            expected,
+            "行式与分组式必须产出一致结果"
+        );
+    }
+
+    #[test]
+    fn card_parameters_rows_skip_levels_missing_a_dimension() {
+        let rows: RawCard = serde_json::from_str(
+            r#"{
+                "id": 9,
+                "characterId": 2,
+                "cardRarityType": "rarity_3",
+                "attr": "pure",
+                "skillId": 5,
+                "cardParameters": [
+                    {"cardLevel": 1, "cardParameterType": "param1", "power": 1},
+                    {"cardLevel": 1, "cardParameterType": "param2", "power": 2},
+                    {"cardLevel": 1, "cardParameterType": "param3", "power": 3},
+                    {"cardLevel": 2, "cardParameterType": "param1", "power": 4}
+                ]
+            }"#,
+        )
+        .expect("row card");
+        assert_eq!(
+            flatten_card_parameters(&rows),
+            vec![CardParameter {
+                card_id: 9,
+                level: 1,
+                param1: 1,
+                param2: 2,
+                param3: 3,
+            }],
+            "缺维度的等级不应产出半截行"
         );
     }
 }
