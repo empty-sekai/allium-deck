@@ -1,6 +1,6 @@
 [package]
 name = "allium-deck"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2021"
 rust-version = "1.89"
 description = "Project Sekai deck recommendation engine: DFS / branch-and-bound exact search"
