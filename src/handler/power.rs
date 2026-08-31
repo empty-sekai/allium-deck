@@ -248,13 +248,12 @@ fn base_power_dims(
     let has_canvas_bonus = user_card
         .has_canvas_bonus_override
         .unwrap_or_else(|| ctx.has_canvas(master.id));
-    if has_canvas_bonus {
-        if let Some(canvas) = idx.canvas_bonus(master.card_rarity_type) {
+    if has_canvas_bonus
+        && let Some(canvas) = idx.canvas_bonus(master.card_rarity_type) {
             base[0] += canvas.power1_bonus_fixed;
             base[1] += canvas.power2_bonus_fixed;
             base[2] += canvas.power3_bonus_fixed;
         }
-    }
 
     base
 }
@@ -623,8 +622,8 @@ pub(crate) fn resolve_unit_mask(master: &MasterCard, game: &GameData<'_>) -> u8 
     let mut mask = primary
         .and_then(unit_to_pool_index)
         .map_or(0, |unit| 1u8 << unit);
-    if matches!(primary, Some(Unit::Piapro)) {
-        if let Some(secondary) = master
+    if matches!(primary, Some(Unit::Piapro))
+        && let Some(secondary) = master
             .support_unit
             .as_deref()
             .and_then(parse_unit_code)
@@ -633,7 +632,6 @@ pub(crate) fn resolve_unit_mask(master: &MasterCard, game: &GameData<'_>) -> u8 
         {
             mask |= 1u8 << secondary;
         }
-    }
     mask
 }
 

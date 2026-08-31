@@ -1,6 +1,7 @@
 use crate::pool::EventBonusExact;
 use crate::types::{Attr, EventType, Unit, FINAL_CHAPTER_EVENT_ID};
 
+use super::BuildError;
 use super::types::{
     attr_to_pool_index, parse_attr_code, parse_unit_code, resolve_event_type, BuildParams,
     EventCard, EventCardBonusLimit, EventDeckBonus, EventHonorBonus, EventRarityBonusRate,
@@ -53,6 +54,8 @@ pub(crate) struct EventContext {
     pub custom_support_unit_by_char: [Unit; 27],
     /// 箱活或模拟活动的统一团过滤条件。
     pub filter_unit: Option<Unit>,
+    /// 模拟 WL 活动合成出的支援 limited 加成行；真实活动为空。
+    pub support_limited_bonuses: Vec<super::types::WBSupportDeckUnitEventLimitedBonus>,
 }
 
 fn common_event_unit(bonuses: &[EventDeckBonus], fallback: Option<&str>) -> Option<Unit> {
@@ -87,27 +90,41 @@ fn load_card_bonus_limit(table: &[EventCardBonusLimit], event_id: i32) -> usize 
         .iter()
         .find(|entry| entry.event_id == event_id)
         .map(|entry| entry.member_count_limit.max(1) as usize)
-        .unwrap_or(5)
+        // 终章（legacy 180 与模拟 WL3 终章）最多 4 张享受 limited bonus。
+        .unwrap_or_else(|| {
+            if crate::types::is_world_bloom_finale_event(event_id) {
+                4
+            } else {
+                5
+            }
+        })
 }
 
 fn load_skill_limit(table: &[EventSkillScoreUpLimit], event_id: i32) -> Option<u32> {
     table
         .iter()
         .find(|entry| entry.event_id == event_id)
-        .map(|entry| entry.score_up_limit.max(0) as u32)
+        // 表内存的是百分比（如 230 = 230%），实际加分上限是扣除基数 100% 后的点数。
+        .map(|entry| (entry.score_up_limit - 100).max(0) as u32)
 }
 
 fn resolve_skill_limit(game: &GameData<'_>, params: &BuildParams, event_id: i32) -> Option<u32> {
-    if event_id == FINAL_CHAPTER_EVENT_ID
-        && !matches!(
-            params.live_type,
-            crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
-        )
-    {
-        // C++ moe base-deck-recommend.cpp hard-caps Final Chapter live skills at 140.
+    if matches!(
+        params.live_type,
+        crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+    ) {
+        return None;
+    }
+    // 游戏真实数据优先：真实终章一旦在表中给出上限，以数据为准，不走兜底常量。
+    if let Some(limit) = load_skill_limit(game.event_skill_score_up_limits, event_id) {
+        return Some(limit);
+    }
+    // 数据缺行时的终章兜底：legacy 终章 180 与模拟 WL3 终章均沿用上一届
+    // 真实终章的 140 点规则。
+    if crate::types::is_world_bloom_finale_event(event_id) {
         return Some(140);
     }
-    load_skill_limit(game.event_skill_score_up_limits, event_id)
+    None
 }
 
 fn load_support_deck_count(turn: Option<i32>, event_type: EventType) -> u8 {
@@ -169,20 +186,34 @@ fn custom_character_ids(game: &GameData<'_>, unit_code: Option<&str>) -> Vec<i32
 pub(crate) fn build_event_context(
     game: &GameData<'_>,
     params: &BuildParams,
-) -> Option<EventContext> {
-    let event_type = resolve_event_type(game, params).or_else(|| {
-        if params.event_unit.is_some()
-            || params.event_attr.is_some()
-            || !params.custom_bonus_character_ids.is_empty()
-            || params.custom_bonus_attr.is_some()
-        {
-            Some(EventType::Marathon)
-        } else {
-            None
-        }
-    })?;
-    let event_id = params.event_id.unwrap_or_default();
-    let world_bloom_event_turn = if matches!(event_type, EventType::WorldBloom) {
+) -> Result<Option<EventContext>, BuildError> {
+    // 模拟 WL 组卡：真实 event_id 优先；否则按 world_bloom_finale_turn /
+    // world_bloom_event_turn 解析假活动，并合成 event cards / deck bonuses /
+    // 章节与荣誉加成行。
+    let wb_event_id = super::world_bloom::resolve_wb_event_id(params)?;
+    let synth_rows = wb_event_id.map(|event_id| super::world_bloom::synthesize_wb_rows(game, event_id));
+    let event_type = if wb_event_id.is_some() {
+        EventType::WorldBloom // 假活动固定为 world_bloom
+    } else {
+        let Some(event_type) = resolve_event_type(game, params).or_else(|| {
+            if params.event_unit.is_some()
+                || params.event_attr.is_some()
+                || !params.custom_bonus_character_ids.is_empty()
+                || params.custom_bonus_attr.is_some()
+            {
+                Some(EventType::Marathon)
+            } else {
+                None
+            }
+        }) else {
+            return Ok(None);
+        };
+        event_type
+    };
+    let event_id = wb_event_id.unwrap_or_else(|| params.event_id.unwrap_or_default());
+    let world_bloom_event_turn = if let Some(id) = wb_event_id {
+        Some(super::world_bloom::world_bloom_event_turn(id))
+    } else if matches!(event_type, EventType::WorldBloom) {
         resolve_world_bloom_event_turn(game, params)
     } else {
         params.world_bloom_event_turn
@@ -195,7 +226,7 @@ pub(crate) fn build_event_context(
         .cloned()
         .collect::<Vec<_>>();
     let filter_unit = common_event_unit(&raw_deck_bonuses, params.event_unit.as_deref());
-    let deck_bonuses = raw_deck_bonuses
+    let mut deck_bonuses = raw_deck_bonuses
         .into_iter()
         .map(|rule| PreparedEventDeckBonus {
             character_id: rule.character_id,
@@ -208,7 +239,17 @@ pub(crate) fn build_event_context(
             bonus_rate: rule.bonus_rate,
             has_attr_rule: rule.attr.is_some(),
         })
-        .collect();
+        .collect::<Vec<_>>();
+    if let Some(rows) = &synth_rows {
+        // 模拟活动：合成行以 character 精确匹配（无团/属性轴）。
+        deck_bonuses.extend(rows.deck_bonuses.iter().map(|rule| PreparedEventDeckBonus {
+            character_id: rule.character_id,
+            attr: None,
+            unit: None,
+            bonus_rate: rule.bonus_rate,
+            has_attr_rule: false,
+        }));
+    }
 
     let has_simulated_bonus = params.event_attr.is_some()
         || params.event_unit.is_some()
@@ -247,24 +288,36 @@ pub(crate) fn build_event_context(
         }
     }
 
-    Some(EventContext {
+    Ok(Some(EventContext {
         event_id,
         event_type,
-        event_cards: game
-            .event_cards
-            .iter()
-            .filter(|entry| entry.event_id == event_id)
-            .cloned()
-            .collect(),
+        event_cards: {
+            let mut cards = game
+                .event_cards
+                .iter()
+                .filter(|entry| entry.event_id == event_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Some(rows) = &synth_rows {
+                cards.extend(rows.event_cards.iter().cloned());
+            }
+            cards
+        },
         deck_bonuses,
         rarity_bonuses,
         rarity_bonus_x10: Some(rarity_bonus_x10),
-        honor_bonuses: game
-            .event_honor_bonuses
-            .iter()
-            .filter(|entry| entry.event_id == event_id)
-            .cloned()
-            .collect(),
+        honor_bonuses: {
+            let mut bonuses = game
+                .event_honor_bonuses
+                .iter()
+                .filter(|entry| entry.event_id == event_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Some(rows) = &synth_rows {
+                bonuses.extend(rows.honor_bonuses.iter().cloned());
+            }
+            bonuses
+        },
         skill_score_up_limit: resolve_skill_limit(game, params, event_id),
         card_bonus_count_limit: load_card_bonus_limit(game.event_card_bonus_limits, event_id),
         diff_attr_bonus: if matches!(event_type, EventType::WorldBloom) {
@@ -273,6 +326,8 @@ pub(crate) fn build_event_context(
             [0; 6]
         },
         support_deck_count: load_support_deck_count(world_bloom_event_turn, event_type),
+        // 模拟活动不合成默认章节角色：由调用方按需显式指定
+        // world_bloom_character_id。
         world_bloom_character_id: resolve_world_bloom_character_id(game, params),
         world_bloom_event_turn,
         custom_character_ids: if params.custom_bonus_character_ids.is_empty() {
@@ -295,7 +350,19 @@ pub(crate) fn build_event_context(
             units
         },
         filter_unit,
-    })
+        support_limited_bonuses: synth_rows
+            .map(|rows| rows.support_limited_bonuses)
+            .unwrap_or_default(),
+    }))
+}
+
+/// 测试与手工构造用：显式字段集。
+#[cfg(test)]
+impl EventContext {
+    pub(crate) fn with_support_limited_bonuses(mut self, bonuses: Vec<super::types::WBSupportDeckUnitEventLimitedBonus>) -> Self {
+        self.support_limited_bonuses = bonuses;
+        self
+    }
 }
 
 fn card_matches_rule(
@@ -325,16 +392,14 @@ fn load_rarity_bonus_x10(
     master: &MasterCard,
     event_ctx: &EventContext,
 ) -> i32 {
-    if let Some(table) = event_ctx.rarity_bonus_x10.as_ref() {
-        if let (Ok(rarity), Ok(rank)) = (
+    if let Some(table) = event_ctx.rarity_bonus_x10.as_ref()
+        && let (Ok(rarity), Ok(rank)) = (
             usize::try_from(master.card_rarity_type),
             usize::try_from(user_card.master_rank),
-        ) {
-            if let Some(value) = table.get(rarity).and_then(|row| row.get(rank)) {
+        )
+            && let Some(value) = table.get(rarity).and_then(|row| row.get(rank)) {
                 return *value;
             }
-        }
-    }
     event_ctx
         .rarity_bonuses
         .iter()
@@ -472,6 +537,7 @@ mod tests {
             custom_attr: Some(Attr::Cute),
             custom_support_unit_by_char: support_units,
             filter_unit: None,
+            support_limited_bonuses: Vec::new(),
         }
     }
 

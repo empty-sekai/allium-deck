@@ -119,12 +119,11 @@ fn search_combo_top1(
                             candidates[e],
                         ];
                         stats.leaf_nodes += 1;
-                        if let Some(score) = leaf_evaluate_challenge(pool, ctx, &deck) {
-                            if score > best_score {
+                        if let Some(score) = leaf_evaluate_challenge(pool, ctx, &deck)
+                            && score > best_score {
                                 best_score = score;
                                 best_deck = Some(deck);
                             }
-                        }
                     }
                 }
             }
@@ -170,11 +169,10 @@ fn challenge_recurse(
 ) {
     if depth == DECK_SIZE {
         stats.leaf_nodes += 1;
-        if let Some(score) = leaf_evaluate_challenge(pool, ctx, deck) {
-            if score > tracker.threshold() {
+        if let Some(score) = leaf_evaluate_challenge(pool, ctx, deck)
+            && score > tracker.threshold() {
                 tracker.insert(DeckResult::new(*deck, score));
             }
-        }
         return;
     }
 

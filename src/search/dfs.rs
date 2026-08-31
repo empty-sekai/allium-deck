@@ -1,4 +1,8 @@
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+use std::time::Duration;
 
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{LiveType, ScoreTarget, DECK_SIZE};
@@ -1007,16 +1011,14 @@ impl SearchState<'_> {
         {
             return false;
         }
-        if let Some(game_id) = self.ctx.fixed_card_at(depth) {
-            if self.pool.game_id(card) != game_id {
+        if let Some(game_id) = self.ctx.fixed_card_at(depth)
+            && self.pool.game_id(card) != game_id {
                 return false;
             }
-        }
-        if let Some(character_id) = self.ctx.fixed_character_at(depth) {
-            if self.pool.char_id(card) != character_id {
+        if let Some(character_id) = self.ctx.fixed_character_at(depth)
+            && self.pool.char_id(card) != character_id {
                 return false;
             }
-        }
         true
     }
 }
@@ -1195,13 +1197,11 @@ impl TopKTracker {
     }
 
     pub(super) fn insert(&mut self, candidate: DeckResult) {
-        if self.results.len() >= self.top_k {
-            if let Some(last) = self.results.last() {
-                if !deck_result_cmp(&candidate, last).is_lt() {
+        if self.results.len() >= self.top_k
+            && let Some(last) = self.results.last()
+                && !deck_result_cmp(&candidate, last).is_lt() {
                     return;
                 }
-            }
-        }
         let candidate_key = self.game_card_set_key(&candidate);
         if let Some(existing_pos) = self.keys.iter().position(|key| *key == candidate_key) {
             if !deck_result_cmp(&candidate, &self.results[existing_pos]).is_lt() {

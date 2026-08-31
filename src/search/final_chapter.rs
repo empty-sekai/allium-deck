@@ -1,4 +1,8 @@
-use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+use std::time::Duration;
 
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, DECK_SIZE};

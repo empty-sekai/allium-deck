@@ -101,12 +101,11 @@ pub(crate) fn build_skill(
             }
             PreparedSkillEffectKind::UnitCount => {
                 unit_count_unit = effect.unit;
-                if let Some(count) = effect.unit_member_count {
-                    if (1..=5).contains(&count) {
+                if let Some(count) = effect.unit_member_count
+                    && (1..=5).contains(&count) {
                         unit_count_values[(count - 1) as usize] =
                             clamp_score(effect.value, skill_limit);
                     }
-                }
             }
             PreparedSkillEffectKind::Diff => {
                 diff = Some(DiffSkill {

@@ -522,15 +522,13 @@ fn promote_best(best: &mut Option<DeckResult>, candidate: DeckResult) {
 
 #[inline(always)]
 fn slot_matches(pool: &CardPool, ctx: &SearchContext, slot: usize, card: CardIdx) -> bool {
-    if let Some(game_id) = ctx.fixed_card_at(slot) {
-        if pool.game_id(card) != game_id {
+    if let Some(game_id) = ctx.fixed_card_at(slot)
+        && pool.game_id(card) != game_id {
             return false;
         }
-    }
-    if let Some(character_id) = ctx.fixed_character_at(slot) {
-        if pool.char_id(card) != character_id {
+    if let Some(character_id) = ctx.fixed_character_at(slot)
+        && pool.char_id(card) != character_id {
             return false;
         }
-    }
     true
 }

@@ -5,6 +5,22 @@ pub const DECK_SIZE: usize = 5;
 pub const SCORE_MAX: f64 = 10_000_000.0;
 pub const FINAL_CHAPTER_EVENT_ID: i32 = 180;
 
+/// 模拟 WL3 终章的假活动 ID。
+///
+/// WL3 模拟终章的假活动 ID
+/// （= `getWorldBloomFakeEventId(3, 0)` = `3000000 + 2 * 100000`）。
+pub const WL3_FAKE_FINALE_EVENT_ID: i32 = 3_200_000;
+
+/// 终章事件判定：legacy WL2 终章（180）与模拟 WL3 终章（3_200_000）。
+///
+/// 真实 masterdata 出现
+/// 新终章活动前，模拟终章共享 180 的终章规则（队长限定 bonus、技能上限 140、
+/// 加成卡上限 4、mysekai fixture 上限 20、禁用 best_skill_as_leader）。
+#[inline]
+pub const fn is_world_bloom_finale_event(event_id: i32) -> bool {
+    event_id == FINAL_CHAPTER_EVENT_ID || event_id == WL3_FAKE_FINALE_EVENT_ID
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Unit {
@@ -359,7 +375,7 @@ impl<'a> DeckContext<'a> {
         let is_final_chapter = params
             .event
             .as_ref()
-            .is_some_and(|event| event.event_id == FINAL_CHAPTER_EVENT_ID);
+            .is_some_and(|event| is_world_bloom_finale_event(event.event_id));
         let effective_live_type = if matches!(params.live_type, LiveType::Multi)
             && params
                 .event

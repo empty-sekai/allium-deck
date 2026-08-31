@@ -142,6 +142,10 @@ pub struct BuildParams {
     pub world_bloom_character_id: Option<i32>,
     /// WL 回合。
     pub world_bloom_event_turn: Option<i32>,
+    /// 模拟 WL 终章回合；2 走 legacy 终章（180），3 合成模拟终章（3_200_000）。
+    ///
+    /// 模拟 WL 终章回合；2 走 legacy 终章（180），3 合成模拟终章（3_200_000）。
+    pub world_bloom_finale_turn: Option<i32>,
     /// Challenge 角色 ID。
     pub challenge_live_character_id: Option<i32>,
     /// 模拟活动团。
@@ -213,6 +217,7 @@ impl Default for BuildParams {
             forced_leader_character_id: None,
             world_bloom_character_id: None,
             world_bloom_event_turn: None,
+            world_bloom_finale_turn: None,
             challenge_live_character_id: None,
             event_unit: None,
             event_attr: None,
@@ -564,6 +569,12 @@ pub struct WorldBloom {
     pub game_character_id: Option<i32>,
     /// 章节序号。
     pub chapter_no: i32,
+    /// 章节类型（`game_character` / `finale`）。
+    ///
+    /// 对应 masterdata 字段 `worldBloomChapterType`；模拟终章行同样写
+    /// `finale`。旧数据缺省时按普通章节处理。
+    #[serde(default)]
+    pub world_bloom_chapter_type: Option<String>,
 }
 
 /// World Bloom 支援角色类型 bonus。
@@ -714,6 +725,12 @@ pub struct Honor {
     pub id: i32,
     /// 各等级信息。
     pub levels: Vec<HonorLevel>,
+    /// 资源包名（如 `honor_top_001000_event_wl_3rd_part1_cp1`）。
+    ///
+    /// 模拟 WL3 终章用它识别排行称号并合成 50% 队长加成；
+    /// 旧数据缺省时跳过这些称号。
+    #[serde(default)]
+    pub asset_bundle_name: Option<String>,
 }
 
 /// 羁绊称号主表。
@@ -964,12 +981,10 @@ pub(crate) fn parse_event_type(value: &str) -> Option<EventType> {
 
 /// 根据 event_id / event_type 解析有效活动类型。
 pub(crate) fn resolve_event_type(game: &GameData<'_>, params: &BuildParams) -> Option<EventType> {
-    if let Some(event_id) = params.event_id {
-        if let Some(event) = game.events.iter().find(|event| event.id == event_id) {
-            if let Some(kind) = parse_event_type(&event.event_type) {
+    if let Some(event_id) = params.event_id
+        && let Some(event) = game.events.iter().find(|event| event.id == event_id)
+            && let Some(kind) = parse_event_type(&event.event_type) {
                 return Some(kind);
             }
-        }
-    }
     params.event_type.as_deref().and_then(parse_event_type)
 }

@@ -29,7 +29,7 @@ pub(crate) fn apply_card_config(
         if let Some(max_level) = master.max_level {
             user_card.level = max_level.max(user_card.level);
         }
-        if super::card_can_special_train(master) {
+        if super::build::card_can_special_train(master) {
             user_card.special_training_status = "done".to_string();
             user_card.default_image = "special_training".to_string();
         }
@@ -42,7 +42,7 @@ pub(crate) fn apply_card_config(
             .find(|rarity| rarity.card_rarity_type == master.card_rarity_type)
             .map(|rarity| rarity.normal_max_level)
             .unwrap_or(max_level);
-        if super::card_can_special_train(master) && user_card.level > normal_max_level {
+        if super::build::card_can_special_train(master) && user_card.level > normal_max_level {
             user_card.special_training_status = "done".to_string();
             user_card.default_image = "special_training".to_string();
         } else {
@@ -50,19 +50,17 @@ pub(crate) fn apply_card_config(
             user_card.default_image = "original".to_string();
         }
     }
-    if config.skill_max {
-        if let Some(max_skill_level) = master.max_skill_level {
+    if config.skill_max
+        && let Some(max_skill_level) = master.max_skill_level {
             user_card.skill_level = max_skill_level.max(user_card.skill_level);
         }
-    }
     if let Some(skill_level) = config.skill_level {
         user_card.skill_level = skill_level.clamp(1, master.max_skill_level.unwrap_or(skill_level));
     }
-    if config.master_max {
-        if let Some(max_master_rank) = master.max_master_rank {
+    if config.master_max
+        && let Some(max_master_rank) = master.max_master_rank {
             user_card.master_rank = max_master_rank.max(user_card.master_rank);
         }
-    }
     if let Some(master_rank) = config.master_rank {
         user_card.master_rank = master_rank.clamp(0, master.max_master_rank.unwrap_or(master_rank));
     }

@@ -93,15 +93,14 @@ impl SearchContext {
     /// 返回当前 deck leader 对应的支援卡组。
     #[inline(always)]
     pub fn support_deck_for_leader(&self, leader_character_id: u8) -> &SupportDeck {
-        if self.is_final_chapter {
-            if let Some(deck) = self
+        if self.is_final_chapter
+            && let Some(deck) = self
                 .support_decks_by_character
                 .get(leader_character_id as usize)
                 .filter(|deck| deck.count > 0)
             {
                 return deck;
             }
-        }
         &self.support_deck
     }
 

@@ -310,6 +310,8 @@ pub fn parse_build_params_json(
         .or_else(|| i32_field(&value, "world_bloom_character_id"));
     params.world_bloom_event_turn = i32_field(&value, "worldBloomEventTurn")
         .or_else(|| i32_field(&value, "world_bloom_event_turn"));
+    params.world_bloom_finale_turn = i32_field(&value, "worldBloomFinaleTurn")
+        .or_else(|| i32_field(&value, "world_bloom_finale_turn"));
     params.challenge_live_character_id = i32_field(&value, "challengeLiveCharacterId")
         .or_else(|| i32_field(&value, "challenge_live_character_id"));
     params.event_unit =
@@ -379,7 +381,9 @@ pub fn parse_build_params_json(
             .or_else(|| string_field(&value, "skillOrderChooseStrategy"))
             .or_else(|| string_field(&value, "skill_order_choose_strategy"))
             .as_deref()
-            .unwrap_or("best"),
+            // 技能发动顺序在游戏内不可控，期望值按平均计；max/min/specific
+            // 供调用方做上界/下界/指定顺序估算。
+            .unwrap_or("average"),
     )?;
     params.specific_skill_order = parse_specific_skill_order(&value)?;
     params.multi_teammate_score_up = i32_field(&value, "multiLiveTeammateScoreUp")
@@ -1020,6 +1024,7 @@ impl OwnedGameData {
                     event_id: entry.event_id,
                     game_character_id: entry.game_character_id,
                     chapter_no: entry.chapter_no,
+                    world_bloom_chapter_type: entry.world_bloom_chapter_type,
                 })
                 .collect(),
             wb_support_deck_bonuses_wl1: load_wl_support_bonuses(
@@ -1110,6 +1115,7 @@ impl OwnedGameData {
                             bonus: lv.bonus,
                         })
                         .collect(),
+                    asset_bundle_name: entry.asset_bundle_name,
                 })
                 .collect(),
             bonds_honors: sources
@@ -1819,6 +1825,8 @@ struct RawWorldBloom {
     #[serde(default)]
     game_character_id: Option<i32>,
     chapter_no: i32,
+    #[serde(default)]
+    world_bloom_chapter_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1958,6 +1966,8 @@ struct RawHonor {
     id: i32,
     #[serde(default)]
     levels: Vec<RawHonorLevel>,
+    #[serde(default)]
+    asset_bundle_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

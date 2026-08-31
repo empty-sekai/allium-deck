@@ -86,18 +86,17 @@ impl PoolIndexes {
                 if let Some(unit) = unit_to_pool_index(primary) {
                     unit_mask |= 1u8 << unit;
                 }
-                if matches!(primary, crate::types::Unit::Piapro) {
-                    if let Some(secondary) = support_unit
+                if matches!(primary, crate::types::Unit::Piapro)
+                    && let Some(secondary) = support_unit
                         .filter(|unit| !matches!(unit, crate::types::Unit::Piapro))
                         .and_then(unit_to_pool_index)
                     {
                         unit_mask |= 1u8 << secondary;
                     }
-                }
             }
             let mut master = card.clone();
-            if master.max_level.is_none() || master.max_skill_level.is_none() {
-                if let Some(rarity) = game
+            if (master.max_level.is_none() || master.max_skill_level.is_none())
+                && let Some(rarity) = game
                     .card_rarities
                     .iter()
                     .find(|entry| entry.card_rarity_type == master.card_rarity_type)
@@ -105,7 +104,6 @@ impl PoolIndexes {
                     master.max_level.get_or_insert(rarity.max_level);
                     master.max_skill_level.get_or_insert(rarity.max_skill_level);
                 }
-            }
             if master.max_master_rank.is_none() {
                 master.max_master_rank = Some(
                     game.master_lessons
