@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::handler::{
-    build_card_pool_with_details, BuildParams, MusicMeta, UserAreaItem, UserProfile,
+    build_card_pool_with_details_prepared, BuildParams, MusicMeta, PreparedGameData, UserAreaItem,
+    UserProfile,
 };
 use crate::search::resolve_power_for_cards;
 use crate::{EventType, LiveSkillOrder, LiveType, ScoreTarget, DECK_SIZE};
@@ -53,13 +54,28 @@ impl AuxiliaryData {
             return Err("shopItems masterdata is not loaded".to_string());
         }
 
-        let current_power = fixed_deck_power(user, game, card_ids)?;
+        let prepared = PreparedGameData::new(*game);
+        let current_power = fixed_deck_power(user, &prepared, card_ids)?;
         let current_levels = user
             .user_area_items
             .iter()
             .map(|item| (item.area_item_id, item.level))
             .collect::<HashMap<_, _>>();
         let mut result = Vec::new();
+
+        // 固定卡组的战力只涉及这几张卡：把用户卡裁剪到卡组集合后，
+        // 每个候选项只构建 5 卡的迷你池（否则每个候选重建全量卡池，
+        // 数百个道具候选时比 C++ 的逐卡重算慢两个数量级）。
+        let mut deck_user = user.clone();
+        deck_user.user_cards = card_ids
+            .iter()
+            .filter_map(|card_id| {
+                user.user_cards
+                    .iter()
+                    .find(|card| card.card_id == *card_id)
+                    .cloned()
+            })
+            .collect();
 
         for area_item in &self.area_items {
             let max_level = game
@@ -90,20 +106,28 @@ impl AuxiliaryData {
                 ));
             }
 
-            let mut upgraded = user.clone();
-            if let Some(item) = upgraded
+            let mut upgraded = deck_user.clone();
+            upgraded.user_area_items = user
                 .user_area_items
-                .iter_mut()
-                .find(|item| item.area_item_id == area_item.id)
-            {
-                item.level = next_level;
-            } else {
-                upgraded.user_area_items.push(UserAreaItem {
-                    area_item_id: area_item.id,
-                    level: next_level,
-                });
-            }
-            let power = fixed_deck_power(&upgraded, game, card_ids)? - current_power;
+                .iter()
+                .map(|item| {
+                    if item.area_item_id == area_item.id {
+                        UserAreaItem {
+                            area_item_id: item.area_item_id,
+                            level: next_level,
+                        }
+                    } else {
+                        item.clone()
+                    }
+                })
+                .chain(
+                    current_level.is_none().then_some(UserAreaItem {
+                        area_item_id: area_item.id,
+                        level: next_level,
+                    }),
+                )
+                .collect();
+            let power = fixed_deck_power(&upgraded, &prepared, card_ids)? - current_power;
             if power <= 0 {
                 continue;
             }
@@ -302,6 +326,18 @@ pub fn recommend_music(
     if music_metas.is_empty() {
         return Err("music metas are not loaded".to_string());
     }
+    // 烤森活动的 multi 玩法即 cheerful live。
+    let live_type = if matches!(options.event_type, EventType::CheerfulCarnival)
+        && matches!(options.live_type, LiveType::Multi)
+    {
+        LiveType::Cheerful
+    } else {
+        options.live_type
+    };
+    let options = &MusicRecommendOptions {
+        live_type,
+        ..options.clone()
+    };
     if deck.cards.is_empty() || deck.cards.len() > DECK_SIZE {
         return Err("deck.cards must contain 1 to 5 cards".to_string());
     }
@@ -355,14 +391,9 @@ pub fn recommend_music(
 
 fn fixed_deck_power(
     user: &UserProfile,
-    game: &crate::handler::GameData<'_>,
+    prepared: &PreparedGameData<'_>,
     card_ids: &[i32],
 ) -> Result<i32, String> {
-    for card_id in card_ids {
-        if !user.user_cards.iter().any(|card| card.card_id == *card_id) {
-            return Err(format!("User card not found for cardId={card_id}"));
-        }
-    }
     let mut params = BuildParams {
         target: ScoreTarget::Power,
         ..BuildParams::default()
@@ -374,7 +405,8 @@ fn fixed_deck_power(
         .into_iter()
         .collect();
     let (pool, context, _) =
-        build_card_pool_with_details(user, game, &params).map_err(|error| error.to_string())?;
+        build_card_pool_with_details_prepared(user, prepared, &params)
+            .map_err(|error| error.to_string())?;
     let mut cards = Vec::with_capacity(card_ids.len());
     for card_id in card_ids {
         let card = pool
