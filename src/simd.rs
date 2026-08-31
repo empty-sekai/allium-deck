@@ -55,7 +55,7 @@ impl SimdBackend {
         fixture_rates: &[f64; 16],
         gate_rates: &[f64; 16],
         valid_lanes: usize,
-    ) -> PowerCommon16 {
+    ) -> PowerCommon16 { unsafe {
         let mut result = match self {
             Self::Scalar => power_common_16_scalar(
                 base_dims,
@@ -81,7 +81,7 @@ impl SimdBackend {
             lane += 1;
         }
         result
-    }
+    }}
 
     #[inline(always)]
     pub(crate) unsafe fn power_area_single_unit_16(
@@ -93,7 +93,7 @@ impl SimdBackend {
         items: &[PowerAreaItem],
         member_key: usize,
         active_lanes: u16,
-    ) -> [i32; 16] {
+    ) -> [i32; 16] { unsafe {
         match self {
             Self::Scalar => power_area_single_unit_16_scalar(
                 base_dims,
@@ -114,7 +114,7 @@ impl SimdBackend {
                 active_lanes,
             ),
         }
-    }
+    }}
 }
 
 #[inline]
@@ -164,7 +164,7 @@ pub(crate) unsafe fn upper_bound_mask_16(upper_bounds: *const u64, threshold: u6
 
 #[cfg(any(test, not(target_arch = "x86_64")))]
 #[inline(always)]
-unsafe fn unused_character_mask_16_scalar(char_ids: *const u8, used_chars: u32) -> u16 {
+unsafe fn unused_character_mask_16_scalar(char_ids: *const u8, used_chars: u32) -> u16 { unsafe {
     let mut mask = 0u16;
     let mut lane = 0usize;
     while lane < 16 {
@@ -173,11 +173,11 @@ unsafe fn unused_character_mask_16_scalar(char_ids: *const u8, used_chars: u32) 
         lane += 1;
     }
     mask
-}
+}}
 
 #[cfg(any(test, not(target_arch = "x86_64")))]
 #[inline(always)]
-unsafe fn upper_bound_mask_16_scalar(upper_bounds: *const u64, threshold: u64) -> u16 {
+unsafe fn upper_bound_mask_16_scalar(upper_bounds: *const u64, threshold: u64) -> u16 { unsafe {
     let mut mask = 0u16;
     let mut lane = 0usize;
     while lane < 16 {
@@ -185,7 +185,7 @@ unsafe fn upper_bound_mask_16_scalar(upper_bounds: *const u64, threshold: u64) -
         lane += 1;
     }
     mask
-}
+}}
 
 #[inline(always)]
 fn power_common_16_scalar(
@@ -273,7 +273,7 @@ unsafe fn power_area_single_unit_16_avx512_unchecked(
     items: &[PowerAreaItem],
     member_key: usize,
     active_lanes: u16,
-) -> [i32; 16] {
+) -> [i32; 16] { unsafe {
     use std::arch::x86_64::*;
 
     let packed_units = _mm_loadu_si128(target_units.as_ptr().cast::<__m128i>());
@@ -347,7 +347,7 @@ unsafe fn power_area_single_unit_16_avx512_unchecked(
         half += 1;
     }
     result
-}
+}}
 
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn power_area_single_unit_16_avx512_unchecked(
@@ -378,7 +378,7 @@ unsafe fn power_common_16_avx512_unchecked(
     character_rates: &[f32; 16],
     fixture_rates: &[f64; 16],
     gate_rates: &[f64; 16],
-) -> PowerCommon16 {
+) -> PowerCommon16 { unsafe {
     use std::arch::x86_64::*;
 
     let rates = _mm512_mul_ps(
@@ -431,7 +431,7 @@ unsafe fn power_common_16_avx512_unchecked(
         half += 1;
     }
     result
-}
+}}
 
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn power_common_16_avx512_unchecked(
@@ -456,7 +456,7 @@ unsafe fn power_common_16_avx512_unchecked(
 pub(crate) unsafe fn unused_character_mask_16_avx512_unchecked(
     char_ids: *const u8,
     used_chars: u32,
-) -> u16 {
+) -> u16 { unsafe {
     use std::arch::x86_64::*;
 
     let packed = _mm_loadu_si128(char_ids.cast::<__m128i>());
@@ -464,14 +464,14 @@ pub(crate) unsafe fn unused_character_mask_16_avx512_unchecked(
     let character_bits = _mm512_sllv_epi32(_mm512_set1_epi32(1), characters);
     let conflicts = _mm512_and_si512(character_bits, _mm512_set1_epi32(used_chars as i32));
     _mm512_cmpeq_epi32_mask(conflicts, _mm512_setzero_si512()) as u16
-}
+}}
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub(crate) unsafe fn upper_bound_mask_16_avx512_unchecked(
     upper_bounds: *const u64,
     threshold: u64,
-) -> u16 {
+) -> u16 { unsafe {
     use std::arch::x86_64::*;
 
     let threshold = _mm512_set1_epi64(threshold as i64);
@@ -480,7 +480,7 @@ pub(crate) unsafe fn upper_bound_mask_16_avx512_unchecked(
     let lower_mask = _mm512_cmp_epu64_mask::<6>(lower, threshold) as u16;
     let upper_mask = _mm512_cmp_epu64_mask::<6>(upper, threshold) as u16;
     lower_mask | (upper_mask << 8)
-}
+}}
 use std::sync::OnceLock;
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -488,18 +488,18 @@ use std::sync::OnceLock;
 pub(crate) unsafe fn unused_character_mask_16_avx512_unchecked(
     char_ids: *const u8,
     used_chars: u32,
-) -> u16 {
+) -> u16 { unsafe {
     unused_character_mask_16_scalar(char_ids, used_chars)
-}
+}}
 
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
 pub(crate) unsafe fn upper_bound_mask_16_avx512_unchecked(
     upper_bounds: *const u64,
     threshold: u64,
-) -> u16 {
+) -> u16 { unsafe {
     upper_bound_mask_16_scalar(upper_bounds, threshold)
-}
+}}
 
 #[cfg(test)]
 mod tests {

@@ -46,7 +46,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.98.0
           components: rustfmt, clippy
 
       - name: Verify release tag matches package versions
@@ -146,7 +146,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.98.0
           targets: ${{ matrix.target }}
 
       - name: Install cross
@@ -230,7 +230,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.98.0
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry and build
@@ -327,7 +327,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.98.0
 
       - name: Publish to crates.io
         env:
@@ -387,7 +387,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.98.0
 
       - name: Install git-cliff
         run: cargo install git-cliff --version 2.13.1 --locked
