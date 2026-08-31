@@ -2,17 +2,33 @@
 
 //! Browser WASM entry point for the standalone npm package.
 //!
-//! 薄壳：masterdata 编译期内嵌，调用方只传 user + params。内部全程复用引擎现有函数
-//! （parse_* / build_card_pool / search / summarize_deck / game_id），无任何组卡逻辑复制——
-//! 改组卡只动 `search/`+`handler/`，此入口自动跟随。
+//! 两种数据供给模式：
+//! - **外置 masterdata（推荐）**：浏览器侧 JS 通常已持有 masterdata JSON，
+//!   `load_masterdata(map, metas)` 直接复用同一份数据——引擎内一次性完成
+//!   「raw JSON → 扁平结构」转换并缓存，零额外下载，数据新鲜度与代码发版解耦。
+//! - **内嵌数据（兼容保留，feature = "embedded"）**：`recommend_embedded`
+//!   使用编译期 `include_bytes!` 的 postcard，供离线 demo / 旧调用方。
+//!
+//! 导出面：`load_masterdata` / `recommend` / `createUserData` +
+//! `recommendWithUserData` / `recommend_area_items` / `recommendMusic` /
+//! `calculate_exact_live` / `get_world_bloom_support_cards`
+//! （见 `auxiliary_api.rs`；不提供批量入口）。
+//!
+//! 薄壳：无组卡逻辑复制——改组卡只动 `search/`+`handler/`，此入口自动跟随。
+
+mod auxiliary_api;
+mod options;
 
 use serde::Serialize;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
 use wasm_bindgen::prelude::*;
 
+#[cfg(feature = "embedded")]
 mod embedded;
 
-use allium_deck::engine::{parse_build_params_json, parse_user_profile_json};
+use allium_deck::auxiliary::AuxiliaryData;
+use allium_deck::engine::{parse_build_params_json, parse_user_profile_json, OwnedGameData};
 use allium_deck::handler::{
     build_card_pool, cultivated_user_cards, GameData, MasterCard, UserCard, UserProfile,
 };
@@ -30,20 +46,113 @@ pub fn init() {
     console_error_panic_hook::set_once();
 }
 
-/// 浏览器组卡入口。`user_json`/`params_json` 为上传链路 camelCase 格式。
-/// 返回 top-5 卡组 JSON（真实游戏卡 ID + 展示指标）。
+/// 一份已扁平化的引擎数据：组卡用主数据 + 辅助接口用附加表。
+pub(crate) struct EngineData {
+    game: OwnedGameData,
+    auxiliary: AuxiliaryData,
+}
+
+thread_local! {
+    /// `load_masterdata` 一次性扁平化后的数据，整个页面生命周期复用。
+    static MASTER_DATA: RefCell<Option<std::rc::Rc<EngineData>>> = const { RefCell::new(None) };
+}
+
+/// 取当前引擎数据；未初始化时直接报错。
+pub(crate) fn engine_data() -> Result<std::rc::Rc<EngineData>, JsValue> {
+    MASTER_DATA.with(|slot| slot.borrow().clone()).ok_or_else(|| {
+        JsValue::from_str("masterdata 未初始化：请先调用 load_masterdata(...)")
+    })
+}
+
+/// 载入 masterdata：`masterdata_json` 形如
+/// `{"cards": "<cards.json 原文>", "events": "...", ...}`（各表 JSON 原文），
+/// `music_metas_json` 为音乐元数据表原文（可为空字符串）。
+///
+/// 数据在引擎内做一次「raw JSON → 扁平结构」转换并缓存，之后每次
+/// recommend 零重复成本。辅助表（areas/areaItems/shopItems/ingameNotes/
+/// ingameCombos）缺省时对应辅助接口报「未载入」错误，不影响组卡。
 #[wasm_bindgen]
-pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, JsValue> {
-    let owned = embedded::embedded_gamedata().map_err(to_js)?;
+pub fn load_masterdata(masterdata_json: &str, music_metas_json: &str) -> Result<(), JsValue> {
+    let map: BTreeMap<String, String> = serde_json::from_str(masterdata_json)
+        .map_err(|err| JsValue::from_str(&format!("masterdata JSON 解析失败: {err}")))?;
+    let auxiliary = AuxiliaryData::from_strings(&map).map_err(to_js)?;
+    let sources = allium_deck::engine::MasterdataSources::from_strings(
+        map.into_iter(),
+        music_metas_json.to_string(),
+    );
+    let owned = allium_deck::engine::OwnedGameData::from_sources(&sources)
+        .map_err(|err| JsValue::from_str(&err))?;
+    MASTER_DATA.with(|slot| {
+        *slot.borrow_mut() = Some(std::rc::Rc::new(EngineData { game: owned, auxiliary }));
+    });
+    Ok(())
+}
+
+/// 组卡入口。需先 `load_masterdata`。`user_json`/`params_json` 为上传链路
+/// camelCase 格式；返回 top-5 卡组 JSON（真实游戏卡 ID + 展示指标）。
+#[wasm_bindgen]
+pub fn recommend(user_json: &str, params_json: &str) -> Result<String, JsValue> {
+    let data = engine_data()?;
     let user = parse_user_profile_json(user_json).map_err(to_js)?;
+    recommend_with_user(&data, &user, params_json)
+}
+
+/// 解析一次用户数据、多次复用的句柄。
+///
+/// `region` 词表：jp/tw/en/kr/cn。句柄与 masterdata 生命周期解耦：
+/// masterdata 重载后旧句柄仍可用，但数据视图可能过期，由调用方自行重载。
+#[wasm_bindgen]
+pub struct UserDataHandle {
+    region: String,
+    user: UserProfile,
+}
+
+#[wasm_bindgen]
+impl UserDataHandle {
+    #[wasm_bindgen(getter)]
+    pub fn region(&self) -> String {
+        self.region.clone()
+    }
+}
+
+/// 创建用户数据句柄：解析成本只付一次，后续 `recommend_with_user_data`
+/// 直接复用（解析成本只付一次）。
+#[wasm_bindgen]
+pub fn create_user_data(user_json: &str, region: &str) -> Result<UserDataHandle, JsValue> {
+    if !matches!(region, "jp" | "tw" | "en" | "kr" | "cn") {
+        return Err(JsValue::from_str(&format!("Invalid region: {region}")));
+    }
+    let user = parse_user_profile_json(user_json).map_err(to_js)?;
+    Ok(UserDataHandle {
+        region: region.to_string(),
+        user,
+    })
+}
+
+/// 组卡入口（句柄式）：options 即 `recommend` 的 `params_json`。
+#[wasm_bindgen(js_name = recommendWithUserData)]
+pub fn recommend_with_user_data(
+    options_json: &str,
+    handle: &UserDataHandle,
+) -> Result<String, JsValue> {
+    let data = engine_data()?;
+    recommend_with_user(&data, &handle.user, options_json)
+}
+
+fn recommend_with_user(
+    data: &std::rc::Rc<EngineData>,
+    user: &UserProfile,
+    params_json: &str,
+) -> Result<String, JsValue> {
     let params = parse_build_params_json(params_json).map_err(to_js)?;
-    let game = owned.as_ref();
+    // OwnedGameData::as_ref 返回借用视图（非拷贝本体），生命周期跟随 data。
+    let game: &GameData<'_> = &data.game.as_ref();
 
     let build_pool_start = performance_now();
-    let (pool, ctx) = build_card_pool(&user, &game, &params).map_err(to_js)?;
+    let (pool, ctx) = build_card_pool(user, game, &params).map_err(to_js)?;
     let build_pool_ms = elapsed_ms(build_pool_start);
     let mut render_user = user.clone();
-    render_user.user_cards = cultivated_user_cards(&user, &game, &params);
+    render_user.user_cards = cultivated_user_cards(user, game, &params);
     let user_cards = render_user
         .user_cards
         .iter()
@@ -55,8 +164,8 @@ pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, 
         &pool,
         &ctx,
         &SearchParams {
-            top_k: 5,
-            timeout_ms: 0,
+            top_k: params.limit.clamp(1, 30),
+            timeout_ms: params.timeout_ms,
         },
     );
     let search_ms = elapsed_ms(search_start);
@@ -65,7 +174,7 @@ pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, 
         .iter()
         .enumerate()
         .map(|(index, result)| {
-            DeckOut::build(index + 1, &pool, &ctx, &game, &user, &user_cards, result)
+            DeckOut::build(index + 1, &pool, &ctx, game, user, &user_cards, result)
         })
         .collect();
 
@@ -78,6 +187,19 @@ pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, 
         },
     })
     .map_err(to_js)
+}
+
+#[cfg(feature = "embedded")]
+#[wasm_bindgen]
+pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, JsValue> {
+    let owned = embedded::embedded_gamedata().map_err(to_js)?;
+    // 内嵌 postcard 不含辅助表；辅助接口在此模式下报「未载入」。
+    let data = std::rc::Rc::new(EngineData {
+        game: owned,
+        auxiliary: AuxiliaryData::default(),
+    });
+    let user = parse_user_profile_json(user_json).map_err(to_js)?;
+    recommend_with_user(&data, &user, params_json)
 }
 
 fn to_js<E: std::fmt::Display>(err: E) -> JsValue {

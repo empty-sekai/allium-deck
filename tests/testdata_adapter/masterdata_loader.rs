@@ -334,6 +334,7 @@ impl OwnedGameData {
                             bonus: lv.bonus,
                         })
                         .collect(),
+                    asset_bundle_name: entry.asset_bundle_name,
                 })
                 .collect(),
             bonds_honors: load_optional_json::<Vec<RawIdOnly>>(
@@ -935,6 +936,8 @@ struct RawHonor {
     id: i32,
     #[serde(default)]
     levels: Vec<RawHonorLevel>,
+    #[serde(default)]
+    asset_bundle_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

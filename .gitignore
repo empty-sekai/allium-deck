@@ -17,3 +17,6 @@ __pycache__/
 # wasm-pack 产出
 /pkg/
 /wasm/pkg/
+
+# wasm crate local build dir (crate has its own [workspace])
+wasm/target/
