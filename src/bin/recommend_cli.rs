@@ -38,6 +38,14 @@ struct CliArgs {
     search_repeats: Option<usize>,
     build_repeats: Option<usize>,
     challenge_all: bool,
+    mode: Option<String>,
+    card_ids: Option<Vec<i32>>,
+    deck: Option<String>,
+    power: Option<i32>,
+    skills: Option<Vec<f64>>,
+    music_score: Option<String>,
+    fever_music_score: Option<String>,
+    multi_sum_power: Option<i32>,
     overrides: ParamOverrides,
 }
 
@@ -55,6 +63,7 @@ struct ParamOverrides {
     excluded_cards: Option<Vec<i32>>,
     world_bloom_character_id: Option<Option<i32>>,
     world_bloom_event_turn: Option<Option<i32>>,
+    world_bloom_finale_turn: Option<Option<i32>>,
     challenge_live_character_id: Option<Option<i32>>,
     event_unit: Option<Option<String>>,
     event_attr: Option<Option<String>>,
@@ -89,7 +98,7 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let args = parse_args()?;
+    let mut args = parse_args()?;
     if args.overrides.help_requested() {
         print_help();
         return Ok(());
@@ -126,10 +135,28 @@ fn run() -> Result<(), String> {
     };
     let mut params =
         parse_build_params_json(&params_json).map_err(|e| format!("解析 params 失败: {e}"))?;
-    apply_overrides(&mut params, args.overrides);
+    apply_overrides(&mut params, std::mem::take(&mut args.overrides));
 
     if args.challenge_all {
         return run_challenge_all(&user, &game, params, timeout_ms, load_ms);
+    }
+
+    match args.mode.as_deref() {
+        Some("area-items") => {
+            return run_area_items(&args, &user, &game, masterdata, load_ms);
+        }
+        Some("music") => {
+            return run_music(&args, &user, &game, params, load_ms);
+        }
+        Some("exact-live") => {
+            return run_exact_live(&args, &game, params, load_ms);
+        }
+        Some(other) => {
+            return Err(format!(
+                "未知 --mode {other}（可用：recommend / area-items / music / exact-live）"
+            ));
+        }
+        None => {}
     }
 
     let prepare_start = Instant::now();
@@ -470,6 +497,187 @@ fn compare_challenge_character(
     }
 }
 
+/// 从 masterdata 目录读取辅助表（缺表报错延迟到使用方）。
+fn load_auxiliary(masterdata: &str) -> Result<allium_deck::auxiliary::AuxiliaryData, String> {
+    let mut tables = std::collections::BTreeMap::new();
+    for name in [
+        "areas.json",
+        "areaItems.json",
+        "shopItems.json",
+        "ingameNotes.json",
+        "ingameCombos.json",
+    ] {
+        let path = PathBuf::from(masterdata).join(name);
+        if path.exists() {
+            tables.insert(name.to_string(), read(path.to_str().unwrap())?);
+        }
+    }
+    allium_deck::auxiliary::AuxiliaryData::from_strings(&tables)
+}
+
+/// event_type 解析：显式字符串优先，其次按 event_id 反查活动主表，缺省 marathon。
+fn resolve_aux_event_type(game: &GameData<'_>, params: &BuildParams) -> allium_deck::EventType {
+    if let Some(text) = params.event_type.as_deref() {
+        return match text.trim().to_ascii_lowercase().as_str() {
+            "cheerful_carnival" => allium_deck::EventType::CheerfulCarnival,
+            "world_bloom" => allium_deck::EventType::WorldBloom,
+            _ => allium_deck::EventType::Marathon,
+        };
+    }
+    if let Some(event_id) = params.event_id {
+        if let Some(event) = game.events.iter().find(|event| event.id == event_id) {
+            return match event.event_type.to_ascii_lowercase().as_str() {
+                "cheerful_carnival" => allium_deck::EventType::CheerfulCarnival,
+                "world_bloom" => allium_deck::EventType::WorldBloom,
+                _ => allium_deck::EventType::Marathon,
+            };
+        }
+    }
+    allium_deck::EventType::Marathon
+}
+
+fn run_area_items(
+    args: &CliArgs,
+    user: &UserProfile,
+    game: &GameData<'_>,
+    masterdata: &str,
+    load_ms: f64,
+) -> Result<(), String> {
+    let auxiliary = load_auxiliary(masterdata)?;
+    let card_ids = args
+        .card_ids
+        .clone()
+        .ok_or_else(|| "--mode area-items 需要 --card-ids（1..5 张卡，逗号分隔）".to_string())?;
+    let start = Instant::now();
+    let result = auxiliary
+        .recommend_area_items(user, game, &card_ids)
+        .map_err(|e| e.to_string())?;
+    eprintln!("[area_items] {:.1}ms  rows={}", ms(start), result.len());
+    eprintln!("[total] {:.1}ms", load_ms + ms(start));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct DeckIn {
+    total_power: i32,
+    event_bonus_rate: f64,
+    support_deck_bonus_rate: f64,
+    cards: Vec<DeckCardIn>,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct DeckCardIn {
+    skill_score_up: f64,
+    skill_life_recovery: f64,
+}
+
+fn run_music(
+    args: &CliArgs,
+    user: &UserProfile,
+    game: &GameData<'_>,
+    mut params: BuildParams,
+    load_ms: f64,
+) -> Result<(), String> {
+    let deck_path = args
+        .deck
+        .clone()
+        .ok_or_else(|| "--mode music 需要 --deck <deck.json>".to_string())?;
+    let deck_json: DeckIn =
+        serde_json::from_str(&read(&deck_path)?).map_err(|e| format!("deck JSON 解析失败: {e}"))?;
+    // 未显式给 live_type 时沿用 params 解析（默认 solo）；具体技能顺序转 Vec。
+    params.live_skill_order = args
+        .overrides
+        .live_skill_order
+        .unwrap_or(params.live_skill_order);
+    let options = allium_deck::auxiliary::MusicRecommendOptions {
+        live_type: params.live_type,
+        event_type: resolve_aux_event_type(game, &params),
+        skill_order: params.live_skill_order,
+        specific_skill_order: params
+            .specific_skill_order
+            .map(|order| order.to_vec()),
+        multi_teammate_score_up: params.multi_teammate_score_up,
+        multi_teammate_power: params.multi_teammate_power,
+    };
+    let deck = allium_deck::auxiliary::MusicDeck {
+        total_power: deck_json.total_power,
+        event_bonus_rate: deck_json.event_bonus_rate,
+        support_deck_bonus_rate: deck_json.support_deck_bonus_rate,
+        cards: deck_json
+            .cards
+            .iter()
+            .map(|card| allium_deck::auxiliary::MusicDeckCard {
+                skill_score_up: card.skill_score_up,
+                skill_life_recovery: card.skill_life_recovery,
+            })
+            .collect(),
+    };
+    let _ = user;
+    let start = Instant::now();
+    let result = allium_deck::auxiliary::recommend_music(game.music_metas, &deck, &options)
+        .map_err(|e| e.to_string())?;
+    eprintln!("[music] {:.1}ms  rows={}", ms(start), result.len());
+    eprintln!("[total] {:.1}ms", load_ms + ms(start));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&result).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+fn run_exact_live(
+    args: &CliArgs,
+    game: &GameData<'_>,
+    params: BuildParams,
+    load_ms: f64,
+) -> Result<(), String> {
+    let auxiliary = load_auxiliary(
+        args.masterdata
+            .as_deref()
+            .ok_or_else(|| "缺少参数 --masterdata".to_string())?,
+    )?;
+    let power = args.power.filter(|p| *p > 0).ok_or_else(|| "--mode exact-live 需要 --power（正整数）".to_string())?;
+    let skills = args.skills.clone().unwrap_or_default();
+    let music_score = args
+        .music_score
+        .clone()
+        .ok_or_else(|| "--mode exact-live 需要 --music-score <谱面JSON>".to_string())?;
+    let fever = match args.fever_music_score.as_deref() {
+        Some(path) => Some(read(path)?),
+        None => None,
+    };
+    let start = Instant::now();
+    let detail = auxiliary
+        .calculate_exact_live(
+            power,
+            &skills,
+            params.live_type,
+            &read(&music_score)?,
+            args.multi_sum_power.unwrap_or(0),
+            fever.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+    let _ = game;
+    eprintln!(
+        "[exact_live] {:.1}ms  notes={} total={:.1}",
+        ms(start),
+        detail.notes.len(),
+        detail.total
+    );
+    eprintln!("[total] {:.1}ms", load_ms + ms(start));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&detail).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
 fn parse_args() -> Result<CliArgs, String> {
     let mut parsed = CliArgs::default();
     let mut iter = std::env::args().skip(1).peekable();
@@ -501,6 +709,14 @@ fn parse_args() -> Result<CliArgs, String> {
             "--search-repeats" => parsed.search_repeats = Some(parse_usize(&value()?, &flag)?),
             "--build-repeats" => parsed.build_repeats = Some(parse_usize(&value()?, &flag)?),
             "--challenge-all" => parsed.challenge_all = true,
+            "--mode" => parsed.mode = Some(value()?),
+            "--card-ids" => parsed.card_ids = Some(parse_i32_list(&value()?, &flag)?),
+            "--deck" => parsed.deck = Some(value()?),
+            "--power" => parsed.power = Some(parse_i32(&value()?, &flag)?),
+            "--skills" => parsed.skills = Some(parse_f64_list(&value()?, &flag)?),
+            "--music-score" => parsed.music_score = Some(value()?),
+            "--fever-music-score" => parsed.fever_music_score = Some(value()?),
+            "--multi-sum-power" => parsed.multi_sum_power = Some(parse_i32(&value()?, &flag)?),
             "--region" => parsed.overrides.region = Some(value()?),
             "--event-id" => parsed.overrides.event_id = Some(parse_optional_i32(&value()?, &flag)?),
             "--event-type" => parsed.overrides.event_type = Some(parse_optional_string(value()?)),
@@ -523,6 +739,10 @@ fn parse_args() -> Result<CliArgs, String> {
             }
             "--world-bloom-event-turn" => {
                 parsed.overrides.world_bloom_event_turn =
+                    Some(parse_optional_i32(&value()?, &flag)?)
+            }
+            "--world-bloom-finale-turn" => {
+                parsed.overrides.world_bloom_finale_turn =
                     Some(parse_optional_i32(&value()?, &flag)?)
             }
             "--challenge-live-character-id" => {
@@ -640,6 +860,9 @@ fn apply_overrides(params: &mut BuildParams, overrides: ParamOverrides) {
     if let Some(value) = overrides.world_bloom_event_turn {
         params.world_bloom_event_turn = value;
     }
+    if let Some(value) = overrides.world_bloom_finale_turn {
+        params.world_bloom_finale_turn = value;
+    }
     if let Some(value) = overrides.challenge_live_character_id {
         params.challenge_live_character_id = value;
     }
@@ -722,10 +945,15 @@ fn print_help() {
          --event-id N --event-type marathon|cheerful_carnival|world_bloom\n\
          --music-id N --music-diff expert --live-type solo|multi|cheerful|auto|challenge|challenge_auto|mysekai\n\
          --target score|power|skill|mysekai --boost 0..10 --top-k N --timeout-ms N --search-repeats N --build-repeats N\n\
-         --challenge-all 逐角色搜索 challenge 最优卡组，并按分数全局排序输出 JSON\n\
+         --mode recommend|area-items|music|exact-live 辅助模式
+\n           area-items: --card-ids 1,2,3,4,5
+\n           music: --deck deck.json
+\n           exact-live: --power N --skills 100,200 --music-score score.json --multi-sum-power N
+\n         --challenge-all 逐角色搜索 challenge 最优卡组，并按分数全局排序输出 JSON\n\
          --fixed-cards 1,2 --fixed-characters 1,2 --excluded-cards 3,4\n\
          --event-unit ln --event-attr cool --filter-other-unit --unit-filter ln --attr-filter cool\n\
-         --world-bloom-character-id N --world-bloom-event-turn N --challenge-live-character-id N\n\
+         --world-bloom-character-id N --world-bloom-event-turn N --world-bloom-finale-turn 2|3
+         --challenge-live-character-id N\n\
          --skill-reference-strategy average|max|min --live-skill-order best|worst|average|specific\n\
          --specific-skill-order 0,1,2,3,4 --best-skill-as-leader --keep-after-training-state\n\
          --multi-teammate-power N --multi-teammate-score-up N --multi-live-score-up-lower-bound N\n\
@@ -781,6 +1009,26 @@ fn parse_u64(value: &str, flag: &str) -> Result<u64, String> {
     value
         .parse::<u64>()
         .map_err(|e| format!("{flag} 需要非负整数: {e}"))
+}
+
+fn parse_i32(value: &str, flag: &str) -> Result<i32, String> {
+    value
+        .parse::<i32>()
+        .map_err(|e| format!("{flag} 需要整数: {e}"))
+}
+
+fn parse_f64_list(value: &str, flag: &str) -> Result<Vec<f64>, String> {
+    if value.trim().is_empty() || is_none_token(value) {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<f64>()
+                .map_err(|e| format!("{flag} 含非法数值 {part:?}: {e}"))
+        })
+        .collect()
 }
 
 fn parse_i32_list(value: &str, flag: &str) -> Result<Vec<i32>, String> {
