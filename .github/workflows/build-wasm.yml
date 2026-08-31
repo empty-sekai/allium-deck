@@ -14,6 +14,9 @@ on:
       - "scripts/package_wasm.py"
       - "scripts/resolve_wasm_inputs.py"
       - "scripts/smoke_wasm_package.mjs"
+  schedule:
+    # 每日 20:00 UTC（北京时间次日凌晨 4 点）对齐上游 masterdata 更新
+    - cron: "0 20 * * *"
   workflow_dispatch:
     inputs:
       region:
@@ -23,9 +26,10 @@ on:
         type: choice
         options:
           - cn
+          - jp
       masterdata_version:
-        description: "CN masterdata dataVersion; used as deck-wasm/cn/<dataVersion>/"
-        required: true
+        description: "Upstream commit SHA; default resolves latest Team-Haruki master"
+        required: false
       cdn_base:
         description: "Public COS/EO base URL"
         required: true
@@ -67,21 +71,14 @@ jobs:
           payload = event.get("client_payload") or {}
           region = (payload.get("region") or inputs.get("region") or "cn").strip()
           cdn_base = (payload.get("cdn_base") or inputs.get("cdn_base") or "https://cdn.emptysekai.com").strip().rstrip("/")
+          # 上游 Team-Haruki masterdata 的 commit SHA（不可变发布标签）；
+          # 留空时由 download 脚本解析上游 master 最新提交。
           version = (payload.get("masterdata_version") or inputs.get("masterdata_version") or "").strip()
+          if version:
+              version = re.sub(r"[^A-Za-z0-9._-]+", "-", version).strip("-")
           if not version:
-              manifest_url = f"{cdn_base}/deck-wasm/{region}/latest/manifest.json"
-              try:
-                  with urllib.request.urlopen(manifest_url, timeout=30) as response:
-                      manifest = json.load(response)
-                  version = str(manifest.get("masterdata_version") or "").strip()
-              except Exception as exc:
-                  raise SystemExit(f"masterdata_version is required and could not be inferred from {manifest_url}: {exc}") from exc
-          if not version:
-              raise SystemExit("masterdata_version is required and could not be inferred from current CDN manifest")
-          version = re.sub(r"[^A-Za-z0-9._-]+", "-", version).strip("-")
-          if not version:
-              raise SystemExit("masterdata_version became empty after sanitization")
-          if region != "cn":
+              version = "latest-upstream"
+          if region not in ("cn", "jp"):
               raise SystemExit(f"unsupported region: {region}")
 
           env_path = os.environ["GITHUB_ENV"]
@@ -103,7 +100,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: 1.94.1
+          toolchain: 1.98.0
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry and build
