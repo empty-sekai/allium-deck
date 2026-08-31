@@ -8,7 +8,12 @@ Given a player's card collection, event bonuses, and an objective (power / skill
 
 ## About the implementation
 
-The in-game formulas (power, skill bonuses, event points, support deck bonuses, etc.) and parameter design reference two existing community C++ implementations (codenamed cpp / moe). The game mechanics themselves are deterministic; source comments keep cross-references to those implementations for verification and future maintenance.
+Some in-game values and logic (power, skill bonuses, event points, support decks, the WL3 simulated finale, etc.) come from the following open-source implementations; source comments keep the cross-references:
+
+- https://github.com/Team-Haruki/sekai-deck-recommend-cpp
+- https://github.com/StarMoe-org/sekai-deck-recommend-cpp
+
+See the individual commit messages for exactly what was ported and corrected.
 
 On top of that, this implementation is not a line-by-line translation: the **low-level hot paths and search pruning have been thoroughly reworked in Rust**, with all core data structures aligned to cache lines:
 
@@ -95,7 +100,7 @@ Performance numbers should be measured under the release profile. `src/bin/recom
 | Language | Location | Notes |
 | --- | --- | --- |
 | Rust | this repository (crates.io `allium-deck`) | the engine itself |
-| JavaScript / browser | [`wasm/`](wasm) (npm `@empty-sekai/allium-deck-wasm`) | WASM bindings, optionally shipping embedded masterdata |
+| JavaScript / browser | [`wasm/`](wasm) (npm `@empty-sekai/allium-deck-wasm`) | WASM bindings; see the Chinese README for the full export table |
 | Python | [`allium-deck-python`](https://github.com/empty-sekai/allium-deck-python) (PyPI `allium-sekai-deck`) | prebuilt abi3 wheels with the `allium_deck` API and a LunaBot-compatible facade; no local Rust toolchain required |
 
 ## CLI

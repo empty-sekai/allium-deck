@@ -8,7 +8,12 @@ Project Sekai 组卡推荐引擎的 Rust 实现，专攻 **DFS / 分支限界（
 
 ## 关于实现来源
 
-游戏内的各项数值公式（综合力、技能加成、活动点数、支援卡组加成等）与参数设计，参考了社区既有的两个 C++ 参考实现（代号 cpp / moe）。这些游戏机制本身是确定的，源码注释中保留了对照出处，便于核对与后续维护。
+部分游戏内数值与逻辑（综合力、技能加成、活动点数、支援卡组、WL3 模拟终章等）来自下列开源实现，源码注释保留对照出处：
+
+- https://github.com/Team-Haruki/sekai-deck-recommend-cpp
+- https://github.com/StarMoe-org/sekai-deck-recommend-cpp
+
+具体移植与修正内容见各 commit 说明。
 
 在此基础上，本实现并非逐行翻译，而是对**底层热路径与搜索剪枝做了彻底的 Rust 重构**，核心数据结构全部按 cache line 对齐：
 
@@ -49,6 +54,7 @@ let result_json = recommend_json(
 | `handler` | 建池层：候选裁剪、综合力/技能/活动加成预计算、WL 支援卡组、构建搜索上下文 |
 | `pool` | SoA 卡池：列式存储、位图、对齐布局、冻结后只读 |
 | `search` | 搜索层：支配剪枝、后缀上界、warm start、按目标/场景分派的 B&B、叶子精确评估 |
+| `auxiliary` | 非搜索路径的辅助计算：区域道具推荐、曲目推荐、精确打歌分（`wasm` 直接导出） |
 
 ## 数据流
 
@@ -95,7 +101,24 @@ cargo build --release
 | 语言 | 位置 | 说明 |
 | --- | --- | --- |
 | Rust | 本仓库（crates.io `allium-deck`） | 引擎本体 |
-| JavaScript / 浏览器 | [`wasm/`](wasm)（npm `@empty-sekai/allium-deck-wasm`） | WASM 绑定，可附带内嵌 masterdata |
+| JavaScript / 浏览器 | [`wasm/`](wasm)（npm `@empty-sekai/allium-deck-wasm`） | WASM 绑定，见下方导出表 |
+
+### WASM 接口面
+
+外置 masterdata 模式（推荐，浏览器侧复用已有的 masterdata JSON）：
+
+| 导出 | 说明 |
+| --- | --- |
+| `load_masterdata(map, metas)` | 一次扁平化并缓存；辅助表（areas/areaItems/shopItems/ingameNotes/ingameCombos）可选 |
+| `recommend(user, params)` | 字符串入 / JSON 字符串出 |
+| `createUserData(user, region)` + `recommendWithUserData(options, handle)` | 解析一次用户数据多次复用（region 词表 jp/tw/en/kr/cn） |
+| `recommend_area_items(options)` | 固定卡组的区域道具升级建议 |
+| `recommendMusic(options)` | 已定卡组的全曲目/难度打分排序 |
+| `calculate_exact_live(options)` | 逐 note 精确打歌分 |
+| `get_world_bloom_support_cards(options)` | WL 支援卡逐卡加成（按 bonus 降序、card_id 升序） |
+
+`recommendBatch` 系列暂未提供。options 键名为 snake_case（兼容 camelCase 别名），
+输出键名为 snake_case。`recommend_embedded` 仍保留在 `embedded` feature 下。
 | Python | [`allium-deck-python`](https://github.com/empty-sekai/allium-deck-python)（PyPI `allium-sekai-deck`） | 预编译 abi3 wheel，含 `allium_deck` API 与 LunaBot 兼容门面，无需本地 Rust 工具链 |
 
 ## CLI
@@ -159,6 +182,7 @@ recommend_cli \
 | `--event-unit` / `--event-attr` | 枚举 | 模拟活动团和属性；团可用 `ln/mmj/vbs/wxs/25ji/vs`，属性可用 `cool/cute/happy/pure/mysterious`。 |
 | `--unit-filter` / `--attr-filter` | 枚举 | 硬过滤候选池；VS 双团卡按 `support_unit` 参与对应团过滤。 |
 | `--world-bloom-character-id` / `--world-bloom-event-turn` / `--challenge-live-character-id` | 值 | WL / Challenge Live 特殊参数。 |
+| `--mode area-items` / `--mode music` / `--mode exact-live` | 模式 | 辅助计算（不组卡）：`area-items` 需 `--card-ids`；`music` 需 `--deck`；`exact-live` 需 `--power/--skills/--music-score`。 |
 | `--skill-reference-strategy` / `--live-skill-order` / `--specific-skill-order` | 值 | 技能参考与发动顺序；指定顺序使用 `0,1,2,3,4`。 |
 | `--multi-teammate-power` / `--multi-teammate-score-up` / `--multi-live-score-up-lower-bound` | 值 | 协力和 Cheerful 队友综合力、技能实效、技能总下限。 |
 | `--other-score` / `--life` | 值 | Cheerful 对手分数和体力。 |

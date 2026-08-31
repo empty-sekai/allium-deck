@@ -34,6 +34,7 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | --- | --- | --- | --- |
 | `worldBloomCharacterId` / `world_bloom_character_id` | int | absent | Chapter character. |
 | `worldBloomEventTurn` / `world_bloom_event_turn` | int | absent | Chapter turn. |
+| `worldBloomFinaleTurn` / `world_bloom_finale_turn` | int 2\|3 | absent | 模拟 WL 终章：2 走 legacy 终章 180，3 合成模拟终章 3_200_000。需配合 `worldBloomCharacterId`。 |
 | `forcedLeaderCharacterId` | int | absent | Final chapter only: fixes the leader character; ignored elsewhere. |
 | `supportMasterMax` / `support_master_max` | bool | false | Value support-deck cards at max master rank. |
 | `supportSkillMax` / `support_skill_max` | bool | false | Value support-deck cards at max skill level. |
@@ -62,7 +63,7 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `bestSkillAsLeader` | bool | true | Prefer the strongest skill in the leader slot. |
-| `liveSkillOrder` / `skillOrderChooseStrategy` / `skill_order_choose_strategy` | string | `"best"` | `best`/`max`, `worst`/`min`, `average`, `specific`. |
+| `liveSkillOrder` / `skillOrderChooseStrategy` / `skill_order_choose_strategy` | string | `"average"` | `best`/`max`, `worst`/`min`, `average`, `specific`. Default reflects the in-game expectation (skill order is not player-controlled); `best` gives an optimistic upper bound. |
 | `specificSkillOrder` | int[5] | absent | Required when order is `specific`: five distinct slot indices. |
 | `skillReferenceChooseStrategy` / `skillReferenceStrategy` | string | `"average"` | Reference-skill valuation: `max`, `min`, `average`. |
 | `keepAfterTrainingState` | bool | false | Lock each card's current trained/untrained art state; cultivation overrides do not flip it. |
