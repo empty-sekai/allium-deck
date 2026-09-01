@@ -9,16 +9,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use allium_deck::engine::{parse_build_params_json, parse_user_profile_json, OwnedGameData};
+use allium_deck::engine::{OwnedGameData, parse_build_params_json, parse_user_profile_json};
 use allium_deck::handler::{
-    build_card_pool, build_card_pool_fully_prepared, cultivated_user_cards, BuildParams,
-    CardRarityConfig, GameData, MasterCard, PreparedGameData, PreparedPoolBuild, SingleCardConfig,
-    UserCard, UserProfile,
+    BuildParams, CardRarityConfig, GameData, MasterCard, PreparedGameData, PreparedPoolBuild,
+    SingleCardConfig, UserCard, UserProfile, build_card_pool, build_card_pool_fully_prepared,
+    cultivated_user_cards,
 };
 use allium_deck::pool::{CardIdx, CardPool};
 use allium_deck::search::{
-    challenge_search, search_instrumented, summarize_deck, DeckResult, DeckResultSummary,
-    PreparedSearch, SearchContext, SearchParams, SearchStats, SuffixBound,
+    DeckResult, DeckResultSummary, PreparedSearch, SearchContext, SearchParams, SearchStats,
+    SuffixBound, challenge_search, search_instrumented, summarize_deck,
 };
 use allium_deck::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 use serde::Serialize;
@@ -524,14 +524,14 @@ fn resolve_aux_event_type(game: &GameData<'_>, params: &BuildParams) -> allium_d
             _ => allium_deck::EventType::Marathon,
         };
     }
-    if let Some(event_id) = params.event_id {
-        if let Some(event) = game.events.iter().find(|event| event.id == event_id) {
-            return match event.event_type.to_ascii_lowercase().as_str() {
-                "cheerful_carnival" => allium_deck::EventType::CheerfulCarnival,
-                "world_bloom" => allium_deck::EventType::WorldBloom,
-                _ => allium_deck::EventType::Marathon,
-            };
-        }
+    if let Some(event_id) = params.event_id
+        && let Some(event) = game.events.iter().find(|event| event.id == event_id)
+    {
+        return match event.event_type.to_ascii_lowercase().as_str() {
+            "cheerful_carnival" => allium_deck::EventType::CheerfulCarnival,
+            "world_bloom" => allium_deck::EventType::WorldBloom,
+            _ => allium_deck::EventType::Marathon,
+        };
     }
     allium_deck::EventType::Marathon
 }
@@ -599,9 +599,7 @@ fn run_music(
         live_type: params.live_type,
         event_type: resolve_aux_event_type(game, &params),
         skill_order: params.live_skill_order,
-        specific_skill_order: params
-            .specific_skill_order
-            .map(|order| order.to_vec()),
+        specific_skill_order: params.specific_skill_order.map(|order| order.to_vec()),
         multi_teammate_score_up: params.multi_teammate_score_up,
         multi_teammate_power: params.multi_teammate_power,
     };
@@ -642,7 +640,10 @@ fn run_exact_live(
             .as_deref()
             .ok_or_else(|| "缺少参数 --masterdata".to_string())?,
     )?;
-    let power = args.power.filter(|p| *p > 0).ok_or_else(|| "--mode exact-live 需要 --power（正整数）".to_string())?;
+    let power = args
+        .power
+        .filter(|p| *p > 0)
+        .ok_or_else(|| "--mode exact-live 需要 --power（正整数）".to_string())?;
     let skills = args.skills.clone().unwrap_or_default();
     let music_score = args
         .music_score

@@ -7,13 +7,13 @@ use super::build::enrich_master;
 use super::gather::CardIntermediate;
 use super::power::resolve_unit_mask;
 use super::types::{
-    self, default_image_kind, is_after_training, parse_unit_code, unit_to_pool_index,
-    GameData, WBSupportDeckBonus,
+    self, GameData, WBSupportDeckBonus, default_image_kind, is_after_training, parse_unit_code,
+    unit_to_pool_index,
 };
 
+use super::BuildError;
 use super::event_bonus::EventContext;
 use super::index;
-use super::BuildError;
 
 pub struct WorldBloomSupportCard {
     pub card_id: i32,
@@ -457,8 +457,7 @@ pub(crate) fn calc_wb_support_bonus(
         }
     }
     for bonus in extra_limited {
-        if bonus.game_character_id == special_character_id && bonus.card_id == game_card_id as i32
-        {
+        if bonus.game_character_id == special_character_id && bonus.card_id == game_card_id as i32 {
             total += bonus.bonus_rate;
         }
     }
@@ -526,9 +525,7 @@ fn world_bloom_3_part_by_character_id(character_id: i32) -> Option<i32> {
 /// - `world_bloom_finale_turn`：2 → legacy 终章 180；3 → 模拟终章 3_200_000；
 /// - `world_bloom_event_turn=3`：要求 `world_bloom_character_id`，按分组出卡；
 /// - `world_bloom_event_turn=1/2`：要求 `event_unit`，按团出卡。
-pub(super) fn resolve_wb_event_id(
-    params: &types::BuildParams,
-) -> Result<Option<i32>, BuildError> {
+pub(super) fn resolve_wb_event_id(params: &types::BuildParams) -> Result<Option<i32>, BuildError> {
     if params.event_id.is_some() {
         return Ok(None); // 真实活动优先，模拟参数只作辅助
     }
@@ -550,13 +547,12 @@ pub(super) fn resolve_wb_event_id(
     if let Some(turn) = params.world_bloom_event_turn {
         return match turn {
             3 => {
-                let character_id =
-                    params.world_bloom_character_id.ok_or_else(|| {
-                        BuildError::InvalidConfig(
-                            "world_bloom_event_turn=3 需要 world_bloom_character_id（按 WL3 分组模拟）"
-                                .to_string(),
-                        )
-                    })?;
+                let character_id = params.world_bloom_character_id.ok_or_else(|| {
+                    BuildError::InvalidConfig(
+                        "world_bloom_event_turn=3 需要 world_bloom_character_id（按 WL3 分组模拟）"
+                            .to_string(),
+                    )
+                })?;
                 if !(1..=26).contains(&character_id) {
                     return Err(BuildError::InvalidConfig(format!(
                         "world_bloom_character_id 非法: {character_id}"
@@ -908,8 +904,7 @@ fn synth_support_limited(
         else {
             continue;
         };
-        if !characters.contains(&character_id) || !used.insert((character_id, event_card.card_id))
-        {
+        if !characters.contains(&character_id) || !used.insert((character_id, event_card.card_id)) {
             continue;
         }
         bonuses.push(types::WBSupportDeckUnitEventLimitedBonus {
@@ -978,7 +973,7 @@ fn rate_to_f64(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{EventType, LiveType, WL3_FAKE_FINALE_EVENT_ID, FINAL_CHAPTER_EVENT_ID};
+    use crate::types::{FINAL_CHAPTER_EVENT_ID, LiveType, WL3_FAKE_FINALE_EVENT_ID};
 
     /// 构造只含 WL 模拟所需行的 GameData（其余字段为空切片）。
     struct WbFixture {
@@ -1073,7 +1068,12 @@ mod tests {
         }
     }
 
-    fn limited(event_id: i32, character_id: i32, card_id: i32, rate: f64) -> types::WBSupportDeckUnitEventLimitedBonus {
+    fn limited(
+        event_id: i32,
+        character_id: i32,
+        card_id: i32,
+        rate: f64,
+    ) -> types::WBSupportDeckUnitEventLimitedBonus {
         types::WBSupportDeckUnitEventLimitedBonus {
             event_id,
             game_character_id: character_id,
@@ -1094,21 +1094,42 @@ mod tests {
                 unit("piapro", 21),
             ],
             events: vec![
-                types::Event { id: 100, event_type: "marathon".to_string() },
-                types::Event { id: 118, event_type: "world_bloom".to_string() },
-                types::Event { id: 170, event_type: "world_bloom".to_string() },
-                types::Event { id: 179, event_type: "world_bloom".to_string() },
-                types::Event { id: 202, event_type: "world_bloom".to_string() },
-                types::Event { id: 205, event_type: "world_bloom".to_string() },
-                types::Event { id: 207, event_type: "world_bloom".to_string() },
+                types::Event {
+                    id: 100,
+                    event_type: "marathon".to_string(),
+                },
+                types::Event {
+                    id: 118,
+                    event_type: "world_bloom".to_string(),
+                },
+                types::Event {
+                    id: 170,
+                    event_type: "world_bloom".to_string(),
+                },
+                types::Event {
+                    id: 179,
+                    event_type: "world_bloom".to_string(),
+                },
+                types::Event {
+                    id: 202,
+                    event_type: "world_bloom".to_string(),
+                },
+                types::Event {
+                    id: 205,
+                    event_type: "world_bloom".to_string(),
+                },
+                types::Event {
+                    id: 207,
+                    event_type: "world_bloom".to_string(),
+                },
             ],
             event_cards: vec![
-                event_card(1, 118, 20),  // WL1 限定卡
-                event_card(2, 170, 25),  // WL2 限定卡
-                event_card(3, 202, 25),  // WL3 限定卡（源）
-                event_card(3, 205, 30),  // 同卡重复出现在另一场 WL3 → 去重
-                event_card(4, 207, 0),   // bonus 0 → 不收
-                event_card(5, 100, 25),  // 非 WL 活动 → 不收
+                event_card(1, 118, 20), // WL1 限定卡
+                event_card(2, 170, 25), // WL2 限定卡
+                event_card(3, 202, 25), // WL3 限定卡（源）
+                event_card(3, 205, 30), // 同卡重复出现在另一场 WL3 → 去重
+                event_card(4, 207, 0),  // bonus 0 → 不收
+                event_card(5, 100, 25), // 非 WL 活动 → 不收
             ],
             world_blooms: vec![
                 chapter(202, 1, 1), // char1, cp1, part1
@@ -1253,18 +1274,20 @@ mod tests {
 
         // 全角色（fixture 的 6 个 unit 行）5% deck bonus。
         assert_eq!(rows.deck_bonuses.len(), 6);
-        assert!(rows
-            .deck_bonuses
-            .iter()
-            .all(|bonus| bonus.bonus_rate == 5 && bonus.attr.is_none()));
+        assert!(
+            rows.deck_bonuses
+                .iter()
+                .all(|bonus| bonus.bonus_rate == 5 && bonus.attr.is_none())
+        );
 
         // 支援 limited：WL1/2 的 card2（WL2）20%；card1 属 WL1 也应 20%。
         // fixture 中 WL1 的 card1 在 eventCards 里 bonus=20>0，故 1/2 两张。
         assert_eq!(rows.support_limited_bonuses.len(), 2);
-        assert!(rows
-            .support_limited_bonuses
-            .iter()
-            .all(|bonus| bonus.bonus_rate == 20.0));
+        assert!(
+            rows.support_limited_bonuses
+                .iter()
+                .all(|bonus| bonus.bonus_rate == 20.0)
+        );
 
         // 荣誉：9001 → (part1, cp1) → 角色 1；9002 → (part2, cp2) → 角色 4（part2 成员）；
         // 9003 rank 超限、9004 非 wl_3rd。
@@ -1285,30 +1308,42 @@ mod tests {
     #[test]
     fn real_events_are_never_synthesized() {
         let fixture = jp_like_fixture();
-        assert!(synthesize_wb_rows(&fixture.game(), 202).support_limited_bonuses.is_empty());
-        assert!(synthesize_wb_rows(&fixture.game(), 202).event_cards.is_empty());
+        assert!(
+            synthesize_wb_rows(&fixture.game(), 202)
+                .support_limited_bonuses
+                .is_empty()
+        );
+        assert!(
+            synthesize_wb_rows(&fixture.game(), 202)
+                .event_cards
+                .is_empty()
+        );
     }
 
     #[test]
     fn legacy_finale_synthesis_copies_wl2_limited_rows() {
-        let mut fixture = jp_like_fixture();
+        let fixture = jp_like_fixture();
         // 去掉真实 180 活动行（fixture 本来就没有），确保 legacy 合成生效。
         let game = fixture.game();
         let rows = synthesize_wb_rows(&game, FINAL_CHAPTER_EVENT_ID);
         assert_eq!(rows.deck_bonuses.len(), 6);
         assert!(rows.deck_bonuses.iter().all(|bonus| bonus.bonus_rate == 5));
         // WL2 集合 {163,167,170,171,176,179} 中 fixture 只有 170 的 card2。
-        assert_eq!(rows.event_cards, vec![types::EventCard {
-            event_id: FINAL_CHAPTER_EVENT_ID,
-            card_id: 2,
-            bonus_rate: 25,
-            leader_bonus_rate: 0,
-        }]);
+        assert_eq!(
+            rows.event_cards,
+            vec![types::EventCard {
+                event_id: FINAL_CHAPTER_EVENT_ID,
+                card_id: 2,
+                bonus_rate: 25,
+                leader_bonus_rate: 0,
+            }]
+        );
         // 支援 limited 整表复制且改写 event_id。
         assert_eq!(rows.support_limited_bonuses.len(), fixture.limited.len());
-        assert!(rows
-            .support_limited_bonuses
-            .iter()
-            .all(|bonus| bonus.event_id == FINAL_CHAPTER_EVENT_ID));
+        assert!(
+            rows.support_limited_bonuses
+                .iter()
+                .all(|bonus| bonus.event_id == FINAL_CHAPTER_EVENT_ID)
+        );
     }
 }

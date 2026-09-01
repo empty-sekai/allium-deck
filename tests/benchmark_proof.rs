@@ -7,9 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use allium_deck::handler::{build_card_pool, UserProfile};
+use allium_deck::handler::{UserProfile, build_card_pool};
 use allium_deck::pool::CardPool;
-use allium_deck::search::{brute_force_search, search_instrumented, DeckResult};
+use allium_deck::search::{DeckResult, brute_force_search, search_instrumented};
 use serde::{Deserialize, Serialize};
 use testdata_adapter::input_transform::transform_input;
 use testdata_adapter::legacy_types::LegacyInput;
@@ -724,29 +724,28 @@ fn summarize_dataset(dataset: &str) -> Result<CorpusSummary, String> {
             *summary.by_combo.entry(combo.clone()).or_default() += 1;
         }
 
-        if summary.sample_bf_candidates.len() < 16 {
-            if let Ok(input) = load_json::<LegacyInput>(&root.join(&case.input_path)) {
-                let user_card_count =
-                    serde_json::from_str::<serde_json::Value>(&input.user_data_str)
-                        .ok()
-                        .and_then(|value| {
-                            value
-                                .get("userCards")
-                                .and_then(|cards| cards.as_array())
-                                .map(Vec::len)
-                        })
-                        .unwrap_or(0);
-                summary.sample_bf_candidates.push(CaseSketch {
-                    name: case.name.clone(),
-                    input_path: case.input_path.clone(),
-                    target: input.target,
-                    live_type: input.live_type,
-                    event_id: input.event_id,
-                    user_card_count,
-                    has_output,
-                    has_reference,
-                });
-            }
+        if summary.sample_bf_candidates.len() < 16
+            && let Ok(input) = load_json::<LegacyInput>(&root.join(&case.input_path))
+        {
+            let user_card_count = serde_json::from_str::<serde_json::Value>(&input.user_data_str)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("userCards")
+                        .and_then(|cards| cards.as_array())
+                        .map(Vec::len)
+                })
+                .unwrap_or(0);
+            summary.sample_bf_candidates.push(CaseSketch {
+                name: case.name.clone(),
+                input_path: case.input_path.clone(),
+                target: input.target,
+                live_type: input.live_type,
+                event_id: input.event_id,
+                user_card_count,
+                has_output,
+                has_reference,
+            });
         }
     }
     Ok(summary)

@@ -55,33 +55,35 @@ impl SimdBackend {
         fixture_rates: &[f64; 16],
         gate_rates: &[f64; 16],
         valid_lanes: usize,
-    ) -> PowerCommon16 { unsafe {
-        let mut result = match self {
-            Self::Scalar => power_common_16_scalar(
-                base_dims,
-                base_sum,
-                character_rates,
-                fixture_rates,
-                gate_rates,
-                valid_lanes,
-            ),
-            Self::Avx512 => power_common_16_avx512_unchecked(
-                base_dims,
-                base_sum,
-                character_rates,
-                fixture_rates,
-                gate_rates,
-            ),
-        };
-        let mut lane = valid_lanes;
-        while lane < 16 {
-            result.character_bonus[lane] = 0;
-            result.fixture_bonus[lane] = 0;
-            result.gate_bonus[lane] = 0;
-            lane += 1;
+    ) -> PowerCommon16 {
+        unsafe {
+            let mut result = match self {
+                Self::Scalar => power_common_16_scalar(
+                    base_dims,
+                    base_sum,
+                    character_rates,
+                    fixture_rates,
+                    gate_rates,
+                    valid_lanes,
+                ),
+                Self::Avx512 => power_common_16_avx512_unchecked(
+                    base_dims,
+                    base_sum,
+                    character_rates,
+                    fixture_rates,
+                    gate_rates,
+                ),
+            };
+            let mut lane = valid_lanes;
+            while lane < 16 {
+                result.character_bonus[lane] = 0;
+                result.fixture_bonus[lane] = 0;
+                result.gate_bonus[lane] = 0;
+                lane += 1;
+            }
+            result
         }
-        result
-    }}
+    }
 
     #[inline(always)]
     pub(crate) unsafe fn power_area_single_unit_16(
@@ -93,28 +95,30 @@ impl SimdBackend {
         items: &[PowerAreaItem],
         member_key: usize,
         active_lanes: u16,
-    ) -> [i32; 16] { unsafe {
-        match self {
-            Self::Scalar => power_area_single_unit_16_scalar(
-                base_dims,
-                target_units,
-                attrs,
-                character_ids,
-                items,
-                member_key,
-                active_lanes,
-            ),
-            Self::Avx512 => power_area_single_unit_16_avx512_unchecked(
-                base_dims,
-                target_units,
-                attrs,
-                character_ids,
-                items,
-                member_key,
-                active_lanes,
-            ),
+    ) -> [i32; 16] {
+        unsafe {
+            match self {
+                Self::Scalar => power_area_single_unit_16_scalar(
+                    base_dims,
+                    target_units,
+                    attrs,
+                    character_ids,
+                    items,
+                    member_key,
+                    active_lanes,
+                ),
+                Self::Avx512 => power_area_single_unit_16_avx512_unchecked(
+                    base_dims,
+                    target_units,
+                    attrs,
+                    character_ids,
+                    items,
+                    member_key,
+                    active_lanes,
+                ),
+            }
         }
-    }}
+    }
 }
 
 #[inline]
@@ -144,10 +148,13 @@ fn avx512_available_uncached() -> bool {
 #[cfg(test)]
 #[inline(always)]
 pub(crate) unsafe fn unused_character_mask_16(char_ids: *const u8, used_chars: u32) -> u16 {
-    if avx512_available() {
-        return unused_character_mask_16_avx512_unchecked(char_ids, used_chars);
+    // 安全性由调用方保证：`char_ids` 至少 16 项，直接转交给下游实现。
+    unsafe {
+        if avx512_available() {
+            return unused_character_mask_16_avx512_unchecked(char_ids, used_chars);
+        }
+        unused_character_mask_16_scalar(char_ids, used_chars)
     }
-    unused_character_mask_16_scalar(char_ids, used_chars)
 }
 
 /// Returns one bit per upper bound that is strictly above `threshold`.
@@ -156,36 +163,43 @@ pub(crate) unsafe fn unused_character_mask_16(char_ids: *const u8, used_chars: u
 #[cfg(test)]
 #[inline(always)]
 pub(crate) unsafe fn upper_bound_mask_16(upper_bounds: *const u64, threshold: u64) -> u16 {
-    if avx512_available() {
-        return upper_bound_mask_16_avx512_unchecked(upper_bounds, threshold);
+    // 安全性由调用方保证：`upper_bounds` 至少 16 项，直接转交给下游实现。
+    unsafe {
+        if avx512_available() {
+            return upper_bound_mask_16_avx512_unchecked(upper_bounds, threshold);
+        }
+        upper_bound_mask_16_scalar(upper_bounds, threshold)
     }
-    upper_bound_mask_16_scalar(upper_bounds, threshold)
 }
 
 #[cfg(any(test, not(target_arch = "x86_64")))]
 #[inline(always)]
-unsafe fn unused_character_mask_16_scalar(char_ids: *const u8, used_chars: u32) -> u16 { unsafe {
-    let mut mask = 0u16;
-    let mut lane = 0usize;
-    while lane < 16 {
-        let character = *char_ids.add(lane);
-        mask |= (((used_chars & (1u32 << character)) == 0) as u16) << lane;
-        lane += 1;
+unsafe fn unused_character_mask_16_scalar(char_ids: *const u8, used_chars: u32) -> u16 {
+    unsafe {
+        let mut mask = 0u16;
+        let mut lane = 0usize;
+        while lane < 16 {
+            let character = *char_ids.add(lane);
+            mask |= (((used_chars & (1u32 << character)) == 0) as u16) << lane;
+            lane += 1;
+        }
+        mask
     }
-    mask
-}}
+}
 
 #[cfg(any(test, not(target_arch = "x86_64")))]
 #[inline(always)]
-unsafe fn upper_bound_mask_16_scalar(upper_bounds: *const u64, threshold: u64) -> u16 { unsafe {
-    let mut mask = 0u16;
-    let mut lane = 0usize;
-    while lane < 16 {
-        mask |= ((*upper_bounds.add(lane) > threshold) as u16) << lane;
-        lane += 1;
+unsafe fn upper_bound_mask_16_scalar(upper_bounds: *const u64, threshold: u64) -> u16 {
+    unsafe {
+        let mut mask = 0u16;
+        let mut lane = 0usize;
+        while lane < 16 {
+            mask |= ((*upper_bounds.add(lane) > threshold) as u16) << lane;
+            lane += 1;
+        }
+        mask
     }
-    mask
-}}
+}
 
 #[inline(always)]
 fn power_common_16_scalar(
@@ -273,81 +287,83 @@ unsafe fn power_area_single_unit_16_avx512_unchecked(
     items: &[PowerAreaItem],
     member_key: usize,
     active_lanes: u16,
-) -> [i32; 16] { unsafe {
-    use std::arch::x86_64::*;
+) -> [i32; 16] {
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let packed_units = _mm_loadu_si128(target_units.as_ptr().cast::<__m128i>());
-    let packed_attrs = _mm_loadu_si128(attrs.as_ptr().cast::<__m128i>());
-    let units = _mm512_cvtepu8_epi32(packed_units);
-    let attributes = _mm512_cvtepu8_epi32(packed_attrs);
-    let characters = _mm512_loadu_si512(character_ids.as_ptr().cast::<__m512i>());
-    let mut acc = [[_mm512_setzero_pd(); 2]; 3];
+        let packed_units = _mm_loadu_si128(target_units.as_ptr().cast::<__m128i>());
+        let packed_attrs = _mm_loadu_si128(attrs.as_ptr().cast::<__m128i>());
+        let units = _mm512_cvtepu8_epi32(packed_units);
+        let attributes = _mm512_cvtepu8_epi32(packed_attrs);
+        let characters = _mm512_loadu_si512(character_ids.as_ptr().cast::<__m512i>());
+        let mut acc = [[_mm512_setzero_pd(); 2]; 3];
 
-    for item in items {
-        let mut lanes = active_lanes;
-        if item.unit != PowerAreaItem::ANY {
-            lanes &= _mm512_cmpeq_epi32_mask(units, _mm512_set1_epi32(item.unit as i32)) as u16;
-        }
-        if item.attr != PowerAreaItem::ANY {
-            lanes &=
-                _mm512_cmpeq_epi32_mask(attributes, _mm512_set1_epi32(item.attr as i32)) as u16;
-        }
-        if item.character_id != PowerAreaItem::ANY_CHARACTER {
-            lanes &=
-                _mm512_cmpeq_epi32_mask(characters, _mm512_set1_epi32(item.character_id)) as u16;
-        }
-        if lanes == 0 {
-            continue;
-        }
-        let all_match = (item.unit != PowerAreaItem::ANY && member_key >= 2)
-            || (item.attr != PowerAreaItem::ANY && member_key % 2 == 1);
-        let rate = if all_match {
-            item.power_all_match_rate
-        } else {
-            item.power_rate
-        } * 0.01_f64;
-        let rate = _mm512_set1_pd(rate);
-        let mut dim = 0usize;
-        while dim < 3 {
-            let mut half = 0usize;
-            while half < 2 {
-                let offset = half * 8;
-                let mask = ((lanes >> offset) & 0xff) as u8;
-                if mask != 0 {
-                    let base = _mm512_cvtepi32_pd(_mm256_loadu_si256(
-                        base_dims[dim].as_ptr().add(offset).cast::<__m256i>(),
-                    ));
-                    acc[dim][half] = _mm512_mask_add_pd(
-                        acc[dim][half],
-                        mask,
-                        acc[dim][half],
-                        _mm512_mul_pd(rate, base),
-                    );
-                }
-                half += 1;
+        for item in items {
+            let mut lanes = active_lanes;
+            if item.unit != PowerAreaItem::ANY {
+                lanes &= _mm512_cmpeq_epi32_mask(units, _mm512_set1_epi32(item.unit as i32)) as u16;
             }
-            dim += 1;
+            if item.attr != PowerAreaItem::ANY {
+                lanes &=
+                    _mm512_cmpeq_epi32_mask(attributes, _mm512_set1_epi32(item.attr as i32)) as u16;
+            }
+            if item.character_id != PowerAreaItem::ANY_CHARACTER {
+                lanes &= _mm512_cmpeq_epi32_mask(characters, _mm512_set1_epi32(item.character_id))
+                    as u16;
+            }
+            if lanes == 0 {
+                continue;
+            }
+            let all_match = (item.unit != PowerAreaItem::ANY && member_key >= 2)
+                || (item.attr != PowerAreaItem::ANY && member_key % 2 == 1);
+            let rate = if all_match {
+                item.power_all_match_rate
+            } else {
+                item.power_rate
+            } * 0.01_f64;
+            let rate = _mm512_set1_pd(rate);
+            let mut dim = 0usize;
+            while dim < 3 {
+                let mut half = 0usize;
+                while half < 2 {
+                    let offset = half * 8;
+                    let mask = ((lanes >> offset) & 0xff) as u8;
+                    if mask != 0 {
+                        let base = _mm512_cvtepi32_pd(_mm256_loadu_si256(
+                            base_dims[dim].as_ptr().add(offset).cast::<__m256i>(),
+                        ));
+                        acc[dim][half] = _mm512_mask_add_pd(
+                            acc[dim][half],
+                            mask,
+                            acc[dim][half],
+                            _mm512_mul_pd(rate, base),
+                        );
+                    }
+                    half += 1;
+                }
+                dim += 1;
+            }
         }
-    }
 
-    let mut result = [0i32; 16];
-    let mut half = 0usize;
-    while half < 2 {
-        let offset = half * 8;
-        let mut sum = _mm256_setzero_si256();
-        let mut dim = 0usize;
-        while dim < 3 {
-            sum = _mm256_add_epi32(
-                sum,
-                _mm512_cvttpd_epi32(_mm512_roundscale_pd::<0x09>(acc[dim][half])),
-            );
-            dim += 1;
+        let mut result = [0i32; 16];
+        let mut half = 0usize;
+        while half < 2 {
+            let offset = half * 8;
+            let mut sum = _mm256_setzero_si256();
+            let mut dim = 0usize;
+            while dim < 3 {
+                sum = _mm256_add_epi32(
+                    sum,
+                    _mm512_cvttpd_epi32(_mm512_roundscale_pd::<0x09>(acc[dim][half])),
+                );
+                dim += 1;
+            }
+            _mm256_storeu_si256(result.as_mut_ptr().add(offset).cast::<__m256i>(), sum);
+            half += 1;
         }
-        _mm256_storeu_si256(result.as_mut_ptr().add(offset).cast::<__m256i>(), sum);
-        half += 1;
+        result
     }
-    result
-}}
+}
 
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn power_area_single_unit_16_avx512_unchecked(
@@ -378,60 +394,62 @@ unsafe fn power_common_16_avx512_unchecked(
     character_rates: &[f32; 16],
     fixture_rates: &[f64; 16],
     gate_rates: &[f64; 16],
-) -> PowerCommon16 { unsafe {
-    use std::arch::x86_64::*;
+) -> PowerCommon16 {
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let rates = _mm512_mul_ps(
-        _mm512_loadu_ps(character_rates.as_ptr()),
-        _mm512_set1_ps(0.01_f32),
-    );
-    let mut character_bonus = _mm512_setzero_si512();
-    let mut dim = 0usize;
-    while dim < 3 {
-        let base = _mm512_loadu_si512(base_dims[dim].as_ptr().cast::<__m512i>());
-        let scaled = _mm512_mul_ps(rates, _mm512_cvtepi32_ps(base));
-        character_bonus = _mm512_add_epi32(
+        let rates = _mm512_mul_ps(
+            _mm512_loadu_ps(character_rates.as_ptr()),
+            _mm512_set1_ps(0.01_f32),
+        );
+        let mut character_bonus = _mm512_setzero_si512();
+        let mut dim = 0usize;
+        while dim < 3 {
+            let base = _mm512_loadu_si512(base_dims[dim].as_ptr().cast::<__m512i>());
+            let scaled = _mm512_mul_ps(rates, _mm512_cvtepi32_ps(base));
+            character_bonus = _mm512_add_epi32(
+                character_bonus,
+                _mm512_cvttps_epi32(_mm512_roundscale_ps::<0x09>(scaled)),
+            );
+            dim += 1;
+        }
+
+        let mut result = PowerCommon16::EMPTY;
+        _mm512_storeu_si512(
+            result.character_bonus.as_mut_ptr().cast::<__m512i>(),
             character_bonus,
-            _mm512_cvttps_epi32(_mm512_roundscale_ps::<0x09>(scaled)),
         );
-        dim += 1;
+        let mut half = 0usize;
+        while half < 2 {
+            let offset = half * 8;
+            let sums = _mm512_cvtepi32_pd(_mm256_loadu_si256(
+                base_sum.as_ptr().add(offset).cast::<__m256i>(),
+            ));
+            let fixture = _mm512_mul_pd(
+                _mm512_mul_pd(sums, _mm512_loadu_pd(fixture_rates.as_ptr().add(offset))),
+                _mm512_set1_pd(0.001_f64),
+            );
+            let gate = _mm512_mul_pd(
+                _mm512_mul_pd(sums, _mm512_loadu_pd(gate_rates.as_ptr().add(offset))),
+                _mm512_set1_pd(0.01_f64),
+            );
+            _mm256_storeu_si256(
+                result
+                    .fixture_bonus
+                    .as_mut_ptr()
+                    .add(offset)
+                    .cast::<__m256i>(),
+                _mm512_cvttpd_epi32(_mm512_roundscale_pd::<0x09>(fixture)),
+            );
+            _mm256_storeu_si256(
+                result.gate_bonus.as_mut_ptr().add(offset).cast::<__m256i>(),
+                _mm512_cvttpd_epi32(_mm512_roundscale_pd::<0x09>(gate)),
+            );
+            half += 1;
+        }
+        result
     }
-
-    let mut result = PowerCommon16::EMPTY;
-    _mm512_storeu_si512(
-        result.character_bonus.as_mut_ptr().cast::<__m512i>(),
-        character_bonus,
-    );
-    let mut half = 0usize;
-    while half < 2 {
-        let offset = half * 8;
-        let sums = _mm512_cvtepi32_pd(_mm256_loadu_si256(
-            base_sum.as_ptr().add(offset).cast::<__m256i>(),
-        ));
-        let fixture = _mm512_mul_pd(
-            _mm512_mul_pd(sums, _mm512_loadu_pd(fixture_rates.as_ptr().add(offset))),
-            _mm512_set1_pd(0.001_f64),
-        );
-        let gate = _mm512_mul_pd(
-            _mm512_mul_pd(sums, _mm512_loadu_pd(gate_rates.as_ptr().add(offset))),
-            _mm512_set1_pd(0.01_f64),
-        );
-        _mm256_storeu_si256(
-            result
-                .fixture_bonus
-                .as_mut_ptr()
-                .add(offset)
-                .cast::<__m256i>(),
-            _mm512_cvttpd_epi32(_mm512_roundscale_pd::<0x09>(fixture)),
-        );
-        _mm256_storeu_si256(
-            result.gate_bonus.as_mut_ptr().add(offset).cast::<__m256i>(),
-            _mm512_cvttpd_epi32(_mm512_roundscale_pd::<0x09>(gate)),
-        );
-        half += 1;
-    }
-    result
-}}
+}
 
 #[cfg(not(target_arch = "x86_64"))]
 unsafe fn power_common_16_avx512_unchecked(
@@ -456,31 +474,35 @@ unsafe fn power_common_16_avx512_unchecked(
 pub(crate) unsafe fn unused_character_mask_16_avx512_unchecked(
     char_ids: *const u8,
     used_chars: u32,
-) -> u16 { unsafe {
-    use std::arch::x86_64::*;
+) -> u16 {
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let packed = _mm_loadu_si128(char_ids.cast::<__m128i>());
-    let characters = _mm512_cvtepu8_epi32(packed);
-    let character_bits = _mm512_sllv_epi32(_mm512_set1_epi32(1), characters);
-    let conflicts = _mm512_and_si512(character_bits, _mm512_set1_epi32(used_chars as i32));
-    _mm512_cmpeq_epi32_mask(conflicts, _mm512_setzero_si512()) as u16
-}}
+        let packed = _mm_loadu_si128(char_ids.cast::<__m128i>());
+        let characters = _mm512_cvtepu8_epi32(packed);
+        let character_bits = _mm512_sllv_epi32(_mm512_set1_epi32(1), characters);
+        let conflicts = _mm512_and_si512(character_bits, _mm512_set1_epi32(used_chars as i32));
+        _mm512_cmpeq_epi32_mask(conflicts, _mm512_setzero_si512()) as u16
+    }
+}
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx512f")]
 pub(crate) unsafe fn upper_bound_mask_16_avx512_unchecked(
     upper_bounds: *const u64,
     threshold: u64,
-) -> u16 { unsafe {
-    use std::arch::x86_64::*;
+) -> u16 {
+    unsafe {
+        use std::arch::x86_64::*;
 
-    let threshold = _mm512_set1_epi64(threshold as i64);
-    let lower = _mm512_loadu_si512(upper_bounds.cast::<__m512i>());
-    let upper = _mm512_loadu_si512(upper_bounds.add(8).cast::<__m512i>());
-    let lower_mask = _mm512_cmp_epu64_mask::<6>(lower, threshold) as u16;
-    let upper_mask = _mm512_cmp_epu64_mask::<6>(upper, threshold) as u16;
-    lower_mask | (upper_mask << 8)
-}}
+        let threshold = _mm512_set1_epi64(threshold as i64);
+        let lower = _mm512_loadu_si512(upper_bounds.cast::<__m512i>());
+        let upper = _mm512_loadu_si512(upper_bounds.add(8).cast::<__m512i>());
+        let lower_mask = _mm512_cmp_epu64_mask::<6>(lower, threshold) as u16;
+        let upper_mask = _mm512_cmp_epu64_mask::<6>(upper, threshold) as u16;
+        lower_mask | (upper_mask << 8)
+    }
+}
 use std::sync::OnceLock;
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -488,22 +510,22 @@ use std::sync::OnceLock;
 pub(crate) unsafe fn unused_character_mask_16_avx512_unchecked(
     char_ids: *const u8,
     used_chars: u32,
-) -> u16 { unsafe {
-    unused_character_mask_16_scalar(char_ids, used_chars)
-}}
+) -> u16 {
+    unsafe { unused_character_mask_16_scalar(char_ids, used_chars) }
+}
 
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
 pub(crate) unsafe fn upper_bound_mask_16_avx512_unchecked(
     upper_bounds: *const u64,
     threshold: u64,
-) -> u16 { unsafe {
-    upper_bound_mask_16_scalar(upper_bounds, threshold)
-}}
+) -> u16 {
+    unsafe { upper_bound_mask_16_scalar(upper_bounds, threshold) }
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{unused_character_mask_16, upper_bound_mask_16, PowerAreaItem, SimdBackend};
+    use super::{PowerAreaItem, SimdBackend, unused_character_mask_16, upper_bound_mask_16};
 
     #[test]
     fn dispatched_mask_rejects_used_characters() {

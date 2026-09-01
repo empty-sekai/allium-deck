@@ -1,11 +1,12 @@
 use crate::pool::EventBonusExact;
-use crate::types::{Attr, EventType, Unit, FINAL_CHAPTER_EVENT_ID};
+use crate::types::{Attr, EventType, FINAL_CHAPTER_EVENT_ID, Unit};
 
 use super::BuildError;
 use super::types::{
-    attr_to_pool_index, parse_attr_code, parse_unit_code, resolve_event_type, BuildParams,
-    EventCard, EventCardBonusLimit, EventDeckBonus, EventHonorBonus, EventRarityBonusRate,
-    EventSkillScoreUpLimit, GameData, MasterCard, UserCard, WorldBloomDiffAttrBonus,
+    BuildParams, EventCard, EventCardBonusLimit, EventDeckBonus, EventHonorBonus,
+    EventRarityBonusRate, EventSkillScoreUpLimit, GameData, MasterCard, UserCard,
+    WorldBloomDiffAttrBonus, attr_to_pool_index, parse_attr_code, parse_unit_code,
+    resolve_event_type,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -191,7 +192,8 @@ pub(crate) fn build_event_context(
     // world_bloom_event_turn 解析假活动，并合成 event cards / deck bonuses /
     // 章节与荣誉加成行。
     let wb_event_id = super::world_bloom::resolve_wb_event_id(params)?;
-    let synth_rows = wb_event_id.map(|event_id| super::world_bloom::synthesize_wb_rows(game, event_id));
+    let synth_rows =
+        wb_event_id.map(|event_id| super::world_bloom::synthesize_wb_rows(game, event_id));
     let event_type = if wb_event_id.is_some() {
         EventType::WorldBloom // 假活动固定为 world_bloom
     } else {
@@ -356,15 +358,6 @@ pub(crate) fn build_event_context(
     }))
 }
 
-/// 测试与手工构造用：显式字段集。
-#[cfg(test)]
-impl EventContext {
-    pub(crate) fn with_support_limited_bonuses(mut self, bonuses: Vec<super::types::WBSupportDeckUnitEventLimitedBonus>) -> Self {
-        self.support_limited_bonuses = bonuses;
-        self
-    }
-}
-
 fn card_matches_rule(
     master: &MasterCard,
     card_attr: u8,
@@ -397,9 +390,10 @@ fn load_rarity_bonus_x10(
             usize::try_from(master.card_rarity_type),
             usize::try_from(user_card.master_rank),
         )
-            && let Some(value) = table.get(rarity).and_then(|row| row.get(rank)) {
-                return *value;
-            }
+        && let Some(value) = table.get(rarity).and_then(|row| row.get(rank))
+    {
+        return *value;
+    }
     event_ctx
         .rarity_bonuses
         .iter()
