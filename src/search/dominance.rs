@@ -20,10 +20,11 @@ pub struct DominanceResult {
 /// WL 同样走支配裁剪：被裁的卡仍在独立的 support_cards 里参与支援计算（支援与主搜索池解耦），
 /// 且 `dominates` 要求 attr 相同，异色变体全部保留，diff_attr_bonus 无损。
 pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceResult {
-    // WL 下支配还需支援惩罚不劣（issue #23）：支援表内的卡编入队伍会损失支援加成，
+    // WL 下支配还需支援维度可承担（issue #23）：支援表内的卡编入队伍会让出支援位，
     // 支援盲的支配会裁掉真实最优卡组里的卡，Top-1 都可能出错。
-    let penalties = support_penalties(pool, ctx);
-    let (keep, dominated_by) = compute_keep_mask_with_winners(pool, ctx, penalties.as_deref());
+    // 差额不再一票否决，而是允许用支配者多出的活动加成抵扣（见 support_deficit_affordable）。
+    let support = support_dimension(pool, ctx);
+    let (keep, dominated_by) = compute_keep_mask_with_winners(pool, ctx, support.as_ref());
     let before = pool.count();
     let after = keep.iter().copied().filter(|keep| *keep).count();
     let alternatives = chain_compress_alternatives(&keep, &dominated_by);
@@ -77,12 +78,45 @@ pub struct MemberDominance {
     pub alternatives: Vec<Vec<CardIdx>>,
 }
 
-/// WL 支配裁剪的支援惩罚维度：支援表内的卡编入队伍会损失其支援加成
-/// （评估把在队卡从支援总和中排除），惩罚更大的卡作支配者时裁剪不再分数安全、
-/// 「被裁卡换成支配根」也不再分数单调。逐队长角色取惩罚（终章支援表按队长角色
-/// 独立；非终章回落到全局支援表，各角色列相同），支配要求对每个队长角色都不劣。
+/// WL 支配裁剪的支援维度。支援表内的卡编入队伍会让出自己的支援位，
+/// 该位由表中下一张未入队的卡顶替，因此损失的是「自身加成 − 顶替者加成」。
+///
+/// 逐队长角色取值（终章支援表按队长角色独立；非终章回落到全局支援表，各角色列相同）。
+/// `bonus_x100` 只记录实际占用支援位的前 `count` 张卡，其余为 0（让位不产生损失）；
+/// `replacement_floor_x100` 取第 `count + DECK_SIZE - 1` 位的加成——队伍另外 4 张卡
+/// 也可能同时占用支援位，把顶替者推到更靠后的位置，取这一位才是差额的安全下界。
+///
 /// 第一轮 `eliminate_dominated`（issue #23）与终章 member 轮（issue #7）共用。
-fn support_penalties(pool: &CardPool, ctx: &SearchContext) -> Option<Vec<[i32; 27]>> {
+struct SupportDimension {
+    bonus_x100: Vec<[i32; 27]>,
+    replacement_floor_x100: [i32; 27],
+}
+
+impl SupportDimension {
+    /// `lhs` 顶替 `rhs` 入队时，支援加成最多多损失多少（×100，非负）。
+    ///
+    /// 两张卡都在支援位内时顶替者相同、逐项抵消，差额恰为两者加成之差；
+    /// 只有 `lhs` 在位时，顶替者最差落到 `replacement_floor_x100`。
+    /// 两种情形统一为对 `max(rhs 加成, 顶替下界)` 取差。
+    #[inline(always)]
+    fn deficit_x100(&self, lhs: CardIdx, rhs: CardIdx) -> i32 {
+        let lhs_bonus = &self.bonus_x100[lhs.raw()];
+        let rhs_bonus = &self.bonus_x100[rhs.raw()];
+        let mut worst = 0i32;
+        let mut char_id = 0usize;
+        while char_id < 27 {
+            let floor = rhs_bonus[char_id].max(self.replacement_floor_x100[char_id]);
+            let deficit = lhs_bonus[char_id] - floor;
+            if deficit > worst {
+                worst = deficit;
+            }
+            char_id += 1;
+        }
+        worst
+    }
+}
+
+fn support_dimension(pool: &CardPool, ctx: &SearchContext) -> Option<SupportDimension> {
     if !ctx.is_world_bloom {
         return None;
     }
@@ -90,32 +124,37 @@ fn support_penalties(pool: &CardPool, ctx: &SearchContext) -> Option<Vec<[i32; 2
     for card in pool.indices() {
         dense_by_game_id.insert(pool.game_id(card), card.raw());
     }
-    let mut penalties = vec![[0i32; 27]; pool.count()];
+    let mut bonus_x100 = vec![[0i32; 27]; pool.count()];
+    let mut replacement_floor_x100 = [0i32; 27];
     let mut any = false;
     let mut char_id = 0u8;
     while (char_id as usize) < 27 {
         let support = ctx.support_deck_for_leader(char_id);
         let count = support.count as usize;
         if count > 0 {
-            let replacement = support
+            // 顶替下界向下取整、卡自身加成向上取整：差额只会被高估，不会被低估。
+            replacement_floor_x100[char_id as usize] = support
                 .cards
-                .get(count)
-                .map(|(_, bonus)| *bonus)
-                .unwrap_or(0.0);
+                .get(count + crate::types::DECK_SIZE - 1)
+                .map(|(_, bonus)| (bonus * 100.0).floor() as i32)
+                .unwrap_or(0);
             for &(game_id, bonus) in support.cards.iter().take(count) {
-                let penalty = ((bonus - replacement).max(0.0) * 100.0).round() as i32;
-                if penalty == 0 {
+                let value = (bonus * 100.0).ceil() as i32;
+                if value == 0 {
                     continue;
                 }
                 if let Some(&dense) = dense_by_game_id.get(&game_id) {
-                    penalties[dense][char_id as usize] = penalty;
+                    bonus_x100[dense][char_id as usize] = value;
                     any = true;
                 }
             }
         }
         char_id += 1;
     }
-    any.then_some(penalties)
+    any.then_some(SupportDimension {
+        bonus_x100,
+        replacement_floor_x100,
+    })
 }
 
 /// 终章 member 位支配裁剪：用中性 ctx（忽略队长专属称号/当期加成）逐角色比较，
@@ -123,7 +162,7 @@ fn support_penalties(pool: &CardPool, ctx: &SearchContext) -> Option<Vec<[i32; 2
 /// WL 支援惩罚从真实 ctx 计入支配维度。被裁卡记录到存活根的 alternatives，
 /// 供 Top-K 搜索后按 member 槽位回换（issue #7）。
 pub fn compute_member_dominance(pool: &CardPool, ctx: &SearchContext) -> MemberDominance {
-    let penalties = support_penalties(pool, ctx);
+    let support = support_dimension(pool, ctx);
     let (keep, dominated_by) = compute_keep_mask_with_winners(
         pool,
         &SearchContext {
@@ -169,7 +208,7 @@ pub fn compute_member_dominance(pool: &CardPool, ctx: &SearchContext) -> MemberD
             skill_is_after_training: vec![false; pool.count()],
             trained_to_special_image: vec![false; pool.count()],
         },
-        penalties.as_deref(),
+        support.as_ref(),
     );
     let alternatives = chain_compress_alternatives(&keep, &dominated_by);
     MemberDominance { keep, alternatives }
@@ -177,11 +216,11 @@ pub fn compute_member_dominance(pool: &CardPool, ctx: &SearchContext) -> MemberD
 
 /// 返回保留位图与「被谁裁掉」映射：dominated_by[dense] 仅在 keep[dense]=false 时有意义，
 /// 记录裁掉该卡的卡的 dense 索引（裁剪者之后仍可能被裁，使用前需链压缩到存活根）。
-/// `support_penalties` 存在时，支配额外要求逐队长角色的支援惩罚不劣。
+/// `support` 存在时（WL），支配额外要求支援加成差额能被活动加成盈余抵扣。
 fn compute_keep_mask_with_winners(
     pool: &CardPool,
     ctx: &SearchContext,
-    support_penalties: Option<&[[i32; 27]]>,
+    support: Option<&SupportDimension>,
 ) -> (Vec<bool>, Vec<u16>) {
     let mut keep = vec![true; pool.count()];
     let mut dominated_by = vec![0u16; pool.count()];
@@ -205,7 +244,7 @@ fn compute_keep_mask_with_winners(
                     if keep[b.raw()]
                         && !ctx.is_fixed_game_id(pool.game_id(b))
                         && dominates(pool, ctx, a, b)
-                        && support_penalty_not_worse(support_penalties, a, b)
+                        && support_deficit_affordable(pool, support, a, b)
                     {
                         keep[b.raw()] = false;
                         dominated_by[b.raw()] = a.raw() as u16;
@@ -220,25 +259,29 @@ fn compute_keep_mask_with_winners(
     (keep, dominated_by)
 }
 
+/// 支援差额是否付得起：`lhs` 顶替 `rhs` 少收的支援加成，必须被它多出来的
+/// 卡面活动加成补上。两者在活动加成总和里同为百分比、同为加项（见
+/// `evaluate::calc_support_bonus`），可直接相抵。
+///
+/// 只用 base 盈余作预算：limited 加成受 `card_bonus_count_limit` 约束，未必计入总和。
+/// `dominates` 已保证 base 不劣，故盈余非负。
 #[inline(always)]
-fn support_penalty_not_worse(
-    support_penalties: Option<&[[i32; 27]]>,
+fn support_deficit_affordable(
+    pool: &CardPool,
+    support: Option<&SupportDimension>,
     lhs: CardIdx,
     rhs: CardIdx,
 ) -> bool {
-    let Some(penalties) = support_penalties else {
+    let Some(support) = support else {
         return true;
     };
-    let lhs_pen = &penalties[lhs.raw()];
-    let rhs_pen = &penalties[rhs.raw()];
-    let mut char_id = 0usize;
-    while char_id < 27 {
-        if lhs_pen[char_id] > rhs_pen[char_id] {
-            return false;
-        }
-        char_id += 1;
+    let deficit = support.deficit_x100(lhs, rhs);
+    if deficit <= 0 {
+        return true;
     }
-    true
+    let surplus_x10 = pool.event_bonus_exact(lhs).base_x10() as i32
+        - pool.event_bonus_exact(rhs).base_x10() as i32;
+    deficit <= surplus_x10 * 10
 }
 
 fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -> bool {
