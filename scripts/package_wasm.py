@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Package wasm-pack output for CDN publication."""
+"""Package wasm-pack output for release publication."""
 
 from __future__ import annotations
 
@@ -49,12 +49,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pkg-dir", default="pkg")
     parser.add_argument("--out-dir", required=True)
-    parser.add_argument("--region", default="cn")
     parser.add_argument("--version", required=True)
-    parser.add_argument("--cdn-base", default="https://cdn.emptysekai.com")
     parser.add_argument("--source-repository", default="")
     parser.add_argument("--source-revision", default="")
-    parser.add_argument("--masterdata-manifest", default="")
     args = parser.parse_args()
 
     pkg_dir = Path(args.pkg_dir)
@@ -80,9 +77,6 @@ def main() -> int:
     ]:
         copy_if_exists(optional, out_dir / optional.name)
 
-    if args.masterdata_manifest:
-        copy_if_exists(Path(args.masterdata_manifest), out_dir / "masterdata.json")
-
     files = []
     for file in sorted(path for path in out_dir.iterdir() if path.is_file()):
         files.append(
@@ -94,19 +88,13 @@ def main() -> int:
             }
         )
 
-    cdn_base = args.cdn_base.rstrip("/")
     manifest = {
         "name": "allium-deck-wasm",
-        "region": args.region,
-        "masterdata_version": args.version,
+        "version": args.version,
         "built_at": utc_now(),
         "source": {
             "repository": args.source_repository,
             "revision": args.source_revision,
-        },
-        "cdn": {
-            "latest_base_url": f"{cdn_base}/deck-wasm/{args.region}/latest",
-            "versioned_base_url": f"{cdn_base}/deck-wasm/{args.region}/{args.version}",
         },
         "entrypoint": "allium_deck.js",
         "wasm": "allium_deck_bg.wasm",
