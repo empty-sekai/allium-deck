@@ -14,11 +14,11 @@
 mod synth_masterdata;
 
 use allium_deck::engine::{
-    parse_build_params_json, parse_user_profile_json, MasterdataSources, OwnedGameData,
+    MasterdataSources, OwnedGameData, parse_build_params_json, parse_user_profile_json,
 };
-use allium_deck::handler::{build_card_pool, BuildParams, UserProfile};
-use allium_deck::search::{search, SearchParams};
-use criterion::{criterion_group, criterion_main, Criterion, SamplingMode};
+use allium_deck::handler::{BuildParams, UserProfile, build_card_pool};
+use allium_deck::search::{SearchParams, search};
+use criterion::{Criterion, SamplingMode, criterion_group, criterion_main};
 use std::time::Duration;
 
 const EVENT_PARAMS: &str =
@@ -27,6 +27,8 @@ const NO_EVENT_PARAMS: &str = r#"{"liveType":"multi","target":"score","limit":8}
 /// 无活动 + 单属性池：把最坏情形收窄到可精确完成的规模。
 const NO_EVENT_ATTR_PARAMS: &str =
     r#"{"liveType":"multi","target":"score","limit":8,"attrFilter":"cool"}"#;
+/// World Bloom 终章（自动队长）：走 `final_chapter` 后端，是 WL 侧最重的搜索形态。
+const WL_FINALE_PARAMS: &str = r#"{"liveType":"multi","target":"score","limit":8,"worldBloomFinaleTurn":3,"attrFilter":"cool"}"#;
 
 struct BenchInput {
     owned: OwnedGameData,
@@ -117,11 +119,29 @@ fn bench_no_event_search_full(c: &mut Criterion) {
     group.finish();
 }
 
+/// World Bloom 终章搜索：队长 × 4 角色 × 逐卡三层递归，WL 侧的性能基线。
+fn bench_wl_finale_search(c: &mut Criterion) {
+    let input = build_input();
+    let game = input.owned.as_ref();
+    let (pool, ctx) =
+        build_card_pool(&input.user, &game, &params(WL_FINALE_PARAMS)).expect("build pool");
+
+    let mut group = c.benchmark_group("search");
+    group.sample_size(10);
+    group.measurement_time(Duration::from_secs(20));
+    group.sampling_mode(SamplingMode::Flat);
+    group.bench_function("world_bloom_finale", |b| {
+        b.iter(|| search(&pool, &ctx, &SEARCH_PARAMS))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_cold_build,
     bench_event_search,
     bench_no_event_search,
-    bench_no_event_search_full
+    bench_no_event_search_full,
+    bench_wl_finale_search
 );
 criterion_main!(benches);
