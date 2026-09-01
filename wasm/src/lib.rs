@@ -28,12 +28,12 @@ use wasm_bindgen::prelude::*;
 mod embedded;
 
 use allium_deck::auxiliary::AuxiliaryData;
-use allium_deck::engine::{parse_build_params_json, parse_user_profile_json, OwnedGameData};
+use allium_deck::engine::{OwnedGameData, parse_build_params_json, parse_user_profile_json};
 use allium_deck::handler::{
-    build_card_pool, cultivated_user_cards, GameData, MasterCard, UserCard, UserProfile,
+    GameData, MasterCard, UserCard, UserProfile, build_card_pool, cultivated_user_cards,
 };
 use allium_deck::pool::CardPool;
-use allium_deck::search::{search, summarize_deck, DeckResult, SearchContext, SearchParams};
+use allium_deck::search::{DeckResult, SearchContext, SearchParams, search, summarize_deck};
 
 #[wasm_bindgen]
 extern "C" {
@@ -59,9 +59,9 @@ thread_local! {
 
 /// 取当前引擎数据；未初始化时直接报错。
 pub(crate) fn engine_data() -> Result<std::rc::Rc<EngineData>, JsValue> {
-    MASTER_DATA.with(|slot| slot.borrow().clone()).ok_or_else(|| {
-        JsValue::from_str("masterdata 未初始化：请先调用 load_masterdata(...)")
-    })
+    MASTER_DATA
+        .with(|slot| slot.borrow().clone())
+        .ok_or_else(|| JsValue::from_str("masterdata 未初始化：请先调用 load_masterdata(...)"))
 }
 
 /// 载入 masterdata：`masterdata_json` 形如
@@ -94,7 +94,10 @@ pub fn load_masterdata(masterdata_json: &str, music_metas_json: &str) -> Result<
     let owned = allium_deck::engine::OwnedGameData::from_sources(&sources)
         .map_err(|err| JsValue::from_str(&err))?;
     MASTER_DATA.with(|slot| {
-        *slot.borrow_mut() = Some(std::rc::Rc::new(EngineData { game: owned, auxiliary }));
+        *slot.borrow_mut() = Some(std::rc::Rc::new(EngineData {
+            game: owned,
+            auxiliary,
+        }));
     });
     Ok(())
 }
@@ -464,11 +467,7 @@ struct CardMeta {
     attr: String,
 }
 
-fn card_meta(
-    master_cards: &HashMap<i32, &MasterCard>,
-    card_id: i32,
-    trained: bool,
-) -> CardMeta {
+fn card_meta(master_cards: &HashMap<i32, &MasterCard>, card_id: i32, trained: bool) -> CardMeta {
     let training = if trained { "after_training" } else { "normal" };
     match master_cards.get(&card_id).copied() {
         Some(MasterCard {

@@ -48,7 +48,7 @@ pub(crate) fn user_from_options(opts: &Value) -> Result<UserProfile, wasm_bindge
         _ => {
             return Err(wasm_bindgen::JsValue::from_str(
                 "Either user_data / user_data_str is required.",
-            ))
+            ));
         }
     };
     allium_deck::engine::parse_user_profile_json(&text).map_err(to_js)
@@ -153,8 +153,7 @@ impl DeckIn {
         if !deck.is_object() {
             return Err(wasm_bindgen::JsValue::from_str("deck must be an object."));
         }
-        serde_json::from_value(deck.clone()).map_err(|err| {
-            wasm_bindgen::JsValue::from_str(&format!("deck JSON 解析失败: {err}"))
-        })
+        serde_json::from_value(deck.clone())
+            .map_err(|err| wasm_bindgen::JsValue::from_str(&format!("deck JSON 解析失败: {err}")))
     }
 }

@@ -6,14 +6,12 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use allium_deck::auxiliary::{
-    recommend_music, MusicDeck, MusicDeckCard, MusicRecommendOptions,
-};
-use allium_deck::handler::{world_bloom_support_cards, BuildParams};
+use allium_deck::auxiliary::{MusicDeck, MusicDeckCard, MusicRecommendOptions, recommend_music};
+use allium_deck::handler::{BuildParams, world_bloom_support_cards};
 
 use crate::options::{
-    event_type_from_options, field, opt_bool, opt_i32, opt_str, parse_options, require_live_type,
-    skill_order_from_options, user_from_options, DeckIn,
+    DeckIn, event_type_from_options, field, opt_bool, opt_i32, opt_str, parse_options,
+    require_live_type, skill_order_from_options, user_from_options,
 };
 use crate::{engine_data, to_js};
 
@@ -88,12 +86,15 @@ pub fn recommend_music_api(options_json: &str) -> Result<String, wasm_bindgen::J
         event_type,
         skill_order: skill_order_from_options(&opts)?,
         specific_skill_order,
-        multi_teammate_score_up: opt_i32(&opts, "multi_live_teammate_score_up", "multiLiveTeammateScoreUp"),
+        multi_teammate_score_up: opt_i32(
+            &opts,
+            "multi_live_teammate_score_up",
+            "multiLiveTeammateScoreUp",
+        ),
         multi_teammate_power: opt_i32(&opts, "multi_live_teammate_power", "multiLiveTeammatePower"),
     };
 
-    let result = recommend_music(game.music_metas, &deck, &options)
-    .map_err(to_js)?;
+    let result = recommend_music(game.music_metas, &deck, &options).map_err(to_js)?;
     serde_json::to_string(&result).map_err(to_js)
 }
 
@@ -107,9 +108,9 @@ pub fn calculate_exact_live(options_json: &str) -> Result<String, wasm_bindgen::
     let data = engine_data()?;
 
     let live_type = require_live_type(&opts)?;
-    let power = opt_i32(&opts, "power", "power").filter(|power| *power > 0).ok_or_else(|| {
-        wasm_bindgen::JsValue::from_str("power must be positive.")
-    })?;
+    let power = opt_i32(&opts, "power", "power")
+        .filter(|power| *power > 0)
+        .ok_or_else(|| wasm_bindgen::JsValue::from_str("power must be positive."))?;
     let skills = field(&opts, "skills", "skills")
         .and_then(|value| value.as_array())
         .map(|values| {
@@ -161,7 +162,11 @@ pub fn get_world_bloom_support_cards(options_json: &str) -> Result<String, wasm_
         event_id: opt_i32(&opts, "event_id", "eventId"),
         world_bloom_event_turn: opt_i32(&opts, "world_bloom_event_turn", "worldBloomEventTurn"),
         world_bloom_finale_turn: opt_i32(&opts, "world_bloom_finale_turn", "worldBloomFinaleTurn"),
-        world_bloom_character_id: opt_i32(&opts, "world_bloom_character_id", "worldBloomCharacterId"),
+        world_bloom_character_id: opt_i32(
+            &opts,
+            "world_bloom_character_id",
+            "worldBloomCharacterId",
+        ),
         forced_leader_character_id: opt_i32(
             &opts,
             "forced_leader_character_id",
