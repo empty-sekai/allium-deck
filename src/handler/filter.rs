@@ -182,7 +182,11 @@ pub(super) fn per_character_trim(
         candidates.sort_by(|&left, &right| {
             bonus_key(&cards[right])
                 .cmp(&bonus_key(&cards[left]))
-                .then_with(|| cards[right].card_rarity_type.cmp(&cards[left].card_rarity_type))
+                .then_with(|| {
+                    cards[right]
+                        .card_rarity_type
+                        .cmp(&cards[left].card_rarity_type)
+                })
                 .then_with(|| power_key(&cards[right]).cmp(&power_key(&cards[left])))
         });
 

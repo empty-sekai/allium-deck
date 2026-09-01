@@ -52,8 +52,8 @@ pub fn search_all_characters(
     suffix: &SuffixBound,
     params: &SearchParams,
 ) -> (Vec<DeckResult>, super::SearchStats) {
-    let deadline = (params.timeout_ms != 0)
-        .then(|| Instant::now() + Duration::from_millis(params.timeout_ms));
+    let deadline =
+        (params.timeout_ms != 0).then(|| Instant::now() + Duration::from_millis(params.timeout_ms));
 
     let mut present = [false; 27];
     for card in pool.indices() {
