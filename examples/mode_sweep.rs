@@ -123,5 +123,11 @@ fn main() {
             results.len(),
             results.first().map(|result| result.score).unwrap_or(0),
         );
+        if std::env::var_os("ALLIUM_TOPK").is_some() {
+            for (rank, r) in results.iter().enumerate() {
+                let ids: Vec<u16> = r.cards.iter().map(|c| pool.game_id(*c)).collect();
+                println!("    #{rank} {} {ids:?}", r.score);
+            }
+        }
     }
 }

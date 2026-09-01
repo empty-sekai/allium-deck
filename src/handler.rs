@@ -6,6 +6,7 @@ mod gather;
 mod index;
 mod music;
 mod power;
+mod prune;
 mod skill;
 #[cfg(test)]
 mod tests;

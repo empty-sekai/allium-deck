@@ -15,17 +15,17 @@ use crate::types::DefaultImage;
 use super::card_config::apply_card_config;
 use super::event_bonus::{EventContext, build_card_event_bonus, build_event_context};
 use super::filter::{
-    CHALLENGE_ALL_PER_CHAR_KEEP, EP_PREFILTER_MIN_POOL,
-    GENERAL_PER_CHAR_KEEP, GENERAL_TRIM_THRESHOLD, PER_CHAR_KEEP, ep_prefilter_keep,
-    ep_prefilter_keep_with_params, general_per_character_trim, keep_card, per_character_trim,
-    prepared_ep_prefilter_keep, prepared_ep_prefilter_keep_with_params, prepared_keep_card,
-    prepared_post_event_unit_filter, target_per_character_trim, FINAL_CHAPTER_PER_CHAR_KEEP,
-    WORLD_BLOOM_PER_CHAR_KEEP,
+    CHALLENGE_ALL_PER_CHAR_KEEP, EP_PREFILTER_MIN_POOL, FINAL_CHAPTER_PER_CHAR_KEEP,
+    GENERAL_PER_CHAR_KEEP, GENERAL_TRIM_THRESHOLD, PER_CHAR_KEEP, WORLD_BLOOM_PER_CHAR_KEEP,
+    ep_prefilter_keep, ep_prefilter_keep_with_params, general_per_character_trim, keep_card,
+    per_character_trim, prepared_ep_prefilter_keep, prepared_ep_prefilter_keep_with_params,
+    prepared_keep_card, prepared_post_event_unit_filter, target_per_character_trim,
 };
 use super::gather::{CardIntermediate, FullPrecisionCard, GatheredContext, sort_and_gather};
 use super::index;
 use super::music::{self, build_music_params};
 use super::power::{PowerInput, PowerResult, PreparedPowerContext, build_power_batch_from_fn};
+use super::prune;
 use super::skill::{SkillResult, SkillState, build_skill, is_bfes_skill_pair};
 use super::types::{self, default_image_kind, is_after_training};
 use super::validate::validate_build_params;
@@ -863,8 +863,30 @@ pub(super) fn build_card_pool_fully_prepared_internal(
     if cards.is_empty() {
         return Err(BuildError::EmptyPool);
     }
+    // 候选仍超 mask 容量时，只丢弃能被同角色同属性的另一张卡支配的卡。
+    // 不做近似裁剪：丢不够仍然报 TooManyCards，由调用方收窄条件。
+    //
+    // 只在这一条路径上启用，**不要改成对 WL 默认打开**：搜索期的
+    // `eliminate_dominated` 做同样的压缩，但会记录 alternatives 并在搜索后
+    // 把次优解换回来（见 `search::expand_alternatives`）。建池期淘汰的卡
+    // 根本没有进过池子、拿不到 CardIdx，救不回来——Top-1 仍精确，Top-K 会
+    // 少解。装得下时提前做只有损失：搜索期本就会压到同样的规模。
+    let capacity = crate::pool::MASK_WORDS * 64;
+    if cards.len() > capacity {
+        // 支援维度只在这条冷路径上构建；主路径的支援卡组仍由
+        // build_search_context 负责，此处不改变它。
+        let support = event_ctx
+            .filter(|ctx| ctx.support_deck_count > 0)
+            .and_then(|ctx| {
+                let by_character =
+                    build_final_chapter_support_decks_fast(&support_seeds, game, Some(ctx));
+                let fallback = build_support_deck_fast(&support_seeds, game, Some(ctx), None);
+                prune::SupportBonusTable::build(&by_character, &fallback)
+            });
+        prune::dominance_trim(&mut cards, params, support.as_ref(), capacity);
+    }
     let (fixed_card_ids, fixed_character_ids) = validate_fixed_constraints(params, &cards)?;
-    if cards.len() > crate::pool::MASK_WORDS * 64 {
+    if cards.len() > capacity {
         return Err(BuildError::TooManyCards(cards.len()));
     }
 
