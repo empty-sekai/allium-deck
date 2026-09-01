@@ -1,3 +1,9 @@
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
+
 use crate::pool::{CardIdx, CardPool};
 use crate::types::DECK_SIZE;
 
@@ -33,6 +39,56 @@ pub fn search_character(
     character_id: u8,
 ) -> (Vec<DeckResult>, super::SearchStats) {
     search_with_character_filter(pool, ctx, suffix, params, Some(character_id))
+}
+
+/// challenge_all：逐角色搜索后按分数归并出全局 Top-K。
+///
+/// 挑战 live 的队伍必须五张同角色，所以答案集是各角色最优解的并集，而不是
+/// 在混角色池上做一次无约束搜索——后者既会产出非法卡组，组合数也高数个量级。
+/// `timeout_ms` 在角色之间检查，超时后返回已搜完角色的结果。
+pub fn search_all_characters(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+    params: &SearchParams,
+) -> (Vec<DeckResult>, super::SearchStats) {
+    let deadline = (params.timeout_ms != 0)
+        .then(|| Instant::now() + Duration::from_millis(params.timeout_ms));
+
+    let mut present = [false; 27];
+    for card in pool.indices() {
+        present[(pool.char_id(card) as usize).min(26)] = true;
+    }
+
+    let mut merged = Vec::new();
+    let mut stats = super::SearchStats::default();
+    for (character_id, present) in present.iter().copied().enumerate() {
+        if !present {
+            continue;
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+        }
+        let (results, character_stats) =
+            search_character(pool, ctx, suffix, params, character_id as u8);
+        accumulate_stats(&mut stats, &character_stats);
+        merged.extend(results);
+    }
+
+    merged.sort_unstable_by(super::deck_result_cmp);
+    merged.truncate(params.top_k);
+    (merged, stats)
+}
+
+fn accumulate_stats(total: &mut super::SearchStats, part: &super::SearchStats) {
+    total.leaf_nodes += part.leaf_nodes;
+    total.ub_prunes += part.ub_prunes;
+    total.leader_prunes += part.leader_prunes;
+    total.ep_candidates += part.ep_candidates;
+    total.ep_break_prunes += part.ep_break_prunes;
+    total.ep_continue_prunes += part.ep_continue_prunes;
+    total.ep_explored += part.ep_explored;
+    total.mono_break_prunes += part.mono_break_prunes;
 }
 
 fn search_with_character_filter(
@@ -120,10 +176,11 @@ fn search_combo_top1(
                         ];
                         stats.leaf_nodes += 1;
                         if let Some(score) = leaf_evaluate_challenge(pool, ctx, &deck)
-                            && score > best_score {
-                                best_score = score;
-                                best_deck = Some(deck);
-                            }
+                            && score > best_score
+                        {
+                            best_score = score;
+                            best_deck = Some(deck);
+                        }
                     }
                 }
             }
@@ -170,9 +227,10 @@ fn challenge_recurse(
     if depth == DECK_SIZE {
         stats.leaf_nodes += 1;
         if let Some(score) = leaf_evaluate_challenge(pool, ctx, deck)
-            && score > tracker.threshold() {
-                tracker.insert(DeckResult::new(*deck, score));
-            }
+            && score > tracker.threshold()
+        {
+            tracker.insert(DeckResult::new(*deck, score));
+        }
         return;
     }
 

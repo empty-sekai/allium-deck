@@ -9,9 +9,9 @@ pub mod suffix;
 pub mod types;
 pub mod warm_start;
 
-pub use bruteforce::{brute_force_search, BruteForceStats};
+pub use bruteforce::{BruteForceStats, brute_force_search};
 pub use context::{SearchContext, SupportDeck};
-pub use dfs::{dfs_search, SearchStats};
+pub use dfs::{SearchStats, dfs_search};
 pub use dominance::eliminate_dominated;
 pub use evaluate::{
     calc_event_point, decode_u18, leaf_evaluate, resolve_power_for_cards, summarize_deck,
@@ -21,7 +21,7 @@ pub use types::{DeckResult, DeckResultSummary, SearchParams};
 pub use warm_start::warm_start;
 
 use crate::pool::{CardIdx, CardPool};
-use crate::types::{ScoreTarget, DECK_SIZE};
+use crate::types::{DECK_SIZE, ScoreTarget};
 
 /// Reusable immutable search data for one `CardPool` / `SearchContext` pair.
 ///
@@ -118,7 +118,14 @@ pub fn search_instrumented(
 
     if !ctx.enforce_char_uniqueness {
         let suffix = SuffixBound::build(pool, ctx);
-        return challenge_search::search(pool, ctx, &suffix, params);
+        // 挑战 live 的队伍必须五张同角色。池里只剩一个角色时（调用方已指定
+        // challenge_live_character_id）直接搜；留着多个角色则是 challenge_all，
+        // 必须逐角色搜索后归并——无约束搜索会产出跨角色的非法卡组，
+        // 组合数也是逐角色之和的数个量级。
+        return match single_challenge_character(pool) {
+            Some(_) => challenge_search::search(pool, ctx, &suffix, params),
+            None => challenge_search::search_all_characters(pool, ctx, &suffix, params),
+        };
     }
 
     let dominance = eliminate_dominated(pool, ctx);
@@ -659,15 +666,17 @@ fn simple_target_recurse(
             }
         }
         if let Some(game_id) = ctx.fixed_card_at(depth)
-            && pool.game_id(card) != game_id {
-                idx += 1;
-                continue;
-            }
+            && pool.game_id(card) != game_id
+        {
+            idx += 1;
+            continue;
+        }
         if let Some(character_id) = fixed_char_at_depth
-            && char_id != character_id {
-                idx += 1;
-                continue;
-            }
+            && char_id != character_id
+        {
+            idx += 1;
+            continue;
+        }
         deck[depth] = card;
         let next_min_free = if is_fixed { min_free_idx } else { idx + 1 };
         simple_target_recurse(
@@ -757,6 +766,20 @@ fn deck_result_cmp(left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering 
         .score
         .cmp(&left.score)
         .then_with(|| left.cards.cmp(&right.cards))
+}
+
+/// 池里只有一个角色时返回它；challenge 池保留多角色即为 challenge_all。
+fn single_challenge_character(pool: &CardPool) -> Option<u8> {
+    let mut only = None;
+    for card in pool.indices() {
+        let char_id = pool.char_id(card);
+        match only {
+            None => only = Some(char_id),
+            Some(seen) if seen == char_id => {}
+            Some(_) => return None,
+        }
+    }
+    only
 }
 
 fn remap_results(
