@@ -4,7 +4,6 @@
 //! - `prepared_*`：seed 阶段（`PreparedCardSeed`，尚未计算 power/skill）的快速过滤；
 //! - 其余函数：`CardIntermediate` 阶段的 EP 预过滤、按角色 top-K 裁剪与硬约束保留。
 
-
 use super::build::PreparedCardSeed;
 use super::event_bonus::EventContext;
 use super::gather::CardIntermediate;
@@ -49,26 +48,29 @@ pub(super) fn prepared_keep_card(card: &PreparedCardSeed<'_>, params: &types::Bu
             .as_deref()
             .and_then(parse_unit_code)
             .and_then(types::unit_to_pool_index)
-            && card.unit_mask & (1u8 << unit) == 0 {
-                return false;
-            }
+            && card.unit_mask & (1u8 << unit) == 0
+        {
+            return false;
+        }
         if let Some(attr) = params
             .attr_filter
             .as_deref()
             .and_then(parse_attr_code)
             .and_then(attr_to_pool_index)
-            && card.attr != attr {
-                return false;
-            }
+            && card.attr != attr
+        {
+            return false;
+        }
         if params.filter_other_unit
             && let Some(unit) = params
                 .event_unit
                 .as_deref()
                 .and_then(parse_unit_code)
                 .and_then(types::unit_to_pool_index)
-                && card.unit_mask & (1u8 << unit) == 0 {
-                    return false;
-                }
+            && card.unit_mask & (1u8 << unit) == 0
+        {
+            return false;
+        }
     }
     params
         .challenge_live_character_id
@@ -123,55 +125,39 @@ pub(super) fn ep_prefilter_keep(
     card.has_char_bonus && card.has_attr_bonus
 }
 
+/// 逐角色把候选裁到 `per_char_keep` 张。
+///
+/// 保留规则只有一条：取 (活动加成, 综合力×技能) 的 **Pareto 前沿**。
+/// 在这两者的任意权衡下有可能进最优解的卡，恰好就是前沿上的那一批——
+/// 低加成高练度的「综合力专家」（WL turn-3 的 336k cap / 异色差分场景）
+/// 自然落在前沿末端，不需要单独的第二张榜单。
+///
+/// 前沿不足额时按加成降序补齐；超额时沿前沿保留加成最高的一段。
+/// 固定卡、固定角色与高加成卡（≥30%）豁免裁剪。
 pub(super) fn per_character_trim(
     cards: &mut Vec<CardIntermediate>,
     params: &types::BuildParams,
     per_char_keep: usize,
-    power_specialist_keep: usize,
 ) {
-    if cards.len() <= EP_PREFILTER_MIN_POOL {
+    if cards.len() <= EP_PREFILTER_MIN_POOL || per_char_keep == 0 {
         return;
     }
-    debug_assert!(per_char_keep + power_specialist_keep <= FINAL_CHAPTER_PER_CHAR_KEEP);
 
-    let compare = |a: &CardIntermediate, b: &CardIntermediate| {
-        let a_bonus = a.event_bonus.total_x10();
-        let b_bonus = b.event_bonus.total_x10();
-        // 4星无bonus给虚拟bonus=1，排在有bonus卡之后但优于低星
-        let a_effective_bonus = if a_bonus == 0 && a.card_rarity_type >= 4 {
+    // 4 星无加成卡给虚拟加成 1：排在有加成卡之后，但优于低星。
+    let bonus_key = |card: &CardIntermediate| -> u32 {
+        let bonus = card.event_bonus.total_x10();
+        if bonus == 0 && card.card_rarity_type >= 4 {
             1
         } else {
-            a_bonus
-        };
-        let b_effective_bonus = if b_bonus == 0 && b.card_rarity_type >= 4 {
-            1
-        } else {
-            b_bonus
-        };
-        let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
-        let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
-        b_effective_bonus
-            .cmp(&a_effective_bonus)
-            .then_with(|| b.card_rarity_type.cmp(&a.card_rarity_type))
-            .then_with(|| b_key.cmp(&a_key))
+            bonus
+        }
+    };
+    let power_key = |card: &CardIntermediate| -> u64 {
+        card.power.power_max.max(0) as u64 * (256 + card.skill.skill_max as u64)
     };
 
-    // Only the best K non-exempt cards per character are needed. Sorting the
-    // entire vector moves large CardIntermediate values O(n log n) times.
-    // Maintain 27 tiny, stable top-K index lists instead; equal keys stay in
-    // their original order, matching stable-sort selection semantics.
-    //
-    // power_specialist_keep > 0 时额外维护一张「综合力榜」（综合力×(256+技能)
-    // 降序）：低加成高练度卡在 WL turn-3（336k cap / 差分异色）场景同样能进
-    // 最优解，纯加成榜会漏解。加成榜淘汰的卡
-    // 立即获得一次综合力榜入榜尝试；两榜独立淘汰，角色保留上限 =
-    // per_char_keep + power_specialist_keep（调用方保证合计 ≤
-    // FINAL_CHAPTER_PER_CHAR_KEEP，27 角色总数 ≤ 512 mask 容量）。
-    let mut selected = [[usize::MAX; FINAL_CHAPTER_PER_CHAR_KEEP]; 27];
-    let mut counts = [0usize; 27];
-    let mut p_selected = [[usize::MAX; 8]; 27];
-    let mut p_counts = [0usize; 27];
     let mut keep = vec![false; cards.len()];
+    let mut by_char: Vec<Vec<usize>> = vec![Vec::new(); 27];
     for (index, card) in cards.iter().enumerate() {
         if params.fixed_cards.contains(&card.game_card_id)
             || params
@@ -182,95 +168,52 @@ pub(super) fn per_character_trim(
             keep[index] = true;
             continue;
         }
-        let ch = (card.character_id as usize).min(26);
-        let count = counts[ch];
-        let mut insert = 0usize;
-        while insert < count
-            && compare(card, &cards[selected[ch][insert]]) != std::cmp::Ordering::Less
-        {
-            insert += 1;
-        }
-        let evicted = if insert < per_char_keep && count == per_char_keep {
-            let evicted_index = selected[ch][per_char_keep - 1];
-            keep[evicted_index] = false;
-            Some(evicted_index)
-        } else {
-            None
-        };
-        if insert < per_char_keep {
-            let new_count = (count + 1).min(per_char_keep);
-            let mut slot = new_count - 1;
-            while slot > insert {
-                selected[ch][slot] = selected[ch][slot - 1];
-                slot -= 1;
+        by_char[(card.character_id as usize).min(26)].push(index);
+    }
+
+    for candidates in &mut by_char {
+        if candidates.len() <= per_char_keep {
+            for &index in candidates.iter() {
+                keep[index] = true;
             }
-            selected[ch][insert] = index;
-            counts[ch] = new_count;
-            keep[index] = true;
-        }
-        if let Some(evicted_index) = evicted {
-            // 刚被加成榜挤出的卡立即尝试综合力榜（本趟不会再扫到它）。
-            let evicted_card = &cards[evicted_index];
-            let key = evicted_card.power.power_max.max(0) as u64
-                * (256 + evicted_card.skill.skill_max as u64);
-            let mut p_insert = 0usize;
-            while p_insert < p_counts[ch] {
-                let kept = &cards[p_selected[ch][p_insert]];
-                let kept_key = kept.power.power_max.max(0) as u64
-                    * (256 + kept.skill.skill_max as u64);
-                if key > kept_key {
-                    break;
-                }
-                p_insert += 1;
-            }
-            if p_insert < power_specialist_keep {
-                let p_new_count = (p_counts[ch] + 1).min(power_specialist_keep);
-                if p_counts[ch] == power_specialist_keep {
-                    keep[p_selected[ch][power_specialist_keep - 1]] = false;
-                }
-                let mut p_slot = p_new_count - 1;
-                while p_slot > p_insert {
-                    p_selected[ch][p_slot] = p_selected[ch][p_slot - 1];
-                    p_slot -= 1;
-                }
-                p_selected[ch][p_insert] = evicted_index;
-                p_counts[ch] = p_new_count;
-                keep[evicted_index] = true;
-            }
-        }
-        // 综合力榜尝试：加成榜落选者（含刚被挤出的）都可入榜。
-        if keep[index] {
             continue;
         }
-        if power_specialist_keep > 0 {
-            let key = card.power.power_max.max(0) as u64
-                * (256 + card.skill.skill_max as u64);
-            let mut p_insert = 0usize;
-            while p_insert < p_counts[ch] {
-                let kept = &cards[p_selected[ch][p_insert]];
-                let kept_key = kept.power.power_max.max(0) as u64
-                    * (256 + kept.skill.skill_max as u64);
-                if key > kept_key {
+        // 加成降序、同加成时综合力降序；稳定排序让等价卡维持原始顺序。
+        candidates.sort_by(|&left, &right| {
+            bonus_key(&cards[right])
+                .cmp(&bonus_key(&cards[left]))
+                .then_with(|| cards[right].card_rarity_type.cmp(&cards[left].card_rarity_type))
+                .then_with(|| power_key(&cards[right]).cmp(&power_key(&cards[left])))
+        });
+
+        // 加成已非增，因此「综合力严格高于此前所有卡」等价于不被任何卡支配。
+        let mut kept = 0usize;
+        let mut best_power = 0u64;
+        let mut on_frontier = vec![false; candidates.len()];
+        for (rank, &index) in candidates.iter().enumerate() {
+            let power = power_key(&cards[index]);
+            if rank == 0 || power > best_power {
+                best_power = best_power.max(power);
+                on_frontier[rank] = true;
+                keep[index] = true;
+                kept += 1;
+                if kept == per_char_keep {
                     break;
                 }
-                p_insert += 1;
             }
-            if p_insert < power_specialist_keep {
-                let p_new_count = (p_counts[ch] + 1).min(power_specialist_keep);
-                if p_counts[ch] == power_specialist_keep {
-                    keep[p_selected[ch][power_specialist_keep - 1]] = false;
-                }
-                let mut p_slot = p_new_count - 1;
-                while p_slot > p_insert {
-                    p_selected[ch][p_slot] = p_selected[ch][p_slot - 1];
-                    p_slot -= 1;
-                }
-                p_selected[ch][p_insert] = index;
-                p_counts[ch] = p_new_count;
+        }
+        // 前沿不足额：按加成降序补齐剩余名额。
+        for (rank, &index) in candidates.iter().enumerate() {
+            if kept == per_char_keep {
+                break;
+            }
+            if !on_frontier[rank] {
                 keep[index] = true;
+                kept += 1;
             }
         }
     }
+
     let mut index = 0usize;
     cards.retain(|_| {
         let result = keep[index];
@@ -321,7 +264,10 @@ pub(super) fn general_per_character_trim(
     });
 }
 
-pub(super) fn target_per_character_trim(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
+pub(super) fn target_per_character_trim(
+    cards: &mut Vec<CardIntermediate>,
+    params: &types::BuildParams,
+) {
     // minimize（最弱组卡，仅 Power）时保留每角色最弱的若干张，否则保留最强。
     let minimize = params.minimize && matches!(params.target, crate::types::ScoreTarget::Power);
     cards.sort_by(|a, b| {
@@ -398,9 +344,10 @@ pub(super) fn keep_card(card: &CardIntermediate, params: &types::BuildParams) ->
             .as_deref()
             .and_then(parse_attr_code)
             .and_then(attr_to_pool_index)
-            && card.attr != attr {
-                return false;
-            }
+            && card.attr != attr
+        {
+            return false;
+        }
 
         if params.filter_other_unit
             && let Some(unit) = params
@@ -408,26 +355,28 @@ pub(super) fn keep_card(card: &CardIntermediate, params: &types::BuildParams) ->
                 .as_deref()
                 .and_then(parse_unit_code)
                 .and_then(types::unit_to_pool_index)
-            {
-                let wanted = 1u8 << unit;
-                if card.unit_mask_raw & wanted == 0 {
-                    return false;
-                }
+        {
+            let wanted = 1u8 << unit;
+            if card.unit_mask_raw & wanted == 0 {
+                return false;
             }
+        }
     }
 
     if let Some(challenge_char_id) = params.challenge_live_character_id
-        && card.character_id != challenge_char_id as u8 {
-            return false;
-        }
+        && card.character_id != challenge_char_id as u8
+    {
+        return false;
+    }
 
     true
 }
 
 pub(super) const EP_PREFILTER_MIN_POOL: usize = 50;
 pub(super) const PER_CHAR_KEEP: usize = 6;
-pub(super) const FINAL_CHAPTER_PER_CHAR_KEEP: usize = 16;
+/// WL（章节 / 终章）单角色名额：336k cap 与异色差分让低加成高练度卡也可能进最优解，
+/// 名额比常规活动宽，具体保留哪几张交给 Pareto 前沿决定。
+pub(super) const WORLD_BLOOM_PER_CHAR_KEEP: usize = 12;
 pub(super) const GENERAL_TRIM_THRESHOLD: usize = 400;
 pub(super) const GENERAL_PER_CHAR_KEEP: usize = 10;
 pub(super) const CHALLENGE_ALL_PER_CHAR_KEEP: usize = 19;
-

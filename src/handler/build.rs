@@ -13,42 +13,41 @@ use crate::search::SearchContext;
 use crate::types::DefaultImage;
 
 use super::card_config::apply_card_config;
-use super::event_bonus::{build_card_event_bonus, build_event_context, EventContext};
+use super::event_bonus::{EventContext, build_card_event_bonus, build_event_context};
 use super::filter::{
-    ep_prefilter_keep, ep_prefilter_keep_with_params, general_per_character_trim, keep_card,
-    per_character_trim, prepared_ep_prefilter_keep, prepared_ep_prefilter_keep_with_params,
-    prepared_keep_card, prepared_post_event_unit_filter, target_per_character_trim,
-    CHALLENGE_ALL_PER_CHAR_KEEP, EP_PREFILTER_MIN_POOL, FINAL_CHAPTER_PER_CHAR_KEEP,
-    GENERAL_PER_CHAR_KEEP, GENERAL_TRIM_THRESHOLD, PER_CHAR_KEEP,
+    CHALLENGE_ALL_PER_CHAR_KEEP, EP_PREFILTER_MIN_POOL,
+    GENERAL_PER_CHAR_KEEP, GENERAL_TRIM_THRESHOLD, PER_CHAR_KEEP, ep_prefilter_keep,
+    ep_prefilter_keep_with_params, general_per_character_trim, keep_card, per_character_trim,
+    prepared_ep_prefilter_keep, prepared_ep_prefilter_keep_with_params, prepared_keep_card,
+    prepared_post_event_unit_filter, target_per_character_trim, WORLD_BLOOM_PER_CHAR_KEEP,
 };
-use super::gather::{sort_and_gather, CardIntermediate, FullPrecisionCard, GatheredContext};
+use super::gather::{CardIntermediate, FullPrecisionCard, GatheredContext, sort_and_gather};
 use super::index;
 use super::music::{self, build_music_params};
-use super::power::{
-    build_power_batch_from_fn, PowerInput, PowerResult, PreparedPowerContext,
-};
-use super::skill::{build_skill, is_bfes_skill_pair, SkillResult, SkillState};
-use super::types::{
-    self, default_image_kind, is_after_training,
-};
+use super::power::{PowerInput, PowerResult, PreparedPowerContext, build_power_batch_from_fn};
+use super::skill::{SkillResult, SkillState, build_skill, is_bfes_skill_pair};
+use super::types::{self, default_image_kind, is_after_training};
 use super::validate::validate_build_params;
 use super::world_bloom::{
-    build_final_chapter_support_decks_fast, build_support_deck_fast, support_seed_from_intermediate,
-    SupportSeedSlim,
+    SupportSeedSlim, build_final_chapter_support_decks_fast, build_support_deck_fast,
+    support_seed_from_intermediate,
 };
 use super::{BuildError, PreparedGameData};
 
-pub(super) fn enrich_master(master: &types::MasterCard, game: &types::GameData<'_>) -> types::MasterCard {
+pub(super) fn enrich_master(
+    master: &types::MasterCard,
+    game: &types::GameData<'_>,
+) -> types::MasterCard {
     let mut master = master.clone();
     if (master.max_level.is_none() || master.max_skill_level.is_none())
         && let Some(rarity) = game
             .card_rarities
             .iter()
             .find(|entry| entry.card_rarity_type == master.card_rarity_type)
-        {
-            master.max_level.get_or_insert(rarity.max_level);
-            master.max_skill_level.get_or_insert(rarity.max_skill_level);
-        }
+    {
+        master.max_level.get_or_insert(rarity.max_level);
+        master.max_skill_level.get_or_insert(rarity.max_skill_level);
+    }
     if master.max_master_rank.is_none() {
         let max_master_rank = game
             .master_lessons
@@ -219,19 +218,20 @@ impl<'a> PreparedPoolBuild<'a> {
                 && crate::types::is_world_bloom_finale_event(ctx.event_id)
                 && !ctx.honor_bonuses.is_empty()
             {
-                    let owned_honors: std::collections::HashSet<i32> = user
-                        .user_honors
-                        .iter()
-                        .map(|honor| honor.honor_id)
-                        .collect();
-                    for entry in &ctx.honor_bonuses {
-                        if let Ok(ch) = usize::try_from(entry.leader_game_character_id)
-                            && ch < 27 && owned_honors.contains(&entry.honor_id) {
-                                result[ch] =
-                                    result[ch].wrapping_add(entry.bonus_rate.max(0) as u16);
-                            }
+                let owned_honors: std::collections::HashSet<i32> = user
+                    .user_honors
+                    .iter()
+                    .map(|honor| honor.honor_id)
+                    .collect();
+                for entry in &ctx.honor_bonuses {
+                    if let Ok(ch) = usize::try_from(entry.leader_game_character_id)
+                        && ch < 27
+                        && owned_honors.contains(&entry.honor_id)
+                    {
+                        result[ch] = result[ch].wrapping_add(entry.bonus_rate.max(0) as u16);
                     }
                 }
+            }
             result
         };
 
@@ -328,8 +328,7 @@ impl<'a> PreparedPoolBuild<'a> {
             .as_ref()
             .is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id));
         let can_prefilter_before_power = event_ctx.as_ref().is_some_and(|ctx| {
-            ctx.support_deck_count == 0
-                && !crate::types::is_world_bloom_finale_event(ctx.event_id)
+            ctx.support_deck_count == 0 && !crate::types::is_world_bloom_finale_event(ctx.event_id)
         }) && !matches!(
             params.target,
             crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
@@ -696,9 +695,7 @@ pub(super) fn resolve_fixture_bonus_limit(
         .find(|entry| entry.event_id == event_id)
         .map(|entry| entry.bonus_rate_limit)
         // 终章（legacy 180 与模拟 WL3 终章）固定 20。
-        .or_else(|| {
-            crate::types::is_world_bloom_finale_event(event_id).then_some(20)
-        })
+        .or_else(|| crate::types::is_world_bloom_finale_event(event_id).then_some(20))
 }
 pub(super) fn build_card_pool_fully_prepared_internal(
     prepared: &PreparedGameData<'_>,
@@ -712,10 +709,9 @@ pub(super) fn build_card_pool_fully_prepared_internal(
     let music = build.music.as_ref();
     let prepared_cards = &build.cards;
     let mut cards = Vec::with_capacity(prepared_cards.len());
-    let needs_support_cards = event_ctx
-        .is_some_and(|ctx| {
-            ctx.support_deck_count > 0 || crate::types::is_world_bloom_finale_event(ctx.event_id)
-        });
+    let needs_support_cards = event_ctx.is_some_and(|ctx| {
+        ctx.support_deck_count > 0 || crate::types::is_world_bloom_finale_event(ctx.event_id)
+    });
     let mut support_seeds: Vec<SupportSeedSlim> = if needs_support_cards {
         Vec::with_capacity(prepared_cards.len())
     } else {
@@ -792,22 +788,21 @@ pub(super) fn build_card_pool_fully_prepared_internal(
 
     if params.filter_other_unit
         && let Some(unit) = event_ctx.and_then(|ctx| ctx.filter_unit)
-            && let Some(unit_index) = types::unit_to_pool_index(unit) {
-                let wanted = 1u8 << unit_index;
-                let piapro = types::unit_to_pool_index(crate::types::Unit::Piapro)
-                    .map(|index| 1u8 << index)
-                    .unwrap_or(0);
-                cards.retain(|card| {
-                    card.unit_mask_raw & wanted != 0 || card.unit_mask_raw == piapro
-                });
-            }
+        && let Some(unit_index) = types::unit_to_pool_index(unit)
+    {
+        let wanted = 1u8 << unit_index;
+        let piapro = types::unit_to_pool_index(crate::types::Unit::Piapro)
+            .map(|index| 1u8 << index)
+            .unwrap_or(0);
+        cards.retain(|card| card.unit_mask_raw & wanted != 0 || card.unit_mask_raw == piapro);
+    }
 
     let is_world_bloom =
         event_ctx.is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom));
-    let is_final_chapter = event_ctx
-        .is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id));
+    let is_final_chapter =
+        event_ctx.is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id));
     if build.ep_prefilter_applied {
-        per_character_trim(&mut cards, params, PER_CHAR_KEEP, 0);
+        per_character_trim(&mut cards, params, PER_CHAR_KEEP);
     } else if event_ctx.is_some()
         && !matches!(
             params.target,
@@ -821,18 +816,14 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         cards.retain(|card| {
             ep_prefilter_keep_with_params(card, params, is_world_bloom, is_final_chapter)
         });
-        if is_world_bloom || is_final_chapter {
-            // WL turn-3 的 336k cap 与异色加成让高练度低加成卡同样可能进最优解，
-            // 额外保留综合力专家。
-            let (keep, power_keep) = if is_final_chapter {
-                (FINAL_CHAPTER_PER_CHAR_KEEP - 8, 8)
-            } else {
-                (PER_CHAR_KEEP, 8)
-            };
-            per_character_trim(&mut cards, params, keep, power_keep);
+        // WL turn-3 的 336k cap 与异色加成让高练度低加成卡同样可能进最优解，
+        // 单角色名额放宽；Pareto 前沿自会把这类卡排进保留集。
+        let keep = if is_world_bloom || is_final_chapter {
+            WORLD_BLOOM_PER_CHAR_KEEP
         } else {
-            per_character_trim(&mut cards, params, PER_CHAR_KEEP, 0);
-        }
+            PER_CHAR_KEEP
+        };
+        per_character_trim(&mut cards, params, keep);
     }
 
     let is_challenge_live = matches!(
@@ -847,8 +838,6 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         params.target,
         crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
     ) && !is_challenge_all
-        && !is_final_chapter
-        && !is_world_bloom
         && cards.len() > GENERAL_TRIM_THRESHOLD
     {
         general_per_character_trim(&mut cards, params, GENERAL_PER_CHAR_KEEP);
@@ -864,6 +853,14 @@ pub(super) fn build_card_pool_fully_prepared_internal(
 
     if cards.is_empty() {
         return Err(BuildError::EmptyPool);
+    }
+    // 兜底：任何模式的候选都必须装进 mask 容量。上面的模式化裁剪只是让保留集
+    // 更贴合该模式的打分，装不下时按 Pareto 前沿逐角色收紧，而不是把
+    // TooManyCards 抛给调用方。
+    let mut fallback_keep = GENERAL_PER_CHAR_KEEP;
+    while cards.len() > crate::pool::MASK_WORDS * 64 && fallback_keep > 1 {
+        per_character_trim(&mut cards, params, fallback_keep);
+        fallback_keep /= 2;
     }
     let (fixed_card_ids, fixed_character_ids) = validate_fixed_constraints(params, &cards)?;
     if cards.len() > crate::pool::MASK_WORDS * 64 {
