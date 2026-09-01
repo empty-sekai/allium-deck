@@ -112,7 +112,7 @@ Run a full recommendation from the command line, printing pool-build/search timi
 ```bash
 # Option 1: download a prebuilt binary (linux-x86_64 shown)
 curl -L -o recommend_cli \
-  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.8/recommend_cli-v0.0.8-linux-x86_64
+  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.9/recommend_cli-v0.0.9-linux-x86_64
 chmod +x recommend_cli
 ./recommend_cli [OPTIONS]
 
