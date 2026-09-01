@@ -100,7 +100,8 @@ pub fn load_masterdata(masterdata_json: &str, music_metas_json: &str) -> Result<
 }
 
 /// 组卡入口。需先 `load_masterdata`。`user_json`/`params_json` 为上传链路
-/// camelCase 格式；返回 top-5 卡组 JSON（真实游戏卡 ID + 展示指标）。
+/// camelCase 格式；返回卡组 JSON（真实游戏卡 ID + 展示指标），条数由
+/// params 的 `limit` 决定（缺省 10，上限 30）。
 #[wasm_bindgen]
 pub fn recommend(user_json: &str, params_json: &str) -> Result<String, JsValue> {
     let data = engine_data()?;
@@ -162,10 +163,9 @@ fn recommend_with_user(
     let build_pool_start = performance_now();
     let (pool, ctx) = build_card_pool(user, game, &params).map_err(to_js)?;
     let build_pool_ms = elapsed_ms(build_pool_start);
-    let mut render_user = user.clone();
-    render_user.user_cards = cultivated_user_cards(user, game, &params);
-    let user_cards = render_user
-        .user_cards
+    // 只需要养成态卡表本身；克隆整个 UserProfile 后立刻覆盖 user_cards 是纯浪费。
+    let cultivated = cultivated_user_cards(user, game, &params);
+    let user_cards = cultivated
         .iter()
         .map(|card| (card.card_id, card))
         .collect::<HashMap<_, _>>();
@@ -181,11 +181,26 @@ fn recommend_with_user(
     );
     let search_ms = elapsed_ms(search_start);
 
+    // 每张输出卡都线性扫 cards 主表的话是 top_k × 5 次全表扫描；先建一次索引。
+    let master_cards = game
+        .cards
+        .iter()
+        .map(|card| (card.id, card))
+        .collect::<HashMap<_, _>>();
     let decks: Vec<DeckOut> = results
         .iter()
         .enumerate()
         .map(|(index, result)| {
-            DeckOut::build(index + 1, &pool, &ctx, game, user, &user_cards, result)
+            DeckOut::build(
+                index + 1,
+                &pool,
+                &ctx,
+                game,
+                &master_cards,
+                user,
+                &user_cards,
+                result,
+            )
         })
         .collect();
 
@@ -283,6 +298,7 @@ impl DeckOut {
         pool: &CardPool,
         ctx: &SearchContext,
         game: &GameData<'_>,
+        master_cards: &HashMap<i32, &MasterCard>,
         original_user: &UserProfile,
         user_cards: &HashMap<i32, &UserCard>,
         result: &DeckResult,
@@ -297,6 +313,7 @@ impl DeckOut {
                             pool,
                             ctx,
                             game,
+                            master_cards,
                             original_user,
                             user_cards,
                             card_idx,
@@ -328,6 +345,7 @@ impl DeckOut {
                             pool,
                             ctx,
                             game,
+                            master_cards,
                             original_user,
                             user_cards,
                             card_idx,
@@ -366,6 +384,7 @@ impl CardOut {
         pool: &CardPool,
         ctx: &SearchContext,
         game: &GameData<'_>,
+        master_cards: &HashMap<i32, &MasterCard>,
         original_user: &UserProfile,
         user_cards: &HashMap<i32, &UserCard>,
         card_idx: allium_deck::pool::CardIdx,
@@ -378,7 +397,7 @@ impl CardOut {
         let trained = user_card
             .map(default_image_is_trained)
             .unwrap_or_else(|| ctx.trained_to_special_image_at(card_idx.raw()));
-        let meta = card_meta(game, card_id, trained);
+        let meta = card_meta(master_cards, card_id, trained);
         let has_canvas_bonus = user_card
             .and_then(|card| card.has_canvas_bonus_override)
             .unwrap_or_else(|| {
@@ -445,9 +464,13 @@ struct CardMeta {
     attr: String,
 }
 
-fn card_meta(game: &GameData<'_>, card_id: i32, trained: bool) -> CardMeta {
+fn card_meta(
+    master_cards: &HashMap<i32, &MasterCard>,
+    card_id: i32,
+    trained: bool,
+) -> CardMeta {
     let training = if trained { "after_training" } else { "normal" };
-    match game.cards.iter().find(|card| card.id == card_id) {
+    match master_cards.get(&card_id).copied() {
         Some(MasterCard {
             asset_bundle_name,
             rarity,
