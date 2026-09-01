@@ -196,6 +196,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       masterdata-version: ${{ steps.inputs.outputs.masterdata-version }}
+    # npm trusted publishing 需要 OIDC token，必须在能发出它的 job 层声明；
+    # 顶层 `permissions: contents: read` 会被这里的 job 级设置覆盖。
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -293,6 +298,12 @@ jobs:
           (cd wasm/pkg && npm pack --pack-destination ../../release)
           mv release/empty-sekai-allium-deck-wasm-*.tgz "release/$NPM_TGZ"
 
+      - name: Set up Node for npm trusted publishing
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
       - name: Smoke-test npm package
         run: |
           INSTALL_ROOT=$(mktemp -d)
@@ -300,6 +311,18 @@ jobs:
           npm install --prefix "$INSTALL_ROOT" "$NPM_PACKAGE"
           cp scripts/smoke_wasm_package.mjs "$INSTALL_ROOT/smoke.mjs"
           node "$INSTALL_ROOT/smoke.mjs"
+
+      - name: Publish to npm (trusted publishing)
+        run: |
+          # trusted publishing 硬门槛：npm CLI >= 11.5.1 / Node >= 22.14。
+          # runner 自带版本未必满足，强制升到 latest。
+          npm install -g npm@latest
+          # trusted publishing 校验 package.json 的 repository.url 与 GitHub 仓库一致，
+          # 缺了会报 "Repository URL mismatch"。wasm-pack 生成的 package.json 不带该字段，
+          # 此处补上并显式设为 public（scoped 包默认 restricted）。
+          node -e "const fs=require('fs');const p='wasm/pkg/package.json';const j=JSON.parse(fs.readFileSync(p));j.repository={type:'git',url:'git+https://github.com/empty-sekai/allium-deck.git'};j.publishConfig={access:'public'};fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
+          cd wasm/pkg
+          npm publish --provenance
 
       - name: Upload WASM release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
