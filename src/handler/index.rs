@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use crate::simd::PowerAreaItem;
 
 use super::types::{
-    attr_to_pool_index, parse_attr_code, parse_unit_code, unit_to_pool_index, CardEpisode,
-    CardMysekaiCanvasBonus, CardParameter, GameData, MasterCard, MasterLesson, Skill,
+    CardEpisode, CardMysekaiCanvasBonus, CardParameter, GameData, MasterCard, MasterLesson, Skill,
+    attr_to_pool_index, parse_attr_code, parse_unit_code, unit_to_pool_index,
 };
 
 pub(crate) struct PreparedCardIndex {
@@ -90,9 +90,9 @@ impl PoolIndexes {
                     && let Some(secondary) = support_unit
                         .filter(|unit| !matches!(unit, crate::types::Unit::Piapro))
                         .and_then(unit_to_pool_index)
-                    {
-                        unit_mask |= 1u8 << secondary;
-                    }
+                {
+                    unit_mask |= 1u8 << secondary;
+                }
             }
             let mut master = card.clone();
             if (master.max_level.is_none() || master.max_skill_level.is_none())
@@ -100,10 +100,10 @@ impl PoolIndexes {
                     .card_rarities
                     .iter()
                     .find(|entry| entry.card_rarity_type == master.card_rarity_type)
-                {
-                    master.max_level.get_or_insert(rarity.max_level);
-                    master.max_skill_level.get_or_insert(rarity.max_skill_level);
-                }
+            {
+                master.max_level.get_or_insert(rarity.max_level);
+                master.max_skill_level.get_or_insert(rarity.max_skill_level);
+            }
             if master.max_master_rank.is_none() {
                 master.max_master_rank = Some(
                     game.master_lessons

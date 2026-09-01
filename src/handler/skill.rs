@@ -2,7 +2,7 @@ use crate::pool::{DiffSkill, RefSkill, SkillSlot, UnitCountSkill};
 use crate::types::SkillInfo;
 
 use super::index::{PoolIndexes, PreparedSkillEffectKind};
-use super::types::{unit_to_pool_index, GameData, MasterCard, UserCard};
+use super::types::{GameData, MasterCard, UserCard, unit_to_pool_index};
 
 /// 技能预计算结果。
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -102,10 +102,11 @@ pub(crate) fn build_skill(
             PreparedSkillEffectKind::UnitCount => {
                 unit_count_unit = effect.unit;
                 if let Some(count) = effect.unit_member_count
-                    && (1..=5).contains(&count) {
-                        unit_count_values[(count - 1) as usize] =
-                            clamp_score(effect.value, skill_limit);
-                    }
+                    && (1..=5).contains(&count)
+                {
+                    unit_count_values[(count - 1) as usize] =
+                        clamp_score(effect.value, skill_limit);
+                }
             }
             PreparedSkillEffectKind::Diff => {
                 diff = Some(DiffSkill {

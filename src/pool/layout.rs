@@ -1,7 +1,7 @@
 use std::mem::size_of;
 
 use super::types::{
-    EventBonusHot, Mask, SkillSlot, ATTR_MASK_COUNT, CHAR_MASK_COUNT, UNIT_MASK_COUNT,
+    ATTR_MASK_COUNT, CHAR_MASK_COUNT, EventBonusHot, Mask, SkillSlot, UNIT_MASK_COUNT,
 };
 
 /// 向上按 `align` 对齐。

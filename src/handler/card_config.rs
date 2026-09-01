@@ -1,6 +1,6 @@
 use super::types::{
-    config_for_rarity, CardConfigSet, CardEpisode, CardRarity, CardRarityConfig, MasterCard,
-    UserCard,
+    CardConfigSet, CardEpisode, CardRarity, CardRarityConfig, MasterCard, UserCard,
+    config_for_rarity,
 };
 
 fn resolve_single_config(configs: &CardConfigSet, card_id: i32) -> Option<&CardRarityConfig> {
@@ -51,16 +51,18 @@ pub(crate) fn apply_card_config(
         }
     }
     if config.skill_max
-        && let Some(max_skill_level) = master.max_skill_level {
-            user_card.skill_level = max_skill_level.max(user_card.skill_level);
-        }
+        && let Some(max_skill_level) = master.max_skill_level
+    {
+        user_card.skill_level = max_skill_level.max(user_card.skill_level);
+    }
     if let Some(skill_level) = config.skill_level {
         user_card.skill_level = skill_level.clamp(1, master.max_skill_level.unwrap_or(skill_level));
     }
     if config.master_max
-        && let Some(max_master_rank) = master.max_master_rank {
-            user_card.master_rank = max_master_rank.max(user_card.master_rank);
-        }
+        && let Some(max_master_rank) = master.max_master_rank
+    {
+        user_card.master_rank = max_master_rank.max(user_card.master_rank);
+    }
     if let Some(master_rank) = config.master_rank {
         user_card.master_rank = master_rank.clamp(0, master.max_master_rank.unwrap_or(master_rank));
     }

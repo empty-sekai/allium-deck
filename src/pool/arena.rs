@@ -1,4 +1,4 @@
-use std::alloc::{alloc_zeroed, dealloc, handle_alloc_error, Layout};
+use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
 
 /// 64 字节对齐的连续内存块。

@@ -9,9 +9,9 @@ mod power;
 mod skill;
 #[cfg(test)]
 mod tests;
+pub mod types;
 mod validate;
 pub(crate) mod world_bloom;
-pub mod types;
 
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -19,10 +19,10 @@ use std::sync::Arc;
 
 use crate::search::SearchContext;
 
-pub use build::{cultivated_user_cards, PreparedPoolBuild};
+pub use build::{PreparedPoolBuild, cultivated_user_cards};
 pub use gather::FullPrecisionCard;
 pub use types::*;
-pub use world_bloom::{world_bloom_support_cards, WorldBloomSupportCard};
+pub use world_bloom::{WorldBloomSupportCard, world_bloom_support_cards};
 
 pub(crate) use validate::validate_build_params;
 
@@ -147,4 +147,3 @@ pub fn build_card_pool_with_details_fully_prepared(
 ) -> Result<(crate::pool::CardPool, SearchContext, Vec<FullPrecisionCard>), BuildError> {
     build_card_pool_fully_prepared_internal(prepared, build, true)
 }
-

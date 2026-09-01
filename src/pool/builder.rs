@@ -4,8 +4,8 @@ use super::arena::Arena;
 use super::card_pool::CardPool;
 use super::layout::PoolLayout;
 use super::types::{
-    DiffSkill, EventBonusExact, EventBonusHot, Mask, RefSkill, SkillSlot, SpecialTables,
-    UnitCountSkill, ATTR_MASK_COUNT, CHAR_MASK_COUNT, MASK_BITS, UNIT_MASK_COUNT,
+    ATTR_MASK_COUNT, CHAR_MASK_COUNT, DiffSkill, EventBonusExact, EventBonusHot, MASK_BITS, Mask,
+    RefSkill, SkillSlot, SpecialTables, UNIT_MASK_COUNT, UnitCountSkill,
 };
 
 /// `CardPool` 的可写构建阶段。

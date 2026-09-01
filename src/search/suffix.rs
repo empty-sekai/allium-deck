@@ -1,7 +1,7 @@
 use std::mem::size_of;
 
 use crate::pool::{CardIdx, CardPool};
-use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, DECK_SIZE};
+use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
 
 use super::context::SearchContext;
 use super::evaluate::calc_mysekai_internal;

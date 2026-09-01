@@ -9,7 +9,7 @@
 //! 生成结果走引擎自己的 `MasterdataSources::from_strings` →
 //! `OwnedGameData::from_sources` 解析路径，schema 正确性由真实解析代码保证。
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// 主线五团（VS 以支援团形式挂靠）。
 pub const MAIN_UNITS: [&str; 5] = [

@@ -2,7 +2,7 @@ use crate::pool::{CardPool, EventBonusExact, PoolBuilder, SkillSlot};
 use crate::types::{DefaultImage, LiveType, PowerDetail, ScoreTarget, SkillInfo};
 
 use super::power::PowerResult;
-use super::skill::{is_bfes_skill_pair, SkillResult};
+use super::skill::{SkillResult, is_bfes_skill_pair};
 
 /// gather 前的卡级中间态。
 #[derive(Debug, Clone, PartialEq)]

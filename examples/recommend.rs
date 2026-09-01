@@ -34,7 +34,7 @@
 
 use std::path::Path;
 
-use allium_deck::engine::{recommend_json, OwnedGameData};
+use allium_deck::engine::{OwnedGameData, recommend_json};
 
 const DEFAULT_PARAMS: &str = r#"{"liveType":"multi","target":"score","limit":5}"#;
 

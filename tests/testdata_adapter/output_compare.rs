@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use allium_deck::pool::{CardIdx, CardPool, RefSkill, SkillSlot, UnitCountSkill};
-use allium_deck::search::{leaf_evaluate, DeckResult, SearchContext};
-use allium_deck::types::{ScoreTarget, SkillReferenceStrategy, DECK_SIZE};
+use allium_deck::search::{DeckResult, SearchContext, leaf_evaluate};
+use allium_deck::types::{DECK_SIZE, ScoreTarget, SkillReferenceStrategy};
 use serde::Serialize;
 
 use super::legacy_types::{LegacyOutput, LegacyOutputCard};

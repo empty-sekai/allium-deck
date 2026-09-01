@@ -7,8 +7,8 @@ mod types;
 pub use builder::PoolBuilder;
 pub use card_pool::CardPool;
 pub use types::{
-    CardIdx, DiffSkill, EventBonusExact, EventBonusHot, Mask, RefSkill, SkillSlot, SpecialTables,
-    UnitCountSkill, MASK_WORDS,
+    CardIdx, DiffSkill, EventBonusExact, EventBonusHot, MASK_WORDS, Mask, RefSkill, SkillSlot,
+    SpecialTables, UnitCountSkill,
 };
 
 #[cfg(test)]

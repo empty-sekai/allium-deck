@@ -2,8 +2,8 @@
 
 use std::collections::BTreeSet;
 
-use super::types::{self, parse_attr_code};
 use super::BuildError;
+use super::types::{self, parse_attr_code};
 
 pub(crate) fn validate_build_params(params: &types::BuildParams) -> Result<(), BuildError> {
     let configs = [

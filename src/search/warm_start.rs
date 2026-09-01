@@ -1,5 +1,5 @@
 use crate::pool::{CardIdx, CardPool};
-use crate::types::{LiveType, ScoreTarget, DECK_SIZE};
+use crate::types::{DECK_SIZE, LiveType, ScoreTarget};
 
 use super::context::SearchContext;
 use super::evaluate::{card_proxy_bonus, leaf_evaluate_checked};
@@ -523,12 +523,14 @@ fn promote_best(best: &mut Option<DeckResult>, candidate: DeckResult) {
 #[inline(always)]
 fn slot_matches(pool: &CardPool, ctx: &SearchContext, slot: usize, card: CardIdx) -> bool {
     if let Some(game_id) = ctx.fixed_card_at(slot)
-        && pool.game_id(card) != game_id {
-            return false;
-        }
+        && pool.game_id(card) != game_id
+    {
+        return false;
+    }
     if let Some(character_id) = ctx.fixed_character_at(slot)
-        && pool.char_id(card) != character_id {
-            return false;
-        }
+        && pool.char_id(card) != character_id
+    {
+        return false;
+    }
     true
 }

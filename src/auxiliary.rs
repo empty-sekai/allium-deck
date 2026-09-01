@@ -5,11 +5,11 @@ use std::collections::{BTreeMap, HashMap};
 use serde::{Deserialize, Serialize};
 
 use crate::handler::{
-    build_card_pool_with_details_prepared, BuildParams, MusicMeta, PreparedGameData, UserAreaItem,
-    UserProfile,
+    BuildParams, MusicMeta, PreparedGameData, UserAreaItem, UserProfile,
+    build_card_pool_with_details_prepared,
 };
 use crate::search::resolve_power_for_cards;
-use crate::{EventType, LiveSkillOrder, LiveType, ScoreTarget, DECK_SIZE};
+use crate::{DECK_SIZE, EventType, LiveSkillOrder, LiveType, ScoreTarget};
 
 /// Additional masterdata used only by auxiliary calculations.
 #[derive(Debug, Clone, Default)]
@@ -120,12 +120,10 @@ impl AuxiliaryData {
                         item.clone()
                     }
                 })
-                .chain(
-                    current_level.is_none().then_some(UserAreaItem {
-                        area_item_id: area_item.id,
-                        level: next_level,
-                    }),
-                )
+                .chain(current_level.is_none().then_some(UserAreaItem {
+                    area_item_id: area_item.id,
+                    level: next_level,
+                }))
                 .collect();
             let power = fixed_deck_power(&upgraded, &prepared, card_ids)? - current_power;
             if power <= 0 {
@@ -404,9 +402,8 @@ fn fixed_deck_power(
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    let (pool, context, _) =
-        build_card_pool_with_details_prepared(user, prepared, &params)
-            .map_err(|error| error.to_string())?;
+    let (pool, context, _) = build_card_pool_with_details_prepared(user, prepared, &params)
+        .map_err(|error| error.to_string())?;
     let mut cards = Vec::with_capacity(card_ids.len());
     for card_id in card_ids {
         let card = pool

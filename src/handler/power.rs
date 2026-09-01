@@ -2,8 +2,8 @@ use crate::types::{PowerDetail, Unit};
 
 use super::index::PoolIndexes;
 use super::types::{
-    is_after_training, parse_unit_code, unit_to_pool_index, GameData, MasterCard, UserCard,
-    UserProfile,
+    GameData, MasterCard, UserCard, UserProfile, is_after_training, parse_unit_code,
+    unit_to_pool_index,
 };
 use crate::simd::{PowerAreaItem, SimdBackend};
 
@@ -248,12 +248,11 @@ fn base_power_dims(
     let has_canvas_bonus = user_card
         .has_canvas_bonus_override
         .unwrap_or_else(|| ctx.has_canvas(master.id));
-    if has_canvas_bonus
-        && let Some(canvas) = idx.canvas_bonus(master.card_rarity_type) {
-            base[0] += canvas.power1_bonus_fixed;
-            base[1] += canvas.power2_bonus_fixed;
-            base[2] += canvas.power3_bonus_fixed;
-        }
+    if has_canvas_bonus && let Some(canvas) = idx.canvas_bonus(master.card_rarity_type) {
+        base[0] += canvas.power1_bonus_fixed;
+        base[1] += canvas.power2_bonus_fixed;
+        base[2] += canvas.power3_bonus_fixed;
+    }
 
     base
 }
@@ -629,19 +628,19 @@ pub(crate) fn resolve_unit_mask(master: &MasterCard, game: &GameData<'_>) -> u8 
             .and_then(parse_unit_code)
             .filter(|unit| !matches!(unit, Unit::Piapro))
             .and_then(unit_to_pool_index)
-        {
-            mask |= 1u8 << secondary;
-        }
+    {
+        mask |= 1u8 << secondary;
+    }
     mask
 }
 
 #[cfg(test)]
 mod tests {
     use super::{PoolIndexes, PreparedPowerContext};
+    use crate::handler::UserProfile;
     use crate::handler::types::{
         GameData, MysekaiGate, MysekaiGateLevel, UserFixtureBonus, UserGateBonus,
     };
-    use crate::handler::UserProfile;
 
     #[test]
     fn fixture_bonus_only_clamps_when_limit_is_present() {

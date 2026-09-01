@@ -1,5 +1,5 @@
 use crate::pool::{CardIdx, CardPool, DiffSkill, RefSkill, SkillSlot, UnitCountSkill};
-use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy, DECK_SIZE};
+use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 
 use super::context::SearchContext;
 use super::types::DeckResultSummary;

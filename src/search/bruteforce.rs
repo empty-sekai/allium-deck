@@ -1,5 +1,5 @@
 use crate::pool::{CardIdx, CardPool};
-use crate::types::{ScoreTarget, DECK_SIZE};
+use crate::types::{DECK_SIZE, ScoreTarget};
 
 use super::context::SearchContext;
 use super::evaluate::leaf_evaluate_checked;
@@ -101,13 +101,15 @@ fn selected_card_idx(deck: &[CardIdx; DECK_SIZE], depth: usize, card: CardIdx) -
 #[inline(always)]
 fn slot_matches(pool: &CardPool, ctx: &SearchContext, depth: usize, card: CardIdx) -> bool {
     if let Some(game_id) = ctx.fixed_card_at(depth)
-        && pool.game_id(card) != game_id {
-            return false;
-        }
+        && pool.game_id(card) != game_id
+    {
+        return false;
+    }
     if let Some(character_id) = ctx.fixed_character_at(depth)
-        && pool.char_id(card) != character_id {
-            return false;
-        }
+        && pool.char_id(card) != character_id
+    {
+        return false;
+    }
     true
 }
 

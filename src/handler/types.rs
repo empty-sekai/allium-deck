@@ -983,8 +983,9 @@ pub(crate) fn parse_event_type(value: &str) -> Option<EventType> {
 pub(crate) fn resolve_event_type(game: &GameData<'_>, params: &BuildParams) -> Option<EventType> {
     if let Some(event_id) = params.event_id
         && let Some(event) = game.events.iter().find(|event| event.id == event_id)
-            && let Some(kind) = parse_event_type(&event.event_type) {
-                return Some(kind);
-            }
+        && let Some(kind) = parse_event_type(&event.event_type)
+    {
+        return Some(kind);
+    }
     params.event_type.as_deref().and_then(parse_event_type)
 }

@@ -10,8 +10,8 @@ use allium_deck::handler::{
     SkillEffect, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus, WorldBloom,
     WorldBloomDiffAttrBonus,
 };
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 /// 持有 `GameData<'_>` 借用所需的所有 `Vec<T>`。
 #[derive(Debug, Default)]

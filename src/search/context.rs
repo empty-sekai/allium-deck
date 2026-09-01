@@ -1,5 +1,5 @@
 use crate::types::{
-    EventType, LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy, DECK_SIZE,
+    DECK_SIZE, EventType, LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy,
 };
 
 /// 预排序支援卡组。
@@ -98,9 +98,9 @@ impl SearchContext {
                 .support_decks_by_character
                 .get(leader_character_id as usize)
                 .filter(|deck| deck.count > 0)
-            {
-                return deck;
-            }
+        {
+            return deck;
+        }
         &self.support_deck
     }
 

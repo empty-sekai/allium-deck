@@ -2022,9 +2022,11 @@ mod tests {
             .filter(|row| row.music_id == OMAKASE_MUSIC_ID)
             .collect();
         assert_eq!(omakase.len(), OMAKASE_OUTPUT_DIFFS.len());
-        assert!(OMAKASE_OUTPUT_DIFFS
-            .iter()
-            .all(|diff| omakase.iter().any(|row| row.difficulty == *diff)));
+        assert!(
+            OMAKASE_OUTPUT_DIFFS
+                .iter()
+                .all(|diff| omakase.iter().any(|row| row.difficulty == *diff))
+        );
         let master = omakase
             .iter()
             .find(|row| row.difficulty == "master")

@@ -4,8 +4,8 @@ use super::arena::Arena;
 use super::builder::PoolBuilder;
 use super::layout::PoolLayout;
 use super::types::{
-    CardIdx, EventBonusExact, EventBonusHot, Mask, SkillSlot, SpecialTables, ATTR_MASK_COUNT,
-    CHAR_MASK_COUNT, UNIT_MASK_COUNT,
+    ATTR_MASK_COUNT, CHAR_MASK_COUNT, CardIdx, EventBonusExact, EventBonusHot, Mask, SkillSlot,
+    SpecialTables, UNIT_MASK_COUNT,
 };
 
 /// HPC SoA 卡池。
@@ -266,22 +266,28 @@ impl CardPool {
     }
 
     #[inline(always)]
-    pub(crate) unsafe fn char_mask_unchecked(&self, char_id: u8) -> &Mask { unsafe {
-        debug_assert!((char_id as usize) < CHAR_MASK_COUNT);
-        self.char_masks().get_unchecked(char_id as usize)
-    }}
+    pub(crate) unsafe fn char_mask_unchecked(&self, char_id: u8) -> &Mask {
+        unsafe {
+            debug_assert!((char_id as usize) < CHAR_MASK_COUNT);
+            self.char_masks().get_unchecked(char_id as usize)
+        }
+    }
 
     #[inline(always)]
-    pub(crate) unsafe fn unit_mask_unchecked(&self, unit_id: u8) -> &Mask { unsafe {
-        debug_assert!((unit_id as usize) < UNIT_MASK_COUNT);
-        self.unit_masks().get_unchecked(unit_id as usize)
-    }}
+    pub(crate) unsafe fn unit_mask_unchecked(&self, unit_id: u8) -> &Mask {
+        unsafe {
+            debug_assert!((unit_id as usize) < UNIT_MASK_COUNT);
+            self.unit_masks().get_unchecked(unit_id as usize)
+        }
+    }
 
     #[inline(always)]
-    pub(crate) unsafe fn attr_mask_unchecked(&self, attr_id: u8) -> &Mask { unsafe {
-        debug_assert!((attr_id as usize) < ATTR_MASK_COUNT);
-        self.attr_masks().get_unchecked(attr_id as usize)
-    }}
+    pub(crate) unsafe fn attr_mask_unchecked(&self, attr_id: u8) -> &Mask {
+        unsafe {
+            debug_assert!((attr_id as usize) < ATTR_MASK_COUNT);
+            self.attr_masks().get_unchecked(attr_id as usize)
+        }
+    }
 
     /// 根据保留位图重新打包一个紧凑卡池。
     pub fn compact(&self, keep: &[bool]) -> CardPool {
