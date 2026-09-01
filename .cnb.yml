@@ -16,16 +16,6 @@
       --retries "${DOWNLOAD_RETRIES:-5}" \
       --workers "${DOWNLOAD_WORKERS:-8}"
 
-.deck-wasm-build-gamedata: &deck_wasm_build_gamedata
-  name: Build embedded gamedata
-  script: |
-    set -e
-    . .tmp/cnb-wasm.env
-    cargo run --release --manifest-path wasm/Cargo.toml --bin build_gamedata -- \
-      --masterdata "$MASTERDATA_DIR" \
-      --music-metas "$MUSIC_METAS" \
-      --region "$REGION"
-
 .deck-wasm-build: &deck_wasm_build
   name: Build wasm
   script: |
@@ -86,7 +76,6 @@
         python3 scripts/resolve_wasm_inputs.py --mode publish --env-out .tmp/cnb-wasm.env
         cat .tmp/cnb-wasm.env
     - *deck_wasm_download_masterdata
-    - *deck_wasm_build_gamedata
     - *deck_wasm_build
     - *deck_wasm_package_files
     - name: Upload CDN prefixes
@@ -173,7 +162,6 @@
         python3 scripts/resolve_wasm_inputs.py --mode release --env-out .tmp/cnb-wasm.env
         cat .tmp/cnb-wasm.env
     - *deck_wasm_download_masterdata
-    - *deck_wasm_build_gamedata
     - *deck_wasm_build
     - name: Package release zip
       script: |

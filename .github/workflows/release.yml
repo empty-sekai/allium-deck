@@ -95,9 +95,12 @@ jobs:
             echo "allium-deck crate package unexpectedly contains WASM files" >&2
             exit 1
           fi
+          # wasm-bindgen is a legitimate transitive dependency of web-time, the
+          # portable Instant shim the engine uses on wasm32; only the bindings
+          # crate itself must stay out of the published package.
           PACKAGE_LOCK=$(tar -xOf "$CRATE" "allium-deck-${VERSION}/Cargo.lock")
-          if grep -Eq 'name = "(allium-deck-wasm|postcard|wasm-bindgen)"' <<<"$PACKAGE_LOCK"; then
-            echo "allium-deck crate package lock unexpectedly contains WASM dependencies" >&2
+          if grep -Eq 'name = "allium-deck-wasm"' <<<"$PACKAGE_LOCK"; then
+            echo "allium-deck crate package lock unexpectedly contains the WASM bindings crate" >&2
             exit 1
           fi
           rm -f "$CRATE"
@@ -253,13 +256,6 @@ jobs:
             --snapshot-mode pinned \
             --expected-music-sha256 "$MUSIC_METAS_SHA256"
 
-      - name: Build embedded gamedata
-        run: |
-          cargo run --release --manifest-path wasm/Cargo.toml --bin build_gamedata -- \
-            --masterdata "$MASTERDATA_DIR" \
-            --music-metas "$MUSIC_METAS" \
-            --region "$REGION"
-
       - name: Build WASM npm package
         env:
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
@@ -410,7 +406,7 @@ jobs:
             echo "|-------|------------|"
             echo "| \`recommend_cli-${GITHUB_REF_NAME}-*\` | Prebuilt CLI binaries (Linux x86_64 / musl / aarch64, Windows x86_64, macOS Intel / Apple Silicon) |"
             echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}.tgz\` | Installable npm package \`@empty-sekai/allium-deck-wasm\` |"
-            echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}-${MASTERDATA_VERSION}-cn.zip\` | Browser WASM bundle with embedded CN masterdata snapshot |"
+            echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}-${MASTERDATA_VERSION}-cn.zip\` | Browser WASM bundle paired with the CN masterdata snapshot |"
           } >> CHANGELOG.md
 
       - name: Download all artifacts

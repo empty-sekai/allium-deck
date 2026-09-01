@@ -2,12 +2,9 @@
 
 //! Browser WASM entry point for the standalone npm package.
 //!
-//! 两种数据供给模式：
-//! - **外置 masterdata（推荐）**：浏览器侧 JS 通常已持有 masterdata JSON，
-//!   `load_masterdata(map, metas)` 直接复用同一份数据——引擎内一次性完成
-//!   「raw JSON → 扁平结构」转换并缓存，零额外下载，数据新鲜度与代码发版解耦。
-//! - **内嵌数据（兼容保留，feature = "embedded"）**：`recommend_embedded`
-//!   使用编译期 `include_bytes!` 的 postcard，供离线 demo / 旧调用方。
+//! masterdata 由调用方提供：浏览器侧 JS 通常已持有 masterdata JSON，
+//! `load_masterdata(map, metas)` 直接复用同一份数据——引擎内一次性完成
+//! 「raw JSON → 扁平结构」转换并缓存，零额外下载，数据新鲜度与代码发版解耦。
 //!
 //! 导出面：`load_masterdata` / `recommend` / `createUserData` +
 //! `recommendWithUserData` / `recommend_area_items` / `recommendMusic` /
@@ -23,9 +20,6 @@ use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use wasm_bindgen::prelude::*;
-
-#[cfg(feature = "embedded")]
-mod embedded;
 
 use allium_deck::auxiliary::AuxiliaryData;
 use allium_deck::engine::{OwnedGameData, parse_build_params_json, parse_user_profile_json};
@@ -216,19 +210,6 @@ fn recommend_with_user(
         },
     })
     .map_err(to_js)
-}
-
-#[cfg(feature = "embedded")]
-#[wasm_bindgen]
-pub fn recommend_embedded(user_json: &str, params_json: &str) -> Result<String, JsValue> {
-    let owned = embedded::embedded_gamedata().map_err(to_js)?;
-    // 内嵌 postcard 不含辅助表；辅助接口在此模式下报「未载入」。
-    let data = std::rc::Rc::new(EngineData {
-        game: owned,
-        auxiliary: AuxiliaryData::default(),
-    });
-    let user = parse_user_profile_json(user_json).map_err(to_js)?;
-    recommend_with_user(&data, &user, params_json)
 }
 
 fn to_js<E: std::fmt::Display>(err: E) -> JsValue {
