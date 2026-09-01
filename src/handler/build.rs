@@ -19,7 +19,8 @@ use super::filter::{
     GENERAL_PER_CHAR_KEEP, GENERAL_TRIM_THRESHOLD, PER_CHAR_KEEP, ep_prefilter_keep,
     ep_prefilter_keep_with_params, general_per_character_trim, keep_card, per_character_trim,
     prepared_ep_prefilter_keep, prepared_ep_prefilter_keep_with_params, prepared_keep_card,
-    prepared_post_event_unit_filter, target_per_character_trim, WORLD_BLOOM_PER_CHAR_KEEP,
+    prepared_post_event_unit_filter, target_per_character_trim, FINAL_CHAPTER_PER_CHAR_KEEP,
+    WORLD_BLOOM_PER_CHAR_KEEP,
 };
 use super::gather::{CardIntermediate, FullPrecisionCard, GatheredContext, sort_and_gather};
 use super::index;
@@ -817,8 +818,10 @@ pub(super) fn build_card_pool_fully_prepared_internal(
             ep_prefilter_keep_with_params(card, params, is_world_bloom, is_final_chapter)
         });
         // WL turn-3 的 336k cap 与异色加成让高练度低加成卡同样可能进最优解，
-        // 单角色名额放宽；Pareto 前沿自会把这类卡排进保留集。
-        let keep = if is_world_bloom || is_final_chapter {
+        // 单角色名额比常规活动宽，保留哪几张由 Pareto 前沿决定。
+        let keep = if is_final_chapter {
+            FINAL_CHAPTER_PER_CHAR_KEEP
+        } else if is_world_bloom {
             WORLD_BLOOM_PER_CHAR_KEEP
         } else {
             PER_CHAR_KEEP
@@ -838,6 +841,12 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         params.target,
         crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
     ) && !is_challenge_all
+        // WL 的加成含 diff_attr_bonus（按卡组不同属性数给 0/10/20/35/50）、支援挤占、
+        // limited 计数上限与队长专属加成，都不是单卡可分解的量。这一档裁剪只按
+        // 综合力×技能排序、完全不看加成也不看属性，用它收 WL 会同时裁掉高加成卡
+        // 和某角色仅有的某个属性，属性齐全度一旦掉档就是几十个点的损失。
+        && !is_world_bloom
+        && !is_final_chapter
         && cards.len() > GENERAL_TRIM_THRESHOLD
     {
         general_per_character_trim(&mut cards, params, GENERAL_PER_CHAR_KEEP);
@@ -853,14 +862,6 @@ pub(super) fn build_card_pool_fully_prepared_internal(
 
     if cards.is_empty() {
         return Err(BuildError::EmptyPool);
-    }
-    // 兜底：任何模式的候选都必须装进 mask 容量。上面的模式化裁剪只是让保留集
-    // 更贴合该模式的打分，装不下时按 Pareto 前沿逐角色收紧，而不是把
-    // TooManyCards 抛给调用方。
-    let mut fallback_keep = GENERAL_PER_CHAR_KEEP;
-    while cards.len() > crate::pool::MASK_WORDS * 64 && fallback_keep > 1 {
-        per_character_trim(&mut cards, params, fallback_keep);
-        fallback_keep /= 2;
     }
     let (fixed_card_ids, fixed_character_ids) = validate_fixed_constraints(params, &cards)?;
     if cards.len() > crate::pool::MASK_WORDS * 64 {

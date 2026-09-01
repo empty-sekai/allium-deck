@@ -374,9 +374,10 @@ pub(super) fn keep_card(card: &CardIntermediate, params: &types::BuildParams) ->
 
 pub(super) const EP_PREFILTER_MIN_POOL: usize = 50;
 pub(super) const PER_CHAR_KEEP: usize = 6;
-/// WL（章节 / 终章）单角色名额：336k cap 与异色差分让低加成高练度卡也可能进最优解，
+/// WL 章节 / 终章的单角色名额：336k cap 与异色差分让低加成高练度卡也可能进最优解，
 /// 名额比常规活动宽，具体保留哪几张交给 Pareto 前沿决定。
-pub(super) const WORLD_BLOOM_PER_CHAR_KEEP: usize = 12;
+pub(super) const WORLD_BLOOM_PER_CHAR_KEEP: usize = 14;
+pub(super) const FINAL_CHAPTER_PER_CHAR_KEEP: usize = 16;
 pub(super) const GENERAL_TRIM_THRESHOLD: usize = 400;
 pub(super) const GENERAL_PER_CHAR_KEEP: usize = 10;
 pub(super) const CHALLENGE_ALL_PER_CHAR_KEEP: usize = 19;
