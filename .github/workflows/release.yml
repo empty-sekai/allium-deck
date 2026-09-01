@@ -135,10 +135,6 @@ jobs:
             os: macos-15
             bin_name: recommend_cli
             asset_name: macos-aarch64
-          - target: x86_64-apple-darwin
-            os: macos-15-intel
-            bin_name: recommend_cli
-            asset_name: macos-x86_64
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -397,7 +393,7 @@ jobs:
             echo "### Assets"
             echo "| Asset | Description |"
             echo "|-------|------------|"
-            echo "| \`recommend_cli-${GITHUB_REF_NAME}-*\` | Prebuilt CLI binaries (Linux x86_64 / musl / aarch64, Windows x86_64, macOS Intel / Apple Silicon) |"
+            echo "| \`recommend_cli-${GITHUB_REF_NAME}-*\` | Prebuilt CLI binaries (Linux x86_64 / musl / aarch64, Windows x86_64, macOS Apple Silicon) |"
             echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}.tgz\` | Installable npm package \`@empty-sekai/allium-deck-wasm\` |"
             echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}-cn.zip\` | Browser WASM bundle (ZIP) |"
           } >> CHANGELOG.md

@@ -24,10 +24,12 @@ name = "allium_deck"
 crate-type = ["cdylib"]
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = true
+# `wasm-opt` 直接接受传给 binaryen 的参数数组；没有独立的 `wasm-opt-args` 键，
+# 后者会被 wasm-pack 0.15 判为 unknown 并忽略，导致 wasm-opt 不带 feature 开关运行
+# ——产物一旦用到 bulk-memory，validator 就会拒绝。
 # 注意不能用 --all-features：会把 wasm-bindgen test 导出打进去，破坏 Node 侧加载；
-# 特性开关逐项列出（wasm-bindgen 0.2 产物所需集合）。
-wasm-opt-args = ["-O3", "--converge", "--enable-bulk-memory", "--enable-sign-ext", "--enable-nontrapping-float-to-int", "--enable-mutable-globals", "--enable-reference-types", "--strip-dwarf", "--strip-producers"]
+# feature 开关逐项列出（wasm-bindgen 0.2 产物所需集合）。
+wasm-opt = ["-O3", "--converge", "--enable-bulk-memory", "--enable-sign-ext", "--enable-nontrapping-float-to-int", "--enable-mutable-globals", "--enable-reference-types", "--strip-dwarf", "--strip-producers"]
 
 [dependencies]
 allium-deck = { path = "..", version = "=0.0.9" }
