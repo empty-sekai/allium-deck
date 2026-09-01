@@ -65,16 +65,27 @@ pub(crate) fn engine_data() -> Result<std::rc::Rc<EngineData>, JsValue> {
 }
 
 /// 载入 masterdata：`masterdata_json` 形如
-/// `{"cards": "<cards.json 原文>", "events": "...", ...}`（各表 JSON 原文），
-/// `music_metas_json` 为音乐元数据表原文（可为空字符串）。
+/// `{"cards": "<cards.json 原文>", "events": "...", ...}`（各表 JSON 原文，
+/// 键名裸表名或带 `.json` 后缀均可），`music_metas_json` 为音乐元数据表
+/// 原文（可为空字符串）。
 ///
 /// 数据在引擎内做一次「raw JSON → 扁平结构」转换并缓存，之后每次
 /// recommend 零重复成本。辅助表（areas/areaItems/shopItems/ingameNotes/
 /// ingameCombos）缺省时对应辅助接口报「未载入」错误，不影响组卡。
 #[wasm_bindgen]
 pub fn load_masterdata(masterdata_json: &str, music_metas_json: &str) -> Result<(), JsValue> {
-    let map: BTreeMap<String, String> = serde_json::from_str(masterdata_json)
+    let raw: BTreeMap<String, String> = serde_json::from_str(masterdata_json)
         .map_err(|err| JsValue::from_str(&format!("masterdata JSON 解析失败: {err}")))?;
+    // 统一为文件名键（含 .json 后缀）：调用方传裸表名时自动补全。
+    let map = raw
+        .into_iter()
+        .map(|(mut name, text)| {
+            if !name.ends_with(".json") {
+                name.push_str(".json");
+            }
+            (name, text)
+        })
+        .collect::<BTreeMap<_, _>>();
     let auxiliary = AuxiliaryData::from_strings(&map).map_err(to_js)?;
     let sources = allium_deck::engine::MasterdataSources::from_strings(
         map.into_iter(),

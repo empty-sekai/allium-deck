@@ -989,8 +989,10 @@ impl OwnedGameData {
                     }
                 })
                 .collect(),
+            // 积分上限/称号加成/技能上限三表缺省时走内建 fallback
+            //（bonus 上限 4/5、终章技能上限 140），组卡主链路不受影响。
             event_card_bonus_limits: sources
-                .required::<Vec<RawEventCardBonusLimit>>("eventCardBonusLimits.json")?
+                .optional::<Vec<RawEventCardBonusLimit>>("eventCardBonusLimits.json")?
                 .into_iter()
                 .map(|entry| EventCardBonusLimit {
                     event_id: entry.event_id,
@@ -998,7 +1000,7 @@ impl OwnedGameData {
                 })
                 .collect(),
             event_honor_bonuses: sources
-                .required::<Vec<RawEventHonorBonus>>("eventHonorBonuses.json")?
+                .optional::<Vec<RawEventHonorBonus>>("eventHonorBonuses.json")?
                 .into_iter()
                 .map(|entry| EventHonorBonus {
                     event_id: entry.event_id,
@@ -1054,7 +1056,7 @@ impl OwnedGameData {
                 })
                 .collect(),
             event_skill_score_up_limits: sources
-                .required::<Vec<RawEventSkillScoreUpLimit>>("eventSkillScoreUpLimits.json")?
+                .optional::<Vec<RawEventSkillScoreUpLimit>>("eventSkillScoreUpLimits.json")?
                 .into_iter()
                 .map(|entry| EventSkillScoreUpLimit {
                     event_id: entry.event_id,
@@ -2310,6 +2312,37 @@ mod tests {
             "from_sources 与 load 产出不一致"
         );
     }
+    #[test]
+    fn from_sources_tolerates_missing_limit_tables() {
+        // 积分上限三表（eventCardBonusLimits/eventHonorBonuses/eventSkillScoreUpLimits）
+        // 是可选供给：缺失时走内建 fallback，不得阻断 from_sources。
+        let Some(dir) = std::env::var_os("ALLIUM_MASTERDATA_CN") else {
+            eprintln!("跳过：未设 ALLIUM_MASTERDATA_CN");
+            return;
+        };
+        let Some(mm) = std::env::var_os("ALLIUM_MUSIC_METAS") else {
+            eprintln!("跳过：未设 ALLIUM_MUSIC_METAS");
+            return;
+        };
+        let mut sources = MasterdataSources::from_dir(
+            &std::path::PathBuf::from(dir),
+            &std::path::PathBuf::from(mm),
+        )
+        .expect("from_dir");
+        for name in [
+            "eventCardBonusLimits.json",
+            "eventHonorBonuses.json",
+            "eventSkillScoreUpLimits.json",
+        ] {
+            sources.tables.remove(name);
+        }
+
+        let owned = OwnedGameData::from_sources(&sources).expect("from_sources");
+        assert!(owned.event_card_bonus_limits.is_empty());
+        assert!(owned.event_honor_bonuses.is_empty());
+        assert!(owned.event_skill_score_up_limits.is_empty());
+    }
+
     #[test]
     fn card_parameters_accept_both_grouped_and_row_encodings() {
         let grouped: RawCard = serde_json::from_str(
