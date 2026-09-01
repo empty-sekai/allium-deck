@@ -1,11 +1,11 @@
+use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Instant;
 #[cfg(target_arch = "wasm32")]
 use web_time::Instant;
-use std::time::Duration;
 
 use crate::pool::{CardIdx, CardPool};
-use crate::types::{LiveSkillOrder, LiveType, ScoreTarget, DECK_SIZE};
+use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
 
 use super::context::{SearchContext, SupportDeck};
 use super::dfs::SearchStats;
@@ -16,6 +16,61 @@ use super::types::{DeckResult, SearchParams};
 const MEMBER_COUNT: usize = 4;
 const FINAL_CHAPTER_AUTO_LEADERS_PER_CHAR: usize = 3;
 const FINAL_CHAPTER_SEED_GROUP_PREFIX: usize = 6;
+/// 每层最多按上界降序保留的候选卡数。
+const RANKED_CAP: usize = 32;
+
+/// `recurse_cards` 排序候选缓冲的单槽：(上界, 卡, 落子后的局部状态)。
+type RankedSlot = (u64, CardIdx, CardPartial);
+/// 递归热路径每 1024 个节点才真正读一次时钟：`Instant::now()` 在 wasm 上是
+/// `performance.now()` 的 JS 调用，逐节点读会主导终章搜索耗时。一旦过线即置粘性
+/// 标志，之后所有调用立刻返回 true，整棵递归逐层退出（与 `dfs.rs` 同一约定）。
+struct DeadlineGuard {
+    deadline: Option<Instant>,
+    node_count: u32,
+    hit: bool,
+}
+
+impl DeadlineGuard {
+    fn new(deadline: Option<Instant>) -> Self {
+        Self {
+            deadline,
+            node_count: 0,
+            hit: false,
+        }
+    }
+
+    /// 逐次读时钟：只用于每队长 / 每 job 的外层循环（调用量为个位数量级）。
+    #[inline]
+    fn expired(&mut self) -> bool {
+        if self.hit {
+            return true;
+        }
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        if Instant::now() >= deadline {
+            self.hit = true;
+            return true;
+        }
+        false
+    }
+
+    /// 采样读时钟：用于递归内部的高频调用点。
+    #[inline(always)]
+    fn expired_sampled(&mut self) -> bool {
+        if self.hit {
+            return true;
+        }
+        if self.deadline.is_none() {
+            return false;
+        }
+        self.node_count = self.node_count.wrapping_add(1);
+        if self.node_count & 1023 != 0 {
+            return false;
+        }
+        self.expired()
+    }
+}
 
 #[derive(Clone)]
 struct CharGroup {
@@ -212,13 +267,12 @@ fn search_leaders(
         return (Vec::new(), SearchStats::default());
     }
 
-    let started_at = Instant::now();
-    let requested_deadline = if params.timeout_ms == 0 {
+    let deadline = if params.timeout_ms == 0 {
         None
     } else {
-        Some(started_at + Duration::from_millis(params.timeout_ms))
+        Some(Instant::now() + Duration::from_millis(params.timeout_ms))
     };
-    let deadline = requested_deadline;
+    let mut guard = DeadlineGuard::new(deadline);
     let suffix = SuffixBound::build(pool, ctx);
     // member 位图由 search_instrumented 统一计算（含支援惩罚维度与替代记录），
     // 经 ctx 透传；空位图等价全保留。
@@ -232,7 +286,7 @@ fn search_leaders(
             params,
             &suffix,
             &member_keep,
-            deadline,
+            &mut guard,
             tracker,
             stats,
         );
@@ -267,7 +321,7 @@ fn search_leaders(
         }
 
         for leader in leaders {
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            if guard.expired() {
                 break;
             }
             let leader_const = build_leader_const(pool, ctx, leader);
@@ -291,7 +345,7 @@ fn search_leaders(
                 support: ctx.support_deck_for_leader(leader_char),
                 tracker: &mut tracker,
                 stats: &mut stats,
-                deadline,
+                deadline: &mut guard,
                 leader: leader_const,
             };
             state.recurse_chars(0, 0, &mut selected);
@@ -307,7 +361,7 @@ fn search_auto_leaders_two_phase(
     params: &SearchParams,
     suffix: &SuffixBound,
     member_keep: &[bool],
-    deadline: Option<Instant>,
+    guard: &mut DeadlineGuard,
     mut tracker: TopKTracker,
     mut stats: SearchStats,
 ) -> (Vec<DeckResult>, SearchStats) {
@@ -359,7 +413,7 @@ fn search_auto_leaders_two_phase(
             .then_with(|| left.leader.leader.raw().cmp(&right.leader.leader.raw()))
     });
     for job in jobs {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if guard.expired() {
             break;
         }
         if tracker.threshold() != 0 && job.ceiling <= tracker.threshold() {
@@ -377,7 +431,7 @@ fn search_auto_leaders_two_phase(
             support: ctx.support_deck_for_leader(pool.char_id(job.leader.leader)),
             tracker: &mut tracker,
             stats: &mut stats,
-            deadline,
+            deadline: guard,
             leader: job.leader,
         };
         state.recurse_chars(0, 0, &mut selected);
@@ -1045,16 +1099,13 @@ struct CharacterSearchState<'a> {
     support: &'a SupportDeck,
     tracker: &'a mut TopKTracker,
     stats: &'a mut SearchStats,
-    deadline: Option<Instant>,
+    deadline: &'a mut DeadlineGuard,
     leader: LeaderConst,
 }
 
 impl CharacterSearchState<'_> {
     fn recurse_chars(&mut self, depth: usize, start: usize, selected: &mut [usize; MEMBER_COUNT]) {
-        if self
-            .deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-        {
+        if self.deadline.expired_sampled() {
             return;
         }
         if depth == MEMBER_COUNT {
@@ -1063,7 +1114,10 @@ impl CharacterSearchState<'_> {
             let mut deck = [self.leader.leader; DECK_SIZE];
             let partial = CardPartial::for_leader(self.pool, self.ctx, &self.leader);
             let plan = build_card_group_plan(self.groups, &ordered);
-            self.recurse_cards(&ordered, &plan, 0, &mut deck, partial);
+            // 排序缓冲按层预留一份：放在递归里会让每个节点付一次 ~3KB 栈清零，
+            // 终章单次搜索的节点量在千万级，这项开销会主导整棵树。
+            let mut scratch = [[(0u64, CardIdx::new(0), partial); RANKED_CAP]; MEMBER_COUNT];
+            self.recurse_cards(&ordered, &plan, 0, &mut deck, partial, &mut scratch);
             return;
         }
 
@@ -1086,10 +1140,7 @@ impl CharacterSearchState<'_> {
 
         let mut idx = start;
         while idx < self.groups.len() {
-            if self
-                .deadline
-                .is_some_and(|deadline| Instant::now() >= deadline)
-            {
+            if self.deadline.expired_sampled() {
                 return;
             }
             if threshold != 0 {
@@ -1122,11 +1173,9 @@ impl CharacterSearchState<'_> {
         depth: usize,
         deck: &mut [CardIdx; DECK_SIZE],
         partial: CardPartial,
+        scratch: &mut [[RankedSlot; RANKED_CAP]],
     ) {
-        if self
-            .deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-        {
+        if self.deadline.expired_sampled() {
             return;
         }
         if depth == MEMBER_COUNT {
@@ -1155,7 +1204,9 @@ impl CharacterSearchState<'_> {
 
         let group = &self.groups[selected[depth]];
         if threshold != 0 {
-            let mut ranked = [(0u64, CardIdx::new(0), partial); 32];
+            let Some((ranked, scratch_tail)) = scratch.split_first_mut() else {
+                return;
+            };
             let mut ranked_len = 0usize;
             for &card in group.cards.iter().take(ranked.len()) {
                 let optimistic_ub = selected_card_ceiling_with_candidate_support_ub(
@@ -1206,7 +1257,7 @@ impl CharacterSearchState<'_> {
                     break;
                 }
                 deck[depth + 1] = card;
-                self.recurse_cards(selected, plan, depth + 1, deck, next_partial);
+                self.recurse_cards(selected, plan, depth + 1, deck, next_partial, scratch_tail);
                 threshold = self.tracker.threshold();
                 ranked_idx += 1;
             }
@@ -1215,7 +1266,14 @@ impl CharacterSearchState<'_> {
                 deck[depth + 1] = card;
                 let next_partial =
                     partial.with_card(self.pool, self.ctx.is_world_bloom, self.support, card);
-                self.recurse_cards(selected, plan, depth + 1, deck, next_partial);
+                self.recurse_cards(
+                    selected,
+                    plan,
+                    depth + 1,
+                    deck,
+                    next_partial,
+                    &mut scratch[1..],
+                );
             }
         }
     }
