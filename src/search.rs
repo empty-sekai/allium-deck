@@ -226,6 +226,21 @@ pub fn search_bonus_targets(
     dfs::dfs_search_bonus_targets(pool, ctx, &suffix, params, targets)
 }
 
+/// 统一搜索入口（engine 与 wasm 共用，避免入口分叉）：
+/// 无档位列表走完整搜索流水线；指定活动加成档位时逐档保留独立 Top-K。
+pub fn search_targets(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    target_bonus_list: &[i32],
+) -> Vec<DeckResult> {
+    if target_bonus_list.is_empty() {
+        search(pool, ctx, params)
+    } else {
+        search_bonus_targets(pool, ctx, params, target_bonus_list).0
+    }
+}
+
 /// Top-K 支配替代展开。
 ///
 /// dominance 裁剪对 Top-1 无损（被裁卡换成支配者分数不降），但 Top-K 下被裁卡参与的

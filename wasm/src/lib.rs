@@ -27,7 +27,7 @@ use allium_deck::handler::{
     GameData, MasterCard, UserCard, UserProfile, build_card_pool, cultivated_user_cards,
 };
 use allium_deck::pool::CardPool;
-use allium_deck::search::{DeckResult, SearchContext, SearchParams, search, summarize_deck};
+use allium_deck::search::{DeckResult, SearchContext, SearchParams, search_targets, summarize_deck};
 
 #[wasm_bindgen]
 extern "C" {
@@ -168,13 +168,16 @@ fn recommend_with_user(
         .collect::<HashMap<_, _>>();
 
     let search_start = performance_now();
-    let results = search(
+    // 走统一搜索入口（与 engine::recommend 同一条分派路径）：
+    // 无档位 → 完整搜索流水线；有档位 → 逐档独立 Top-K。
+    let results = search_targets(
         &pool,
         &ctx,
         &SearchParams {
             top_k: params.limit.clamp(1, 30),
             timeout_ms: params.timeout_ms,
         },
+        &params.target_bonus_list,
     );
     let search_ms = elapsed_ms(search_start);
 

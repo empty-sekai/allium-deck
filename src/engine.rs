@@ -80,17 +80,12 @@ pub fn recommend(
         top_k: params.limit,
         timeout_ms: params.timeout_ms,
     };
-    if params.target_bonus_list.is_empty() {
-        Ok(crate::search::search(&pool, &ctx, &search_params))
-    } else {
-        Ok(crate::search::search_bonus_targets(
-            &pool,
-            &ctx,
-            &search_params,
-            &params.target_bonus_list,
-        )
-        .0)
-    }
+    Ok(crate::search::search_targets(
+        &pool,
+        &ctx,
+        &search_params,
+        &params.target_bonus_list,
+    ))
 }
 
 #[derive(Debug, Serialize)]
