@@ -27,7 +27,9 @@ use allium_deck::handler::{
     GameData, MasterCard, UserCard, UserProfile, build_card_pool, cultivated_user_cards,
 };
 use allium_deck::pool::CardPool;
-use allium_deck::search::{DeckResult, SearchContext, SearchParams, search_targets, summarize_deck};
+use allium_deck::search::{
+    DeckResult, SearchContext, SearchParams, search_targets, summarize_deck,
+};
 
 #[wasm_bindgen]
 extern "C" {
