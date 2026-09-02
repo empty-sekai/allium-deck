@@ -1,3 +1,4 @@
+pub mod bonus_reach;
 pub mod bruteforce;
 pub mod challenge_search;
 pub mod context;
@@ -223,7 +224,8 @@ pub fn search_bonus_targets(
         return (Vec::new(), SearchStats::default());
     }
     let suffix = SuffixBound::build(pool, ctx);
-    dfs::dfs_search_bonus_targets(pool, ctx, &suffix, params, targets)
+    let bonus_reach = bonus_reach::BonusReach::build(pool);
+    dfs::dfs_search_bonus_targets(pool, ctx, &suffix, params, targets, &bonus_reach)
 }
 
 /// 统一搜索入口（engine 与 wasm 共用，避免入口分叉）：

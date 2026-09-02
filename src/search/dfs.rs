@@ -7,6 +7,7 @@ use web_time::Instant;
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, LiveType, ScoreTarget};
 
+use super::bonus_reach::BonusReach;
 use super::context::SearchContext;
 use super::evaluate::leaf_evaluate_checked;
 use super::suffix::{PartialDeck, SuffixBound, UsedSet};
@@ -61,8 +62,17 @@ pub fn dfs_search_bonus_targets(
     suffix: &SuffixBound,
     params: &SearchParams,
     targets: &[i32],
+    bonus_reach: &BonusReach,
 ) -> (Vec<DeckResult>, SearchStats) {
-    dfs_search_seeded_inner(pool, ctx, suffix, params, Vec::new(), Some(targets))
+    dfs_search_seeded_inner(
+        pool,
+        ctx,
+        suffix,
+        params,
+        Vec::new(),
+        Some(targets),
+        Some(bonus_reach),
+    )
 }
 
 pub(crate) fn dfs_search_seeded(
@@ -73,7 +83,7 @@ pub(crate) fn dfs_search_seeded(
     seed: Option<DeckResult>,
 ) -> Vec<DeckResult> {
     let seeds = seed.into_iter().collect::<Vec<_>>();
-    let (results, _) = dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None);
+    let (results, _) = dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None, None);
     results
 }
 
@@ -85,7 +95,7 @@ pub fn dfs_search_instrumented(
     seed: Option<DeckResult>,
 ) -> (Vec<DeckResult>, SearchStats) {
     let seeds = seed.into_iter().collect::<Vec<_>>();
-    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None)
+    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None, None)
 }
 
 pub(crate) fn dfs_search_instrumented_with_seeds(
@@ -95,7 +105,7 @@ pub(crate) fn dfs_search_instrumented_with_seeds(
     params: &SearchParams,
     seeds: Vec<DeckResult>,
 ) -> (Vec<DeckResult>, SearchStats) {
-    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None)
+    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None, None)
 }
 
 fn dfs_search_seeded_inner(
@@ -105,6 +115,7 @@ fn dfs_search_seeded_inner(
     params: &SearchParams,
     seeds: Vec<DeckResult>,
     bonus_targets: Option<&[i32]>,
+    bonus_reach: Option<&BonusReach>,
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
@@ -130,6 +141,7 @@ fn dfs_search_seeded_inner(
         suffix,
         deadline,
         tracker: &mut tracker,
+        bonus_reach,
         node_count: 0,
         deadline_hit: false,
         stats: SearchStats::default(),
@@ -168,7 +180,7 @@ fn dfs_search_seeded_inner(
                     continue;
                 }
             }
-            state.recurse(1, 0, &mut deck, used, partial, Some(leader));
+            state.recurse(1, 0, &mut deck, used, partial, Some(leader), 0);
         }
     } else {
         state.recurse(
@@ -178,6 +190,7 @@ fn dfs_search_seeded_inner(
             UsedSet::new(),
             PartialDeck::default(),
             None,
+            0,
         );
     }
 
@@ -191,6 +204,8 @@ struct SearchState<'a> {
     suffix: &'a SuffixBound,
     deadline: Option<Instant>,
     tracker: &'a mut SearchTracker,
+    /// Bonus-target reachability bitsets; `None` on every non-bucket path.
+    bonus_reach: Option<&'a BonusReach>,
     node_count: u64,
     deadline_hit: bool,
     stats: SearchStats,
@@ -207,6 +222,7 @@ impl SearchState<'_> {
         used: UsedSet,
         partial: PartialDeck,
         fixed_leader: Option<CardIdx>,
+        bonus_x10: u32,
     ) {
         if self.timed_out() {
             return;
@@ -224,7 +240,17 @@ impl SearchState<'_> {
             // partial.bonus 是逐卡 ceil 百分比；每张卡至多高估 0.5%，
             // 因此 2*ceil-depth 是精确 x2 bonus 的安全下界。
             let lower_bonus_x2 = partial.bonus.saturating_mul(2).saturating_sub(depth as u32);
-            if self.tracker.bonus_can_prune(lower_bonus_x2, upper) {
+            // World Bloom 的加成合计走 limited-count 分支，与逐卡求和模型不一致，
+            // 该场景保持旧行为（不做可达性剪枝）。
+            let reach = if self.ctx.is_world_bloom {
+                None
+            } else {
+                self.bonus_reach
+            };
+            if self
+                .tracker
+                .bonus_can_prune(lower_bonus_x2, upper, reach, start, depth, bonus_x10)
+            {
                 self.stats.ub_prunes += 1;
                 return;
             }
@@ -296,7 +322,7 @@ impl SearchState<'_> {
                         threshold,
                     );
                 } else {
-                    self.recurse_simple(depth, start, deck, used, partial, fixed_leader);
+                    self.recurse_simple(depth, start, deck, used, partial, fixed_leader, bonus_x10);
                 }
             }
         }
@@ -370,6 +396,7 @@ impl SearchState<'_> {
                 next_used,
                 next_partial,
                 fixed_leader,
+                0,
             );
         }
     }
@@ -456,6 +483,7 @@ impl SearchState<'_> {
                 next_used,
                 next_partial,
                 fixed_leader,
+                0,
             );
         }
     }
@@ -723,6 +751,7 @@ impl SearchState<'_> {
                 next_used,
                 next_partial,
                 fixed_leader,
+                0,
             );
 
             let new_threshold = self.tracker.threshold();
@@ -930,6 +959,7 @@ impl SearchState<'_> {
             next_used,
             next_partial,
             None,
+            0,
         );
     }
 
@@ -942,6 +972,7 @@ impl SearchState<'_> {
         used: UsedSet,
         partial: PartialDeck,
         fixed_leader: Option<CardIdx>,
+        bonus_x10: u32,
     ) {
         let mut dense = start;
         while dense < self.pool.count() {
@@ -978,6 +1009,7 @@ impl SearchState<'_> {
                 next_used,
                 next_partial,
                 fixed_leader,
+                bonus_x10 + self.pool.event_bonus(card).total_x10() as u32,
             );
         }
     }
@@ -1045,9 +1077,19 @@ impl SearchTracker {
     }
 
     #[inline(always)]
-    fn bonus_can_prune(&self, lower_bonus_x2: u32, upper: u64) -> bool {
+    fn bonus_can_prune(
+        &self,
+        lower_bonus_x2: u32,
+        upper: u64,
+        bonus_reach: Option<&BonusReach>,
+        start: usize,
+        depth: usize,
+        bonus_x10: u32,
+    ) -> bool {
         match self {
-            Self::Bonus(tracker) => tracker.can_prune(lower_bonus_x2, upper),
+            Self::Bonus(tracker) => {
+                tracker.can_prune(lower_bonus_x2, upper, bonus_reach, start, depth, bonus_x10)
+            }
             Self::TopK(_) => false,
         }
     }
@@ -1102,9 +1144,23 @@ impl BonusBucketTracker {
     }
 
     #[inline(always)]
-    fn can_prune(&self, lower_bonus_x2: u32, upper: u64) -> bool {
+    fn can_prune(
+        &self,
+        lower_bonus_x2: u32,
+        upper: u64,
+        bonus_reach: Option<&BonusReach>,
+        start: usize,
+        depth: usize,
+        bonus_x10: u32,
+    ) -> bool {
         let max_bonus_x2 = (upper >> 32) as u32;
         let live_upper = upper as u32 as u64;
+        let remaining = DECK_SIZE - depth.min(DECK_SIZE);
+        // The subtree can only ever produce buckets that are (a) already
+        // populated and still under their live threshold, or (b) empty but
+        // reachable by some combination of the remaining cards. Anything else
+        // is provably dead weight and gets pruned.
+        let mut satisfiable = false;
         for (target, tracker) in &self.buckets {
             if *target < lower_bonus_x2 {
                 continue;
@@ -1113,11 +1169,33 @@ impl BonusBucketTracker {
                 break;
             }
             let threshold = tracker.threshold();
-            if threshold == 0 || live_upper >= (threshold as u32 as u64) {
-                return false;
+            if threshold == 0 {
+                let Some(reach) = bonus_reach else {
+                    satisfiable = true;
+                    continue;
+                };
+                // round(x10 / 5) == x2 holds exactly for
+                // x10 in [5*x2 - 2, 5*x2 + 2].
+                let center = target.saturating_mul(5);
+                let lo = center.saturating_sub(2);
+                let hi = center.saturating_add(2);
+                // reach covers only the remaining cards' sum, so the already
+                // picked bonus is subtracted from the target window.
+                if reach.any_in_range(
+                    start,
+                    remaining,
+                    lo.saturating_sub(bonus_x10),
+                    hi.saturating_sub(bonus_x10),
+                ) {
+                    satisfiable = true;
+                }
+                continue;
+            }
+            if live_upper >= threshold {
+                satisfiable = true;
             }
         }
-        true
+        !satisfiable
     }
 
     fn into_vec(self) -> Vec<DeckResult> {
