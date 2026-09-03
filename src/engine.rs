@@ -297,10 +297,11 @@ pub fn parse_build_params_json(
     params.music_id = i32_field(&value, "musicId").or_else(|| i32_field(&value, "music_id"));
     params.music_diff =
         string_field(&value, "musicDiff").or_else(|| string_field(&value, "music_diff"));
-    params.fixed_cards = int_array(&value, "fixedCards");
-    params.fixed_characters = int_array(&value, "fixedCharacters");
-    params.forced_leader_character_id = i32_field(&value, "forcedLeaderCharacterId");
-    params.excluded_cards = int_array(&value, "excludedCards");
+    params.fixed_cards = int_array_alias(&value, "fixedCards", "fixed_cards");
+    params.fixed_characters = int_array_alias(&value, "fixedCharacters", "fixed_characters");
+    params.forced_leader_character_id = i32_field(&value, "forcedLeaderCharacterId")
+        .or_else(|| i32_field(&value, "forced_leader_character_id"));
+    params.excluded_cards = int_array_alias(&value, "excludedCards", "excluded_cards");
     params.world_bloom_character_id = i32_field(&value, "worldBloomCharacterId")
         .or_else(|| i32_field(&value, "world_bloom_character_id"));
     params.world_bloom_event_turn = i32_field(&value, "worldBloomEventTurn")
@@ -489,6 +490,16 @@ fn int_array(value: &Value, key: &str) -> Vec<i32> {
         .iter()
         .filter_map(|entry| entry.as_i64().map(|value| value as i32))
         .collect()
+}
+
+/// camelCase 优先、snake_case 兜底的整数数组读取。
+fn int_array_alias(value: &Value, camel_key: &str, snake_key: &str) -> Vec<i32> {
+    let camel = int_array(value, camel_key);
+    if camel.is_empty() {
+        int_array(value, snake_key)
+    } else {
+        camel
+    }
 }
 
 fn parse_custom_bonus_support_units(
@@ -2180,6 +2191,72 @@ mod tests {
             params.custom_bonus_character_support_units[0].unit,
             crate::Unit::Idol
         );
+    }
+
+    #[test]
+    fn parse_build_params_reads_deck_constraint_fields_in_both_cases() {
+        let camel = parse_build_params_json(
+            r#"{
+                "fixedCards":[101,102],
+                "fixedCharacters":[3],
+                "excludedCards":[999],
+                "forcedLeaderCharacterId":5
+            }"#,
+        )
+        .expect("parse");
+        assert_eq!(camel.fixed_cards, vec![101, 102]);
+        assert_eq!(camel.fixed_characters, vec![3]);
+        assert_eq!(camel.excluded_cards, vec![999]);
+        assert_eq!(camel.forced_leader_character_id, Some(5));
+
+        let snake = parse_build_params_json(
+            r#"{
+                "fixed_cards":[201],
+                "fixed_characters":[7,8],
+                "excluded_cards":[888],
+                "forced_leader_character_id":9
+            }"#,
+        )
+        .expect("parse");
+        assert_eq!(snake.fixed_cards, vec![201]);
+        assert_eq!(snake.fixed_characters, vec![7, 8]);
+        assert_eq!(snake.excluded_cards, vec![888]);
+        assert_eq!(snake.forced_leader_character_id, Some(9));
+    }
+
+    #[test]
+    fn parse_build_params_reads_the_full_simulated_event_option_set() {
+        // 模拟活动不带 event_id，全部条件由这组键描述；浏览器 worker 用 snake_case 下发。
+        for json in [
+            r#"{
+                "event_type":"marathon",
+                "event_unit":"light_sound",
+                "event_attr":"cool",
+                "custom_bonus_character_ids":[1,5,21],
+                "custom_bonus_character_support_units":{"21":"street"},
+                "world_bloom_event_turn":3,
+                "world_bloom_character_id":21
+            }"#,
+            r#"{
+                "eventType":"marathon",
+                "eventUnit":"light_sound",
+                "eventAttr":"cool",
+                "customBonusCharacterIds":[1,5,21],
+                "customBonusCharacterSupportUnits":{"21":"street"},
+                "worldBloomEventTurn":3,
+                "worldBloomCharacterId":21
+            }"#,
+        ] {
+            let params = parse_build_params_json(json).expect("parse");
+            assert_eq!(params.event_id, None);
+            assert_eq!(params.event_type.as_deref(), Some("marathon"));
+            assert_eq!(params.event_unit.as_deref(), Some("light_sound"));
+            assert_eq!(params.event_attr.as_deref(), Some("cool"));
+            assert_eq!(params.custom_bonus_character_ids, vec![1, 5, 21]);
+            assert_eq!(params.custom_bonus_character_support_units.len(), 1);
+            assert_eq!(params.world_bloom_event_turn, Some(3));
+            assert_eq!(params.world_bloom_character_id, Some(21));
+        }
     }
 
     #[test]

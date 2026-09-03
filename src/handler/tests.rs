@@ -1812,6 +1812,199 @@ fn handler_target_trim_preserves_fixed_cards_and_characters() {
 }
 
 #[test]
+fn forced_leader_character_becomes_a_fixed_character_slot() {
+    let cards = vec![
+        make_card(100, 1, 30000, 20),
+        make_card(200, 2, 29000, 20),
+        make_card(300, 3, 28000, 20),
+        make_card(400, 4, 27000, 20),
+        make_card(500, 5, 26000, 20),
+    ];
+
+    // 固定 100（角色 1）+ 指定角色 3 当队长：角色 3 补一个固定角色槽。
+    let params = BuildParams {
+        fixed_cards: vec![100],
+        forced_leader_character_id: Some(3),
+        ..BuildParams::default()
+    };
+    let (fixed_card_ids, fixed_character_ids) =
+        validate_fixed_constraints(&params, &cards).expect("固定约束应合法");
+    assert_eq!(fixed_card_ids, vec![100u16]);
+    assert_eq!(fixed_character_ids, vec![3u8]);
+
+    // 队长角色已被固定卡覆盖时不重复占槽。
+    let params = BuildParams {
+        fixed_cards: vec![100],
+        forced_leader_character_id: Some(1),
+        ..BuildParams::default()
+    };
+    let (fixed_card_ids, fixed_character_ids) =
+        validate_fixed_constraints(&params, &cards).expect("固定约束应合法");
+    assert_eq!(fixed_card_ids, vec![100u16]);
+    assert!(fixed_character_ids.is_empty());
+
+    // 队长角色已在 fixed_characters 里时同样不重复占槽。
+    let params = BuildParams {
+        fixed_characters: vec![3],
+        forced_leader_character_id: Some(3),
+        ..BuildParams::default()
+    };
+    let (_, fixed_character_ids) =
+        validate_fixed_constraints(&params, &cards).expect("固定约束应合法");
+    assert_eq!(fixed_character_ids, vec![3u8]);
+}
+
+#[test]
+fn forced_leader_character_rejects_a_full_fixed_deck_and_an_absent_character() {
+    let cards = vec![
+        make_card(100, 1, 30000, 20),
+        make_card(200, 2, 29000, 20),
+        make_card(300, 3, 28000, 20),
+        make_card(400, 4, 27000, 20),
+        make_card(500, 5, 26000, 20),
+    ];
+
+    // 五个槽位已被固定卡占满，再指定一个新角色当队长无处安放。
+    let params = BuildParams {
+        fixed_cards: vec![100, 200, 300, 400, 500],
+        forced_leader_character_id: Some(6),
+        ..BuildParams::default()
+    };
+    assert!(validate_fixed_constraints(&params, &cards).is_err());
+
+    // 卡池里没有该角色的卡。
+    let params = BuildParams {
+        forced_leader_character_id: Some(6),
+        ..BuildParams::default()
+    };
+    assert!(validate_fixed_constraints(&params, &cards).is_err());
+}
+
+#[test]
+fn forced_leader_character_is_dropped_for_challenge_live() {
+    let cards = vec![make_card(100, 1, 30000, 20), make_card(101, 1, 29000, 20)];
+    let params = BuildParams {
+        live_type: LiveType::Challenge,
+        forced_leader_character_id: Some(3),
+        ..BuildParams::default()
+    };
+    let (_, fixed_character_ids) =
+        validate_fixed_constraints(&params, &cards).expect("挑战 live 应忽略队长约束");
+    assert!(fixed_character_ids.is_empty());
+}
+
+/// 造 n 张 4 星卡（角色 1..n），供指定队长的端到端建池测试使用。
+fn leader_master_cards(count: i32) -> Vec<MasterCard> {
+    (1..=count)
+        .map(|id| MasterCard {
+            id,
+            character_id: id,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: String::new(),
+            asset_bundle_name: format!("chara_{id:06}"),
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        })
+        .collect()
+}
+
+#[test]
+fn handler_forced_leader_reaches_the_search_context_for_a_normal_event() {
+    // 回归点：forced_leader_character_id 曾只在 WL 终章写进 SearchContext，
+    // 其余活动一律丢弃，该参数因此对普通活动完全无效。
+    let cards = leader_master_cards(6);
+    let card_params = (1..=6)
+        .map(|card_id| types::CardParameter {
+            card_id,
+            level: 1,
+            param1: 100,
+            param2: 100,
+            param3: 100,
+        })
+        .collect::<Vec<_>>();
+    let skills = [types::Skill {
+        id: 10,
+        level: 1,
+        is_after_training: false,
+    }];
+    let effects = [types::SkillEffect {
+        skill_id: 10,
+        skill_level: 1,
+        effect_type: "score_up".to_string(),
+        value: 100,
+        additional_value: None,
+        unit_member_count: None,
+        unit: None,
+        activate_character_rank: None,
+    }];
+    let units = (1..=6)
+        .map(|id| types::GameCharacterUnit {
+            game_character_id: id,
+            unit: "idol".to_string(),
+        })
+        .collect::<Vec<_>>();
+    let events = [types::Event {
+        id: 42,
+        event_type: "marathon".to_string(),
+    }];
+    let game = sample_game(
+        &cards,
+        &card_params,
+        &[],
+        &[],
+        &[],
+        &skills,
+        &effects,
+        &[],
+        &units,
+    );
+    let game = GameData {
+        events: &events,
+        ..game
+    };
+    let user = UserProfile {
+        user_cards: (1..=6).map(sample_user_card).collect(),
+        ..UserProfile::default()
+    };
+
+    let params = BuildParams {
+        event_id: Some(42),
+        live_type: LiveType::Multi,
+        target: ScoreTarget::Score,
+        forced_leader_character_id: Some(3),
+        ..BuildParams::default()
+    };
+    let (_, ctx) = build_card_pool(&user, &game, &params).expect("普通活动应能建池");
+    assert!(!ctx.is_final_chapter);
+    assert_eq!(ctx.forced_leader_character_id, Some(3));
+    assert_eq!(ctx.fixed_character_ids, vec![3u8]);
+    assert!(
+        !ctx.effective_best_skill_as_leader(),
+        "指定队长时不得再让最高技能抢队长位",
+    );
+
+    // 不指定队长时上下文保持原样。
+    let params = BuildParams {
+        event_id: Some(42),
+        live_type: LiveType::Multi,
+        target: ScoreTarget::Score,
+        ..BuildParams::default()
+    };
+    let (_, ctx) = build_card_pool(&user, &game, &params).expect("建池");
+    assert_eq!(ctx.forced_leader_character_id, None);
+    assert!(ctx.fixed_character_ids.is_empty());
+    assert!(ctx.effective_best_skill_as_leader());
+}
+
+#[test]
 fn handler_build_power_large_pool_does_not_error() {
     // 模拟大账号：26 角色各 25 张卡 = 650 张 > 512
     let mut master_cards = Vec::new();

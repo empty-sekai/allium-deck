@@ -504,6 +504,29 @@ pub(super) fn validate_fixed_constraints(
         fixed_character_ids.push(character_id);
     }
 
+    // 指定队长：队长角色必须真的在队里。已被固定卡/固定角色覆盖时不重复占槽，
+    // 否则补一个固定角色槽——排序、热启动、支配裁剪与 DFS 剪枝随之复用同一套约束。
+    if !matches!(
+        params.live_type,
+        crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+    ) && let Some(leader_id) = params
+        .forced_leader_character_id
+        .filter(|id| (1..=26).contains(id))
+    {
+        let leader_id = leader_id as u8;
+        if seen_chars.insert(leader_id) {
+            if fixed_card_ids.len() + fixed_character_ids.len() >= crate::types::DECK_SIZE {
+                return Err(BuildError::InvalidConfig(
+                    "固定约束已占满 5 个槽位，无法再指定队长角色".to_string(),
+                ));
+            }
+            if full.iter().all(|card| card.character_id != leader_id) {
+                return Err(BuildError::EmptyPool);
+            }
+            fixed_character_ids.push(leader_id);
+        }
+    }
+
     Ok((fixed_card_ids, fixed_character_ids))
 }
 
@@ -606,15 +629,17 @@ pub(super) fn build_search_context(
         target: params.target,
         fixed_card_ids,
         fixed_character_ids,
-        forced_leader_character_id: if event_ctx
-            .is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id))
-        {
+        // 指定队长对所有活动/模式生效；挑战 live 五张同角色，队长约束无意义。
+        forced_leader_character_id: if matches!(
+            params.live_type,
+            crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+        ) {
+            None
+        } else {
             params
                 .forced_leader_character_id
                 .filter(|id| (1..=26).contains(id))
                 .map(|id| id as u8)
-        } else {
-            None
         },
         music_rate_pct: music.map(|music| music.event_rate_pct).unwrap_or(100),
         boost_rate_pct: normalize_boost_rate_pct(params.boost),

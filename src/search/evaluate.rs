@@ -116,6 +116,9 @@ pub(crate) fn leaf_evaluate_checked(
     ctx: &SearchContext,
     deck: &[CardIdx; 5],
 ) -> Option<u64> {
+    if !ctx.deck_matches_forced_leader(pool, deck) {
+        return None;
+    }
     let power_total = ctx.clamp_power_total(resolve_power_target(pool, deck) + ctx.honor_bonus);
     match ctx.target {
         ScoreTarget::Power => {
@@ -755,6 +758,8 @@ fn materialize_permutation(
     }
 
     let mut order = [0usize, 1, 2, 3, 4];
+    // 默认路径（最高技能作队长）保持原样；指定队长时 effective_best_skill_as_leader
+    // 恒为 false，额外的槽位查找只落在 else 分支上。
     if ctx.effective_best_skill_as_leader() {
         let mut best_pos = 0usize;
         let mut pos = 1usize;
@@ -774,6 +779,10 @@ fn materialize_permutation(
         }
         order.swap(0, best_pos);
     } else {
+        // 指定队长：该角色的卡固定占 order[0]（队长位），其余按卡 ID 排序。
+        if let Some(leader_slot) = ctx.forced_leader_slot(pool, deck) {
+            order.swap(0, leader_slot);
+        }
         sort_tail_by_card_raw(pool, &mut order, deck);
     }
 

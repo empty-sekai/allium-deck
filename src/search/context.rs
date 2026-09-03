@@ -121,7 +121,36 @@ impl SearchContext {
     /// 返回搜索期生效的 leader 选择策略。
     #[inline(always)]
     pub fn effective_best_skill_as_leader(&self) -> bool {
-        self.best_skill_as_leader && !self.is_final_chapter && self.fixed_character_ids.is_empty()
+        self.best_skill_as_leader
+            && !self.is_final_chapter
+            && self.forced_leader_character_id.is_none()
+            && self.fixed_character_ids.is_empty()
+    }
+
+    /// 卡组是否满足指定队长约束（队里必须有该角色的卡）。
+    #[inline(always)]
+    pub fn deck_matches_forced_leader(
+        &self,
+        pool: &crate::pool::CardPool,
+        deck: &[crate::pool::CardIdx; DECK_SIZE],
+    ) -> bool {
+        let Some(leader_character_id) = self.forced_leader_character_id else {
+            return true;
+        };
+        deck.iter()
+            .any(|&card| pool.char_id(card) == leader_character_id)
+    }
+
+    /// 返回队长在 `deck` 中的槽位：指定队长时为该角色所在槽位，否则 `None`。
+    #[inline(always)]
+    pub fn forced_leader_slot(
+        &self,
+        pool: &crate::pool::CardPool,
+        deck: &[crate::pool::CardIdx; DECK_SIZE],
+    ) -> Option<usize> {
+        let leader_character_id = self.forced_leader_character_id?;
+        deck.iter()
+            .position(|&card| pool.char_id(card) == leader_character_id)
     }
 
     /// 判断当前搜索是否走 Mysekai 路径。

@@ -445,6 +445,7 @@ fn search_simple_target(
         && ctx.enforce_char_uniqueness
         && ctx.fixed_card_ids.is_empty()
         && ctx.fixed_character_ids.is_empty()
+        && ctx.forced_leader_character_id.is_none()
     {
         return search_power_scenarios(pool, ctx, params);
     }
