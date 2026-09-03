@@ -130,7 +130,7 @@ cargo build --release
 ```bash
 # 方式1: 下载预编译二进制 (以 linux-x86_64 为例)
 curl -L -o recommend_cli \
-  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.9/recommend_cli-v0.0.9-linux-x86_64
+  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.12/recommend_cli-v0.0.12-linux-x86_64
 chmod +x recommend_cli
 ./recommend_cli [OPTIONS]
 
