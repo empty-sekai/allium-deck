@@ -116,8 +116,7 @@ fn run() -> Result<(), String> {
         .user
         .as_deref()
         .ok_or_else(|| "缺少参数 --user".to_string())?;
-    let top_k = args.top_k.unwrap_or(5);
-    let timeout_ms = args.timeout_ms.unwrap_or(30_000);
+
     let search_repeats = args.search_repeats.unwrap_or(1).max(1);
     let build_repeats = args.build_repeats.unwrap_or(1).max(1);
 
@@ -136,6 +135,11 @@ fn run() -> Result<(), String> {
     let mut params =
         parse_build_params_json(&params_json).map_err(|e| format!("解析 params 失败: {e}"))?;
     apply_overrides(&mut params, std::mem::take(&mut args.overrides));
+
+    // 未显式给 flags 时以 params 为准（此前固定 5/30s，忽略 --params 的
+    // limit/timeout_ms，对以 CLI 为验收入口的回归造成系统性假阴性）。
+    let top_k = args.top_k.unwrap_or(params.limit);
+    let timeout_ms = args.timeout_ms.unwrap_or(params.timeout_ms);
 
     if args.challenge_all {
         return run_challenge_all(&user, &game, params, timeout_ms, load_ms);
@@ -168,10 +172,18 @@ fn run() -> Result<(), String> {
     let build_start = Instant::now();
     let mut build_output = None;
     for _ in 0..build_repeats {
-        build_output = Some(
-            build_card_pool_fully_prepared(&prepared_game, &prepared_build)
-                .map_err(|e| e.to_string())?,
-        );
+        let built = build_card_pool_fully_prepared(&prepared_game, &prepared_build);
+        match built {
+            Ok(ok) => build_output = Some(ok),
+            // 精确档位组卡：候选不足等价于「所有目标档位都不可达」。
+            Err(allium_deck::handler::BuildError::EmptyPool)
+                if !params.target_bonus_list.is_empty() =>
+            {
+                println!("{{\"decks\": []}}");
+                return Ok(());
+            }
+            Err(e) => return Err(e.to_string()),
+        }
     }
     let (pool, ctx) = build_output.expect("build_repeats is non-zero");
     let build_pool_ms = ms(build_start) / build_repeats as f64;

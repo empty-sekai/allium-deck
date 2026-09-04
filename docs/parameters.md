@@ -9,7 +9,7 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | `region` | string | `"cn"` | Region tag carried through to the caller; does not change engine math. |
 | `target` | string | `"score"` | `score`, `power`, `skill`, `bonus`, `mysekai`. Event point optimization is `score` plus an event context. |
 | `liveType` / `live_type` | string | `"solo"` | `solo`, `auto`, `multi`, `cheerful`, `challenge`, `challenge_auto`, `mysekai`. |
-| `limit` | int | 10 | Number of decks returned (Top-K). Distinct card sets. |
+| `limit` | int | 10 | Number of decks returned (Top-K). Distinct card sets. Max 100. |
 | `member` | int | absent | Compatibility field; only 5 (or absent) is supported. |
 | `timeoutMs` / `timeout_ms` | int | 300000 | Search deadline in milliseconds, max 300000. On expiry the best results found so far are returned (anytime behavior); exactness is only guaranteed when the search finishes before the deadline. |
 | `minimize` | bool | false | Weakest-deck search. Only meaningful with `target=power`; ignored otherwise. |
@@ -24,16 +24,16 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | `eventAttr` / `event_attr` | string | absent | Simulated event attribute: `mysterious`, `cute`, `cool`, `pure`, `happy`. |
 | `customBonusCharacterIds` / `custom_bonus_character_ids` | int[] | `[]` | Mixed-event character set; overrides the unit expansion of `eventUnit`. IDs 1–26, max 26 entries. |
 | `customBonusAttr` / `custom_bonus_attr` | string | absent | Mixed-event attribute. |
-| `customBonusCharacterSupportUnits` / `custom_bonus_character_support_units` | array | `[]` | Support-unit constraints for Virtual Singer entries in the custom character set. |
-| `boost` | int | absent | Energy flame count (0–10), not a multiplier; affects event point display math. |
-| `targetBonusList` / `target_bonus_list` | int[] | `[]` | For `target=bonus`: exact event-bonus tiers to hit, one Top-K per tier. Tiered bonus search builds its own candidate pool from the whole box — cards above the highest requested tier are dropped, hard constraints (fixed/excluded cards, unit/attribute filters) still apply, and every remaining card stays searchable so low-granularity tiers stay reachable. |
+| `customBonusCharacterSupportUnits` / `custom_bonus_character_support_units` | object | `{}` | Support-unit constraints for Virtual Singer entries in the custom character set, keyed by character id (`{"21": "street"}`). |
+| `boost` | int | absent | Energy flame count (0–10), not a multiplier; affects event point display math. Values outside 0–10 are rejected. |
+| `targetBonusList` / `target_bonus_list` | int[] | `[]` | For `target=bonus`: exact event-bonus tiers to hit, one Top-K per tier. Max 32 tiers, each 0–10000. An empty result for a tier means the tier is unreachable with the given box. Tiered bonus search builds its own candidate pool from the whole box — cards above the highest requested tier are dropped, hard constraints (fixed/excluded cards, unit/attribute filters) still apply, and every remaining card stays searchable so low-granularity tiers stay reachable. |
 
 ## World Bloom
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `worldBloomCharacterId` / `world_bloom_character_id` | int | absent | Chapter character. |
-| `worldBloomEventTurn` / `world_bloom_event_turn` | int | absent | Chapter turn. |
+| `worldBloomEventTurn` / `world_bloom_event_turn` | int | absent | Chapter turn (1, 2 or 3). Turn 1/2 require `eventUnit`; turn 3 requires `worldBloomCharacterId`. |
 | `worldBloomFinaleTurn` / `world_bloom_finale_turn` | int 2\|3 | absent | 模拟 WL 终章：2 走 legacy 终章 180，3 合成模拟终章 3_200_000。需配合 `worldBloomCharacterId`。 |
 | `forcedLeaderCharacterId` | int | absent | Final chapter only: fixes the leader character; ignored elsewhere. |
 | `supportMasterMax` / `support_master_max` | bool | false | Value support-deck cards at max master rank. |

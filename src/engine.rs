@@ -74,8 +74,16 @@ pub fn recommend(
     game: &GameData<'_>,
     params: &crate::handler::BuildParams,
 ) -> Result<Vec<DeckResult>, EngineError> {
-    let (pool, ctx) = crate::handler::build_card_pool(user, game, params)
-        .map_err(|error| EngineError::Build(error.to_string()))?;
+    let build = crate::handler::build_card_pool(user, game, params);
+    let (pool, ctx) = match build {
+        Ok(ok) => ok,
+        // 精确档位组卡：候选不足等价于「所有目标档位都不可达」，
+        // 返回空结果而非错误（与逐档搜索的空 bucket 行为一致）。
+        Err(crate::handler::BuildError::EmptyPool) if !params.target_bonus_list.is_empty() => {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(EngineError::Build(error.to_string())),
+    };
     let search_params = SearchParams {
         top_k: params.limit,
         timeout_ms: params.timeout_ms,
@@ -246,11 +254,15 @@ pub fn parse_build_params_json(
     input: &str,
 ) -> Result<crate::handler::BuildParams, serde_json::Error> {
     let value = serde_json::from_str::<Value>(input)?;
+    if !value.is_object() {
+        return Err(serde_json::Error::custom("参数必须是 JSON 对象"));
+    }
     let mut params = crate::handler::BuildParams::default();
     if let Some(region) = string_field(&value, "region") {
         params.region = region;
     }
-    params.event_id = i32_field(&value, "eventId").or_else(|| i32_field(&value, "event_id"));
+    params.event_id =
+        i32_field_checked(&value, "eventId")?.or(i32_field_checked(&value, "event_id")?);
     params.event_type =
         string_field(&value, "eventType").or_else(|| string_field(&value, "event_type"));
     params.live_type = parse_live_type_checked(
@@ -294,22 +306,23 @@ pub fn parse_build_params_json(
         crate::handler::types::MAX_TARGET_BONUS_BUCKETS,
     )?;
     params.minimize = bool_field(&value, "minimize").unwrap_or(false);
-    params.music_id = i32_field(&value, "musicId").or_else(|| i32_field(&value, "music_id"));
+    params.music_id =
+        i32_field_checked(&value, "musicId")?.or(i32_field_checked(&value, "music_id")?);
     params.music_diff =
         string_field(&value, "musicDiff").or_else(|| string_field(&value, "music_diff"));
     params.fixed_cards = int_array_alias(&value, "fixedCards", "fixed_cards");
     params.fixed_characters = int_array_alias(&value, "fixedCharacters", "fixed_characters");
-    params.forced_leader_character_id = i32_field(&value, "forcedLeaderCharacterId")
-        .or_else(|| i32_field(&value, "forced_leader_character_id"));
+    params.forced_leader_character_id = i32_field_checked(&value, "forcedLeaderCharacterId")?
+        .or(i32_field_checked(&value, "forced_leader_character_id")?);
     params.excluded_cards = int_array_alias(&value, "excludedCards", "excluded_cards");
-    params.world_bloom_character_id = i32_field(&value, "worldBloomCharacterId")
-        .or_else(|| i32_field(&value, "world_bloom_character_id"));
-    params.world_bloom_event_turn = i32_field(&value, "worldBloomEventTurn")
-        .or_else(|| i32_field(&value, "world_bloom_event_turn"));
-    params.world_bloom_finale_turn = i32_field(&value, "worldBloomFinaleTurn")
-        .or_else(|| i32_field(&value, "world_bloom_finale_turn"));
-    params.challenge_live_character_id = i32_field(&value, "challengeLiveCharacterId")
-        .or_else(|| i32_field(&value, "challenge_live_character_id"));
+    params.world_bloom_character_id = i32_field_checked(&value, "worldBloomCharacterId")?
+        .or(i32_field_checked(&value, "world_bloom_character_id")?);
+    params.world_bloom_event_turn = i32_field_checked(&value, "worldBloomEventTurn")?
+        .or(i32_field_checked(&value, "world_bloom_event_turn")?);
+    params.world_bloom_finale_turn = i32_field_checked(&value, "worldBloomFinaleTurn")?
+        .or(i32_field_checked(&value, "world_bloom_finale_turn")?);
+    params.challenge_live_character_id = i32_field_checked(&value, "challengeLiveCharacterId")?
+        .or(i32_field_checked(&value, "challenge_live_character_id")?);
     params.event_unit =
         string_field(&value, "eventUnit").or_else(|| string_field(&value, "event_unit"));
     params.event_attr =
@@ -332,19 +345,15 @@ pub fn parse_build_params_json(
         "event_attr",
         &["mysterious", "cute", "cool", "pure", "happy"],
     )?;
-    validate_optional_enum(
-        params.event_unit.as_deref(),
-        "event_unit",
-        &[
-            "light_sound",
-            "idol",
-            "street",
-            "theme_park",
-            "themepark",
-            "school_refusal",
-            "piapro",
-        ],
-    )?;
+    // 词表单一权威：与 unit_filter 同用 parse_unit_code，
+    // 避免 event_unit 拒绝而 unit_filter 接受同一别名的分叉。
+    if let Some(unit) = params.event_unit.as_deref()
+        && crate::handler::types::parse_unit_code(unit).is_none()
+    {
+        return Err(serde_json::Error::custom(format!(
+            "event_unit 非法: {unit}"
+        )));
+    }
     params.custom_bonus_character_ids = bounded_int_array_alias(
         &value,
         "customBonusCharacterIds",
@@ -382,18 +391,22 @@ pub fn parse_build_params_json(
             .unwrap_or("average"),
     )?;
     params.specific_skill_order = parse_specific_skill_order(&value)?;
-    params.multi_teammate_score_up = i32_field(&value, "multiLiveTeammateScoreUp")
-        .or_else(|| i32_field(&value, "multi_teammate_score_up"));
-    params.multi_teammate_power = i32_field(&value, "multiLiveTeammatePower")
-        .or_else(|| i32_field(&value, "multi_teammate_power"));
+    params.multi_teammate_score_up = i32_field_checked(&value, "multiLiveTeammateScoreUp")?
+        .or(i32_field_checked(&value, "multi_teammate_score_up")?);
+    params.multi_teammate_power = i32_field_checked(&value, "multiLiveTeammatePower")?
+        .or(i32_field_checked(&value, "multi_teammate_power")?);
     params.multi_live_score_up_lower_bound = value
         .get("multiLiveScoreUpLowerBound")
         .or_else(|| value.get("multi_live_score_up_lower_bound"))
         .and_then(Value::as_f64);
-    params.boost = i32_field(&value, "boost");
+    params.boost = match i32_field_checked(&value, "boost")? {
+        Some(boost) if (0..=10).contains(&boost) => Some(boost),
+        Some(_) => return Err(serde_json::Error::custom("boost 必须在 0..=10 范围内")),
+        None => None,
+    };
     params.other_score =
-        i32_field(&value, "otherScore").or_else(|| i32_field(&value, "other_score"));
-    params.life = i32_field(&value, "life");
+        i32_field_checked(&value, "otherScore")?.or(i32_field_checked(&value, "other_score")?);
+    params.life = i32_field_checked(&value, "life")?;
     params.unit_filter =
         string_field(&value, "unitFilter").or_else(|| string_field(&value, "unit_filter"));
     params.attr_filter =
@@ -663,6 +676,19 @@ fn bounded_int_array_alias(
         .collect()
 }
 
+/// 严格整数字段：键存在但类型不对时直接报错，不再静默丢弃
+/// （例如字符串形式的 event_id 曾会无声丢掉整个活动上下文）。
+fn i32_field_checked(value: &Value, key: &str) -> Result<Option<i32>, serde_json::Error> {
+    match value.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(raw) => raw
+            .as_i64()
+            .and_then(|number| i32::try_from(number).ok())
+            .map(Some)
+            .ok_or_else(|| serde_json::Error::custom(format!("{key} 必须是整数"))),
+    }
+}
+
 fn i32_field(value: &Value, key: &str) -> Option<i32> {
     value
         .get(key)
@@ -704,12 +730,20 @@ fn parse_specific_skill_order(value: &Value) -> Result<Option<[usize; 5]>, serde
     let values = match entry {
         Value::Array(items) => items
             .iter()
-            .filter_map(|item| item.as_u64().map(|value| value as usize))
-            .collect::<Vec<_>>(),
+            .map(|item| {
+                item.as_u64()
+                    .map(|value| value as usize)
+                    .ok_or_else(|| serde_json::Error::custom("specific_skill_order 必须是非负整数"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
         Value::String(text) => text
             .split(',')
-            .filter_map(|part| part.trim().parse::<usize>().ok())
-            .collect::<Vec<_>>(),
+            .map(|part| {
+                part.trim()
+                    .parse::<usize>()
+                    .map_err(|_| serde_json::Error::custom("specific_skill_order 必须是非负整数"))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
         _ => return Err(serde_json::Error::custom("specific_skill_order 非法")),
     };
     if values.len() != 5 {
@@ -722,6 +756,12 @@ fn parse_specific_skill_order(value: &Value) -> Result<Option<[usize; 5]>, serde
     if order.iter().any(|value| *value >= 5) {
         return Err(serde_json::Error::custom(
             "specific_skill_order 索引必须在 0..5",
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    if !order.iter().all(|value| seen.insert(*value)) {
+        return Err(serde_json::Error::custom(
+            "specific_skill_order 索引不得重复",
         ));
     }
     Ok(Some(order))
@@ -2118,6 +2158,75 @@ mod tests {
                 .expect("parse snake case");
         assert!(snake.support_master_max);
         assert!(snake.support_skill_max);
+    }
+
+    #[test]
+    fn parse_build_params_rejects_out_of_range_boost() {
+        // 回归：boost=11 曾被静默接受并按无 boost 计 PT（docs 承诺 0-10）。
+        let err = parse_build_params_json(r#"{"boost":11}"#).expect_err("boost 11 应被拒绝");
+        assert!(err.to_string().contains("boost"), "{err}");
+
+        let params = parse_build_params_json(r#"{"boost":10}"#).expect("boost 10 合法");
+        assert_eq!(params.boost, Some(10));
+        let params = parse_build_params_json(r#"{"boost":0}"#).expect("boost 0 合法");
+        assert_eq!(params.boost, Some(0));
+    }
+
+    #[test]
+    fn parse_build_params_rejects_wrong_typed_integer_fields() {
+        // 回归：字符串形式的 event_id 曾被静默丢弃，整个活动上下文无声消失。
+        let err =
+            parse_build_params_json(r#"{"event_id":"215"}"#).expect_err("字符串 event_id 应被拒绝");
+        assert!(err.to_string().contains("event_id"), "{err}");
+
+        let err =
+            parse_build_params_json(r#"{"musicId":"74"}"#).expect_err("字符串 musicId 应被拒绝");
+        assert!(err.to_string().contains("musicId"), "{err}");
+
+        // 正确类型不受影响。
+        let params = parse_build_params_json(r#"{"event_id":215}"#).expect("数字 event_id 合法");
+        assert_eq!(params.event_id, Some(215));
+    }
+
+    #[test]
+    fn parse_build_params_rejects_non_object_payload() {
+        let err = parse_build_params_json("[1,2,3]").expect_err("顶层数组应被拒绝");
+        assert!(err.to_string().contains("JSON 对象"), "{err}");
+        let err = parse_build_params_json(r#""score""#).expect_err("顶层字符串应被拒绝");
+        assert!(err.to_string().contains("JSON 对象"), "{err}");
+    }
+
+    #[test]
+    fn parse_specific_skill_order_rejects_duplicates_and_garbage() {
+        let err = parse_build_params_json(
+            r#"{"liveSkillOrder":"specific","specificSkillOrder":[1,2,3,4,4]}"#,
+        )
+        .expect_err("重复索引应被拒绝");
+        assert!(err.to_string().contains("重复"), "{err}");
+
+        let err = parse_build_params_json(
+            r#"{"liveSkillOrder":"specific","specificSkillOrder":"1,2,3,4,x"}"#,
+        )
+        .expect_err("非数字索引应被拒绝");
+        assert!(err.to_string().contains("非负整数"), "{err}");
+
+        let params = parse_build_params_json(
+            r#"{"liveSkillOrder":"specific","specificSkillOrder":[4,3,2,1,0]}"#,
+        )
+        .expect("合法排列不受影响");
+        assert_eq!(params.specific_skill_order, Some([4, 3, 2, 1, 0]));
+    }
+
+    #[test]
+    fn parse_event_unit_accepts_the_shared_unit_vocabulary() {
+        // 回归：event_unit 曾用独立硬编码词表，拒绝 unit_filter 已接受的别名。
+        for unit in ["light_sound", "ln", "leoneed", "mmj", "vbs", "piapro"] {
+            let parsed =
+                parse_build_params_json(&format!(r#"{{"event_unit":"{unit}"}}"#)).expect(unit);
+            assert_eq!(parsed.event_unit.as_deref(), Some(unit));
+        }
+        let err = parse_build_params_json(r#"{"event_unit":"bogus"}"#).expect_err("非法团应被拒绝");
+        assert!(err.to_string().contains("event_unit"), "{err}");
     }
 
     #[test]

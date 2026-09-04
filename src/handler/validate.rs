@@ -79,6 +79,13 @@ pub(crate) fn validate_build_params(params: &types::BuildParams) -> Result<(), B
             crate::types::DECK_SIZE
         )));
     }
+    if let Some(character_id) = params.challenge_live_character_id
+        && !(1..=26).contains(&character_id)
+    {
+        return Err(BuildError::InvalidConfig(
+            "challenge_live_character_id 需在 1..=26".to_string(),
+        ));
+    }
     if params.target_bonus_list.len() > types::MAX_TARGET_BONUS_BUCKETS {
         return Err(BuildError::InvalidConfig(format!(
             "target_bonus_list 最多支持 {} 个档位",

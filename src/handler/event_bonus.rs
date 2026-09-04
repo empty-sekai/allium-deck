@@ -212,6 +212,16 @@ pub(crate) fn build_event_context(
         };
         event_type
     };
+    if matches!(event_type, EventType::WorldBloom)
+        && wb_event_id.is_none()
+        && params.event_id.is_none()
+        && params.world_bloom_event_turn.is_none()
+        && params.world_bloom_finale_turn.is_none()
+    {
+        return Err(BuildError::InvalidConfig(
+            "world_bloom 模拟需要 world_bloom_event_turn（或提供真实活动 event_id）".to_string(),
+        ));
+    }
     let event_id = wb_event_id.unwrap_or_else(|| params.event_id.unwrap_or_default());
     let world_bloom_event_turn = if let Some(id) = wb_event_id {
         Some(super::world_bloom::world_bloom_event_turn(id))

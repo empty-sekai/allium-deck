@@ -76,6 +76,26 @@ fn sample_user_card(card_id: i32) -> UserCard {
 }
 
 #[test]
+fn validate_rejects_out_of_range_challenge_character() {
+    // 回归：越界的 challenge_live_character_id 曾漏过校验，
+    // 到建池阶段才以误导性的「候选卡池为空」失败。
+    let game = sample_game(&[], &[], &[], &[], &[], &[], &[], &[], &[]);
+    let user = UserProfile::default();
+    for character_id in [0, 27, -1] {
+        let params = BuildParams {
+            challenge_live_character_id: Some(character_id),
+            ..BuildParams::default()
+        };
+        match build_card_pool(&user, &game, &params) {
+            Err(BuildError::InvalidConfig(reason)) => {
+                assert!(reason.contains("1..=26"), "{reason}");
+            }
+            other => panic!("character_id {character_id} 应被拒绝，实际 {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn bonus_target_requires_non_final_event_context() {
     let game = sample_game(&[], &[], &[], &[], &[], &[], &[], &[], &[]);
     let user = UserProfile::default();
