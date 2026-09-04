@@ -113,20 +113,23 @@ pub fn search_instrumented(
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
     }
-    if matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill) {
-        return search_simple_target(pool, ctx, params);
-    }
 
+    // 挑战 live 的队伍必须五张同角色，该约束对所有 target 生效，必须先于
+    // Power/Skill 通用路径分发：`simple_target_recurse` 无条件要求角色唯一，
+    // 会在 challenge 下永远凑不齐 5 张而静默返回空集。
     if !ctx.enforce_char_uniqueness {
         let suffix = SuffixBound::build(pool, ctx);
-        // 挑战 live 的队伍必须五张同角色。池里只剩一个角色时（调用方已指定
-        // challenge_live_character_id）直接搜；留着多个角色则是 challenge_all，
-        // 必须逐角色搜索后归并——无约束搜索会产出跨角色的非法卡组，
-        // 组合数也是逐角色之和的数个量级。
+        // 池里只剩一个角色时（调用方已指定 challenge_live_character_id）直接搜；
+        // 留着多个角色则是 challenge_all，必须逐角色搜索后归并——无约束搜索
+        // 会产出跨角色的非法卡组，组合数也是逐角色之和的数个量级。
         return match single_challenge_character(pool) {
             Some(_) => challenge_search::search(pool, ctx, &suffix, params),
             None => challenge_search::search_all_characters(pool, ctx, &suffix, params),
         };
+    }
+
+    if matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill) {
+        return search_simple_target(pool, ctx, params);
     }
 
     let dominance = eliminate_dominated(pool, ctx);
