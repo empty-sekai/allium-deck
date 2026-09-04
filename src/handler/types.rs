@@ -508,10 +508,10 @@ pub struct EventCard {
     pub event_id: i32,
     /// 卡 ID。
     pub card_id: i32,
-    /// 当期 bonus。
-    pub bonus_rate: i32,
-    /// leader 额外 bonus。
-    pub leader_bonus_rate: i32,
+    /// 当期 bonus（x10 定点，保留 0.1% 精度）。
+    pub bonus_rate_x10: i32,
+    /// leader 额外 bonus（x10 定点）。
+    pub leader_bonus_rate_x10: i32,
 }
 
 /// 活动 deck bonus 规则。
@@ -525,8 +525,8 @@ pub struct EventDeckBonus {
     pub unit: Option<String>,
     /// 属性条件。
     pub attr: Option<String>,
-    /// bonus。
-    pub bonus_rate: i32,
+    /// bonus（x10 定点，保留 0.1% 精度）。
+    pub bonus_rate_x10: i32,
 }
 
 /// 活动卡 bonus 张数上限。

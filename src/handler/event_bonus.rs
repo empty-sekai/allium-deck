@@ -14,7 +14,7 @@ struct PreparedEventDeckBonus {
     character_id: Option<i32>,
     attr: Option<u8>,
     unit: Option<Unit>,
-    bonus_rate: i32,
+    bonus_rate_x10: i32,
     has_attr_rule: bool,
 }
 
@@ -248,7 +248,7 @@ pub(crate) fn build_event_context(
                 .and_then(parse_attr_code)
                 .and_then(attr_to_pool_index),
             unit: rule.unit.as_deref().and_then(parse_unit_code),
-            bonus_rate: rule.bonus_rate,
+            bonus_rate_x10: rule.bonus_rate_x10,
             has_attr_rule: rule.attr.is_some(),
         })
         .collect::<Vec<_>>();
@@ -258,7 +258,7 @@ pub(crate) fn build_event_context(
             character_id: rule.character_id,
             attr: None,
             unit: None,
-            bonus_rate: rule.bonus_rate,
+            bonus_rate_x10: rule.bonus_rate_x10,
             has_attr_rule: false,
         }));
     }
@@ -495,12 +495,12 @@ pub(crate) fn build_card_event_bonus(
     };
 
     // 活动 deck bonus：多条规则命中时取最大值（与 C++/TS 一致）。
-    let mut deck_bonus_x2 = 0i32;
+    let mut deck_bonus_x10 = 0i32;
     let mut deck_char = false;
     let mut deck_attr = false;
     for rule in &event_ctx.deck_bonuses {
         if card_matches_rule(master, card_attr, primary_unit, support_unit, rule) {
-            deck_bonus_x2 = deck_bonus_x2.max(rule.bonus_rate.saturating_mul(2));
+            deck_bonus_x10 = deck_bonus_x10.max(rule.bonus_rate_x10);
             if rule.character_id.is_some() {
                 deck_char = true;
             }
@@ -509,7 +509,7 @@ pub(crate) fn build_card_event_bonus(
             }
         }
     }
-    let base_bonus_x10 = rarity_bonus_x10 + (custom_bonus_x2 + deck_bonus_x2) * 5;
+    let base_bonus_x10 = rarity_bonus_x10 + custom_bonus_x2 * 5 + deck_bonus_x10;
 
     (
         EventBonusExact::from_x10(
@@ -598,6 +598,42 @@ mod tests {
             custom_bonus(&master(Some("future_unknown_unit"), "cool"), &ctx),
             0
         );
+    }
+
+    #[test]
+    fn deck_bonus_rule_keeps_tenth_percent_precision() {
+        // 25.5% 的 deck bonus 规则曾被 .round() 取整成 26%：先取整再换算的
+        // 链路会把 0.5% 的误差带进档位精确匹配。规则现按 x10 定点直达热路径。
+        let mut ctx = custom_context();
+        ctx.custom_character_ids.clear();
+        ctx.custom_attr = None;
+        ctx.deck_bonuses.push(PreparedEventDeckBonus {
+            character_id: Some(1),
+            attr: None,
+            unit: None,
+            bonus_rate_x10: 255,
+            has_attr_rule: false,
+        });
+        let card_master = MasterCard {
+            character_id: 1,
+            ..master(None, "cool")
+        };
+        let user_card = UserCard {
+            card_id: 1,
+            level: 1,
+            skill_level: 1,
+            master_rank: 0,
+            special_training_status: "none".to_string(),
+            default_image: "original".to_string(),
+            episodes_read: Vec::new(),
+            is_virtual: false,
+            has_canvas_bonus_override: None,
+        };
+
+        let (bonus, has_char, _) =
+            build_card_event_bonus(&user_card, &card_master, 0, None, None, true, 0, &ctx);
+        assert_eq!(bonus.base_x10(), 255);
+        assert!(has_char);
     }
 
     #[test]

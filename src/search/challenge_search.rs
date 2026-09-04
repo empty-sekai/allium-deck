@@ -102,7 +102,7 @@ fn search_with_character_filter(
         return (Vec::new(), super::SearchStats::default());
     }
 
-    let mut tracker = TopKTracker::new(params.top_k, pool);
+    let mut tracker = TopKTracker::new(params.top_k, pool, false);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     let mut stats = super::SearchStats::default();
     let candidates = ordered_candidates(pool, ctx, character_id);

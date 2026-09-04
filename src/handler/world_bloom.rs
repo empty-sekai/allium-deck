@@ -664,7 +664,7 @@ fn synthesize_wb_turn_rows(
             character_id: Some(*character_id),
             unit: None,
             attr: None,
-            bonus_rate: 25,
+            bonus_rate_x10: 250,
         });
     }
 
@@ -691,7 +691,7 @@ fn synthesize_wb_legacy_rows(game: &types::GameData<'_>) -> SynthWbRows {
     let mut rows = SynthWbRows::default();
 
     // 全角色 5% deck bonus。
-    push_all_character_deck_bonuses(game, crate::types::FINAL_CHAPTER_EVENT_ID, 5, &mut rows);
+    push_all_character_deck_bonuses(game, crate::types::FINAL_CHAPTER_EVENT_ID, 50, &mut rows);
 
     // WL2 六场活动的限定卡按 25% 挂到终章。
     const WL2_EVENT_IDS: [i32; 6] = [163, 167, 170, 171, 176, 179];
@@ -707,8 +707,8 @@ fn synthesize_wb_legacy_rows(game: &types::GameData<'_>) -> SynthWbRows {
         rows.event_cards.push(types::EventCard {
             event_id: crate::types::FINAL_CHAPTER_EVENT_ID,
             card_id,
-            bonus_rate: 25,
-            leader_bonus_rate: 0,
+            bonus_rate_x10: 250,
+            leader_bonus_rate_x10: 0,
         });
     }
 
@@ -764,13 +764,13 @@ fn synthesize_wb_finale_rows(game: &types::GameData<'_>) -> SynthWbRows {
     }
 
     // 全角色 5% deck bonus（含 VS）。
-    push_all_character_deck_bonuses(game, event_id, 5, &mut rows);
+    push_all_character_deck_bonuses(game, event_id, 50, &mut rows);
 
     // 源活动限定卡 → 25%（队长 20%），按卡去重。
     let mut seen_cards: std::collections::BTreeSet<i32> = Default::default();
     for entry in game.event_cards {
         if !source_event_ids.contains(&entry.event_id)
-            || entry.bonus_rate <= 0
+            || entry.bonus_rate_x10 <= 0
             || !seen_cards.insert(entry.card_id)
         {
             continue;
@@ -778,8 +778,8 @@ fn synthesize_wb_finale_rows(game: &types::GameData<'_>) -> SynthWbRows {
         rows.event_cards.push(types::EventCard {
             event_id,
             card_id: entry.card_id,
-            bonus_rate: 25,
-            leader_bonus_rate: 20,
+            bonus_rate_x10: 250,
+            leader_bonus_rate_x10: 200,
         });
     }
 
@@ -837,7 +837,7 @@ fn synthesize_wb_finale_rows(game: &types::GameData<'_>) -> SynthWbRows {
 fn push_all_character_deck_bonuses(
     game: &types::GameData<'_>,
     event_id: i32,
-    bonus_rate: i32,
+    bonus_rate_x10: i32,
     rows: &mut SynthWbRows,
 ) {
     for entry in game.game_character_units {
@@ -846,7 +846,7 @@ fn push_all_character_deck_bonuses(
             character_id: Some(entry.game_character_id),
             unit: None,
             attr: None,
-            bonus_rate,
+            bonus_rate_x10,
         });
     }
 }
@@ -884,7 +884,7 @@ fn synth_support_limited(
     for event_card in game.event_cards {
         if event_card.event_id == crate::types::FINAL_CHAPTER_EVENT_ID
             || world_bloom_event_turn(event_card.event_id) > 2
-            || event_card.bonus_rate <= 0
+            || event_card.bonus_rate_x10 <= 0
         {
             continue;
         }
@@ -1036,8 +1036,8 @@ mod tests {
         types::EventCard {
             event_id,
             card_id,
-            bonus_rate: bonus,
-            leader_bonus_rate: 0,
+            bonus_rate_x10: bonus * 10,
+            leader_bonus_rate_x10: 0,
         }
     }
 
@@ -1270,15 +1270,15 @@ mod tests {
         // 25% 加成 + 队长 20%。
         assert_eq!(rows.event_cards.len(), 1);
         assert_eq!(rows.event_cards[0].card_id, 3);
-        assert_eq!(rows.event_cards[0].bonus_rate, 25);
-        assert_eq!(rows.event_cards[0].leader_bonus_rate, 20);
+        assert_eq!(rows.event_cards[0].bonus_rate_x10, 250);
+        assert_eq!(rows.event_cards[0].leader_bonus_rate_x10, 200);
 
         // 全角色（fixture 的 6 个 unit 行）5% deck bonus。
         assert_eq!(rows.deck_bonuses.len(), 6);
         assert!(
             rows.deck_bonuses
                 .iter()
-                .all(|bonus| bonus.bonus_rate == 5 && bonus.attr.is_none())
+                .all(|bonus| bonus.bonus_rate_x10 == 50 && bonus.attr.is_none())
         );
 
         // 支援 limited：WL1/2 的 card2（WL2）20%；card1 属 WL1 也应 20%。
@@ -1328,15 +1328,15 @@ mod tests {
         let game = fixture.game();
         let rows = synthesize_wb_rows(&game, FINAL_CHAPTER_EVENT_ID);
         assert_eq!(rows.deck_bonuses.len(), 6);
-        assert!(rows.deck_bonuses.iter().all(|bonus| bonus.bonus_rate == 5));
+        assert!(rows.deck_bonuses.iter().all(|bonus| bonus.bonus_rate_x10 == 50));
         // WL2 集合 {163,167,170,171,176,179} 中 fixture 只有 170 的 card2。
         assert_eq!(
             rows.event_cards,
             vec![types::EventCard {
                 event_id: FINAL_CHAPTER_EVENT_ID,
                 card_id: 2,
-                bonus_rate: 25,
-                leader_bonus_rate: 0,
+                bonus_rate_x10: 250,
+                leader_bonus_rate_x10: 0,
             }]
         );
         // 支援 limited 整表复制且改写 event_id。

@@ -201,14 +201,14 @@ impl<'a> PreparedPoolBuild<'a> {
             .map_or(user.user_cards.len(), Vec::len);
         let mut seeds = Vec::with_capacity(card_count);
 
-        // (bonus_rate, leader_bonus_rate) of the first event-card row per card id.
+        // (bonus_rate_x10, leader_bonus_rate_x10) of the first event-card row per card id.
         let limited_bonus_by_card: std::collections::HashMap<i32, (i32, i32)> = event_ctx
             .as_ref()
             .map(|ctx| {
                 let mut map = std::collections::HashMap::with_capacity(ctx.event_cards.len());
                 for entry in &ctx.event_cards {
                     map.entry(entry.card_id)
-                        .or_insert((entry.bonus_rate, entry.leader_bonus_rate));
+                        .or_insert((entry.bonus_rate_x10, entry.leader_bonus_rate_x10));
                 }
                 map
             })
@@ -277,9 +277,7 @@ impl<'a> PreparedPoolBuild<'a> {
                         card_data.primary_unit,
                         card_data.support_unit,
                         card_data.support_unit_unrestricted,
-                        limited_entry
-                            .map(|(bonus, _)| bonus.saturating_mul(10))
-                            .unwrap_or(0),
+                        limited_entry.map(|(bonus, _)| bonus).unwrap_or(0),
                         ctx,
                     )
                 })
@@ -294,8 +292,9 @@ impl<'a> PreparedPoolBuild<'a> {
                 0
             };
             let leader_limit_bonus = if event_ctx.is_some() {
+                // leader 向量按整型百分比消费；x10 → 百分比在此收口。
                 let from_table = limited_entry
-                    .map(|(_, leader)| leader.max(0) as u16)
+                    .map(|(_, leader)| (leader.max(0) / 10) as u16)
                     .unwrap_or(0);
                 if from_table == 0
                     && limited_entry.is_some()

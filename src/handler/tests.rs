@@ -2246,7 +2246,7 @@ fn bonus_tier_fixture() -> BonusTierFixture {
         character_id: None,
         unit: None,
         attr: Some("mysterious".to_string()),
-        bonus_rate: 25,
+        bonus_rate_x10: 250,
     }];
     let rarity_rates = vec![
         types::EventRarityBonusRate {

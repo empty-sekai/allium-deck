@@ -202,8 +202,8 @@ impl OwnedGameData {
                 .map(|entry| EventCard {
                     event_id: entry.event_id,
                     card_id: entry.card_id,
-                    bonus_rate: entry.bonus_rate.round() as i32,
-                    leader_bonus_rate: entry.leader_bonus_rate.round() as i32,
+                    bonus_rate_x10: (entry.bonus_rate * 10.0).round() as i32,
+                    leader_bonus_rate_x10: (entry.leader_bonus_rate * 10.0).round() as i32,
                 })
                 .collect(),
             event_deck_bonuses: load_json::<Vec<RawEventDeckBonus>>(
@@ -219,7 +219,7 @@ impl OwnedGameData {
                     character_id: mapped_unit.map(|unit| unit.game_character_id),
                     unit: mapped_unit.map(|unit| unit.unit.clone()),
                     attr: entry.card_attr,
-                    bonus_rate: entry.bonus_rate.round() as i32,
+                    bonus_rate_x10: (entry.bonus_rate * 10.0).round() as i32,
                 }
             })
             .collect(),
