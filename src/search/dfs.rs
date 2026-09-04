@@ -449,6 +449,7 @@ impl SearchState<'_> {
                 let tight_skill =
                     partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest
                         - pre.skill_delta(char_id);
+                // 队长上界只对未来仍可填充的槽位计入未用角色的最优技能。
                 let remaining_best_skill = if char_id == pre.best_skill_char {
                     pre.second_best_skill
                 } else {

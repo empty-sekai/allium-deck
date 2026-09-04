@@ -184,7 +184,12 @@ pub(crate) fn leaf_evaluate_checked(
             found.then_some(best)
         }
         ScoreTarget::Score => {
-            let total_bonus = resolve_total_bonus(pool, ctx, deck);
+            // 无活动时加成合计不参与计分，跳过逐卡加成解析。
+            let total_bonus = if ctx.has_event() {
+                resolve_total_bonus(pool, ctx, deck)
+            } else {
+                0.0
+            };
             let prepared = prepare_skills(pool, ctx, deck);
             let mut best = 0u64;
             let mut found = false;
