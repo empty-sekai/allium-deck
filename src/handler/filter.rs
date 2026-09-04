@@ -248,6 +248,11 @@ pub(super) fn general_per_character_trim(
     params: &types::BuildParams,
     per_char_keep: usize,
 ) {
+    // 活动点数对加成是乘性敏感的：同角色内按纯战力保留会把高加成卡挤到
+    // 名额之外直接裁掉（实测 jp1302 + 活动 215 裁掉 62.5% 活动卡，
+    // Top-1 EP 落后 4~207，130 个马拉松/欢乐事件受影响）。因此有加成的卡
+    // 一律豁免；战力序名额只用于 0 加成填充卡的择优，容量压力交给
+    // dominance_trim（对 Top-1 无损）。
     cards.sort_by(|a, b| {
         let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
         let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
@@ -256,6 +261,9 @@ pub(super) fn general_per_character_trim(
     let mut counts = [0u8; 27];
     cards.retain(|card| {
         if params.fixed_cards.contains(&card.game_card_id) {
+            return true;
+        }
+        if card.event_bonus.total_x10() > 0 {
             return true;
         }
         let ch = (card.character_id as usize).min(26);

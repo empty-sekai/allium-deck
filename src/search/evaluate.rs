@@ -555,13 +555,29 @@ pub(crate) fn resolve_total_bonus(
     deck: &[CardIdx; 5],
 ) -> f64 {
     if !ctx.is_final_chapter && !ctx.is_world_bloom {
-        let total_x10 = unsafe {
-            pool.event_bonus(*deck.get_unchecked(0)).total_x10() as u32
-                + pool.event_bonus(*deck.get_unchecked(1)).total_x10() as u32
-                + pool.event_bonus(*deck.get_unchecked(2)).total_x10() as u32
-                + pool.event_bonus(*deck.get_unchecked(3)).total_x10() as u32
-                + pool.event_bonus(*deck.get_unchecked(4)).total_x10() as u32
-        };
+        // 无张数上限（默认）：热路径直出整卡加成之和。
+        if ctx.card_bonus_count_limit >= DECK_SIZE {
+            let total_x10 = unsafe {
+                pool.event_bonus(*deck.get_unchecked(0)).total_x10() as u32
+                    + pool.event_bonus(*deck.get_unchecked(1)).total_x10() as u32
+                    + pool.event_bonus(*deck.get_unchecked(2)).total_x10() as u32
+                    + pool.event_bonus(*deck.get_unchecked(3)).total_x10() as u32
+                    + pool.event_bonus(*deck.get_unchecked(4)).total_x10() as u32
+            };
+            return total_x10 as f64 * 0.1;
+        }
+        // 有张数上限：按 base/limited 拆分计账，超额 limited 张不计入。
+        let mut total_x10 = 0u32;
+        let mut limited_count = 0usize;
+        for pos in 0..DECK_SIZE {
+            let card = unsafe { *deck.get_unchecked(pos) };
+            let exact = pool.event_bonus_exact(card);
+            total_x10 += exact.base_x10() as u32;
+            if exact.limited_x10() > 0 && limited_count < ctx.card_bonus_count_limit {
+                total_x10 += exact.limited_x10() as u32;
+                limited_count += 1;
+            }
+        }
         return total_x10 as f64 * 0.1;
     }
 

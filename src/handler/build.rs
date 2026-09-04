@@ -294,9 +294,21 @@ impl<'a> PreparedPoolBuild<'a> {
                 0
             };
             let leader_limit_bonus = if event_ctx.is_some() {
-                limited_entry
+                let from_table = limited_entry
                     .map(|(_, leader)| leader.max(0) as u16)
-                    .unwrap_or(0)
+                    .unwrap_or(0);
+                if from_table == 0
+                    && limited_entry.is_some()
+                    && crate::types::is_world_bloom_finale_event(
+                        event_ctx.as_ref().map(|ctx| ctx.event_id).unwrap_or(0),
+                    )
+                {
+                    // legacy 终章：当期卡行缺 leaderBonusRate 时队长兜底 20%
+                    // （与参照实现一致；本地合成行恰好全部缺该字段）。
+                    20
+                } else {
+                    from_table
+                }
             } else {
                 0
             };
@@ -368,10 +380,23 @@ impl<'a> PreparedPoolBuild<'a> {
                 .iter()
                 .any(|card| prepared_ep_prefilter_keep(card, false, is_final_chapter))
         {
-            seeds.retain(|card| {
-                prepared_ep_prefilter_keep_with_params(card, params, false, is_final_chapter)
-            });
-            ep_prefilter_applied = true;
+            // 预过滤不得把池子裁到组不满一副卡组（纯低星小盒会被裁到 0，
+            // 全目标「候选卡池为空」）；不满足就回退不裁。
+            let keep: Vec<bool> = seeds
+                .iter()
+                .map(|card| {
+                    prepared_ep_prefilter_keep_with_params(card, params, false, is_final_chapter)
+                })
+                .collect();
+            if keep.iter().filter(|flag| **flag).count() >= crate::types::DECK_SIZE {
+                let mut index = 0usize;
+                seeds.retain(|_| {
+                    let flag = keep[index];
+                    index += 1;
+                    flag
+                });
+                ep_prefilter_applied = true;
+            }
         }
 
         let mut cards = Vec::with_capacity(seeds.len());
@@ -897,9 +922,17 @@ pub(super) fn build_card_pool_fully_prepared_internal(
             .iter()
             .any(|card| ep_prefilter_keep(card, is_world_bloom, is_final_chapter))
     {
-        cards.retain(|card| {
-            ep_prefilter_keep_with_params(card, params, is_world_bloom, is_final_chapter)
-        });
+        // 同 prepared 阶段：裁后不足一副卡组则回退不裁。
+        let filtered: Vec<_> = cards
+            .iter()
+            .filter(|card| {
+                ep_prefilter_keep_with_params(card, params, is_world_bloom, is_final_chapter)
+            })
+            .cloned()
+            .collect();
+        if filtered.len() >= crate::types::DECK_SIZE {
+            cards = filtered;
+        }
         // WL turn-3 的 336k cap 与异色加成让高练度低加成卡同样可能进最优解，
         // 单角色名额比常规活动宽，保留哪几张由 Pareto 前沿决定。
         let keep = if is_final_chapter {

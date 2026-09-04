@@ -90,7 +90,7 @@ fn load_card_bonus_limit(table: &[EventCardBonusLimit], event_id: i32) -> usize 
     table
         .iter()
         .find(|entry| entry.event_id == event_id)
-        .map(|entry| entry.member_count_limit.max(1) as usize)
+        .map(|entry| entry.member_count_limit.max(0) as usize)
         // 终章（legacy 180 与模拟 WL3 终章）最多 4 张享受 limited bonus。
         .unwrap_or_else(|| {
             if crate::types::is_world_bloom_finale_event(event_id) {
@@ -380,11 +380,16 @@ fn card_matches_rule(
         .is_none_or(|character_id| character_id == master.character_id);
     let attr_ok = rule.attr.is_none_or(|attr| card_attr == attr);
     let unit_ok = match rule.unit {
-        Some(unit) => primary_unit.is_some_and(|card_unit| {
-            card_unit == unit
-                || (matches!(card_unit, crate::types::Unit::Piapro)
-                    && support_unit.is_none_or(|support_unit| support_unit == unit))
-        }),
+        Some(unit) => {
+            if master.character_id >= 21 {
+                // VS 卡以支援团为准：支援团等于规则团（或未设支援团）才命中；
+                // 主团 piapro 不参与命中（与参照实现一致：VS 卡的队伍身份
+                // 跟随玩家为其选择的支援团）。
+                support_unit.is_none_or(|support_unit| support_unit == unit)
+            } else {
+                primary_unit.is_some_and(|card_unit| card_unit == unit)
+            }
+        }
         None => true,
     };
     character_ok && attr_ok && unit_ok

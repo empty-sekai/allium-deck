@@ -1216,8 +1216,22 @@ fn partial_bonus_add(
     limited_count: u8,
 ) -> (u32, u8) {
     let eb = pool.event_bonus(card);
-    if !ctx.is_final_chapter {
+    if !ctx.is_final_chapter && ctx.card_bonus_count_limit >= DECK_SIZE {
+        // 无张数上限（默认）：热路径直出整卡加成。
         return (eb.total_ceil(), 0);
+    }
+    let exact = pool.event_bonus_exact(card);
+    if !ctx.is_final_chapter {
+        // 有张数上限的非终章活动：与终章同一套 base/limited 拆分计账，
+        // 超出上限的 limited 张不计数（对照参照实现 deck-calculator 的
+        // 任意活动通用扣除逻辑）。
+        let mut bonus = exact.base_ceil();
+        let mut limited_inc = 0u8;
+        if (limited_count as usize) < ctx.card_bonus_count_limit && exact.limited_x10() > 0 {
+            bonus += exact.limited_ceil();
+            limited_inc = 1;
+        }
+        return (bonus, limited_inc);
     }
     let exact = pool.event_bonus_exact(card);
     let mut bonus = exact.base_ceil();
