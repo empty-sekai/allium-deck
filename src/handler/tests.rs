@@ -2420,3 +2420,62 @@ fn bonus_tier_pool_drops_cards_above_the_highest_target() {
         .count();
     assert_eq!(over_target, 0, "超过最高档位的卡不应进池");
 }
+
+#[test]
+fn world_bloom_turn_resolution_covers_real_turn3_chapters() {
+    // 回归点：真实 WL 第三轮章节（活动 id > 180）曾被回合解析判成 turn 2，
+    // 支援卡组因此取 20 张并错误使用 WL2 加成表，turn-3 专属的 336k 综合
+    // 力上限也被丢掉。真实 WL 活动的回合必须由 id 区间完整覆盖 1/2/3。
+    let events = [types::Event {
+        id: 214,
+        event_type: "world_bloom".to_string(),
+    }];
+    let world_blooms = [types::WorldBloom {
+        event_id: 214,
+        game_character_id: Some(11),
+        chapter_no: 1,
+        world_bloom_chapter_type: Some("game_character".to_string()),
+    }];
+    let game = sample_game(&[], &[], &[], &[], &[], &[], &[], &[], &[]);
+    let game = GameData {
+        events: &events,
+        world_blooms: &world_blooms,
+        ..game
+    };
+    let params = BuildParams {
+        event_id: Some(214),
+        ..BuildParams::default()
+    };
+
+    let ctx = super::event_bonus::build_event_context(&game, &params)
+        .expect("活动上下文应能构建")
+        .expect("world_bloom 活动应有活动上下文");
+    assert_eq!(ctx.world_bloom_event_turn, Some(3));
+    assert_eq!(ctx.support_deck_count, 25);
+
+    // 对照：第二轮章节（141..180）维持 turn 2 / 20 张。
+    let events2 = [types::Event {
+        id: 176,
+        event_type: "world_bloom".to_string(),
+    }];
+    let world_blooms2 = [types::WorldBloom {
+        event_id: 176,
+        game_character_id: Some(5),
+        chapter_no: 1,
+        world_bloom_chapter_type: Some("game_character".to_string()),
+    }];
+    let game2 = GameData {
+        events: &events2,
+        world_blooms: &world_blooms2,
+        ..sample_game(&[], &[], &[], &[], &[], &[], &[], &[], &[])
+    };
+    let params2 = BuildParams {
+        event_id: Some(176),
+        ..BuildParams::default()
+    };
+    let ctx2 = super::event_bonus::build_event_context(&game2, &params2)
+        .expect("活动上下文应能构建")
+        .expect("world_bloom 活动应有活动上下文");
+    assert_eq!(ctx2.world_bloom_event_turn, Some(2));
+    assert_eq!(ctx2.support_deck_count, 20);
+}

@@ -45,14 +45,15 @@ pub fn world_bloom_support_cards(
             params.event_id.and_then(|event_id| {
                 if event_id == FINAL_CHAPTER_EVENT_ID {
                     Some(2)
-                } else if event_id > 1000 {
-                    Some((event_id / 100_000) % 10 + 1)
                 } else if game
                     .world_blooms
                     .iter()
                     .any(|entry| entry.event_id == event_id)
+                    || event_id > 1000
                 {
-                    Some(if event_id <= 140 { 1 } else { 2 })
+                    // 真实 WL 章节按 id 区间覆盖 turn 1/2/3；模拟假活动 id
+                    // （>1000）同样由统一函数换算。
+                    Some(world_bloom_event_turn(event_id))
                 } else {
                     None
                 }

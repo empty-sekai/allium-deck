@@ -156,7 +156,7 @@ fn resolve_world_bloom_event_turn(game: &GameData<'_>, params: &BuildParams) -> 
         .iter()
         .any(|entry| entry.event_id == event_id)
     {
-        return Some(if event_id <= 140 { 1 } else { 2 });
+        return Some(super::world_bloom::world_bloom_event_turn(event_id));
     }
     None
 }
