@@ -2588,3 +2588,80 @@ fn challenge_live_power_and_skill_targets_search_same_character_decks() {
         assert_eq!(results, reference, "challenge × {target:?} 应等于逐角色归并");
     }
 }
+
+#[test]
+fn mysekai_top_k_is_monotone_across_limits() {
+    // mysekai 分值把总战力按 45k 一档量化，桶内大量并列。并列内的去留与
+    // 次序曾被 tracker 插入序决定：limit=1 的第一名可以在 limit=3 缺席。
+    // 规范次序 = 分值降序、总战力降序、队长 cardId 升序，对任意 limit 一致。
+    let mut cards = Vec::new();
+    for char_id in 0..5u8 {
+        for variant in 0..2u16 {
+            let power =
+                70_000 + u32::from(char_id) * 2_000 - u32::from(variant) * 1_000;
+            cards.push(TestCard {
+                char_id,
+                attr: 0,
+                unit_mask: 1,
+                game_id: 1200 + u16::from(char_id) * 2 + variant,
+                power,
+                skill: SkillSlot::default(),
+                base_bonus: 0,
+                limited_bonus: 0,
+                power_max: power,
+                skill_max: 0,
+            });
+        }
+    }
+    let pool = build_pool(&cards);
+    let search_ctx = ready_ctx(&pool, ScoreTarget::Mysekai);
+
+    let run = |top_k: usize| {
+        search(
+            &pool,
+            &search_ctx,
+            &SearchParams {
+                top_k,
+                timeout_ms: 0,
+            },
+        )
+    };
+    let limits = [1usize, 2, 3, 5, 10];
+    let by_limit: Vec<_> = limits.iter().copied().map(run).collect();
+
+    // 所有 limit 的第一名都是同一个（战力最高的并列卡组）。站位序不参与比较。
+    let first_key = by_limit[0][0].game_card_set_key(&pool);
+    assert!(first_key.contains(&1208));
+    for (index, results) in by_limit.iter().enumerate() {
+        assert_eq!(
+            results[0].game_card_set_key(&pool),
+            first_key,
+            "limit={} 的第一名偏离 top-1",
+            limits[index]
+        );
+        // 结果集随 limit 单调增长。
+        for (rank, result) in results.iter().enumerate() {
+            assert!(
+                by_limit[by_limit.len() - 1]
+                    .iter()
+                    .take(rank + 1)
+                    .any(|top| top.game_card_set_key(&pool) == result.game_card_set_key(&pool)),
+                "limit={} 第 {} 名不在 top-10 前缀里",
+                limits[index],
+                rank,
+            );
+        }
+    }
+
+    // 并列分值内按总战力降序输出。
+    let top10 = &by_limit[by_limit.len() - 1];
+    let mut prev_power = u32::MAX;
+    for result in top10.iter().filter(|r| r.score == by_limit[0][0].score) {
+        let power: u32 = result.cards.iter().map(|c| pool.power_max(*c) as u32).sum();
+        assert!(
+            power <= prev_power,
+            "并列分值内战力未按降序排列: {power} > {prev_power}"
+        );
+        prev_power = power;
+    }
+}

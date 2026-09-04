@@ -298,7 +298,7 @@ fn expand_alternatives(
         return results;
     }
 
-    let mut tracker = dfs::TopKTracker::new(params.top_k, pool);
+    let mut tracker = dfs::TopKTracker::new(params.top_k, pool, matches!(ctx.target, ScoreTarget::Mysekai));
     for result in &results {
         tracker.insert(*result);
     }

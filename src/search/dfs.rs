@@ -129,7 +129,11 @@ fn dfs_search_seeded_inner(
 
     let mut tracker = match bonus_targets {
         Some(targets) => SearchTracker::Bonus(BonusBucketTracker::new(params.top_k, pool, targets)),
-        None => SearchTracker::TopK(TopKTracker::new(params.top_k, pool)),
+        None => SearchTracker::TopK(TopKTracker::new(
+            params.top_k,
+            pool,
+            matches!(ctx.target, ScoreTarget::Mysekai),
+        )),
     };
     for seed_result in seeds {
         tracker.insert(seed_result);
@@ -1127,7 +1131,7 @@ impl BonusBucketTracker {
         Self {
             buckets: target_x2
                 .into_iter()
-                .map(|target| (target, TopKTracker::new(top_k, pool)))
+                .map(|target| (target, TopKTracker::new(top_k, pool, false)))
                 .collect(),
         }
     }
@@ -1250,6 +1254,8 @@ fn partial_bonus_add(
 pub(super) struct TopKTracker {
     top_k: usize,
     game_ids: Vec<u16>,
+    powers: Vec<u32>,
+    power_tiebreak: bool,
     results: Vec<DeckResult>,
     keys: Vec<[u16; DECK_SIZE]>,
 }
@@ -1273,10 +1279,12 @@ fn highest_upper_bound_lane(upper_bounds: &[u64; EP_SHADOW_BLOCK_WIDTH], mask: u
 }
 
 impl TopKTracker {
-    pub(super) fn new(top_k: usize, pool: &CardPool) -> Self {
+    pub(super) fn new(top_k: usize, pool: &CardPool, power_tiebreak: bool) -> Self {
         Self {
             top_k,
             game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
+            powers: pool.indices().map(|card| pool.power_max(card)).collect(),
+            power_tiebreak,
             results: Vec::with_capacity(top_k),
             keys: Vec::with_capacity(top_k),
         }
@@ -1290,16 +1298,43 @@ impl TopKTracker {
         }
     }
 
+    /// mysekai 的量化分值会产生大量并列（power 按 45k 一档进桶），并列内若按
+    /// 卡序或插入序取舍，limit=1 与 limit>1 会给出互斥的结果集。这里以
+    /// 总战力降序、队长 cardId 升序作为并列时的规范次序（与参考实现的
+    /// compareDeck 一致），使任意 top_k 的结果集单调一致。
+    #[inline(always)]
+    fn cmp_candidate(&self, left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
+        let ordering = right.score.cmp(&left.score);
+        if self.power_tiebreak && ordering == std::cmp::Ordering::Equal {
+            return self
+                .power_sum(right)
+                .cmp(&self.power_sum(left))
+                .then_with(|| {
+                    self.game_ids[left.cards[0].raw()].cmp(&self.game_ids[right.cards[0].raw()])
+                });
+        }
+        ordering.then_with(|| left.cards.cmp(&right.cards))
+    }
+
+    #[inline]
+    fn power_sum(&self, result: &DeckResult) -> u32 {
+        result
+            .cards
+            .iter()
+            .map(|card| self.powers[card.raw()])
+            .sum()
+    }
+
     pub(super) fn insert(&mut self, candidate: DeckResult) {
         if self.results.len() >= self.top_k
             && let Some(last) = self.results.last()
-            && !deck_result_cmp(&candidate, last).is_lt()
+            && !self.cmp_candidate(&candidate, last).is_lt()
         {
             return;
         }
         let candidate_key = self.game_card_set_key(&candidate);
         if let Some(existing_pos) = self.keys.iter().position(|key| *key == candidate_key) {
-            if !deck_result_cmp(&candidate, &self.results[existing_pos]).is_lt() {
+            if !self.cmp_candidate(&candidate, &self.results[existing_pos]).is_lt() {
                 return;
             }
             self.results.remove(existing_pos);
@@ -1308,7 +1343,7 @@ impl TopKTracker {
         let pos = self
             .results
             .iter()
-            .position(|existing| deck_result_cmp(&candidate, existing).is_lt())
+            .position(|existing| self.cmp_candidate(&candidate, existing).is_lt())
             .unwrap_or(self.results.len());
         self.results.insert(pos, candidate);
         self.keys.insert(pos, candidate_key);
@@ -1345,7 +1380,7 @@ pub(crate) fn dfs_search_power_len_for_test(
     top_k: usize,
     ctx: &SearchContext,
 ) -> Vec<DeckResult> {
-    let mut tracker = TopKTracker::new(top_k, pool);
+    let mut tracker = TopKTracker::new(top_k, pool, false);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     recurse_power_len_for_test(
         pool,
