@@ -127,10 +127,11 @@ pub(super) fn ep_prefilter_keep(
 
 /// 逐角色把候选裁到 `per_char_keep` 张。
 ///
-/// 保留规则只有一条：取 (活动加成, 综合力×技能) 的 **Pareto 前沿**。
-/// 在这两者的任意权衡下有可能进最优解的卡，恰好就是前沿上的那一批——
-/// 低加成高练度的「综合力专家」（WL turn-3 的 336k cap / 异色差分场景）
-/// 自然落在前沿末端，不需要单独的第二张榜单。
+/// 与 [`trim_char_quota`] 的纯排序名额不同，这里保留规则是 (活动加成,
+/// 综合力×技能) 的 **Pareto 前沿**：在这两者的任意权衡下有可能进最优解的
+/// 卡，恰好就是前沿上的那一批——低加成高练度的「综合力专家」（WL turn-3
+/// 的 336k cap / 异色差分场景）自然落在前沿末端，不需要单独的第二张榜单。
+/// 幸存卡保持原相对顺序（掩码保留，不重排建池次序）。
 ///
 /// 前沿不足额时按加成降序补齐；超额时沿前沿保留加成最高的一段。
 /// 固定卡、固定角色与高加成卡（≥30%）豁免裁剪。
@@ -151,9 +152,6 @@ pub(super) fn per_character_trim(
         } else {
             bonus
         }
-    };
-    let power_key = |card: &CardIntermediate| -> u64 {
-        card.power.power_max.max(0) as u64 * (256 + card.skill.skill_max as u64)
     };
 
     let mut keep = vec![false; cards.len()];
@@ -187,7 +185,7 @@ pub(super) fn per_character_trim(
                         .card_rarity_type
                         .cmp(&cards[left].card_rarity_type)
                 })
-                .then_with(|| power_key(&cards[right]).cmp(&power_key(&cards[left])))
+                .then_with(|| power_skill_key(&cards[right]).cmp(&power_skill_key(&cards[left])))
         });
 
         // 加成已非增，因此「综合力严格高于此前所有卡」等价于不被任何卡支配。
@@ -195,7 +193,7 @@ pub(super) fn per_character_trim(
         let mut best_power = 0u64;
         let mut on_frontier = vec![false; candidates.len()];
         for (rank, &index) in candidates.iter().enumerate() {
-            let power = power_key(&cards[index]);
+            let power = power_skill_key(&cards[index]);
             if rank == 0 || power > best_power {
                 best_power = best_power.max(power);
                 on_frontier[rank] = true;
@@ -243,27 +241,34 @@ pub(super) fn ep_prefilter_keep_with_params(
     ep_prefilter_keep(card, is_world_bloom, is_final_chapter)
 }
 
-pub(super) fn general_per_character_trim(
+/// 综合力×技能排序键：score 类路径的「卡牌强度」统一度量。
+fn power_skill_key(card: &CardIntermediate) -> u64 {
+    card.power.power_max.max(0) as u64 * (256 + card.skill.skill_max as u64)
+}
+
+/// 每角色名额裁剪的唯一排序实现。
+///
+/// 历史上 general / target 两份函数各自复制了「排序 → 逐角色计数 → 保留」
+/// 的机制，只有排序键与豁免规则不同；现在两者都走这里，由调用方注入：
+/// - `order`：名额内的择优比较器（整体稳定排序，幸存卡保持排序序，
+///   这决定了建池后的 CardIdx 次序，不得随意改动）；
+/// - `exempt`：不占名额、无条件保留的卡（固定卡与固定角色由本函数统一豁免）。
+fn trim_char_quota(
     cards: &mut Vec<CardIntermediate>,
     params: &types::BuildParams,
+    order: impl FnMut(&CardIntermediate, &CardIntermediate) -> std::cmp::Ordering,
+    exempt: impl Fn(&CardIntermediate) -> bool,
     per_char_keep: usize,
 ) {
-    // 活动点数对加成是乘性敏感的：同角色内按纯战力保留会把高加成卡挤到
-    // 名额之外直接裁掉（实测 jp1302 + 活动 215 裁掉 62.5% 活动卡，
-    // Top-1 EP 落后 4~207，130 个马拉松/欢乐事件受影响）。因此有加成的卡
-    // 一律豁免；战力序名额只用于 0 加成填充卡的择优，容量压力交给
-    // dominance_trim（对 Top-1 无损）。
-    cards.sort_by(|a, b| {
-        let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
-        let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
-        b_key.cmp(&a_key)
-    });
+    cards.sort_by(order);
     let mut counts = [0u8; 27];
     cards.retain(|card| {
-        if params.fixed_cards.contains(&card.game_card_id) {
-            return true;
-        }
-        if card.event_bonus.total_x10() > 0 {
+        if params.fixed_cards.contains(&card.game_card_id)
+            || params
+                .fixed_characters
+                .contains(&(card.character_id as i32))
+            || exempt(card)
+        {
             return true;
         }
         let ch = (card.character_id as usize).min(26);
@@ -276,60 +281,64 @@ pub(super) fn general_per_character_trim(
     });
 }
 
+/// 通用活动的按角色裁剪（容量压力挡板）。
+pub(super) fn general_per_character_trim(
+    cards: &mut Vec<CardIntermediate>,
+    params: &types::BuildParams,
+    per_char_keep: usize,
+) {
+    // 活动点数对加成是乘性敏感的：同角色内按纯战力保留会把高加成卡挤到
+    // 名额之外直接裁掉（实测 jp1302 + 活动 215 裁掉 62.5% 活动卡，
+    // Top-1 EP 落后 4~207，130 个马拉松/欢乐事件受影响）。因此有加成的卡
+    // 一律豁免；战力序名额只用于 0 加成填充卡的择优，容量压力交给
+    // dominance_trim（对 Top-1 无损）。
+    trim_char_quota(
+        cards,
+        params,
+        |a, b| power_skill_key(b).cmp(&power_skill_key(a)),
+        |card| card.event_bonus.total_x10() > 0,
+        per_char_keep,
+    );
+}
+
+/// power/skill 目标的按角色裁剪：名额按目标键（minimize 时反向）择优。
 pub(super) fn target_per_character_trim(
     cards: &mut Vec<CardIntermediate>,
     params: &types::BuildParams,
 ) {
     // minimize（最弱组卡，仅 Power）时保留每角色最弱的若干张，否则保留最强。
     let minimize = params.minimize && matches!(params.target, crate::types::ScoreTarget::Power);
-    cards.sort_by(|a, b| {
-        let (a_key, b_key) = match params.target {
-            crate::types::ScoreTarget::Power => (
-                a.power.power_max.max(0) as u64,
-                b.power.power_max.max(0) as u64,
-            ),
-            crate::types::ScoreTarget::Skill => {
-                (a.skill.skill_max as u64, b.skill.skill_max as u64)
-            }
-            _ => {
-                let a_key = a.power.power_max.max(0) as u64 * (256 + a.skill.skill_max as u64);
-                let b_key = b.power.power_max.max(0) as u64 * (256 + b.skill.skill_max as u64);
-                (a_key, b_key)
-            }
-        };
-        // minimize 时按 power 升序（最弱优先保留），否则降序。次级键同向翻转。
-        let primary = if minimize {
-            a_key.cmp(&b_key)
-        } else {
-            b_key.cmp(&a_key)
-        };
-        let rarity = if minimize {
-            a.card_rarity_type.cmp(&b.card_rarity_type)
-        } else {
-            b.card_rarity_type.cmp(&a.card_rarity_type)
-        };
-        primary
-            .then(rarity)
-            .then_with(|| a.game_card_id.cmp(&b.game_card_id))
-    });
-
-    let mut counts = [0u8; 27];
-    cards.retain(|card| {
-        if params.fixed_cards.contains(&card.game_card_id)
-            || params
-                .fixed_characters
-                .contains(&(card.character_id as i32))
-        {
-            return true;
-        }
-        let ch = (card.character_id as usize).min(26);
-        if (counts[ch] as usize) < GENERAL_PER_CHAR_KEEP {
-            counts[ch] += 1;
-            true
-        } else {
-            false
-        }
-    });
+    trim_char_quota(
+        cards,
+        params,
+        |a, b| {
+            let (a_key, b_key) = match params.target {
+                crate::types::ScoreTarget::Power => {
+                    (a.power.power_max.max(0) as u64, b.power.power_max.max(0) as u64)
+                }
+                crate::types::ScoreTarget::Skill => {
+                    (a.skill.skill_max as u64, b.skill.skill_max as u64)
+                }
+                _ => (power_skill_key(a), power_skill_key(b)),
+            };
+            // minimize 时按 power 升序（最弱优先保留），否则降序。次级键同向翻转。
+            let primary = if minimize {
+                a_key.cmp(&b_key)
+            } else {
+                b_key.cmp(&a_key)
+            };
+            let rarity = if minimize {
+                a.card_rarity_type.cmp(&b.card_rarity_type)
+            } else {
+                b.card_rarity_type.cmp(&a.card_rarity_type)
+            };
+            primary
+                .then(rarity)
+                .then_with(|| a.game_card_id.cmp(&b.game_card_id))
+        },
+        |_| false,
+        GENERAL_PER_CHAR_KEEP,
+    );
 }
 
 pub(super) fn keep_card(card: &CardIntermediate, params: &types::BuildParams) -> bool {
