@@ -26,7 +26,7 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | `customBonusAttr` / `custom_bonus_attr` | string | absent | Mixed-event attribute. |
 | `customBonusCharacterSupportUnits` / `custom_bonus_character_support_units` | array | `[]` | Support-unit constraints for Virtual Singer entries in the custom character set. |
 | `boost` | int | absent | Energy flame count (0–10), not a multiplier; affects event point display math. |
-| `targetBonusList` / `target_bonus_list` | int[] | `[]` | For `target=bonus`: exact event-bonus tiers to hit, one Top-K per tier. |
+| `targetBonusList` / `target_bonus_list` | int[] | `[]` | For `target=bonus`: exact event-bonus tiers to hit, one Top-K per tier. Tiered bonus search builds its own candidate pool from the whole box — cards above the highest requested tier are dropped, hard constraints (fixed/excluded cards, unit/attribute filters) still apply, and every remaining card stays searchable so low-granularity tiers stay reachable. |
 
 ## World Bloom
 
@@ -108,6 +108,6 @@ Per-rarity defaults (`rarity1Config` … `rarity4Config`, `rarityBirthdayConfig`
 | `power` (no fixed cards/characters, not `minimize`) | 49-scenario additive DP | Exact, including Top-K |
 | `power` (with fixed cards/characters, or `minimize`) | quality-prefix truncation (28 cards, ≤6 per character) | Heuristic |
 | `skill` | quality-prefix truncation (20 cards, ≤3 per character) | Heuristic |
-| `bonus` (`targetBonusList`) | DFS per bonus tier | Exact per tier |
+| `bonus` (`targetBonusList`) | dedicated candidate pool + DFS per bonus tier | Exact per tier |
 
 Dominance pruning compares power, skill, event bonus, attribute, unit mask — and, in World Bloom, the per-leader support-deck penalty (a support-listed card placed in the deck forfeits its support bonus). Timeouts turn any exact path into best-effort.

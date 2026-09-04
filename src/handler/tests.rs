@@ -2116,3 +2116,307 @@ fn handler_build_power_large_pool_does_not_error() {
     let (pool, _) = result.unwrap();
     assert!(pool.count() <= 512, "池子大小应 ≤ 512");
 }
+
+/// 精确档位组卡的合成上下文：马拉松活动 + 稀有度×突破加成表 + 可选的
+/// 属性轴 deck bonus。所有卡默认互不命中队伍/属性规则。
+struct BonusTierFixture {
+    master_cards: Vec<MasterCard>,
+    card_params: Vec<types::CardParameter>,
+    skills: Vec<types::Skill>,
+    effects: Vec<types::SkillEffect>,
+    units: Vec<types::GameCharacterUnit>,
+    events: Vec<types::Event>,
+    deck_bonuses: Vec<types::EventDeckBonus>,
+    rarity_rates: Vec<types::EventRarityBonusRate>,
+    music_metas: Vec<MusicMeta>,
+}
+
+fn bonus_tier_fixture() -> BonusTierFixture {
+    let mut master_cards = Vec::new();
+    let mut card_params = Vec::new();
+    // 60 张无关 4★（0破，加成 10%）：让池子规模超过 EP_PREFILTER_MIN_POOL，
+    // EP 预过滤在该活动下会真实触发。
+    for id in 1..=60i32 {
+        let character_id = (id - 1) % 26 + 1;
+        master_cards.push(MasterCard {
+            id,
+            character_id,
+            attr: "cute".to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: format!("chara_{id:06}"),
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        });
+        card_params.push(types::CardParameter {
+            card_id: id,
+            level: 1,
+            param1: 100,
+            param2: 100,
+            param3: 100,
+        });
+    }
+    // 档位 33% 的骨架卡：4★0破(10) + 4★4破(20) + 三张 2★5破(1)。
+    for (id, character_id, rarity, attr) in [
+        (101, 5, 4, "cute"),
+        (102, 6, 4, "cute"),
+        (103, 7, 2, "cute"),
+        (104, 8, 2, "cute"),
+        (105, 9, 2, "cute"),
+    ] {
+        master_cards.push(MasterCard {
+            id,
+            character_id,
+            attr: attr.to_string(),
+            card_rarity_type: rarity,
+            rarity: format!("rarity_{rarity}"),
+            asset_bundle_name: format!("chara_{id:06}"),
+            skill_id: 10,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        });
+        card_params.push(types::CardParameter {
+            card_id: id,
+            level: 1,
+            param1: 120,
+            param2: 100,
+            param3: 100,
+        });
+    }
+    let skills = vec![types::Skill {
+        id: 10,
+        level: 1,
+        is_after_training: false,
+    }];
+    let effects = vec![types::SkillEffect {
+        skill_id: 10,
+        skill_level: 1,
+        effect_type: "score_up".to_string(),
+        value: 100,
+        additional_value: None,
+        unit_member_count: None,
+        unit: None,
+        activate_character_rank: None,
+    }];
+    let units = (1..=26)
+        .map(|character_id| types::GameCharacterUnit {
+            game_character_id: character_id,
+            unit: "idol".to_string(),
+        })
+        .collect();
+    let events = vec![types::Event {
+        id: 42,
+        event_type: "marathon".to_string(),
+    }];
+    let deck_bonuses = vec![types::EventDeckBonus {
+        event_id: 42,
+        character_id: None,
+        unit: None,
+        attr: Some("mysterious".to_string()),
+        bonus_rate: 25,
+    }];
+    let rarity_rates = vec![
+        types::EventRarityBonusRate {
+            event_id: 42,
+            card_rarity_type: 4,
+            master_rank: 0,
+            bonus_rate_x10: 100,
+        },
+        types::EventRarityBonusRate {
+            event_id: 42,
+            card_rarity_type: 4,
+            master_rank: 4,
+            bonus_rate_x10: 200,
+        },
+        types::EventRarityBonusRate {
+            event_id: 42,
+            card_rarity_type: 2,
+            master_rank: 5,
+            bonus_rate_x10: 10,
+        },
+    ];
+    let music_metas = vec![MusicMeta {
+        music_id: 7,
+        difficulty: "expert".to_string(),
+        event_rate_solo: 100,
+        event_rate_multi: 100,
+        event_rate_auto: 100,
+        base_score: 100.0,
+        base_score_auto: 100.0,
+        fever_score: 0.0,
+        solo_skill_scores: [0.0; 6],
+        multi_skill_scores: [0.0; 6],
+        auto_skill_scores: [0.0; 6],
+        music_time: 100.0,
+        tap_count: 500,
+    }];
+    BonusTierFixture {
+        master_cards,
+        card_params,
+        skills,
+        effects,
+        units,
+        events,
+        deck_bonuses,
+        rarity_rates,
+        music_metas,
+    }
+}
+
+fn bonus_tier_game<'a>(fixture: &'a BonusTierFixture) -> GameData<'a> {
+    let game = sample_game(
+        &fixture.master_cards,
+        &fixture.card_params,
+        &[],
+        &[],
+        &[],
+        &fixture.skills,
+        &fixture.effects,
+        &[],
+        &fixture.units,
+    );
+    GameData {
+        events: &fixture.events,
+        event_deck_bonuses: &fixture.deck_bonuses,
+        event_rarity_bonus_rates: &fixture.rarity_rates,
+        music_metas: &fixture.music_metas,
+        ..game
+    }
+}
+
+fn user_card_with_rank(card_id: i32, master_rank: i32) -> UserCard {
+    UserCard {
+        master_rank,
+        ..sample_user_card(card_id)
+    }
+}
+
+fn bonus_tier_params(tiers: &[i32]) -> BuildParams {
+    BuildParams {
+        target: ScoreTarget::Bonus,
+        event_id: Some(42),
+        live_type: LiveType::Multi,
+        music_id: Some(7),
+        music_diff: Some("expert".to_string()),
+        target_bonus_list: tiers.to_vec(),
+        ..BuildParams::default()
+    }
+}
+
+#[test]
+fn bonus_tier_pool_keeps_master_rank_bonus_cards_and_hits_exact_tiers() {
+    // 回归点：EP 预过滤要求低星卡「加成>0 且角色+属性双轴命中」，2★5破的
+    // 1% 突破加成卡因此全部出局，池内单卡下限 10%、卡组下限 50%，25%~33%
+    // 这类零头档位永远不可达。档位组卡不应触发该预过滤。
+    let fixture = bonus_tier_fixture();
+    let game = bonus_tier_game(&fixture);
+    let mut user_cards: Vec<UserCard> = (1..=60).map(sample_user_card).collect();
+    user_cards.push(user_card_with_rank(101, 0));
+    user_cards.push(user_card_with_rank(102, 4));
+    user_cards.push(user_card_with_rank(103, 5));
+    user_cards.push(user_card_with_rank(104, 5));
+    user_cards.push(user_card_with_rank(105, 5));
+    let user = UserProfile {
+        user_cards,
+        ..UserProfile::default()
+    };
+
+    let (pool, ctx) =
+        build_card_pool(&user, &game, &bonus_tier_params(&[33])).expect("档位组卡应能建池");
+    let bonuses: Vec<u32> = (0..pool.count())
+        .map(|index| {
+            pool.event_bonus(crate::pool::CardIdx::new(index as u16))
+                .total_x10() as u32
+        })
+        .collect();
+    assert!(
+        bonuses.contains(&10),
+        "1% 突破加成卡必须进池，实际池内加成种类: {:?}",
+        bonuses
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+
+    let decks = crate::search::search_targets(
+        &pool,
+        &ctx,
+        &crate::search::SearchParams {
+            top_k: 3,
+            timeout_ms: 10_000,
+        },
+        &[33],
+    );
+    assert!(!decks.is_empty(), "33 档应能组出卡组");
+    for deck in &decks {
+        let total_x10: u32 = deck
+            .cards
+            .iter()
+            .map(|card| pool.event_bonus(*card).total_x10() as u32)
+            .sum();
+        assert_eq!(total_x10, 330, "命中档位的卡组加成总和应为 33%");
+    }
+}
+
+#[test]
+fn bonus_tier_pool_drops_cards_above_the_highest_target() {
+    // 超过最高档位的卡不可能出现在任何命中卡组里（加成非负、总和单调），
+    // 专属路径在综合力计算前把它们收掉；4★5破+属性轴命中 = 50% > 33%。
+    let mut fixture = bonus_tier_fixture();
+    fixture.master_cards.push(MasterCard {
+        id: 201,
+        character_id: 10,
+        attr: "mysterious".to_string(),
+        card_rarity_type: 4,
+        rarity: "rarity_4".to_string(),
+        asset_bundle_name: "chara_002010".to_string(),
+        skill_id: 10,
+        special_training_skill_id: None,
+        special_training_power1_bonus_fixed: 0,
+        special_training_power2_bonus_fixed: 0,
+        special_training_power3_bonus_fixed: 0,
+        support_unit: None,
+        max_level: Some(60),
+        max_skill_level: Some(4),
+        max_master_rank: Some(5),
+    });
+    fixture.card_params.push(types::CardParameter {
+        card_id: 201,
+        level: 1,
+        param1: 200,
+        param2: 100,
+        param3: 100,
+    });
+    let game = bonus_tier_game(&fixture);
+    let mut user_cards: Vec<UserCard> = (1..=60).map(sample_user_card).collect();
+    user_cards.push(user_card_with_rank(101, 0));
+    user_cards.push(user_card_with_rank(102, 4));
+    user_cards.push(user_card_with_rank(103, 5));
+    user_cards.push(user_card_with_rank(104, 5));
+    user_cards.push(user_card_with_rank(105, 5));
+    user_cards.push(user_card_with_rank(201, 5));
+    let user = UserProfile {
+        user_cards,
+        ..UserProfile::default()
+    };
+
+    let (pool, _) =
+        build_card_pool(&user, &game, &bonus_tier_params(&[33])).expect("档位组卡应能建池");
+    let over_target = (0..pool.count())
+        .filter(|index| pool.game_id(crate::pool::CardIdx::new(*index as u16)) == 201)
+        .count();
+    assert_eq!(over_target, 0, "超过最高档位的卡不应进池");
+}

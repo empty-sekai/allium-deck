@@ -6,7 +6,7 @@
 //! - `build_card_pool*` 公开入口与 `cultivated_user_cards` 展示态卡况。
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::pool::EventBonusExact;
 use crate::search::SearchContext;
@@ -328,18 +328,39 @@ impl<'a> PreparedPoolBuild<'a> {
         let is_final_chapter = event_ctx
             .as_ref()
             .is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id));
-        let can_prefilter_before_power = event_ctx.as_ref().is_some_and(|ctx| {
+        let event_scoped = event_ctx.as_ref().is_some_and(|ctx| {
             ctx.support_deck_count == 0 && !crate::types::is_world_bloom_finale_event(ctx.event_id)
-        }) && !matches!(
-            params.target,
-            crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
-        );
+        });
+        // 精确档位组卡（target=bonus + target_bonus_list）的候选语义：
+        // 命中零头档位（如 25%~33%）依赖全盒的低加成尾部，任何按加成盲裁的
+        // 预过滤都会把这些档位变成不可达。专属路径只保留硬约束，并在综合力
+        // 计算之前按最高档位收掉必然超档的卡（加成非负，含超档卡的卡组
+        // 总和必超档，不可能命中任何目标档位）。
+        let bonus_tiered = matches!(params.target, crate::types::ScoreTarget::Bonus)
+            && !params.target_bonus_list.is_empty();
+        let can_prefilter_before_power = event_scoped
+            && !bonus_tiered
+            && !matches!(
+                params.target,
+                crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
+            );
         let mut ep_prefilter_applied = false;
-        if can_prefilter_before_power {
+        if can_prefilter_before_power || (event_scoped && bonus_tiered) {
             seeds.retain(|card| {
                 prepared_keep_card(card, params)
                     && prepared_post_event_unit_filter(card, params, event_ctx.as_ref())
             });
+        }
+        if bonus_tiered {
+            let max_target_x10 = params
+                .target_bonus_list
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(0)
+                .max(0) as u32
+                * 10;
+            seeds.retain(|card| card.event_bonus.total_x10() <= max_target_x10);
         }
         if can_prefilter_before_power
             && seeds.len() > EP_PREFILTER_MIN_POOL
@@ -437,6 +458,38 @@ pub(super) fn normalize_boost_rate_pct(boost: Option<i32>) -> u32 {
         Some(value) if value <= 10 => (2500 + (value - 5) * 200) as u32,
         _ => 100,
     }
+}
+
+/// 精确档位组卡的类内去重：卡组内角色唯一，档位命中只看每张卡的加成
+/// 总和，因此同 (角色, 加成总和) 的卡在任何命中卡组里都可一比一互换，
+/// 保留综合力×技能最强的一张即可，每个目标档位的可达组合不受影响。
+fn bonus_class_dedup(cards: &mut Vec<CardIntermediate>) {
+    let power_rank = |card: &CardIntermediate| -> u64 {
+        card.power.power_max.max(0) as u64 * (256 + card.skill.skill_max as u64)
+    };
+    let mut best: HashMap<(u8, u32), usize> = HashMap::new();
+    for (index, card) in cards.iter().enumerate() {
+        let key = (
+            card.character_id,
+            card.event_bonus.base_x10() + card.event_bonus.limited_x10(),
+        );
+        match best.get(&key) {
+            Some(&current) if power_rank(&cards[current]) >= power_rank(card) => {}
+            _ => {
+                best.insert(key, index);
+            }
+        }
+    }
+    let mut keep = vec![false; cards.len()];
+    for index in best.values() {
+        keep[*index] = true;
+    }
+    let mut index = 0usize;
+    cards.retain(|_| {
+        let result = keep[index];
+        index += 1;
+        result
+    });
 }
 
 pub(super) fn validate_fixed_constraints(
@@ -827,9 +880,14 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         event_ctx.is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom));
     let is_final_chapter =
         event_ctx.is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id));
+    // 与 PreparedPoolBuild::new 的 bonus_tiered 判定一致：精确档位组卡不做
+    // 任何按加成盲裁的收缩，容量压力由等加成支配裁剪处理（见 dominance_trim）。
+    let bonus_tiered = matches!(params.target, crate::types::ScoreTarget::Bonus)
+        && !params.target_bonus_list.is_empty();
     if build.ep_prefilter_applied {
         per_character_trim(&mut cards, params, PER_CHAR_KEEP);
     } else if event_ctx.is_some()
+        && !bonus_tiered
         && !matches!(
             params.target,
             crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
@@ -862,10 +920,12 @@ pub(super) fn build_card_pool_fully_prepared_internal(
 
     if is_challenge_live && cards.len() > CHALLENGE_ALL_PER_CHAR_KEEP {
         general_per_character_trim(&mut cards, params, CHALLENGE_ALL_PER_CHAR_KEEP);
-    } else if !matches!(
-        params.target,
-        crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
-    ) && !is_challenge_all
+    } else if !bonus_tiered
+        && !matches!(
+            params.target,
+            crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
+        )
+        && !is_challenge_all
         // WL 的加成含 diff_attr_bonus（按卡组不同属性数给 0/10/20/35/50）、支援挤占、
         // limited 计数上限与队长专属加成，都不是单卡可分解的量。这一档裁剪只按
         // 综合力×技能排序、完全不看加成也不看属性，用它收 WL 会同时裁掉高加成卡
@@ -883,6 +943,13 @@ pub(super) fn build_card_pool_fully_prepared_internal(
     ) && cards.len() > crate::pool::MASK_WORDS * 64
     {
         target_per_character_trim(&mut cards, params);
+    }
+
+    // 精确档位组卡：同角色同属性同加成分量的卡对档位完全可互换（卡组内
+    // 角色唯一，每类至多占一槽），只保留综合力×技能最强的一张。这是档位
+    // 路径自己的容量压缩——不丢失任何加成组合，与通用路径的盲裁不同源。
+    if bonus_tiered {
+        bonus_class_dedup(&mut cards);
     }
 
     if cards.is_empty() {

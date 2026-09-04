@@ -106,6 +106,11 @@ pub(super) fn dominance_trim(
         return 0;
     }
 
+    // 精确档位组卡下，把低加成卡换成高加成的支配者会改变卡组加成总和，
+    // 档位命中因此被破坏。支配判据收紧为「加成分量完全相等」，替换只影响
+    // 综合力与技能得分，每个目标档位的命中总和保持不变。
+    let require_equal_bonus = matches!(params.target, crate::types::ScoreTarget::Bonus)
+        && !params.target_bonus_list.is_empty();
     let power_slots: Vec<[i32; 24]> = cards.iter().map(power_profile).collect();
 
     // 同角色同属性分桶：跨属性不比较，`diff_attr_bonus` 的档位因此不会被改变。
@@ -136,6 +141,7 @@ pub(super) fn dominance_trim(
                     &power_slots[a],
                     &power_slots[b],
                     support,
+                    require_equal_bonus,
                 ) {
                     alive[b] = false;
                     dominated_by[b] = Some(a);
@@ -164,6 +170,7 @@ pub(super) fn dominance_trim(
                     &power_slots[other],
                     &power_slots[index],
                     support,
+                    require_equal_bonus,
                 )
         });
         match replacement {
@@ -241,6 +248,7 @@ fn dominates(
     lhs_power: &[i32; 24],
     rhs_power: &[i32; 24],
     support: Option<&SupportBonusTable>,
+    require_equal_bonus: bool,
 ) -> bool {
     debug_assert_eq!(lhs.character_id, rhs.character_id);
     debug_assert_eq!(lhs.attr, rhs.attr);
@@ -258,7 +266,13 @@ fn dominates(
     if !skill_dominates(lhs, rhs) {
         return false;
     }
-    if lhs.event_bonus.base_x10() < rhs.event_bonus.base_x10()
+    if require_equal_bonus {
+        if lhs.event_bonus.base_x10() != rhs.event_bonus.base_x10()
+            || lhs.event_bonus.limited_x10() != rhs.event_bonus.limited_x10()
+        {
+            return false;
+        }
+    } else if lhs.event_bonus.base_x10() < rhs.event_bonus.base_x10()
         || lhs.event_bonus.limited_x10() < rhs.event_bonus.limited_x10()
     {
         return false;
@@ -376,6 +390,32 @@ mod tests {
             leader_limit_bonus: 0,
             ep_sort_key: 0,
         }
+    }
+
+    #[test]
+    fn dominance_trim_respects_equal_bonus_under_exact_tiers() {
+        // 档位组卡下加成不同的卡互不支配：1% 卡被 2% 卡顶替会破坏档位总和。
+        // 容量压力下宁可保留也不破坏精确性，超容量交由 TooManyCards 上抛。
+        let mut cards = vec![card(1, 1, 0, 100, 1), card(2, 1, 0, 200, 2)];
+        cards[0].event_bonus = EventBonusExact::from_x10(10, 0);
+        cards[1].event_bonus = EventBonusExact::from_x10(20, 0);
+        let tiered = BuildParams {
+            target: crate::types::ScoreTarget::Bonus,
+            target_bonus_list: vec![33],
+            ..BuildParams::default()
+        };
+        assert_eq!(dominance_trim(&mut cards, &tiered, None, 1), 0);
+        assert_eq!(cards.len(), 2);
+
+        // 默认（非档位）语义维持原判据：低加成卡仍可被支配淘汰。
+        let mut cards = vec![card(1, 1, 0, 100, 1), card(2, 1, 0, 200, 2)];
+        cards[0].event_bonus = EventBonusExact::from_x10(10, 0);
+        cards[1].event_bonus = EventBonusExact::from_x10(20, 0);
+        assert_eq!(
+            dominance_trim(&mut cards, &BuildParams::default(), None, 1),
+            1
+        );
+        assert_eq!(cards.len(), 1);
     }
 
     #[test]
