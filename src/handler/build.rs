@@ -953,7 +953,8 @@ pub(super) fn build_card_pool_fully_prepared_internal(
 
     if is_challenge_live && cards.len() > CHALLENGE_ALL_PER_CHAR_KEEP {
         general_per_character_trim(&mut cards, params, CHALLENGE_ALL_PER_CHAR_KEEP);
-    } else if !bonus_tiered
+    } else if event_ctx.is_some()
+        && !bonus_tiered
         && !matches!(
             params.target,
             crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
