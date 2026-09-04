@@ -1364,14 +1364,6 @@ impl TopKTracker {
     }
 }
 
-#[inline(always)]
-pub(super) fn deck_result_cmp(left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
-    right
-        .score
-        .cmp(&left.score)
-        .then_with(|| left.cards.cmp(&right.cards))
-}
-
 #[cfg(test)]
 pub(crate) fn dfs_search_power_len_for_test(
     pool: &CardPool,

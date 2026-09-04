@@ -572,9 +572,9 @@ pub(crate) fn resolve_total_bonus(
         for pos in 0..DECK_SIZE {
             let card = unsafe { *deck.get_unchecked(pos) };
             let exact = pool.event_bonus_exact(card);
-            total_x10 += exact.base_x10() as u32;
+            total_x10 += exact.base_x10();
             if exact.limited_x10() > 0 && limited_count < ctx.card_bonus_count_limit {
-                total_x10 += exact.limited_x10() as u32;
+                total_x10 += exact.limited_x10();
                 limited_count += 1;
             }
         }

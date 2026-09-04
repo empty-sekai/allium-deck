@@ -111,3 +111,5 @@ Per-rarity defaults (`rarity1Config` … `rarity4Config`, `rarityBirthdayConfig`
 | `bonus` (`targetBonusList`) | dedicated candidate pool + DFS per bonus tier | Exact per tier |
 
 Dominance pruning compares power, skill, event bonus, attribute, unit mask — and, in World Bloom, the per-leader support-deck penalty (a support-listed card placed in the deck forfeits its support bonus). Timeouts turn any exact path into best-effort.
+
+Result ordering: decks are ranked by the search objective descending. The Mysekai objective quantizes deck power into 45k buckets, so ties are common; tied decks rank by total power descending, then leader card id ascending, consistently for every `limit`. Challenge live decks are always five cards of one character, for every target including `power`/`skill`.
