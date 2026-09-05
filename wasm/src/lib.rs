@@ -160,7 +160,27 @@ fn recommend_with_user(
     let game: &GameData<'_> = &data.game.as_ref();
 
     let build_pool_start = performance_now();
-    let (pool, ctx) = build_card_pool(user, game, &params).map_err(to_js)?;
+    // 精确档位组卡：候选不足等价于「所有目标档位都不可达」，返回空结果而
+    // 非错误——与 engine::recommend 的逐档空 bucket 语义保持一致（不可达的
+    // 档位（如 0% 档、低星盒的高档位）是正常查询结果，不应让整个请求失败）。
+    let build = build_card_pool(user, game, &params);
+    let (pool, ctx) = match build {
+        Ok(ok) => ok,
+        Err(allium_deck::handler::BuildError::EmptyPool)
+            if !params.target_bonus_list.is_empty() =>
+        {
+            return serde_json::to_string(&DeckResponse {
+                decks: Vec::new(),
+                performance: DeckPerformance {
+                    build_pool_ms: elapsed_ms(build_pool_start),
+                    search_ms: 0.0,
+                    pool_size: 0,
+                },
+            })
+            .map_err(to_js);
+        }
+        Err(error) => return Err(to_js(error)),
+    };
     let build_pool_ms = elapsed_ms(build_pool_start);
     // 只需要养成态卡表本身；克隆整个 UserProfile 后立刻覆盖 user_cards 是纯浪费。
     let cultivated = cultivated_user_cards(user, game, &params);
