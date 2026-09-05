@@ -1,6 +1,6 @@
 [package]
 name = "allium-deck-wasm"
-version = "0.0.13"
+version = "0.0.14"
 edition = "2024"
 description = "Browser WASM bindings for allium-deck"
 license = "MIT OR Apache-2.0"
