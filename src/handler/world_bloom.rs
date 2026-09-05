@@ -1328,7 +1328,11 @@ mod tests {
         let game = fixture.game();
         let rows = synthesize_wb_rows(&game, FINAL_CHAPTER_EVENT_ID);
         assert_eq!(rows.deck_bonuses.len(), 6);
-        assert!(rows.deck_bonuses.iter().all(|bonus| bonus.bonus_rate_x10 == 50));
+        assert!(
+            rows.deck_bonuses
+                .iter()
+                .all(|bonus| bonus.bonus_rate_x10 == 50)
+        );
         // WL2 集合 {163,167,170,171,176,179} 中 fixture 只有 170 的 card2。
         assert_eq!(
             rows.event_cards,

@@ -313,9 +313,10 @@ pub(super) fn target_per_character_trim(
         params,
         |a, b| {
             let (a_key, b_key) = match params.target {
-                crate::types::ScoreTarget::Power => {
-                    (a.power.power_max.max(0) as u64, b.power.power_max.max(0) as u64)
-                }
+                crate::types::ScoreTarget::Power => (
+                    a.power.power_max.max(0) as u64,
+                    b.power.power_max.max(0) as u64,
+                ),
                 crate::types::ScoreTarget::Skill => {
                     (a.skill.skill_max as u64, b.skill.skill_max as u64)
                 }

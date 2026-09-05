@@ -2585,7 +2585,10 @@ fn challenge_live_power_and_skill_targets_search_same_character_decks() {
         }
         reference.sort_unstable_by(deck_result_cmp);
         reference.truncate(params.top_k);
-        assert_eq!(results, reference, "challenge × {target:?} 应等于逐角色归并");
+        assert_eq!(
+            results, reference,
+            "challenge × {target:?} 应等于逐角色归并"
+        );
     }
 }
 
@@ -2597,8 +2600,7 @@ fn mysekai_top_k_is_monotone_across_limits() {
     let mut cards = Vec::new();
     for char_id in 0..5u8 {
         for variant in 0..2u16 {
-            let power =
-                70_000 + u32::from(char_id) * 2_000 - u32::from(variant) * 1_000;
+            let power = 70_000 + u32::from(char_id) * 2_000 - u32::from(variant) * 1_000;
             cards.push(TestCard {
                 char_id,
                 attr: 0,

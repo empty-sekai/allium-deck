@@ -1335,7 +1335,10 @@ impl TopKTracker {
         }
         let candidate_key = self.game_card_set_key(&candidate);
         if let Some(existing_pos) = self.keys.iter().position(|key| *key == candidate_key) {
-            if !self.cmp_candidate(&candidate, &self.results[existing_pos]).is_lt() {
+            if !self
+                .cmp_candidate(&candidate, &self.results[existing_pos])
+                .is_lt()
+            {
                 return;
             }
             self.results.remove(existing_pos);
