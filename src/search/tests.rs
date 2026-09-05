@@ -2659,7 +2659,7 @@ fn mysekai_top_k_is_monotone_across_limits() {
     let top10 = &by_limit[by_limit.len() - 1];
     let mut prev_power = u32::MAX;
     for result in top10.iter().filter(|r| r.score == by_limit[0][0].score) {
-        let power: u32 = result.cards.iter().map(|c| pool.power_max(*c) as u32).sum();
+        let power: u32 = result.cards.iter().map(|c| pool.power_max(*c)).sum();
         assert!(
             power <= prev_power,
             "并列分值内战力未按降序排列: {power} > {prev_power}"
