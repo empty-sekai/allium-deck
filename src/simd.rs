@@ -301,15 +301,13 @@ unsafe fn power_area_single_unit_16_avx512_unchecked(
         for item in items {
             let mut lanes = active_lanes;
             if item.unit != PowerAreaItem::ANY {
-                lanes &= _mm512_cmpeq_epi32_mask(units, _mm512_set1_epi32(item.unit as i32)) as u16;
+                lanes &= _mm512_cmpeq_epi32_mask(units, _mm512_set1_epi32(item.unit as i32));
             }
             if item.attr != PowerAreaItem::ANY {
-                lanes &=
-                    _mm512_cmpeq_epi32_mask(attributes, _mm512_set1_epi32(item.attr as i32)) as u16;
+                lanes &= _mm512_cmpeq_epi32_mask(attributes, _mm512_set1_epi32(item.attr as i32));
             }
             if item.character_id != PowerAreaItem::ANY_CHARACTER {
-                lanes &= _mm512_cmpeq_epi32_mask(characters, _mm512_set1_epi32(item.character_id))
-                    as u16;
+                lanes &= _mm512_cmpeq_epi32_mask(characters, _mm512_set1_epi32(item.character_id));
             }
             if lanes == 0 {
                 continue;
@@ -482,7 +480,7 @@ pub(crate) unsafe fn unused_character_mask_16_avx512_unchecked(
         let characters = _mm512_cvtepu8_epi32(packed);
         let character_bits = _mm512_sllv_epi32(_mm512_set1_epi32(1), characters);
         let conflicts = _mm512_and_si512(character_bits, _mm512_set1_epi32(used_chars as i32));
-        _mm512_cmpeq_epi32_mask(conflicts, _mm512_setzero_si512()) as u16
+        _mm512_cmpeq_epi32_mask(conflicts, _mm512_setzero_si512())
     }
 }
 
