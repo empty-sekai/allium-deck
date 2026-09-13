@@ -1,3 +1,11 @@
+//! Structure-of-arrays card pool.
+//!
+//! [`CardPool`] stores one column per card attribute, each aligned to a cache
+//! line, so leaf evaluation walks a deck in column order instead of chasing
+//! per-card structs. Cards are addressed by dense [`CardIdx`] rather than game
+//! id, and candidate sets are carried as [`Mask`] bitmaps. A pool is built once
+//! and read-only afterwards.
+
 mod arena;
 mod builder;
 mod card_pool;

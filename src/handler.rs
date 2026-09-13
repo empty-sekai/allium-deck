@@ -1,3 +1,13 @@
+//! Pool-building layer: masterdata and player data in, search inputs out.
+//!
+//! [`build_card_pool`] resolves each owned card's power, skill and event bonus,
+//! prunes candidates that cannot appear in an optimal deck, and produces the
+//! [`crate::pool::CardPool`] and [`crate::search::SearchContext`] the search
+//! layer consumes. The `_prepared` and `_fully_prepared` variants reuse
+//! masterdata indexes and per-user preparation across repeated builds, and the
+//! `_with_details` variants additionally return full-precision display data
+//! aligned with the pool's dense card indexes.
+
 mod build;
 mod card_config;
 mod event_bonus;
@@ -10,6 +20,7 @@ mod prune;
 mod skill;
 #[cfg(test)]
 mod tests;
+/// Handler 层的输入类型：masterdata 视图、用户数据与建池参数。
 pub mod types;
 mod validate;
 pub(crate) mod world_bloom;
@@ -62,6 +73,9 @@ pub struct PreparedGameIndexes {
 }
 
 impl PreparedGameIndexes {
+    /// 为一份 masterdata 建立按 id 的查表索引。
+    ///
+    /// 索引与 masterdata 同生命周期，可在多次建池间复用。
     pub fn new(game: &types::GameData<'_>) -> Self {
         Self {
             indexes: Arc::new(index::PoolIndexes::build(game)),
@@ -69,17 +83,21 @@ impl PreparedGameIndexes {
     }
 }
 
+/// 一份 masterdata 视图与其查表索引的绑定。
 pub struct PreparedGameData<'a> {
     game: types::GameData<'a>,
     indexes: Arc<index::PoolIndexes>,
 }
 
 impl<'a> PreparedGameData<'a> {
+    /// 就地建立索引并绑定。索引只服务这一次，重复建池请改用
+    /// [`PreparedGameData::with_indexes`] 复用同一份索引。
     pub fn new(game: types::GameData<'a>) -> Self {
         let indexes = PreparedGameIndexes::new(&game);
         Self::with_indexes(game, &indexes)
     }
 
+    /// 绑定到一份已建好的索引，索引本身按引用计数共享。
     pub fn with_indexes(game: types::GameData<'a>, indexes: &PreparedGameIndexes) -> Self {
         Self {
             game,
@@ -87,6 +105,7 @@ impl<'a> PreparedGameData<'a> {
         }
     }
 
+    /// 返回绑定的 masterdata 视图。
     #[inline]
     pub fn game(&self) -> &types::GameData<'a> {
         &self.game

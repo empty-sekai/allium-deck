@@ -132,6 +132,7 @@ impl CardPool {
         }
     }
 
+    /// 返回该卡的精确活动加成，把热路径里压缩过的限定加成 code 展开回原值。
     #[inline(always)]
     pub fn event_bonus_exact(&self, idx: CardIdx) -> EventBonusExact {
         let hot = *self.event_bonus(idx);

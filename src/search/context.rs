@@ -3,57 +3,102 @@ use crate::types::{
 };
 
 /// 预排序支援卡组。
+///
+/// World Bloom 的支援卡组按加成降序排好，搜索只取前 `count` 张计入。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SupportDeck {
+    /// `(游戏卡 ID, 加成百分比)`，按加成降序。长度可以大于 `count`：
+    /// 多出的条目是替补，主队伍占用某张支援卡时用来补位。
     pub cards: Vec<(u16, f64)>,
+    /// 实际计入加成的张数。
     pub count: u8,
 }
 
 /// 单次搜索期间不变的常量上下文。
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchContext {
+    /// 搜索最大化的目标。
     pub target: ScoreTarget,
+    /// 必须入队的游戏卡 ID，按槽位顺序占据队首。
     pub fixed_card_ids: Vec<u16>,
+    /// 必须入队的角色 ID，占据 `fixed_card_ids` 之后的槽位。
     pub fixed_character_ids: Vec<u8>,
+    /// 必须占据队长位的角色。挑战 live 五张同角色，该约束无意义，建池时置 `None`。
     pub forced_leader_character_id: Option<u8>,
+    /// 歌曲活动倍率，扩大 100 倍。
     pub music_rate_pct: u32,
+    /// 活动 boost 倍率，扩大 100 倍。
     pub boost_rate_pct: u32,
+    /// 歌曲基础分系数。
     pub base_score: f64,
+    /// 歌曲 auto 模式基础分系数。
     pub base_score_auto: f64,
+    /// 歌曲 fever 分系数。
     pub fever_score: f64,
+    /// 技能分系数，按 `[0=solo, 1=multi, 2=auto][技能槽]` 索引。
     pub skill_scores: [[f64; 6]; 3],
+    /// 计入总分的额外分数。
     pub other_score: i32,
+    /// 初始生命值，影响生命回复类技能的收益。
     pub life: i32,
+    /// World Bloom 异色加成，按队伍内不同属性数索引。
     pub diff_attr_bonus: [u16; 6],
+    /// World Bloom 支援卡组。
     pub support_deck: SupportDeck,
+    /// 终章逐队长角色的支援卡组，按角色 ID 索引；仅终章使用。
     pub support_decks_by_character: Vec<SupportDeck>,
+    /// 当前是否为 World Bloom 活动。
     pub is_world_bloom: bool,
+    /// 当前是否适用终章规则（队长限定加成、独立的支援卡组与综合力上限）。
     pub is_final_chapter: bool,
     /// challenge 模式下不要求角色唯一（pool 已过滤为同角色卡）
     pub enforce_char_uniqueness: bool,
     /// 反向搜索：求最弱（最小化 power）而非最强。仅 Power 目标生效，其它目标忽略。
     pub minimize: bool,
+    /// live 模式。
     pub live_type: LiveType,
+    /// 活动类型；无活动上下文时为 `None`。
     pub event_type: Option<EventType>,
+    /// 保持卡面当前的特训状态，不为了更优技能而假设已特训。
     pub keep_after_training_state: bool,
+    /// 吸分技能取值策略。
     pub skill_reference_strategy: SkillReferenceStrategy,
+    /// 允许把技能最高的卡放到队长位。终章与指定队长时不生效，
+    /// 判定走 [`SearchContext::effective_best_skill_as_leader`]。
     pub best_skill_as_leader: bool,
+    /// 技能发动顺序假设。
     pub live_skill_order: LiveSkillOrder,
+    /// `live_skill_order` 为 [`LiveSkillOrder::Specific`] 时的槽位排列。
     pub specific_skill_order: Option<[usize; DECK_SIZE]>,
+    /// 协力队友的技能加成假设，单位为百分比。
     pub multi_teammate_score_up: Option<i32>,
+    /// 协力队友的综合力假设。
     pub multi_teammate_power: Option<i32>,
+    /// 协力加成的下界，用于把队友贡献钳在可信区间内。
     pub multi_live_score_up_lower_bound: Option<f64>,
+    /// 单卡之外的加成来源上界（异色加成与支援卡组之和），供剪枝使用。
     pub extra_bonus_ub: u32,
+    /// 热启动贪心排序里综合力的权重。
     pub w_power: f64,
+    /// 热启动贪心排序里活动加成的权重。
     pub w_bonus: f64,
+    /// 池内技能值前五之和，即整副队伍技能加成的上界。
     pub skill_ub_global: u32,
+    /// 享受 limited bonus 的最大张数；终章为 4，其余通常为 [`DECK_SIZE`]。
     pub card_bonus_count_limit: usize,
+    /// 称号带来的综合力加成，作为固定项计入每副队伍。
     pub honor_bonus: u32,
+    /// 综合力上限；超过后按上限计算。
     pub power_total_cap: Option<u32>,
+    /// 每张卡作为队长时的称号加成，按稠密卡索引。
     pub leader_honor_bonus: Vec<u16>,
+    /// 每张卡作为队长时的当期限定加成，按稠密卡索引。
     pub leader_limit_bonus: Vec<u16>,
+    /// 终章 member 支配裁剪后仍保留的卡，按稠密卡索引。
     pub final_chapter_member_keep: Vec<bool>,
+    /// 每张卡取用的技能是否为花后技能，按稠密卡索引。
     pub skill_is_after_training: Vec<bool>,
+    /// 每张卡默认立绘是否已是特训图，按稠密卡索引。
     pub trained_to_special_image: Vec<bool>,
 }
 

@@ -15,13 +15,21 @@ use super::BuildError;
 use super::event_bonus::EventContext;
 use super::index;
 
+/// World Bloom 支援卡组里的一张卡及其展示信息。
 pub struct WorldBloomSupportCard {
+    /// 游戏卡 ID。
     pub card_id: i32,
+    /// 该卡计入支援卡组的加成百分比。
     pub bonus: f64,
+    /// 技能等级。
     pub skill_level: i32,
+    /// 突破等级。
     pub master_rank: i32,
+    /// 卡等级。
     pub level: i32,
+    /// 是否已特训。
     pub after_training: bool,
+    /// 当前展示的立绘。
     pub default_image: DefaultImage,
 }
 

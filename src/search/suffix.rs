@@ -42,10 +42,15 @@ impl UsedSet {
 /// DFS 中间节点的可加分量摘要。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PartialDeck {
+    /// 已选卡的综合力合计。
     pub power: u32,
+    /// 已选卡的技能加成合计。
     pub skill: u32,
+    /// 已选卡的活动加成合计，单位为 0.1%。
     pub bonus: u32,
+    /// 已选卡里最高的单卡技能值，用于队长位取值。
     pub max_skill: u8,
+    /// 已选卡里享受 limited bonus 的张数，用于对照计入上限。
     pub limited_count: u8,
 }
 

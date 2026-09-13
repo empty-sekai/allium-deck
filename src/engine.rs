@@ -1,3 +1,9 @@
+//! Public entry points.
+//!
+//! [`recommend_json`] is the JSON-in / JSON-out interface; [`recommend`] is the
+//! typed equivalent for callers that already hold parsed structures. This module
+//! also owns masterdata loading ([`OwnedGameData`]) and parameter parsing.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -826,37 +832,68 @@ fn validate_optional_enum(
 /// 持有 `GameData<'_>` 借用所需的所有 `Vec<T>`。
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct OwnedGameData {
+    /// 卡牌主表。
     pub cards: Vec<MasterCard>,
+    /// 卡牌基础参数表：每张卡分等级的三维数值。
     pub card_parameters: Vec<CardParameter>,
+    /// 稀有度表：各稀有度的等级与技能等级上限。
     pub card_rarities: Vec<CardRarity>,
+    /// 卡牌剧情表：阅读后获得的数值加成。
     pub card_episodes: Vec<CardEpisode>,
+    /// 突破表：master rank 对应的数值加成。
     pub master_lessons: Vec<MasterLesson>,
+    /// 技能主表。
     pub skills: Vec<Skill>,
+    /// 技能效果表：一个技能可有多条效果。
     pub skill_effects: Vec<SkillEffect>,
+    /// 区域道具等级表。
     pub area_item_levels: Vec<crate::handler::AreaItemLevel>,
+    /// 角色所属团表；跨团角色有多行。
     pub game_character_units: Vec<GameCharacterUnit>,
+    /// 角色 rank 表。
     pub character_ranks: Vec<CharacterRank>,
+    /// MySekai 画布加成表。
     pub card_mysekai_canvas_bonuses: Vec<CardMysekaiCanvasBonus>,
+    /// MySekai 大门表。
     pub mysekai_gates: Vec<MysekaiGate>,
+    /// MySekai 大门等级表。
     pub mysekai_gate_levels: Vec<MysekaiGateLevel>,
+    /// 活动主表。
     pub events: Vec<Event>,
+    /// 活动当期卡表。
     pub event_cards: Vec<EventCard>,
+    /// 活动 deck bonus 规则表：按角色、属性与团命中。
     pub event_deck_bonuses: Vec<EventDeckBonus>,
+    /// 活动限定加成的计入张数上限表。
     pub event_card_bonus_limits: Vec<EventCardBonusLimit>,
+    /// 活动称号加成表。
     pub event_honor_bonuses: Vec<EventHonorBonus>,
+    /// World Bloom 异色加成表：按队伍内不同属性数给加成。
     pub world_bloom_different_attribute_bonuses: Vec<WorldBloomDiffAttrBonus>,
+    /// World Bloom 章节表。
     pub world_blooms: Vec<WorldBloom>,
+    /// World Bloom 第一期支援卡组加成表。
     pub wb_support_deck_bonuses_wl1: Vec<WBSupportDeckBonus>,
+    /// World Bloom 第二期支援卡组加成表。
     pub wb_support_deck_bonuses_wl2: Vec<WBSupportDeckBonus>,
+    /// World Bloom 第三期支援卡组加成表。
     pub wb_support_deck_bonuses_wl3: Vec<WBSupportDeckBonus>,
+    /// World Bloom 支援卡组的当期团限定加成表。
     pub world_bloom_support_deck_unit_event_limited_bonuses:
         Vec<WBSupportDeckUnitEventLimitedBonus>,
+    /// 活动 MySekai 家具加成上限表。
     pub event_mysekai_fixture_performance_bonus_limits: Vec<EventFixtureBonusLimit>,
+    /// 活动技能加成上限表。
     pub event_skill_score_up_limits: Vec<EventSkillScoreUpLimit>,
+    /// 歌曲元数据表：分难度的基础分与技能分系数。
     pub music_metas: Vec<MusicMeta>,
+    /// 歌曲难度表。
     pub music_difficulties: Vec<MusicDifficulty>,
+    /// 活动稀有度与突破加成表。
     pub event_rarity_bonus_rates: Vec<EventRarityBonusRate>,
+    /// 称号表。
     pub honors: Vec<Honor>,
+    /// 羁绊称号表。
     pub bonds_honors: Vec<BondsHonor>,
 }
 

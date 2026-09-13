@@ -38,7 +38,10 @@ const _: () = assert!(size_of::<CardIdx>() == 2);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct SkillSlot {
+    /// Which side table `value` indexes, per the table above.
     pub skill_type: u8,
+    /// Score-up percentage for type `0`, otherwise a 1-based side-table index
+    /// where `0` means "no entry".
     pub value: u8,
 }
 
@@ -55,8 +58,15 @@ pub struct EventBonusHot {
 const _: () = assert!(size_of::<EventBonusHot>() == 2);
 
 impl EventBonusHot {
+    /// Largest representable total bonus, in tenths of a percent.
     pub const MAX_TOTAL_X10: u16 = 0x0fff;
 
+    /// Packs a total bonus and a limited-bonus code into one `u16`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `total_x10` exceeds [`Self::MAX_TOTAL_X10`] or `limited_code`
+    /// does not fit in four bits.
     #[inline(always)]
     pub const fn from_parts(total_x10: u16, limited_code: u8) -> Self {
         assert!(total_x10 <= Self::MAX_TOTAL_X10);
@@ -66,21 +76,26 @@ impl EventBonusHot {
         }
     }
 
+    /// Total bonus in tenths of a percent.
     #[inline(always)]
     pub const fn total_x10(self) -> u16 {
         self.packed >> 4
     }
 
+    /// Index into [`SpecialTables::limited_bonus_x10`], 1-based; `0` means the
+    /// card carries no limited bonus.
     #[inline(always)]
     pub const fn limited_code(self) -> u8 {
         (self.packed & 0x0f) as u8
     }
 
+    /// Total bonus as whole percent, rounded up.
     #[inline(always)]
     pub const fn total_ceil(self) -> u32 {
         (self.total_x10() as u32).div_ceil(10)
     }
 
+    /// Total bonus as a percentage.
     #[inline(always)]
     pub fn total_rate(self) -> f64 {
         self.total_x10() as f64 * 0.1
@@ -90,11 +105,22 @@ impl EventBonusHot {
 /// 构建和结果阶段使用的精确活动加成分量。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EventBonusExact {
+    /// Bonus that every matching card contributes, in tenths of a percent.
     pub base_x10: u16,
+    /// Bonus that only counts for the first few cards, in tenths of a percent.
+    ///
+    /// How many cards is capped per event; the cap is applied during evaluation,
+    /// not here.
     pub limited_x10: u16,
 }
 
 impl EventBonusExact {
+    /// Builds from parts already expressed in tenths of a percent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the two parts together exceed
+    /// [`EventBonusHot::MAX_TOTAL_X10`].
     #[inline(always)]
     pub const fn from_x10(base_x10: u16, limited_x10: u16) -> Self {
         assert!(base_x10 as u32 + limited_x10 as u32 <= EventBonusHot::MAX_TOTAL_X10 as u32);
@@ -104,51 +130,66 @@ impl EventBonusExact {
         }
     }
 
+    /// Builds from parts expressed in whole percent.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the two parts together exceed
+    /// [`EventBonusHot::MAX_TOTAL_X10`].
     #[inline(always)]
     pub const fn from_whole(base: u16, limited: u16) -> Self {
         Self::from_x10(base * 10, limited * 10)
     }
 
+    /// Base bonus in tenths of a percent, widened.
     #[inline(always)]
     pub const fn base_x10(self) -> u32 {
         self.base_x10 as u32
     }
 
+    /// Limited bonus in tenths of a percent, widened.
     #[inline(always)]
     pub const fn limited_x10(self) -> u32 {
         self.limited_x10 as u32
     }
 
+    /// Both parts summed, in tenths of a percent.
     #[inline(always)]
     pub const fn total_x10(self) -> u32 {
         self.base_x10() + self.limited_x10()
     }
 
+    /// Both parts summed, as whole percent rounded up.
     #[inline(always)]
     pub const fn total_ceil(self) -> u32 {
         self.total_x10().div_ceil(10)
     }
 
+    /// Base bonus as whole percent, rounded up.
     #[inline(always)]
     pub const fn base_ceil(self) -> u32 {
         self.base_x10().div_ceil(10)
     }
 
+    /// Limited bonus as whole percent, rounded up.
     #[inline(always)]
     pub const fn limited_ceil(self) -> u32 {
         self.limited_x10().div_ceil(10)
     }
 
+    /// Base bonus as a percentage.
     #[inline(always)]
     pub fn base_rate(self) -> f64 {
         self.base_x10() as f64 * 0.1
     }
 
+    /// Limited bonus as a percentage.
     #[inline(always)]
     pub fn limited_rate(self) -> f64 {
         self.limited_x10() as f64 * 0.1
     }
 
+    /// Both parts summed, as a percentage.
     #[inline(always)]
     pub fn total_rate(self) -> f64 {
         self.total_x10() as f64 * 0.1
@@ -159,7 +200,9 @@ impl EventBonusExact {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct UnitCountSkill {
+    /// Unit code the skill counts members of, as a [`crate::types::Unit`] discriminant.
     pub unit: u8,
+    /// Score-up percentage for one through five matching members.
     pub score_up: [u8; 5],
 }
 
@@ -169,7 +212,9 @@ const _: () = assert!(size_of::<UnitCountSkill>() == 6);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct DiffSkill {
+    /// Score-up percentage before any per-unit increment.
     pub base: u8,
+    /// Added to `base` for each additional distinct unit in the deck.
     pub increment: u8,
 }
 
@@ -179,7 +224,9 @@ const _: () = assert!(size_of::<DiffSkill>() == 2);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct RefSkill {
+    /// Percentage of the referenced member's score-up that is mirrored.
     pub rate: u8,
+    /// Upper clamp on the mirrored score-up, in percent.
     pub max: u8,
 }
 

@@ -50,7 +50,7 @@ let result_json = recommend_json(
 | 模块 | 职责 |
 | --- | --- |
 | `engine` | 对外入口（`recommend_json` / `recommend`）、masterdata 加载（`OwnedGameData`）、JSON 参数解析 |
-| `types` | 公共类型与枚举（`Unit` / `Attr` / `LiveType` / `ScoreTarget`）、综合力/技能查找表 |
+| `types` | 公共标识符与枚举（`Unit` / `Attr` / `LiveType` / `ScoreTarget`），以及逐卡解析后的综合力与技能数值 |
 | `handler` | 建池层：候选裁剪、综合力/技能/活动加成预计算、WL 支援卡组、构建搜索上下文 |
 | `pool` | SoA 卡池：列式存储、位图、对齐布局、冻结后只读 |
 | `search` | 搜索层：支配剪枝、后缀上界、warm start、按目标/场景分派的 B&B、叶子精确评估 |

@@ -50,7 +50,7 @@ The complete parameter contract (all fields, defaults, value ranges) and the **p
 | Module | Responsibility |
 | --- | --- |
 | `engine` | Public entry points (`recommend_json` / `recommend`), masterdata loading (`OwnedGameData`), JSON parameter parsing |
-| `types` | Shared types and enums (`Unit` / `Attr` / `LiveType` / `ScoreTarget`), power/skill lookup tables |
+| `types` | Shared identifiers and enums (`Unit` / `Attr` / `LiveType` / `ScoreTarget`), plus the per-card resolved power and skill values |
 | `handler` | Pool-building layer: candidate pruning, precomputation of power / skill / event bonus, WL support deck, search context construction |
 | `pool` | SoA card pool: columnar storage, bitmaps, aligned layout, read-only once frozen |
 | `search` | Search layer: dominance pruning, suffix upper bounds, warm start, B&B dispatched by objective/scenario, exact leaf evaluation |

@@ -5,13 +5,20 @@ use super::context::SearchContext;
 use super::evaluate::leaf_evaluate_checked;
 use super::types::{DeckResult, SearchParams};
 
+/// 穷举搜索的计数统计。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BruteForceStats {
+    /// 枚举到的五张组合数。
     pub candidates: u64,
+    /// 通过约束检查并实际求值的组合数。
     pub evaluated: u64,
+    /// 因违反约束而跳过的组合数。
     pub invalid: u64,
 }
 
+/// 不做任何剪枝地枚举全部组合，作为剪枝搜索的对照实现。
+///
+/// 复杂度随卡池大小组合增长，只适合小池。
 pub fn brute_force_search(
     pool: &CardPool,
     ctx: &SearchContext,

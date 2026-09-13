@@ -5,9 +5,13 @@ use crate::types::{
     Unit,
 };
 
+/// `limit` 参数接受的最大队伍数。
 pub const MAX_BUILD_LIMIT: usize = 100;
+/// `timeout_ms` 参数接受的最大搜索时长，毫秒。
 pub const MAX_BUILD_TIMEOUT_MS: u64 = 300_000;
+/// 精确档位组卡一次最多接受的档位数。
 pub const MAX_TARGET_BONUS_BUCKETS: usize = 32;
+/// 单个目标档位接受的最大加成值。
 pub const MAX_TARGET_BONUS: i32 = 10_000;
 
 /// Handler 读取的 masterdata 视图。

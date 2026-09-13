@@ -456,6 +456,9 @@ pub fn resolve_power_for_cards(pool: &CardPool, deck: &[CardIdx]) -> u32 {
     })
 }
 
+/// 由 live 分数与加成合计算出活动 PT。
+///
+/// 无活动上下文时原样返回 `live_score`。
 #[inline(always)]
 pub fn calc_event_point(live_score: i32, total_bonus: f64, ctx: &SearchContext) -> i32 {
     if !ctx.has_event() {

@@ -35,13 +35,21 @@ impl EpShadowBlock {
 /// DFS 搜索统计。
 #[derive(Clone, Debug, Default)]
 pub struct SearchStats {
+    /// 求值过的完整队伍数。
     pub leaf_nodes: u64,
+    /// 因上界不及当前 Top-K 门限而剪掉的分支数。
     pub ub_prunes: u64,
+    /// 因队长约束不满足而剪掉的分支数。
     pub leader_prunes: u64,
+    /// 活动 PT 路径考察过的候选数。
     pub ep_candidates: u64,
+    /// 活动 PT 路径中止整层枚举的次数。
     pub ep_break_prunes: u64,
+    /// 活动 PT 路径跳过单个候选的次数。
     pub ep_continue_prunes: u64,
+    /// 活动 PT 路径实际展开的候选数。
     pub ep_explored: u64,
+    /// 单调性上界中止整层枚举的次数。
     pub mono_break_prunes: u64,
 }
 
@@ -87,6 +95,7 @@ pub(crate) fn dfs_search_seeded(
     results
 }
 
+/// 与 [`dfs_search`] 相同，额外返回剪枝统计。
 pub fn dfs_search_instrumented(
     pool: &CardPool,
     ctx: &SearchContext,

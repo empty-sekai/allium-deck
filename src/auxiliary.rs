@@ -284,34 +284,52 @@ impl AuxiliaryData {
 /// Minimal deck snapshot required to score all loaded music metadata.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MusicDeck {
+    /// 队伍综合力合计。
     pub total_power: i32,
+    /// 活动加成百分比。
     pub event_bonus_rate: f64,
+    /// 支援卡组加成百分比。
     pub support_deck_bonus_rate: f64,
+    /// 队伍成员，按站位顺序。
     pub cards: Vec<MusicDeckCard>,
 }
 
+/// 单张卡在评分中实际用到的技能数值。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct MusicDeckCard {
+    /// 技能加成百分比。
     pub skill_score_up: f64,
+    /// 技能生命回复量。
     pub skill_life_recovery: f64,
 }
 
+/// 歌曲评分的口径选项。
 #[derive(Debug, Clone, PartialEq)]
 pub struct MusicRecommendOptions {
+    /// live 模式。
     pub live_type: LiveType,
+    /// 活动类型。
     pub event_type: EventType,
+    /// 技能发动顺序假设。
     pub skill_order: LiveSkillOrder,
+    /// `skill_order` 为 [`LiveSkillOrder::Specific`] 时的槽位排列。
     pub specific_skill_order: Option<Vec<usize>>,
+    /// 协力队友的技能加成假设，单位为百分比。
     pub multi_teammate_score_up: Option<i32>,
+    /// 协力队友的综合力假设。
     pub multi_teammate_power: Option<i32>,
 }
 
 /// One scored music/difficulty row.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MusicRecommendation {
+    /// 歌曲 ID。
     pub music_id: i32,
+    /// 难度名。
     pub difficulty: String,
+    /// 该歌曲难度下的 live 分数。
     pub live_score: i32,
+    /// 该歌曲难度下的活动 PT；无活动上下文时为 `None`。
     pub event_point: Option<i32>,
 }
 
@@ -739,39 +757,63 @@ fn fever_effect(score: &MusicScore) -> EffectDetail {
     }
 }
 
+/// 升级一件区域道具所需的各类货币。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct AreaItemCost {
+    /// 所需金币。
     pub coin: i32,
+    /// 所需种子。
     pub seed: i32,
+    /// 所需的第三种兑换货币。
     pub szk: i32,
 }
 
+/// 一条区域道具升级建议，按性价比排序后产出。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AreaItemRecommendation {
+    /// 区域 ID。
     pub area_id: i32,
+    /// 区域类型。
     pub area_type: String,
+    /// 区域展示类型。
     pub area_view_type: String,
+    /// 区域道具 ID。
     pub area_item_id: i32,
+    /// 升级后的等级。
     pub next_level: i32,
+    /// 对应的商店条目 ID。
     pub shop_item_id: i32,
+    /// 本次升级的花费。
     pub cost: AreaItemCost,
+    /// 本次升级带来的综合力增量。
     pub power: i32,
+    /// 每金币换得的综合力，即排序用的性价比。
     pub power_per_coin: f64,
 }
 
+/// 一次精确 live 结算的明细。
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ExactLiveDetail {
+    /// 总分。
     pub total: f64,
+    /// 结算时处于生效状态的加成合计。
     pub active_bonus: f64,
+    /// 逐 note 的明细。
     pub notes: Vec<ExactLiveNoteDetail>,
 }
 
+/// 单个 note 的结算明细。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ExactLiveNoteDetail {
+    /// note 类型系数。
     pub note_coefficient: f64,
+    /// 连击数系数。
     pub combo_coefficient: f64,
+    /// 判定系数。
     pub judge_coefficient: f64,
+    /// 该 note 命中时各技能贡献的加成。
     pub effect_bonuses: Vec<f64>,
+    /// 该 note 的得分。
     pub score: f64,
 }
 

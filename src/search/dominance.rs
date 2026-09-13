@@ -5,13 +5,18 @@ use super::evaluate::decode_u18;
 
 /// dominance 裁剪后的卡池、上下文和原索引映射。
 pub struct DominanceResult {
+    /// 裁剪后的卡池。
     pub pool: CardPool,
+    /// 与 `pool` 对应、已重映射的搜索上下文。
     pub ctx: SearchContext,
+    /// 裁剪后的 dense 索引 -> 原卡池 dense 索引。
     pub original_indices: Vec<CardIdx>,
     /// 原 dense 索引 -> 被该卡（直接或经支配链传递）支配而裁掉的原索引列表。
     /// 仅存活卡的条目非空，供 Top-K 搜索后的替代展开使用。
     pub alternatives: Vec<Vec<CardIdx>>,
+    /// 裁剪前的卡数。
     pub before: usize,
+    /// 裁剪后的卡数。
     pub after: usize,
 }
 
@@ -73,6 +78,7 @@ fn chain_compress_alternatives(keep: &[bool], dominated_by: &[u16]) -> Vec<Vec<C
 
 /// 终章 member 位支配裁剪的保留位图与替代记录。
 pub struct MemberDominance {
+    /// 按原 dense 索引标记该卡是否在 member 位保留。
     pub keep: Vec<bool>,
     /// member 位存活根 -> 被其（直接或经链传递）member 位支配裁掉的索引列表。
     pub alternatives: Vec<Vec<CardIdx>>,

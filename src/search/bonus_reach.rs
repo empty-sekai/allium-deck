@@ -21,6 +21,7 @@ pub struct BonusReach {
 }
 
 impl BonusReach {
+    /// 预计算「从某个位置起再取若干张能凑出哪些加成和」的可达集合。
     pub fn build(pool: &CardPool) -> Self {
         let n = pool.count();
         let bonuses: Vec<u32> = (0..n)
