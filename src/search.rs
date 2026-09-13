@@ -1,13 +1,36 @@
+//! Search layer: exact DFS with branch and bound.
+//!
+//! [`search`] is the general entry point and dispatches to the routine matching
+//! the objective and live type. Before recursing it eliminates dominated cards,
+//! builds character-aware suffix upper bounds ([`SuffixBound`]) and seeds a
+//! lower bound by warm start, so branches that cannot beat the current Top-K are
+//! cut as early as possible. [`PreparedSearch`] keeps those immutable structures
+//! alive across repeated searches over the same pool.
+//!
+//! Searches are bounded by [`SearchParams::timeout_ms`]; on expiry the results
+//! collected so far are returned rather than an error, so a timed-out search is
+//! not necessarily a complete one.
+
+/// 精确档位搜索的可达加成集合。
 pub mod bonus_reach;
+/// 穷举参考实现，用于在测试中校验剪枝搜索的结果。
 pub mod bruteforce;
+/// 挑战 live 搜索：五张同角色，逐角色搜索后归并。
 pub mod challenge_search;
+/// 单次搜索期间不变的上下文。
 pub mod context;
+/// 通用 DFS / 分支限界搜索。
 pub mod dfs;
+/// 支配裁剪：剔除不可能出现在最优解里的卡。
 pub mod dominance;
+/// 叶子求值：把一副确定的队伍算成分数。
 pub mod evaluate;
 mod final_chapter;
+/// 角色感知的后缀上界，用于剪枝。
 pub mod suffix;
+/// 搜索的输入参数与结果类型。
 pub mod types;
+/// 热启动：先用贪心加一次换位得到一个可用下界。
 pub mod warm_start;
 
 pub use bruteforce::{BruteForceStats, brute_force_search};
@@ -482,7 +505,7 @@ fn search_simple_target(
 
     let mut prefix = Vec::with_capacity(prefix_len + 8);
     let mut in_prefix = vec![false; pool.count()];
-    let mut char_counts = [0u8; 27];
+    let mut char_counts = [0usize; 27];
 
     for &card in &cards {
         let gid = pool.game_id(card);
@@ -496,15 +519,25 @@ fn search_simple_target(
         }
     }
 
+    // Fixed-character alternatives occupy one slot, not one slot per card.
+    // Reserve the ordinary candidate budget for the still-unfixed slots even
+    // when the fixed prefix itself exceeds the usual search prefix length.
+    let fixed_slots = ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len();
+    let free_budget = if fixed_slots >= DECK_SIZE {
+        0
+    } else {
+        prefix_len.saturating_sub(fixed_slots)
+    };
+    let prefix_limit = prefix.len() + free_budget;
     for &card in &cards {
-        if prefix.len() >= prefix_len {
+        if prefix.len() >= prefix_limit {
             break;
         }
         if in_prefix[card.raw()] {
             continue;
         }
         let ch = (pool.char_id(card) as usize).min(26);
-        if (char_counts[ch] as usize) >= per_char_cap {
+        if char_counts[ch] >= per_char_cap {
             continue;
         }
         char_counts[ch] += 1;
@@ -525,7 +558,7 @@ fn search_simple_target(
         &prefix,
         0,
         0,
-        0,
+        crate::pool::Mask::EMPTY,
         0,
         &mut deck,
         &mut tracker,
@@ -657,7 +690,7 @@ fn simple_target_recurse(
     prefix: &[CardIdx],
     depth: usize,
     min_free_idx: usize,
-    used_cards: u64,
+    used_cards: crate::pool::Mask,
     used_chars: u32,
     deck: &mut [CardIdx; DECK_SIZE],
     tracker: &mut SimpleTopKTracker,
@@ -676,7 +709,7 @@ fn simple_target_recurse(
 
     let mut idx = scan_from;
     while idx < prefix.len() {
-        if used_cards & (1u64 << idx) != 0 {
+        if used_cards.test(idx) {
             idx += 1;
             continue;
         }
@@ -704,13 +737,15 @@ fn simple_target_recurse(
         }
         deck[depth] = card;
         let next_min_free = if is_fixed { min_free_idx } else { idx + 1 };
+        let mut next_used_cards = used_cards;
+        next_used_cards.set(idx);
         simple_target_recurse(
             pool,
             ctx,
             prefix,
             depth + 1,
             next_min_free,
-            used_cards | (1u64 << idx),
+            next_used_cards,
             used_chars | (1u32 << char_id),
             deck,
             tracker,
@@ -734,6 +769,15 @@ impl SimpleTopKTracker {
             minimize,
             game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
             results: Vec::with_capacity(top_k),
+        }
+    }
+
+    /// Returns a pruning cutoff only after the requested number of sets is present.
+    fn threshold(&self) -> Option<u64> {
+        if self.results.len() < self.top_k {
+            None
+        } else {
+            self.results.last().map(|result| result.score)
         }
     }
 

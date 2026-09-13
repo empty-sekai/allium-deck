@@ -7,12 +7,202 @@ use web_time::Instant;
 use crate::pool::{CardIdx, CardPool};
 use crate::types::DECK_SIZE;
 
+use super::SimpleTopKTracker;
 use super::context::SearchContext;
-use super::dfs::TopKTracker;
 use super::evaluate::{leaf_evaluate_challenge_score_checked, leaf_evaluate_checked};
 use super::suffix::{PartialDeck, SuffixBound};
 use super::types::{DeckResult, SearchParams};
 use crate::types::{LiveType, ScoreTarget};
+
+struct ChallengeDeadline {
+    expires_at: Option<Instant>,
+    checks: u16,
+    hit: bool,
+}
+
+impl ChallengeDeadline {
+    fn new(expires_at: Option<Instant>) -> Self {
+        Self {
+            expires_at,
+            checks: 1023,
+            hit: false,
+        }
+    }
+
+    fn from_params(params: &SearchParams) -> Self {
+        Self::new(
+            (params.timeout_ms != 0)
+                .then(|| Instant::now() + Duration::from_millis(params.timeout_ms)),
+        )
+    }
+
+    #[inline]
+    fn expired(&mut self) -> bool {
+        self.expired_with(Instant::now)
+    }
+
+    #[inline]
+    fn expired_with(&mut self, now: impl FnOnce() -> Instant) -> bool {
+        if self.hit {
+            return true;
+        }
+        let Some(expires_at) = self.expires_at else {
+            return false;
+        };
+        self.checks = self.checks.wrapping_add(1);
+        if self.checks & 1023 == 0 {
+            self.hit = now() >= expires_at;
+        }
+        self.hit
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+
+    #[test]
+    fn challenge_deadline_samples_and_stays_expired() {
+        let start = Instant::now();
+        let end = start + Duration::from_secs(1);
+        let mut guard = ChallengeDeadline::new(Some(end));
+        assert!(!guard.expired_with(|| start));
+        for _ in 0..1023 {
+            assert!(!guard.expired_with(|| panic!("unexpected clock read")));
+        }
+        assert!(guard.expired_with(|| end));
+        for _ in 0..2048 {
+            assert!(guard.expired_with(|| panic!("expired guard read the clock")));
+        }
+    }
+
+    fn equal_bound_pool(count: u16) -> CardPool {
+        let mut builder = crate::pool::PoolBuilder::new(count);
+        for index in 0..count {
+            builder.set_game_id(index, index + 1000);
+            builder.set_char_id(index, 1);
+            builder.set_power_max(index, 100);
+            builder.set_skill_max(index, 20);
+        }
+        builder.freeze()
+    }
+
+    #[test]
+    fn challenge_bounds_deduplicate_equal_states_for_every_suffix() {
+        let pool = equal_bound_pool(100);
+        let candidates: Vec<_> = pool.indices().collect();
+        let mut deadline = ChallengeDeadline::new(None);
+        let bounds = ChallengeBounds::build_with_clock(&pool, &candidates, &mut deadline, || {
+            panic!("disabled deadline read the clock")
+        })
+        .unwrap();
+        for position in 0..=pool.count() {
+            for slots in 0..=DECK_SIZE {
+                let frontier = &bounds.frontiers[position][slots];
+                if slots > pool.count() - position {
+                    assert!(frontier.is_empty());
+                } else {
+                    assert_eq!(
+                        frontier,
+                        &[BoundState {
+                            power: 100 * slots as u32,
+                            skill: 20 * slots as u32,
+                            leader: if slots == 0 { 0 } else { 20 },
+                        }]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn challenge_bounds_preserve_distinct_nondominated_states() {
+        let a = BoundState {
+            power: 100,
+            skill: 10,
+            leader: 10,
+        };
+        let b = BoundState {
+            power: 90,
+            skill: 20,
+            leader: 10,
+        };
+        let mut states = vec![
+            a,
+            b,
+            a,
+            BoundState {
+                power: 80,
+                skill: 5,
+                leader: 5,
+            },
+            BoundState {
+                power: 100,
+                skill: 10,
+                leader: 9,
+            },
+            b,
+        ];
+        let mut deadline = ChallengeDeadline::new(None);
+        prune_dominated(&mut states, &mut deadline, &mut || {
+            panic!("disabled deadline read the clock")
+        })
+        .unwrap();
+        assert_eq!(states, vec![a, b]);
+    }
+
+    #[test]
+    fn challenge_bounds_abort_when_clock_expires_during_build() {
+        let pool = equal_bound_pool(100);
+        let candidates: Vec<_> = pool.indices().collect();
+        let start = Instant::now();
+        let end = start + Duration::from_secs(1);
+        let mut deadline = ChallengeDeadline::new(Some(end));
+        let mut reads = 0;
+        let bounds = ChallengeBounds::build_with_clock(&pool, &candidates, &mut deadline, || {
+            reads += 1;
+            if reads == 1 { start } else { end }
+        });
+        assert!(bounds.is_none());
+        assert!(deadline.hit);
+        assert_eq!(reads, 2);
+    }
+
+    #[test]
+    fn challenge_bounds_abort_during_pairwise_pruning() {
+        let mut states: Vec<_> = (0..64)
+            .map(|value| BoundState {
+                power: value,
+                skill: 64 - value,
+                leader: 0,
+            })
+            .collect();
+        let original = states.clone();
+        let start = Instant::now();
+        let end = start + Duration::from_secs(1);
+        let mut deadline = ChallengeDeadline::new(Some(end));
+        let mut reads = 0;
+        let result = prune_dominated(&mut states, &mut deadline, &mut || {
+            reads += 1;
+            if reads == 1 { start } else { end }
+        });
+        assert!(result.is_none());
+        assert!(deadline.hit);
+        assert_eq!(reads, 2);
+        assert_eq!(states, original);
+    }
+
+    #[test]
+    fn challenge_deadline_checks_initial_expiry_and_skips_disabled_clock() {
+        let now = Instant::now();
+        let mut expired = ChallengeDeadline::new(Some(now));
+        assert!(expired.expired_with(|| now));
+        let mut disabled = ChallengeDeadline::new(None);
+        for _ in 0..2048 {
+            assert!(!disabled.expired_with(|| panic!("disabled deadline read the clock")));
+        }
+    }
+}
 
 /// challenge 模式专用搜索。
 ///
@@ -24,7 +214,8 @@ pub fn search(
     suffix: &SuffixBound,
     params: &SearchParams,
 ) -> (Vec<DeckResult>, super::SearchStats) {
-    search_with_character_filter(pool, ctx, suffix, params, None)
+    let mut deadline = ChallengeDeadline::from_params(params);
+    search_with_character_filter(pool, ctx, suffix, params, None, &mut deadline)
 }
 
 /// 在一个共享 challenge pool 中只搜索指定角色。
@@ -38,22 +229,23 @@ pub fn search_character(
     params: &SearchParams,
     character_id: u8,
 ) -> (Vec<DeckResult>, super::SearchStats) {
-    search_with_character_filter(pool, ctx, suffix, params, Some(character_id))
+    let mut deadline = ChallengeDeadline::from_params(params);
+    search_with_character_filter(pool, ctx, suffix, params, Some(character_id), &mut deadline)
 }
 
 /// challenge_all：逐角色搜索后按分数归并出全局 Top-K。
 ///
 /// 挑战 live 的队伍必须五张同角色，所以答案集是各角色最优解的并集，而不是
 /// 在混角色池上做一次无约束搜索——后者既会产出非法卡组，组合数也高数个量级。
-/// `timeout_ms` 在角色之间检查，超时后返回已搜完角色的结果。
+/// All characters share one deadline, including each character's inner search.
+/// Expiry returns the best complete decks found so far.
 pub fn search_all_characters(
     pool: &CardPool,
     ctx: &SearchContext,
     suffix: &SuffixBound,
     params: &SearchParams,
 ) -> (Vec<DeckResult>, super::SearchStats) {
-    let deadline =
-        (params.timeout_ms != 0).then(|| Instant::now() + Duration::from_millis(params.timeout_ms));
+    let mut deadline = ChallengeDeadline::from_params(params);
 
     let mut present = [false; 27];
     for card in pool.indices() {
@@ -66,16 +258,30 @@ pub fn search_all_characters(
         if !present {
             continue;
         }
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if deadline.expired() {
             break;
         }
-        let (results, character_stats) =
-            search_character(pool, ctx, suffix, params, character_id as u8);
+        let (results, character_stats) = search_with_character_filter(
+            pool,
+            ctx,
+            suffix,
+            params,
+            Some(character_id as u8),
+            &mut deadline,
+        );
         accumulate_stats(&mut stats, &character_stats);
         merged.extend(results);
     }
 
-    merged.sort_unstable_by(super::deck_result_cmp);
+    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
+    merged.sort_unstable_by(|left, right| {
+        let ordering = super::deck_result_cmp(left, right);
+        if minimize {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+    });
     merged.truncate(params.top_k);
     (merged, stats)
 }
@@ -97,12 +303,14 @@ fn search_with_character_filter(
     suffix: &SuffixBound,
     params: &SearchParams,
     character_id: Option<u8>,
+    deadline: &mut ChallengeDeadline,
 ) -> (Vec<DeckResult>, super::SearchStats) {
-    if params.top_k == 0 || pool.count() < DECK_SIZE {
+    if params.top_k == 0 || pool.count() < DECK_SIZE || deadline.expired() {
         return (Vec::new(), super::SearchStats::default());
     }
 
-    let mut tracker = TopKTracker::new(params.top_k, pool, false);
+    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
+    let mut tracker = SimpleTopKTracker::new(params.top_k, minimize, pool);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     let mut stats = super::SearchStats::default();
     let candidates = ordered_candidates(pool, ctx, character_id);
@@ -110,22 +318,31 @@ fn search_with_character_filter(
         return (Vec::new(), super::SearchStats::default());
     }
     if params.top_k == 1 && ctx.fixed_card_ids.is_empty() {
-        return search_combo_top1(pool, ctx, &candidates);
+        return search_combo_top1(pool, ctx, &candidates, tracker, deadline);
     }
-    let bounds = ChallengeBounds::build(pool, &candidates);
+    // Maximization ceilings cannot prune a minimum-power search.
+    let bounds = if minimize {
+        None
+    } else {
+        let Some(bounds) = ChallengeBounds::build(pool, &candidates, deadline) else {
+            return (Vec::new(), stats);
+        };
+        Some(bounds)
+    };
 
     challenge_recurse(
         pool,
         ctx,
         suffix,
         &candidates,
-        &bounds,
+        bounds.as_ref(),
         0,
         0,
         &mut deck,
         PartialDeck::default(),
         &mut tracker,
         &mut stats,
+        deadline,
     );
 
     (tracker.into_vec(), stats)
@@ -135,9 +352,9 @@ fn search_combo_top1(
     pool: &CardPool,
     ctx: &SearchContext,
     candidates: &[CardIdx],
+    mut tracker: SimpleTopKTracker,
+    deadline: &mut ChallengeDeadline,
 ) -> (Vec<DeckResult>, super::SearchStats) {
-    let mut best_score = 0u64;
-    let mut best_deck = None;
     let mut stats = super::SearchStats::default();
     let game_ids = candidates
         .iter()
@@ -145,24 +362,39 @@ fn search_combo_top1(
         .collect::<Vec<_>>();
     let len = candidates.len();
 
-    for a in 0..len - 4 {
+    'search: for a in 0..len - 4 {
+        if deadline.expired() {
+            break;
+        }
         let gid_a = game_ids[a];
         for b in a + 1..len - 3 {
+            if deadline.expired() {
+                break 'search;
+            }
             let gid_b = game_ids[b];
             if gid_b == gid_a {
                 continue;
             }
             for c in b + 1..len - 2 {
+                if deadline.expired() {
+                    break 'search;
+                }
                 let gid_c = game_ids[c];
                 if gid_c == gid_a || gid_c == gid_b {
                     continue;
                 }
                 for d in c + 1..len - 1 {
+                    if deadline.expired() {
+                        break 'search;
+                    }
                     let gid_d = game_ids[d];
                     if gid_d == gid_a || gid_d == gid_b || gid_d == gid_c {
                         continue;
                     }
                     for e in d + 1..len {
+                        if deadline.expired() {
+                            break 'search;
+                        }
                         let gid_e = game_ids[e];
                         if gid_e == gid_a || gid_e == gid_b || gid_e == gid_c || gid_e == gid_d {
                             continue;
@@ -175,11 +407,8 @@ fn search_combo_top1(
                             candidates[e],
                         ];
                         stats.leaf_nodes += 1;
-                        if let Some(score) = leaf_evaluate_challenge(pool, ctx, &deck)
-                            && score > best_score
-                        {
-                            best_score = score;
-                            best_deck = Some(deck);
+                        if let Some(score) = leaf_evaluate_challenge(pool, ctx, &deck) {
+                            tracker.insert(DeckResult::new(deck, score));
                         }
                     }
                 }
@@ -187,10 +416,7 @@ fn search_combo_top1(
         }
     }
 
-    let results = best_deck
-        .map(|deck| vec![DeckResult::new(deck, best_score)])
-        .unwrap_or_default();
-    (results, stats)
+    (tracker.into_vec(), stats)
 }
 
 #[inline(always)]
@@ -216,19 +442,21 @@ fn challenge_recurse(
     ctx: &SearchContext,
     suffix: &SuffixBound,
     candidates: &[CardIdx],
-    bounds: &ChallengeBounds,
+    bounds: Option<&ChallengeBounds>,
     depth: usize,
     start: usize,
     deck: &mut [CardIdx; DECK_SIZE],
     partial: PartialDeck,
-    tracker: &mut TopKTracker,
+    tracker: &mut SimpleTopKTracker,
     stats: &mut super::SearchStats,
+    deadline: &mut ChallengeDeadline,
 ) {
+    if deadline.expired() {
+        return;
+    }
     if depth == DECK_SIZE {
         stats.leaf_nodes += 1;
-        if let Some(score) = leaf_evaluate_challenge(pool, ctx, deck)
-            && score > tracker.threshold()
-        {
+        if let Some(score) = leaf_evaluate_challenge(pool, ctx, deck) {
             tracker.insert(DeckResult::new(*deck, score));
         }
         return;
@@ -236,13 +464,19 @@ fn challenge_recurse(
 
     let remaining = DECK_SIZE - depth;
     let threshold = tracker.threshold();
-    if threshold != 0 && bounds.ceiling(suffix, start, &partial, remaining) <= threshold {
+    // Equal-score branches can still improve the tracker's card-order tie-break.
+    if let (Some(bounds), Some(threshold)) = (bounds, threshold)
+        && bounds.ceiling(suffix, start, &partial, remaining) < threshold
+    {
         stats.ub_prunes += 1;
         return;
     }
 
     let mut dense = start;
     while dense < candidates.len() {
+        if deadline.expired() {
+            return;
+        }
         let card = candidates[dense];
         dense += 1;
 
@@ -266,8 +500,8 @@ fn challenge_recurse(
             max_skill: partial.max_skill.max(pool.skill_max(card)),
             limited_count: partial.limited_count,
         };
-        if threshold != 0
-            && bounds.ceiling(suffix, dense, &next_partial, remaining - 1) <= threshold
+        if let (Some(bounds), Some(threshold)) = (bounds, threshold)
+            && bounds.ceiling(suffix, dense, &next_partial, remaining - 1) < threshold
         {
             stats.ep_continue_prunes += 1;
             continue;
@@ -286,6 +520,7 @@ fn challenge_recurse(
             next_partial,
             tracker,
             stats,
+            deadline,
         );
     }
 }
@@ -345,14 +580,31 @@ struct ChallengeBounds {
 }
 
 impl ChallengeBounds {
-    fn build(pool: &CardPool, candidates: &[CardIdx]) -> Self {
+    fn build(
+        pool: &CardPool,
+        candidates: &[CardIdx],
+        deadline: &mut ChallengeDeadline,
+    ) -> Option<Self> {
+        Self::build_with_clock(pool, candidates, deadline, Instant::now)
+    }
+
+    fn build_with_clock(
+        pool: &CardPool,
+        candidates: &[CardIdx],
+        deadline: &mut ChallengeDeadline,
+        mut now: impl FnMut() -> Instant,
+    ) -> Option<Self> {
+        if deadline.expired_with(&mut now) {
+            return None;
+        }
         let count = candidates.len();
         let mut frontiers = vec![vec![Vec::<BoundState>::new(); DECK_SIZE + 1]; count + 1];
         frontiers[count][0].push(BoundState::default());
 
-        let mut dense = count;
-        while dense > 0 {
-            dense -= 1;
+        for dense in (0..count).rev() {
+            if deadline.expired_with(&mut now) {
+                return None;
+            }
             let card = candidates[dense];
             let card_state = BoundState {
                 power: pool.power_max(card),
@@ -360,25 +612,28 @@ impl ChallengeBounds {
                 leader: pool.skill_max(card) as u16,
             };
 
-            let mut slot = 0usize;
-            while slot <= DECK_SIZE {
-                frontiers[dense][slot] = frontiers[dense + 1][slot].clone();
-                slot += 1;
-            }
-
-            slot = 1;
-            while slot <= DECK_SIZE {
-                let additions = frontiers[dense + 1][slot - 1]
-                    .iter()
-                    .map(|state| state.add(card_state))
-                    .collect::<Vec<_>>();
-                frontiers[dense][slot].extend(additions);
-                prune_dominated(&mut frontiers[dense][slot]);
-                slot += 1;
+            for slot in 0..=DECK_SIZE {
+                let mut states = Vec::new();
+                for &state in &frontiers[dense + 1][slot] {
+                    if deadline.expired_with(&mut now) {
+                        return None;
+                    }
+                    states.push(state);
+                }
+                if slot > 0 {
+                    for &state in &frontiers[dense + 1][slot - 1] {
+                        if deadline.expired_with(&mut now) {
+                            return None;
+                        }
+                        states.push(state.add(card_state));
+                    }
+                }
+                prune_dominated(&mut states, deadline, &mut now)?;
+                frontiers[dense][slot] = states;
             }
         }
 
-        Self { frontiers }
+        Some(Self { frontiers })
     }
 
     #[inline(always)]
@@ -428,17 +683,29 @@ impl BoundState {
     }
 }
 
-fn prune_dominated(states: &mut Vec<BoundState>) {
+fn prune_dominated(
+    states: &mut Vec<BoundState>,
+    deadline: &mut ChallengeDeadline,
+    now: &mut impl FnMut() -> Instant,
+) -> Option<()> {
     let mut pruned = Vec::with_capacity(states.len());
     'candidate: for (idx, candidate) in states.iter().copied().enumerate() {
         for (other_idx, other) in states.iter().copied().enumerate() {
-            if idx != other_idx && dominates(other, candidate) {
+            if deadline.expired_with(&mut *now) {
+                return None;
+            }
+            // Identical upper-bound states are interchangeable; keep the first.
+            // This deduplicates only the bound frontier, never actual card sets.
+            if (other_idx < idx && other == candidate)
+                || (idx != other_idx && dominates(other, candidate))
+            {
                 continue 'candidate;
             }
         }
         pruned.push(candidate);
     }
     *states = pruned;
+    Some(())
 }
 
 #[inline(always)]

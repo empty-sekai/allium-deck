@@ -2441,6 +2441,351 @@ fn bonus_tier_pool_drops_cards_above_the_highest_target() {
     assert_eq!(over_target, 0, "超过最高档位的卡不应进池");
 }
 
+fn pool_constraint_fixture(spec: &[(i32, i32, i32)]) -> BonusTierFixture {
+    let mut master_cards = leader_master_cards(spec.len() as i32);
+    let mut card_params = Vec::with_capacity(spec.len());
+    for (card, &(character_id, rarity, power)) in master_cards.iter_mut().zip(spec) {
+        card.character_id = character_id;
+        card.card_rarity_type = rarity;
+        card.rarity = format!("rarity_{rarity}");
+        card_params.push(types::CardParameter {
+            card_id: card.id,
+            level: 1,
+            param1: power,
+            param2: power,
+            param3: power,
+        });
+    }
+    BonusTierFixture {
+        master_cards,
+        card_params,
+        skills: vec![types::Skill {
+            id: 10,
+            level: 1,
+            is_after_training: false,
+        }],
+        effects: vec![types::SkillEffect {
+            skill_id: 10,
+            skill_level: 1,
+            effect_type: "score_up".to_string(),
+            value: 100,
+            additional_value: None,
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        }],
+        units: (1..=26)
+            .map(|game_character_id| types::GameCharacterUnit {
+                game_character_id,
+                unit: "idol".to_string(),
+            })
+            .collect(),
+        events: Vec::new(),
+        deck_bonuses: Vec::new(),
+        rarity_rates: Vec::new(),
+        music_metas: Vec::new(),
+    }
+}
+
+fn pool_constraint_user(fixture: &BonusTierFixture) -> UserProfile {
+    UserProfile {
+        user_cards: fixture
+            .master_cards
+            .iter()
+            .map(|card| sample_user_card(card.id))
+            .collect(),
+        ..UserProfile::default()
+    }
+}
+
+fn pool_constraint_search(
+    pool: &crate::pool::CardPool,
+    ctx: &crate::search::SearchContext,
+    params: &BuildParams,
+) -> Vec<crate::search::DeckResult> {
+    crate::search::search_targets(
+        pool,
+        ctx,
+        &crate::search::SearchParams {
+            top_k: 1,
+            timeout_ms: 10_000,
+        },
+        &params.target_bonus_list,
+    )
+}
+
+#[test]
+fn handler_pool_constraints_challenge_accepts_five_fixed_cards_of_one_character() {
+    let fixture = pool_constraint_fixture(&[(1, 4, 100); 5]);
+    let game = bonus_tier_game(&fixture);
+    let user = pool_constraint_user(&fixture);
+    for live_type in [LiveType::Challenge, LiveType::ChallengeAuto] {
+        for challenge_live_character_id in [None, Some(1)] {
+            let params = BuildParams {
+                live_type,
+                target: ScoreTarget::Power,
+                challenge_live_character_id,
+                fixed_cards: vec![1, 2, 3, 4, 5],
+                ..BuildParams::default()
+            };
+            let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+            assert_eq!(ctx.fixed_card_ids, vec![1, 2, 3, 4, 5]);
+            let decks = pool_constraint_search(&pool, &ctx, &params);
+            assert_eq!(decks.len(), 1);
+            assert_eq!(decks[0].game_card_set_key(&pool), [1, 2, 3, 4, 5]);
+
+            let duplicate = BuildParams {
+                fixed_cards: vec![1, 1],
+                ..params
+            };
+            assert!(matches!(
+                build_card_pool(&user, &game, &duplicate),
+                Err(BuildError::InvalidConfig(_))
+            ));
+        }
+    }
+    let ordinary = BuildParams {
+        target: ScoreTarget::Power,
+        fixed_cards: vec![1, 2],
+        ..BuildParams::default()
+    };
+    assert!(matches!(
+        build_card_pool(&user, &game, &ordinary),
+        Err(BuildError::InvalidConfig(_))
+    ));
+}
+
+#[test]
+fn handler_pool_constraints_bonus_tier_preserves_a_weaker_fixed_card() {
+    let fixture = pool_constraint_fixture(&[
+        (1, 4, 100),
+        (2, 4, 100),
+        (3, 4, 100),
+        (4, 4, 100),
+        (5, 4, 100),
+        (1, 4, 200),
+    ]);
+    let game = bonus_tier_game(&fixture);
+    let user = pool_constraint_user(&fixture);
+    let params = BuildParams {
+        target: ScoreTarget::Bonus,
+        live_type: LiveType::Multi,
+        event_type: Some("marathon".to_string()),
+        target_bonus_list: vec![0],
+        fixed_cards: vec![1],
+        ..BuildParams::default()
+    };
+    let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+    assert!(pool.indices().any(|card| pool.game_id(card) == 1));
+    let decks = pool_constraint_search(&pool, &ctx, &params);
+    assert_eq!(decks.len(), 1);
+    assert_eq!(decks[0].game_card_set_key(&pool), [1, 2, 3, 4, 5]);
+}
+
+#[test]
+fn handler_pool_constraints_world_bloom_tier_preserves_attribute_alternatives() {
+    let mut fixture = pool_constraint_fixture(&[
+        (1, 4, 100),
+        (2, 4, 100),
+        (3, 4, 100),
+        (4, 4, 100),
+        (5, 4, 100),
+        (1, 4, 200),
+    ]);
+    fixture.master_cards[5].attr = "cute".to_string();
+    let diff_bonuses = [
+        types::WorldBloomDiffAttrBonus {
+            attr_count: 1,
+            bonus_rate: 0,
+        },
+        types::WorldBloomDiffAttrBonus {
+            attr_count: 2,
+            bonus_rate: 10,
+        },
+    ];
+    let game = GameData {
+        world_bloom_different_attribute_bonuses: &diff_bonuses,
+        ..bonus_tier_game(&fixture)
+    };
+    let user = pool_constraint_user(&fixture);
+    for (target, expected_ids) in [(0, [1, 2, 3, 4, 5]), (10, [2, 3, 4, 5, 6])] {
+        let params = BuildParams {
+            target: ScoreTarget::Bonus,
+            live_type: LiveType::Multi,
+            event_id: Some(1),
+            event_type: Some("world_bloom".to_string()),
+            world_bloom_event_turn: Some(1),
+            target_bonus_list: vec![target],
+            ..BuildParams::default()
+        };
+        let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+        assert_eq!(pool.count(), 6);
+        let decks = pool_constraint_search(&pool, &ctx, &params);
+        assert_eq!(decks.len(), 1);
+        assert_eq!(decks[0].game_card_set_key(&pool), expected_ids);
+        let summary = crate::search::summarize_deck(&pool, &ctx, &decks[0].cards).unwrap();
+        assert_eq!(summary.event_bonus_total, Some(target as f64));
+    }
+}
+
+#[test]
+fn handler_pool_constraints_world_bloom_tier_preserves_support_alternatives() {
+    let fixture = pool_constraint_fixture(&[
+        (1, 4, 100),
+        (2, 4, 100),
+        (3, 4, 100),
+        (4, 4, 100),
+        (5, 4, 100),
+        (1, 4, 200),
+    ]);
+    let support_rates = [types::WBSupportDeckBonus {
+        card_rarity_type: "rarity_4".to_string(),
+        ..Default::default()
+    }];
+    let support_limited = [types::WBSupportDeckUnitEventLimitedBonus {
+        event_id: 1,
+        game_character_id: 1,
+        card_id: 6,
+        bonus_rate: 10.0,
+    }];
+    let game = GameData {
+        wb_support_deck_bonuses_wl1: &support_rates,
+        world_bloom_support_deck_unit_event_limited_bonuses: &support_limited,
+        ..bonus_tier_game(&fixture)
+    };
+    let user = pool_constraint_user(&fixture);
+    for (target, expected_ids) in [(0, [2, 3, 4, 5, 6]), (10, [1, 2, 3, 4, 5])] {
+        let params = BuildParams {
+            target: ScoreTarget::Bonus,
+            live_type: LiveType::Multi,
+            event_id: Some(1),
+            event_type: Some("world_bloom".to_string()),
+            world_bloom_event_turn: Some(1),
+            world_bloom_character_id: Some(1),
+            target_bonus_list: vec![target],
+            ..BuildParams::default()
+        };
+        let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+        assert_eq!(pool.count(), 6);
+        assert!(ctx.support_deck.cards.contains(&(6, 10.0)));
+        let decks = pool_constraint_search(&pool, &ctx, &params);
+        assert_eq!(decks.len(), 1);
+        assert_eq!(decks[0].game_card_set_key(&pool), expected_ids);
+        let summary = crate::search::summarize_deck(&pool, &ctx, &decks[0].cards).unwrap();
+        assert_eq!(summary.event_bonus_total, Some(target as f64));
+    }
+}
+
+#[test]
+fn handler_pool_constraints_world_bloom_tier_keeps_capacity_errors() {
+    let count = crate::pool::MASK_WORDS * 64 + 1;
+    let fixture = pool_constraint_fixture(&vec![(1, 4, 100); count]);
+    let game = bonus_tier_game(&fixture);
+    let user = pool_constraint_user(&fixture);
+    let params = BuildParams {
+        target: ScoreTarget::Bonus,
+        live_type: LiveType::Multi,
+        event_id: Some(1),
+        event_type: Some("world_bloom".to_string()),
+        world_bloom_event_turn: Some(1),
+        target_bonus_list: vec![0],
+        fixed_characters: vec![1],
+        ..BuildParams::default()
+    };
+    assert!(matches!(
+        build_card_pool(&user, &game, &params),
+        Err(BuildError::TooManyCards(actual)) if actual == count
+    ));
+}
+
+#[test]
+fn handler_pool_constraints_ep_prefilter_preserves_the_fifth_character() {
+    let mut spec = Vec::new();
+    for character_id in 1..=4 {
+        spec.extend([(character_id, 4, 100); 13]);
+    }
+    spec.push((5, 1, 100));
+    let fixture = pool_constraint_fixture(&spec);
+    let game = bonus_tier_game(&fixture);
+    let user = pool_constraint_user(&fixture);
+    // 普通活动走 prepared 预筛；WL 在构建支援种子后走 intermediate 预筛。
+    for event_type in ["marathon", "world_bloom"] {
+        let params = BuildParams {
+            target: ScoreTarget::Score,
+            live_type: LiveType::Multi,
+            event_id: Some(1),
+            event_type: Some(event_type.to_string()),
+            world_bloom_event_turn: (event_type == "world_bloom").then_some(1),
+            ..BuildParams::default()
+        };
+        let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+        assert!(pool.indices().any(|card| pool.game_id(card) == 53));
+        let decks = pool_constraint_search(&pool, &ctx, &params);
+        assert_eq!(decks.len(), 1);
+        assert!(decks[0].game_card_set_key(&pool).contains(&53));
+        let mut characters = decks[0].cards.map(|card| pool.char_id(card));
+        characters.sort_unstable();
+        assert_eq!(characters, [1, 2, 3, 4, 5]);
+    }
+}
+
+#[test]
+fn handler_pool_constraints_ep_prefilter_preserves_the_forced_leader() {
+    let mut spec = Vec::new();
+    for character_id in 1..=5 {
+        spec.extend([(character_id, 4, 100); 11]);
+    }
+    spec.push((6, 1, 100));
+    let fixture = pool_constraint_fixture(&spec);
+    let game = bonus_tier_game(&fixture);
+    let user = pool_constraint_user(&fixture);
+    for event_type in ["marathon", "world_bloom"] {
+        let params = BuildParams {
+            target: ScoreTarget::Score,
+            live_type: LiveType::Multi,
+            event_id: Some(1),
+            event_type: Some(event_type.to_string()),
+            world_bloom_event_turn: (event_type == "world_bloom").then_some(1),
+            forced_leader_character_id: Some(6),
+            ..BuildParams::default()
+        };
+        let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+        assert!(pool.indices().any(|card| pool.game_id(card) == 56));
+        assert_eq!(ctx.fixed_character_ids, vec![6]);
+        let decks = pool_constraint_search(&pool, &ctx, &params);
+        assert_eq!(decks.len(), 1);
+        assert!(decks[0].game_card_set_key(&pool).contains(&56));
+        let summary = crate::search::summarize_deck(&pool, &ctx, &decks[0].cards).unwrap();
+        assert_eq!(pool.char_id(summary.ordered_cards[0]), 6);
+    }
+}
+
+#[test]
+fn handler_pool_constraints_challenge_minimize_keeps_the_weakest_twenty_card_deck() {
+    let spec = (1..=20).map(|rank| (1, 4, rank * 100)).collect::<Vec<_>>();
+    let fixture = pool_constraint_fixture(&spec);
+    let game = bonus_tier_game(&fixture);
+    let user = pool_constraint_user(&fixture);
+    for live_type in [LiveType::Challenge, LiveType::ChallengeAuto] {
+        for challenge_live_character_id in [None, Some(1)] {
+            let params = BuildParams {
+                target: ScoreTarget::Power,
+                live_type,
+                challenge_live_character_id,
+                minimize: true,
+                ..BuildParams::default()
+            };
+            let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+            assert_eq!(pool.count(), 20);
+            let decks = pool_constraint_search(&pool, &ctx, &params);
+            assert_eq!(decks.len(), 1);
+            assert_eq!(decks[0].game_card_set_key(&pool), [1, 2, 3, 4, 5]);
+            let summary = crate::search::summarize_deck(&pool, &ctx, &decks[0].cards).unwrap();
+            assert_eq!(summary.total_power, 4_500);
+        }
+    }
+}
+
 #[test]
 fn world_bloom_turn_resolution_covers_real_turn3_chapters() {
     // 回归点：真实 WL 第三轮章节（活动 id > 180）曾被回合解析判成 turn 2，

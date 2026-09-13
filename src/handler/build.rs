@@ -17,9 +17,10 @@ use super::event_bonus::{EventContext, build_card_event_bonus, build_event_conte
 use super::filter::{
     CHALLENGE_ALL_PER_CHAR_KEEP, EP_PREFILTER_MIN_POOL, FINAL_CHAPTER_PER_CHAR_KEEP,
     GENERAL_PER_CHAR_KEEP, GENERAL_TRIM_THRESHOLD, PER_CHAR_KEEP, WORLD_BLOOM_PER_CHAR_KEEP,
-    ep_prefilter_keep, ep_prefilter_keep_with_params, general_per_character_trim, keep_card,
-    per_character_trim, prepared_ep_prefilter_keep, prepared_ep_prefilter_keep_with_params,
-    prepared_keep_card, prepared_post_event_unit_filter, target_per_character_trim,
+    ep_prefilter_has_deck, ep_prefilter_keep, ep_prefilter_keep_with_params,
+    general_per_character_trim, keep_card, per_character_trim, prepared_ep_prefilter_keep,
+    prepared_ep_prefilter_keep_with_params, prepared_keep_card, prepared_post_event_unit_filter,
+    target_per_character_trim,
 };
 use super::gather::{CardIntermediate, FullPrecisionCard, GatheredContext, sort_and_gather};
 use super::index;
@@ -151,6 +152,7 @@ pub struct PreparedPoolBuild<'a> {
 }
 
 impl<'a> PreparedPoolBuild<'a> {
+    /// 预处理用户数据与建池参数，产出可在多次建池间复用的中间结果。
     pub fn new(
         user: &'a types::UserProfile,
         prepared: &'a PreparedGameData<'_>,
@@ -379,15 +381,22 @@ impl<'a> PreparedPoolBuild<'a> {
                 .iter()
                 .any(|card| prepared_ep_prefilter_keep(card, false, is_final_chapter))
         {
-            // 预过滤不得把池子裁到组不满一副卡组（纯低星小盒会被裁到 0，
-            // 全目标「候选卡池为空」）；不满足就回退不裁。
+            // 预过滤必须保留组满一副卡组所需的角色覆盖；挑战 live 则要求
+            // 同角色的五张不同游戏卡。不满足就回退不裁。
             let keep: Vec<bool> = seeds
                 .iter()
                 .map(|card| {
                     prepared_ep_prefilter_keep_with_params(card, params, false, is_final_chapter)
                 })
                 .collect();
-            if keep.iter().filter(|flag| **flag).count() >= crate::types::DECK_SIZE {
+            if ep_prefilter_has_deck(
+                seeds
+                    .iter()
+                    .zip(&keep)
+                    .filter(|(_, keep)| **keep)
+                    .map(|(card, _)| (card.master.id, card.master.character_id)),
+                params,
+            ) {
                 let mut index = 0usize;
                 seeds.retain(|_| {
                     let flag = keep[index];
@@ -484,10 +493,10 @@ pub(super) fn normalize_boost_rate_pct(boost: Option<i32>) -> u32 {
     }
 }
 
-/// 精确档位组卡的类内去重：卡组内角色唯一，档位命中只看每张卡的加成
-/// 总和，因此同 (角色, 加成总和) 的卡在任何命中卡组里都可一比一互换，
-/// 保留综合力×技能最强的一张即可，每个目标档位的可达组合不受影响。
-fn bonus_class_dedup(cards: &mut Vec<CardIntermediate>) {
+/// 普通活动精确档位的类内去重：同 (角色, 加成总和) 的非固定卡只保留
+/// 综合力×技能最强的一张。固定卡的全部状态保留，不得被同类卡替换。
+/// World Bloom 的异色加成与支援排除依赖具体卡组，不适用此去重。
+fn bonus_class_dedup(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
     let power_rank = |card: &CardIntermediate| -> u64 {
         card.power.power_max.max(0) as u64 * (256 + card.skill.skill_max as u64)
     };
@@ -504,7 +513,10 @@ fn bonus_class_dedup(cards: &mut Vec<CardIntermediate>) {
             }
         }
     }
-    let mut keep = vec![false; cards.len()];
+    let mut keep: Vec<bool> = cards
+        .iter()
+        .map(|card| params.fixed_cards.contains(&card.game_card_id))
+        .collect();
     for index in best.values() {
         keep[*index] = true;
     }
@@ -520,11 +532,11 @@ pub(super) fn validate_fixed_constraints(
     params: &types::BuildParams,
     full: &[CardIntermediate],
 ) -> Result<(Vec<u16>, Vec<u8>), BuildError> {
-    if matches!(
+    let is_challenge_live = matches!(
         params.live_type,
         crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
-    ) && !params.fixed_characters.is_empty()
-    {
+    );
+    if is_challenge_live && !params.fixed_characters.is_empty() {
         return Err(BuildError::InvalidConfig(
             "challenge live 不支持 fixed_characters".to_string(),
         ));
@@ -554,7 +566,7 @@ pub(super) fn validate_fixed_constraints(
         else {
             return Err(BuildError::EmptyPool);
         };
-        if !seen_chars.insert(character_id) {
+        if !seen_chars.insert(character_id) && !is_challenge_live {
             return Err(BuildError::InvalidConfig(format!(
                 "fixed card 角色重复: {character_id}"
             )));
@@ -929,7 +941,12 @@ pub(super) fn build_card_pool_fully_prepared_internal(
             })
             .cloned()
             .collect();
-        if filtered.len() >= crate::types::DECK_SIZE {
+        if ep_prefilter_has_deck(
+            filtered
+                .iter()
+                .map(|card| (card.game_card_id, card.character_id as i32)),
+            params,
+        ) {
             cards = filtered;
         }
         // WL turn-3 的 336k cap 与异色加成让高练度低加成卡同样可能进最优解，
@@ -950,7 +967,11 @@ pub(super) fn build_card_pool_fully_prepared_internal(
     );
     let is_challenge_all = is_challenge_live && params.challenge_live_character_id.is_none();
 
-    if is_challenge_live && cards.len() > CHALLENGE_ALL_PER_CHAR_KEEP {
+    // 最弱综合力目标不能经过按综合力×技能降序的挑战卡池裁剪。
+    if is_challenge_live
+        && !(params.minimize && matches!(params.target, crate::types::ScoreTarget::Power))
+        && cards.len() > CHALLENGE_ALL_PER_CHAR_KEEP
+    {
         general_per_character_trim(&mut cards, params, CHALLENGE_ALL_PER_CHAR_KEEP);
     } else if event_ctx.is_some()
         && !bonus_tiered
@@ -978,11 +999,10 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         target_per_character_trim(&mut cards, params);
     }
 
-    // 精确档位组卡：同角色同属性同加成分量的卡对档位完全可互换（卡组内
-    // 角色唯一，每类至多占一槽），只保留综合力×技能最强的一张。这是档位
-    // 路径自己的容量压缩——不丢失任何加成组合，与通用路径的盲裁不同源。
-    if bonus_tiered {
-        bonus_class_dedup(&mut cards);
+    // 普通活动档位按角色与加成去重；WL 的异色/支援加成不能按单卡等价，
+    // 保留候选并沿用下方的容量校验。
+    if bonus_tiered && !is_world_bloom {
+        bonus_class_dedup(&mut cards, params);
     }
 
     if cards.is_empty() {

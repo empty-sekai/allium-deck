@@ -2537,6 +2537,172 @@ fn challenge_single_character_pool_keeps_direct_search() {
     assert_eq!(results, direct);
 }
 
+/// Exhaustive challenge oracle: no search bounds, one result per game-card set.
+fn exhaustive_challenge_results(pool: &CardPool, search_ctx: &SearchContext) -> Vec<DeckResult> {
+    let mut results = Vec::new();
+    let card = |dense: usize| CardIdx::new(dense as u16);
+    for a in 0..pool.count() {
+        for b in a + 1..pool.count() {
+            for c in b + 1..pool.count() {
+                for d in c + 1..pool.count() {
+                    for e in d + 1..pool.count() {
+                        let mut deck = [card(a), card(b), card(c), card(d), card(e)];
+                        if deck
+                            .iter()
+                            .any(|&card| pool.char_id(card) != pool.char_id(deck[0]))
+                        {
+                            continue;
+                        }
+                        let mut game_ids = deck.map(|card| pool.game_id(card));
+                        game_ids.sort_unstable();
+                        if game_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+                            continue;
+                        }
+                        // Challenge slots follow fixed-card groups, then the
+                        // public search's descending power/skill candidate order.
+                        deck.sort_unstable_by_key(|&card| {
+                            (
+                                search_ctx
+                                    .fixed_card_ids
+                                    .iter()
+                                    .position(|&id| id == pool.game_id(card))
+                                    .unwrap_or(usize::MAX),
+                                std::cmp::Reverse(pool.power_max(card)),
+                                std::cmp::Reverse(pool.skill_max(card)),
+                                pool.game_id(card),
+                            )
+                        });
+                        if !deck_matches_fixed_slots(pool, search_ctx, &deck) {
+                            continue;
+                        }
+                        if let Some(score) =
+                            evaluate::leaf_evaluate_checked(pool, search_ctx, &deck)
+                        {
+                            results.push(DeckResult::new(deck, score));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let minimize = search_ctx.minimize && matches!(search_ctx.target, ScoreTarget::Power);
+    results.sort_unstable_by(|a, b| {
+        let order = deck_result_cmp(a, b);
+        if minimize { order.reverse() } else { order }
+    });
+    let mut seen = std::collections::HashSet::new();
+    results.retain(|result| seen.insert(result.game_card_set_key(pool)));
+    results
+}
+
+fn check_challenge_ranking(target: ScoreTarget, skill: u8, minimize: bool) {
+    for character_count in [1, 2] {
+        let mut cards = Vec::new();
+        for char_id in 1..=character_count {
+            for variant in 0..8u16 {
+                // The last entry is a second cultivation of the first game card.
+                let game_id = 100 + u16::from(char_id) * 10 + variant % 7;
+                cards.push(skill_card(
+                    game_id,
+                    char_id,
+                    100 + u32::from(char_id) * 100 + u32::from(variant) * 3,
+                    skill,
+                ));
+            }
+        }
+        for shuffled in [false, true] {
+            if shuffled {
+                cards.reverse();
+                cards.rotate_left(3);
+            }
+            let pool = build_pool(&cards);
+            for fixed in [false, true] {
+                let mut search_ctx = ready_ctx(&pool, target);
+                search_ctx.enforce_char_uniqueness = false;
+                search_ctx.live_type = LiveType::Challenge;
+                search_ctx.minimize = minimize;
+                if fixed {
+                    search_ctx.fixed_card_ids = vec![111];
+                }
+                let expected = exhaustive_challenge_results(&pool, &search_ctx);
+                assert!(!expected.is_empty());
+                for top_k in [0, 1, 3, 64] {
+                    let params = SearchParams {
+                        top_k,
+                        timeout_ms: 0,
+                    };
+                    let actual = search(&pool, &search_ctx, &params);
+                    assert_eq!(
+                        actual,
+                        expected[..top_k.min(expected.len())],
+                        "target={target:?}, skill={skill}, minimize={minimize}, characters={character_count}, shuffled={shuffled}, fixed={fixed}, top_k={top_k}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn challenge_search_keeps_zero_score_decks() {
+    check_challenge_ranking(ScoreTarget::Skill, 0, false);
+}
+
+#[test]
+fn challenge_search_preserves_equal_score_tie_breaks() {
+    check_challenge_ranking(ScoreTarget::Skill, 10, false);
+    // Non-power targets continue to ignore minimize.
+    check_challenge_ranking(ScoreTarget::Skill, 10, true);
+}
+
+#[test]
+fn challenge_search_minimizes_power() {
+    check_challenge_ranking(ScoreTarget::Power, 10, true);
+}
+
+#[test]
+fn simple_target_search_preserves_large_fixed_character_prefixes() {
+    for fixed_candidates in [65u16, 508] {
+        let mut cards = Vec::new();
+        for candidate in 0..fixed_candidates {
+            cards.push(skill_card(
+                1000 + candidate,
+                1,
+                100 + u32::from(candidate),
+                (candidate % 150 + 1) as u8,
+            ));
+        }
+        for char_id in 2..=5u8 {
+            cards.push(skill_card(
+                2000 + u16::from(char_id),
+                char_id,
+                1000 + u32::from(char_id),
+                160 + char_id,
+            ));
+        }
+        let pool = build_pool(&cards);
+        assert_eq!(pool.count(), usize::from(fixed_candidates) + 4);
+        for target in [ScoreTarget::Power, ScoreTarget::Skill] {
+            let mut search_ctx = ready_ctx(&pool, target);
+            search_ctx.fixed_character_ids = vec![1];
+            let params = SearchParams {
+                top_k: 3,
+                timeout_ms: 0,
+            };
+            let actual = search(&pool, &search_ctx, &params);
+            let (expected, _) = brute_force_search(&pool, &search_ctx, &params);
+            assert_eq!(actual.len(), params.top_k);
+            assert_results_match_bruteforce(&pool, &actual, &expected);
+            for result in actual {
+                assert_eq!(pool.char_id(result.cards[0]), 1);
+                let mut characters = result.cards.map(|card| pool.char_id(card));
+                characters.sort_unstable();
+                assert_eq!(characters, [1, 2, 3, 4, 5]);
+            }
+        }
+    }
+}
+
 #[test]
 fn challenge_live_power_and_skill_targets_search_same_character_decks() {
     // 回归：challenge live × target=power|skill 曾被 Power/Skill 通用路径截胡，

@@ -23,6 +23,42 @@ pub(super) fn prepared_ep_prefilter_keep(
     card.event_bonus.total_x10() > 0 && card.has_char_bonus && card.has_attr_bonus
 }
 
+pub(super) fn ep_prefilter_has_deck(
+    cards: impl Iterator<Item = (i32, i32)>,
+    params: &types::BuildParams,
+) -> bool {
+    let is_challenge = matches!(
+        params.live_type,
+        crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+    );
+    if !is_challenge {
+        return cards
+            .map(|(_, character_id)| character_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            >= crate::types::DECK_SIZE;
+    }
+
+    // 特训前后状态仍是同一张游戏卡，不能重复计入挑战 live 的五张名额。
+    let mut by_character = std::collections::BTreeMap::<_, std::collections::BTreeSet<_>>::new();
+    for (card_id, character_id) in cards {
+        let ids = by_character.entry(character_id).or_default();
+        ids.insert(card_id);
+        if ids.len() >= crate::types::DECK_SIZE {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_forced_leader_character(character_id: i32, params: &types::BuildParams) -> bool {
+    !matches!(
+        params.live_type,
+        crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+    ) && (1..=26).contains(&character_id)
+        && params.forced_leader_character_id == Some(character_id)
+}
+
 pub(super) fn prepared_ep_prefilter_keep_with_params(
     card: &PreparedCardSeed<'_>,
     params: &types::BuildParams,
@@ -31,6 +67,7 @@ pub(super) fn prepared_ep_prefilter_keep_with_params(
 ) -> bool {
     if params.fixed_cards.contains(&card.master.id)
         || params.fixed_characters.contains(&card.master.character_id)
+        || is_forced_leader_character(card.master.character_id, params)
     {
         return true;
     }
@@ -230,11 +267,11 @@ pub(super) fn ep_prefilter_keep_with_params(
     is_world_bloom: bool,
     is_final_chapter: bool,
 ) -> bool {
-    if (!params.fixed_cards.is_empty() && params.fixed_cards.contains(&card.game_card_id))
-        || (!params.fixed_characters.is_empty()
-            && params
-                .fixed_characters
-                .contains(&(card.character_id as i32)))
+    if params.fixed_cards.contains(&card.game_card_id)
+        || params
+            .fixed_characters
+            .contains(&(card.character_id as i32))
+        || is_forced_leader_character(card.character_id as i32, params)
     {
         return true;
     }

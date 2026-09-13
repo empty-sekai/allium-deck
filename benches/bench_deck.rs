@@ -8,8 +8,7 @@
 //! 无活动多人搜索是分支定界的最坏情形（无活动加成可剪枝），全量池单次约
 //! 数十秒，默认基准用 `attrFilter` 收窄到单属性池（精确完成，亚秒级）；
 //! 全量版本设 `ALLIUM_BENCH_FULL_NO_EVENT=1` 后运行（约数分钟）。
-//! 注意 `SearchParams::timeout_ms` 目前无法截断长搜索（见 dfs.rs `timed_out`：
-//! 超时只剪当前子树、无粘性中止标志），因此不能靠 timeout 控制基准时长。
+//! 精确搜索基准使用充足的 `timeout_ms` 预算，避免把超时返回的部分结果计作完整搜索。
 
 mod synth_masterdata;
 
