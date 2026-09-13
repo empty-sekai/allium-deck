@@ -11,6 +11,9 @@ __pycache__/
 /docs/superpowers/
 /.worktrees/
 
+# Local code index
+/.codegraph/
+
 # wasm-pack 产出
 /pkg/
 /wasm/pkg/
