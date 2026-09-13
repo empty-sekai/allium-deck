@@ -1,8 +1,24 @@
+//! Shared vocabulary: identifiers, enums and per-card resolved values.
+//!
+//! Everything here is re-exported at the crate root, so these names are the ones
+//! callers normally reach for: [`Unit`], [`Attr`], [`LiveType`], [`ScoreTarget`]
+//! and the deck-shape constants such as [`DECK_SIZE`].
+
 use serde::{Deserialize, Serialize};
 
+/// Game card id, as it appears in masterdata and player data.
+///
+/// Distinct from [`crate::pool::CardIdx`], which is a dense index into one
+/// [`crate::pool::CardPool`] and is only meaningful together with that pool.
 pub type CardId = u16;
+
+/// Cards in a deck.
 pub const DECK_SIZE: usize = 5;
+
+/// Upper clamp applied to a computed live score.
 pub const SCORE_MAX: f64 = 10_000_000.0;
+
+/// Event id of the World Bloom chapter 2 finale, the first live with finale rules.
 pub const FINAL_CHAPTER_EVENT_ID: i32 = 180;
 
 /// 模拟 WL3 终章的假活动 ID。
@@ -21,106 +37,200 @@ pub const fn is_world_bloom_finale_event(event_id: i32) -> bool {
     event_id == FINAL_CHAPTER_EVENT_ID || event_id == WL3_FAKE_FINALE_EVENT_ID
 }
 
+/// A unit, plus the pseudo-units that only appear as skill effect targets.
+///
+/// Variants 1..=6 are the real in-game units. [`Unit::Any`], [`Unit::Ref`] and
+/// [`Unit::Diff`] are not units a character belongs to: they are the `unit`
+/// codes masterdata uses on skill effects to mean "any unit", "mirror another
+/// member's score-up" and "scales with the number of distinct units in the
+/// deck". They share this enum so one lookup table can be indexed by unit code.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Unit {
+    /// No unit, used where a unit code is absent.
     None = 0,
+    /// Leo/need.
     LightSound = 1,
+    /// MORE MORE JUMP!.
     Idol = 2,
+    /// Vivid BAD SQUAD.
     Street = 3,
+    /// Wonderlands x Showtime.
     Themepark = 4,
+    /// 25-ji, Nightcord de.
     SchoolRefusal = 5,
+    /// VIRTUAL SINGER.
     Piapro = 6,
+    /// Skill effect target: applies regardless of unit.
     Any = 7,
+    /// Skill effect target: reference skill, mirrors another member's score-up.
     Ref = 8,
+    /// Skill effect target: scales with the number of distinct units in the deck.
     Diff = 9,
 }
+
+/// Number of [`Unit`] variants, i.e. the width of unit-indexed lookup tables.
 pub const UNIT_COUNT: usize = 10;
 
+/// Card attribute.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum Attr {
+    /// No attribute, used where an attribute code is absent.
     Null = 0,
+    /// Cool.
     Cool = 1,
+    /// Cute.
     Cute = 2,
+    /// Happy.
     Happy = 3,
+    /// Pure.
     Pure = 4,
+    /// Mysterious.
     Mysterious = 5,
 }
+
+/// Number of [`Attr`] variants, i.e. the width of attribute-indexed tables.
 pub const ATTR_COUNT: usize = 6;
 
+/// Live mode, which decides the scoring formula and the deck constraints.
+///
+/// [`LiveType::Challenge`] and [`LiveType::ChallengeAuto`] require all five
+/// cards to be the same character; every other mode requires five distinct
+/// characters.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum LiveType {
+    /// Solo live.
     Solo = 0,
+    /// Auto live.
     Auto = 1,
+    /// Multiplayer live.
     Multi = 2,
+    /// Cheerful Carnival, a multiplayer variant with its own score-up term.
     Cheerful = 3,
+    /// Challenge live: five cards of one character.
     Challenge = 4,
+    /// Auto challenge live: five cards of one character.
     ChallengeAuto = 5,
+    /// MySekai live.
     Mysekai = 6,
 }
 
+/// Event type, which decides how event bonuses are computed.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum EventType {
+    /// Marathon event.
     Marathon = 0,
+    /// Cheerful Carnival event.
     CheerfulCarnival = 1,
+    /// World Bloom event, which adds a support deck and a different-attribute bonus.
     WorldBloom = 2,
 }
 
+/// How to resolve a reference skill ([`Unit::Ref`]), whose value depends on the
+/// other members' score-up.
+///
+/// The referenced value is not known until the rest of the deck is fixed, so the
+/// caller chooses which end of the range to score against.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum SkillReferenceStrategy {
+    /// Score against the highest referenced value.
     Max = 0,
+    /// Score against the lowest referenced value.
     Min = 1,
+    /// Score against the mean referenced value.
     Average = 2,
 }
 
+/// Which order the five deck skills are assumed to fire in.
+///
+/// Skill slots are worth different amounts, so the assumed order changes the
+/// score. [`LiveSkillOrder::Specific`] requires an explicit permutation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum LiveSkillOrder {
+    /// Assume the order that maximises the score.
     Best = 0,
+    /// Assume the order that minimises the score.
     Worst = 1,
+    /// Score against the mean over orders.
     Average = 2,
+    /// Use a caller-supplied slot permutation.
     Specific = 3,
 }
 
+/// What the search maximises.
+///
+/// Accepted as the `target` parameter by [`crate::engine::recommend_json`], and
+/// spelled there in lowercase.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ScoreTarget {
+    /// Event points, or live score when there is no event.
     Score = 0,
+    /// Total deck power.
     Power = 1,
+    /// Total skill score-up.
     Skill = 2,
+    /// Event bonus rate, used to hit an exact bonus tier.
     Bonus = 3,
+    /// MySekai event points.
     Mysekai = 4,
 }
 
+/// Which artwork a card shows, which decides whether its after-training skill applies.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum DefaultImage {
+    /// Untrained artwork.
     Original = 0,
+    /// Special training artwork.
     SpecialTraining = 1,
 }
 
+/// One card's power, broken into its additive parts.
+///
+/// Every field is a final `i32`. The float truncation the game applies to each
+/// bonus has already happened in the pool-building layer, so the search never
+/// re-rounds these.
 #[derive(Debug, Copy, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PowerDetail {
+    /// Power from the card itself: level, master rank, episodes and training.
     pub base: i32,
+    /// Power from area items.
     pub area_item_bonus: i32,
+    /// Power from character rank.
     pub character_bonus: i32,
+    /// Power from MySekai fixtures, already clamped to the event's limit.
     pub fixture_bonus: i32,
+    /// Power from MySekai gates.
     pub gate_bonus: i32,
+    /// Sum of the other fields.
     pub total: i32,
 }
 
+/// One card's skill, resolved for a particular deck composition.
+///
+/// A card contributes one `SkillInfo` per unit and member-count combination; the
+/// pool-building layer precomputes them so leaf evaluation is a lookup.
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkillInfo {
+    /// Masterdata skill id.
     pub skill_id: i32,
+    /// Whether this is the after-training skill rather than the base one.
     pub is_after_training: bool,
+    /// Score-up percentage this skill contributes on its own.
     pub base_score_up: f64,
+    /// Life recovered when the skill fires.
     pub life_recovery: f64,
+    /// Whether this is a reference skill, whose value depends on other members.
     pub has_ref: bool,
+    /// Fraction of the referenced member's score-up that is mirrored.
     pub ref_rate: f64,
+    /// Upper clamp on the mirrored score-up.
     pub ref_max: f64,
 }
 
@@ -138,320 +248,14 @@ impl Default for SkillInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CardEventBonus {
-    pub base_bonus: f64,
-    pub limited_bonus: f64,
-    pub leader_honor_bonus: f64,
-    pub leader_limit_bonus: f64,
-}
-
-impl Default for CardEventBonus {
-    fn default() -> Self {
-        Self {
-            base_bonus: 0.0,
-            limited_bonus: 0.0,
-            leader_honor_bonus: 0.0,
-            leader_limit_bonus: 0.0,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-/// 综合力查找表。handler 层 build_card_pool 时预构建。
+/// Overrides which unit a character counts as for unit-sensitive skills.
 ///
-/// ## resolved 槽位编码（member_key）
-///
-/// resolved[unit as usize][member_key(unit_member, attr_member)]
-/// - [0] = 混组混色 (unit_member < 5, attr_member < 5)
-/// - [1] = 混组同色 (unit_member < 5, attr_member == 5)
-/// - [2] = 同组混色 (unit_member == 5, attr_member < 5)
-/// - [3] = 同组同色 (unit_member == 5, attr_member == 5)
-///
-/// handler 必须为每张卡的每个 unit 预计算这 4 种组合的 PowerDetail。
-/// build_card_pool 时执行完整 fallback 链（exact -> normalize -> Any），运行时无 Option。
-///
-/// ## diff 槽位
-///
-/// diff[index] 对应 diff 技能的不同组合数情况。
-/// index = (unit_kind_count - 1).clamp(0, 2)
-/// handler 预计算 diff unit 在 0/1/2 三种组合数下的 PowerDetail。
-///
-/// ## f32 精度截断（handler 职责）
-///
-/// 以下分项在 handler 计算时必须使用 f32 精度（对应游戏客户端行为）：
-/// - characterBonus：`(rate as f32 * 0.01_f32 * basePower as f32).floor() as i32`
-/// - areaItemBonus：TS 用 Math.fround 逐项累加，建议跟随 TS（游戏客户端精度）
-/// - fixtureBonus / gateBonus：TS 用 Math.fround，建议跟随 TS
-///
-/// evaluator 层读取的 PowerDetail 全部是 i32 最终值，不做浮点截断。
-pub struct PowerLookup {
-    pub resolved: [[PowerDetail; 4]; UNIT_COUNT],
-    pub diff: [PowerDetail; 3],
-}
-
-impl Default for PowerLookup {
-    fn default() -> Self {
-        Self {
-            resolved: [[PowerDetail::default(); 4]; UNIT_COUNT],
-            diff: [PowerDetail::default(); 3],
-        }
-    }
-}
-
-/// 技能查找表。按 [unit][skill_key] 索引。
-/// skill_key: 0 = 非全同组(unit_member < 5), 1 = 全同组(unit_member == 5)
-/// 注：技能不区分属性维度（attr_member 始终为 1），与 PowerLookup 的 4-slot 设计不同。
-///
-/// ## 组分技能精度说明
-///
-/// 组分技能（score_up_unit_count）效果与同组人数线性相关（1-5人效果不同），
-/// 但 skill_key 只区分"全5人同组"和"非5人"。2/3/4人效果被合并到 index 0。
-///
-/// handler 预解析策略：
-/// - index 0（非全同组）：存储 unit_member=1 时的值（最保守估计）
-/// - index 1（全同组）：存储 unit_member=5 时的值
-///
-/// 这意味着当实际 deck 有 2/3/4 张同组卡时，组分技能效果被低估。
-/// 这是有意的保守估计：搜索层找到的"最优解"不会因为精度偏高而无效。
-/// 如果未来需要精确组分技能，可扩展 skill_key 为 [SkillInfo; 6]（0-5人），
-/// 代价是每张候选卡增加约 4 * UNIT_COUNT * sizeof(SkillInfo)。
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SkillLookup {
-    pub resolved: [[SkillInfo; 2]; UNIT_COUNT],
-    pub diff: [SkillInfo; 3],
-}
-
-impl Default for SkillLookup {
-    fn default() -> Self {
-        Self {
-            resolved: [[SkillInfo::default(); 2]; UNIT_COUNT],
-            diff: [SkillInfo::default(); 3],
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SupportDeckCard {
-    pub card_id: CardId,
-    pub bonus: f64,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DifferentAttributeBonus {
-    pub attribute_count: i32,
-    pub bonus_rate: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FinalChapterSupportDeck {
-    pub leader_character_id: i32,
-    pub cards: Vec<SupportDeckCard>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WorldBloomContext {
-    pub support_deck_count: usize,
-    pub diff_attr_bonus_table: [f64; ATTR_COUNT],
-    pub support_cards: Vec<SupportDeckCard>,
-    pub final_chapter_support: Vec<FinalChapterSupportDeck>,
-    pub power_total_cap: Option<i32>,
-}
-
+/// Characters who belong to two units pick one per live; this lets the caller
+/// state that choice instead of leaving it to the default mapping.
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CustomSupportUnit {
+    /// Game character id.
     pub character_id: i32,
+    /// Unit the character counts as.
     pub unit: Unit,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CustomBonusParams {
-    pub character_mask: u32,
-    pub attr: Option<Attr>,
-    pub support_unit_by_char: [Unit; 27],
-}
-
-/// 活动上下文。
-///
-/// handler 职责（evaluator 不感知）：
-/// - fixture_bonus 上限：handler 在构建 PowerLookup 时对 PowerDetail.fixture_bonus
-///   执行 .min(limit)，evaluator 读取的值已是 clamp 后的。
-/// - WL3 fake event 注入：handler 在构建 CardEventBonus 和 support_cards 时完成。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct EventContext {
-    pub event_id: i32,
-    pub event_type: EventType,
-    pub boost_rate: f64,
-    pub other_score: Option<i32>,
-    pub life: i32,
-    pub custom_bonus: Option<CustomBonusParams>,
-    pub world_bloom: Option<WorldBloomContext>,
-    pub skill_score_up_limit: Option<f64>,
-    /// 活动卡加成计入上限。handler 从 masterdata eventCardBonusLimits.memberCountLimit 读取。
-    /// 终章最多 4 张卡享受 limited_bonus，第 5 张扣除；非终章通常为 DECK_SIZE。
-    /// 必须 > 0 且 <= DECK_SIZE。
-    pub card_bonus_count_limit: usize,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct MusicParams {
-    pub event_rate: f64,
-    pub base_score: f64,
-    pub base_score_auto: f64,
-    pub fever_score: f64,
-    pub skill_scores: [[f64; 6]; 3],
-    pub music_time: f64,
-    pub tap_count: i32,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DeckScore {
-    pub card_ids: [CardId; DECK_SIZE],
-    pub card_event_bonus_rates: [f64; DECK_SIZE],
-    pub card_skill_score_up: [f64; DECK_SIZE],
-    pub card_skill_life_recovery: [f64; DECK_SIZE],
-    pub card_power_total: [i32; DECK_SIZE],
-    pub total_power: i32,
-    pub base_power: i32,
-    pub area_item_bonus_power: i32,
-    pub character_bonus_power: i32,
-    pub honor_bonus_power: i32,
-    pub fixture_bonus_power: i32,
-    pub gate_bonus_power: i32,
-    pub event_bonus_rate: f64,
-    pub support_deck_bonus_rate: f64,
-    pub diff_attr_bonus_rate: f64,
-    pub multi_live_score_up: f64,
-    pub live_score: i32,
-    pub event_point: i32,
-    pub mysekai_event_point: i32,
-    pub mysekai_internal_point: i32,
-    pub target_value: f64,
-    pub chosen_mask: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct DeckContext<'a> {
-    pub pool: &'a crate::pool::CardPool,
-    pub honor_bonus: i32,
-    pub music: MusicParams,
-    pub live_type: LiveType,
-    pub target: ScoreTarget,
-    pub event: Option<EventContext>,
-    pub skill_reference_strategy: SkillReferenceStrategy,
-    pub keep_after_training_state: bool,
-    pub best_skill_as_leader: bool,
-    pub live_skill_order: LiveSkillOrder,
-    pub specific_skill_order: Option<[usize; DECK_SIZE]>,
-    pub multi_teammate_score_up: Option<i32>,
-    pub multi_teammate_power: Option<i32>,
-    pub effective_live_type: LiveType,
-    pub is_final_chapter: bool,
-    pub effective_best_skill_as_leader: bool,
-    pub is_mysekai: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct DeckContextParams {
-    pub honor_bonus: i32,
-    pub music: MusicParams,
-    pub live_type: LiveType,
-    pub target: ScoreTarget,
-    pub event: Option<EventContext>,
-    pub skill_reference_strategy: SkillReferenceStrategy,
-    pub keep_after_training_state: bool,
-    pub best_skill_as_leader: bool,
-    pub live_skill_order: LiveSkillOrder,
-    pub specific_skill_order: Option<[usize; DECK_SIZE]>,
-    pub multi_teammate_score_up: Option<i32>,
-    pub multi_teammate_power: Option<i32>,
-}
-
-impl<'a> DeckContext<'a> {
-    pub fn new(pool: &'a crate::pool::CardPool, params: DeckContextParams) -> Result<Self, String> {
-        validate_pool(pool)?;
-        validate_params(&params)?;
-
-        let is_final_chapter = params
-            .event
-            .as_ref()
-            .is_some_and(|event| is_world_bloom_finale_event(event.event_id));
-        let effective_live_type = if matches!(params.live_type, LiveType::Multi)
-            && params
-                .event
-                .as_ref()
-                .is_some_and(|event| matches!(event.event_type, EventType::CheerfulCarnival))
-        {
-            LiveType::Cheerful
-        } else {
-            params.live_type
-        };
-        let is_mysekai = matches!(params.target, ScoreTarget::Mysekai)
-            || matches!(effective_live_type, LiveType::Mysekai);
-        let effective_best_skill_as_leader = params.best_skill_as_leader && !is_final_chapter;
-
-        Ok(Self {
-            pool,
-            honor_bonus: params.honor_bonus,
-            music: params.music,
-            live_type: params.live_type,
-            target: params.target,
-            event: params.event,
-            skill_reference_strategy: params.skill_reference_strategy,
-            keep_after_training_state: params.keep_after_training_state,
-            best_skill_as_leader: params.best_skill_as_leader,
-            live_skill_order: params.live_skill_order,
-            specific_skill_order: params.specific_skill_order,
-            multi_teammate_score_up: params.multi_teammate_score_up,
-            multi_teammate_power: params.multi_teammate_power,
-            effective_live_type,
-            is_final_chapter,
-            effective_best_skill_as_leader,
-            is_mysekai,
-        })
-    }
-}
-
-fn validate_pool(pool: &crate::pool::CardPool) -> Result<(), String> {
-    let count = pool.count();
-    if count > u16::MAX as usize {
-        return Err("card pool is too large for CardId".to_string());
-    }
-    if count > 512 {
-        return Err("card pool exceeds 512-bit mask capacity".to_string());
-    }
-    Ok(())
-}
-
-fn validate_params(params: &DeckContextParams) -> Result<(), String> {
-    if matches!(params.live_skill_order, LiveSkillOrder::Specific) {
-        let order = params
-            .specific_skill_order
-            .ok_or_else(|| "specific_skill_order is required".to_string())?;
-        let mut seen = [false; DECK_SIZE];
-        for index in order {
-            if index >= DECK_SIZE {
-                return Err("specific_skill_order index out of range".to_string());
-            }
-            if seen[index] {
-                return Err("specific_skill_order contains duplicate index".to_string());
-            }
-            seen[index] = true;
-        }
-    }
-    if let Some(event) = &params.event {
-        if event.card_bonus_count_limit == 0 {
-            return Err("card_bonus_count_limit must be > 0".to_string());
-        }
-        if event.card_bonus_count_limit > DECK_SIZE {
-            return Err("card_bonus_count_limit exceeds DECK_SIZE".to_string());
-        }
-        if matches!(event.event_type, EventType::WorldBloom) && event.world_bloom.is_none() {
-            return Err("WorldBloom event requires world_bloom context".to_string());
-        }
-        if !matches!(event.event_type, EventType::WorldBloom) && event.world_bloom.is_some() {
-            return Err("world_bloom context is only valid for WorldBloom".to_string());
-        }
-    }
-    Ok(())
 }
