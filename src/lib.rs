@@ -27,6 +27,12 @@
 //! parameter contract and the per-mode exactness matrix (which modes are exact
 //! against brute force and which are heuristic) are in `docs/parameters.md`.
 //!
+//! The response is `{"decks": [{"cards": [id; 5], "score": u64}]}`, where
+//! `cards` holds game card ids in deck order, leader first. Panel details such
+//! as total power and live score are not part of it: build the pool with
+//! [`handler::build_card_pool`] and summarise each result with
+//! [`search::summarize_deck`] when you need them.
+//!
 //! # Modules
 //!
 //! | Module | Responsibility |

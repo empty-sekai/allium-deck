@@ -67,10 +67,9 @@ fn run() -> Result<(), String> {
         [] => DEFAULT_PARAMS.to_string(),
     };
 
-    // 3. 组卡：返回 top-K 卡组。注意当前 `recommend_json` 返回的 `cards`
-    //    是候选池内的稠密索引（`DeckResult` 的 `CardIdx::raw()`），不是
-    //    masterdata 卡 ID；需要卡 ID / 面板明细时用 `recommend` 结构体入口
-    //    配合 `CardPool::game_id` / `summarize_deck`（参考 `src/bin/recommend_cli.rs`）。
+    // 3. 组卡：返回 top-K 卡组，`cards` 是游戏卡 ID。需要综合力、live 分数
+    //    等面板明细时走 `handler::build_card_pool` + `search::summarize_deck`
+    //    （参考 `src/bin/recommend_cli.rs`）。
     let response = recommend_json(&masterdata_json, "", &user_json, &params_json)
         .map_err(|error| format!("组卡失败: {error}"))?;
 

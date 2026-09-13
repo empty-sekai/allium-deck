@@ -43,6 +43,8 @@ let result_json = recommend_json(
 
 Internally it runs two stages: `handler::build_card_pool` (pool building) → `search::search` (search). The typed entry point `engine::recommend` bypasses JSON serialization.
 
+The response is `{"decks": [{"cards": [id; 5], "score": u64}]}`, where `cards` holds game card ids in deck order, leader first. Panel details such as total power and live score are not included: build the pool with `handler::build_card_pool` and summarise results with `search::summarize_deck` (`src/bin/recommend_cli.rs` is a worked example).
+
 The complete parameter contract (all fields, defaults, value ranges) and the **per-mode exactness matrix** (which modes are exact against brute force and which are heuristic) are in [docs/parameters.md](docs/parameters.md).
 
 ## Module map

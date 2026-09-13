@@ -17,8 +17,8 @@ use crate::handler::{
     UserGateBonus, UserHonor, UserProfile, UserWBSupportDeck, WBSupportDeckBonus,
     WBSupportDeckUnitEventLimitedBonus, WorldBloom, WorldBloomDiffAttrBonus,
 };
-use crate::search::{DeckResult, SearchParams};
-use crate::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
+use crate::search::SearchParams;
+use crate::{CardId, DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -37,12 +37,16 @@ pub enum EngineError {
     Search(String),
 }
 
-/// 开源入口：JSON 入、JSON 出。
+/// JSON 入、JSON 出的入口。
 ///
-/// `masterdata_json` 当前接受 `OwnedGameData` 的 JSON 表示；`music_metas_json`
-/// 可传歌曲元数据数组补齐 `music_metas` 与 `music_difficulties`。
-/// `user_data_json` 接受上传链路产出的 camelCase 用户数据。
-/// 返回值包含 top-5 decks。
+/// `masterdata_json` 接受 `OwnedGameData` 的 JSON 表示；`music_metas_json`
+/// 可传歌曲元数据数组补齐 `music_metas` 与 `music_difficulties`；
+/// `user_data_json` 接受 camelCase 的玩家数据；`params_json` 见
+/// `docs/parameters.md`。
+///
+/// 返回 `{"decks": [{"cards": [id; 5], "score": u64}]}`：`cards` 是游戏卡 ID，
+/// 按站位顺序、队长在前；`score` 的语义见 [`Recommendation::score`]。
+/// 卡组条数由参数里的 `limit` 决定。
 pub fn recommend_json(
     masterdata_json: &str,
     music_metas_json: &str,
@@ -68,18 +72,16 @@ pub fn recommend_json(
     let user = parse_user_profile_json(user_data_json)?;
     let params = parse_build_params_json(params_json)?;
     let decks = recommend(&user, &owned.as_ref(), &params)?;
-    let response = JsonDeckResponse {
-        decks: decks.iter().map(JsonDeckResult::from).collect(),
-    };
+    let response = JsonDeckResponse { decks };
     serde_json::to_string(&response).map_err(EngineError::from)
 }
 
-/// 内部入口：结构体入、结构体出，避免请求路径上的 JSON 序列化。
+/// 结构体入、结构体出的入口，避免请求路径上的 JSON 序列化。
 pub fn recommend(
     user: &UserProfile,
     game: &GameData<'_>,
     params: &crate::handler::BuildParams,
-) -> Result<Vec<DeckResult>, EngineError> {
+) -> Result<Vec<Recommendation>, EngineError> {
     let build = crate::handler::build_card_pool(user, game, params);
     let (pool, ctx) = match build {
         Ok(ok) => ok,
@@ -94,32 +96,43 @@ pub fn recommend(
         top_k: params.limit,
         timeout_ms: params.timeout_ms,
     };
-    Ok(crate::search::search_targets(
-        &pool,
-        &ctx,
-        &search_params,
-        &params.target_bonus_list,
-    ))
+    let results =
+        crate::search::search_targets(&pool, &ctx, &search_params, &params.target_bonus_list);
+
+    Ok(results
+        .iter()
+        .map(|result| {
+            // 搜索结果里的是候选池稠密索引，出了这个池就没有意义，必须在
+            // 池还活着时换成游戏卡 ID。站位顺序同样由 summarize_deck 决定；
+            // 没有满足约束的排列时退回搜索给出的原始顺序。
+            let ordered = crate::search::summarize_deck(&pool, &ctx, &result.cards)
+                .map_or(result.cards, |summary| summary.ordered_cards);
+            Recommendation {
+                cards: ordered.map(|card| pool.game_id(card)),
+                score: result.score,
+            }
+        })
+        .collect())
+}
+
+/// 一个推荐卡组。
+///
+/// [`recommend`] 的返回元素，也是 [`recommend_json`] 里 `decks` 数组的元素。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recommendation {
+    /// 五张卡的游戏卡 ID，按站位顺序，队长在前。
+    pub cards: [CardId; DECK_SIZE],
+    /// 排序值。
+    ///
+    /// 单位随搜索目标而定，且只在同一次搜索内可比——用来排序，不要当成
+    /// 可对外汇报的指标。面板明细请走 `handler::build_card_pool` +
+    /// `search::summarize_deck`。
+    pub score: u64,
 }
 
 #[derive(Debug, Serialize)]
 struct JsonDeckResponse {
-    decks: Vec<JsonDeckResult>,
-}
-
-#[derive(Debug, Serialize)]
-struct JsonDeckResult {
-    cards: [usize; 5],
-    score: u64,
-}
-
-impl From<&DeckResult> for JsonDeckResult {
-    fn from(result: &DeckResult) -> Self {
-        Self {
-            cards: result.cards.map(|card| card.raw()),
-            score: result.score,
-        }
-    }
+    decks: Vec<Recommendation>,
 }
 
 /// 将上传链路的 camelCase 用户数据转换为内部 `UserProfile`。
@@ -2652,5 +2665,152 @@ mod tests {
             }],
             "缺维度的等级不应产出半截行"
         );
+    }
+
+    /// 六张卡、六个角色的最小 masterdata。卡 ID 从 501 起，与候选池的
+    /// 稠密索引（0..N）不重叠，因此两者在断言里不会混淆。
+    fn minimal_game_and_user() -> (OwnedGameData, UserProfile, Vec<CardId>) {
+        let card_ids: Vec<i32> = (501..=506).collect();
+        let cards = card_ids
+            .iter()
+            .enumerate()
+            .map(|(index, &id)| MasterCard {
+                id,
+                character_id: index as i32 + 1,
+                attr: "cool".to_string(),
+                card_rarity_type: 4,
+                rarity: String::new(),
+                asset_bundle_name: format!("card_{id:06}"),
+                skill_id: 10,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: None,
+                max_level: Some(60),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            })
+            .collect();
+        let card_parameters = card_ids
+            .iter()
+            .map(|&card_id| CardParameter {
+                card_id,
+                level: 1,
+                param1: 100 + card_id,
+                param2: 100,
+                param3: 100,
+            })
+            .collect();
+        let game = OwnedGameData {
+            cards,
+            card_parameters,
+            skills: vec![Skill {
+                id: 10,
+                level: 1,
+                is_after_training: false,
+            }],
+            skill_effects: vec![SkillEffect {
+                skill_id: 10,
+                skill_level: 1,
+                effect_type: "score_up".to_string(),
+                value: 100,
+                additional_value: None,
+                unit_member_count: None,
+                unit: None,
+                activate_character_rank: None,
+            }],
+            game_character_units: (1..=6)
+                .map(|game_character_id| GameCharacterUnit {
+                    game_character_id,
+                    unit: "idol".to_string(),
+                })
+                .collect(),
+            ..OwnedGameData::default()
+        };
+        let user = UserProfile {
+            user_cards: card_ids
+                .iter()
+                .map(|&card_id| UserCard {
+                    card_id,
+                    level: 1,
+                    skill_level: 1,
+                    master_rank: 0,
+                    special_training_status: "none".to_string(),
+                    default_image: "original".to_string(),
+                    episodes_read: Vec::new(),
+                    is_virtual: false,
+                    has_canvas_bonus_override: None,
+                })
+                .collect(),
+            ..UserProfile::default()
+        };
+        let expected = card_ids.iter().map(|&id| id as CardId).collect();
+        (game, user, expected)
+    }
+
+    fn multi_score_params() -> crate::handler::BuildParams {
+        crate::handler::BuildParams {
+            live_type: LiveType::Multi,
+            target: ScoreTarget::Score,
+            limit: 1,
+            ..crate::handler::BuildParams::default()
+        }
+    }
+
+    #[test]
+    fn recommend_reports_game_card_ids() {
+        let (game, user, owned_ids) = minimal_game_and_user();
+        let decks = recommend(&user, &game.as_ref(), &multi_score_params()).expect("组卡");
+        let deck = decks.first().expect("至少一组");
+
+        for card in deck.cards {
+            assert!(
+                owned_ids.contains(&card),
+                "{card} 不是玩家持有的卡 ID，返回的可能是候选池索引",
+            );
+        }
+        let mut distinct = deck.cards;
+        distinct.sort_unstable();
+        distinct.windows(2).for_each(|pair| {
+            assert_ne!(pair[0], pair[1], "同一张卡不应出现两次");
+        });
+    }
+
+    #[test]
+    fn recommend_json_reports_game_card_ids() {
+        let (game, user, owned_ids) = minimal_game_and_user();
+        // recommend_json 走的是 camelCase 玩家数据格式，不是 UserProfile 的
+        // 序列化形态，所以这里按对外契约手写。
+        let user_json = serde_json::json!({
+            "userCards": user
+                .user_cards
+                .iter()
+                .map(|card| serde_json::json!({
+                    "cardId": card.card_id,
+                    "level": card.level,
+                    "skillLevel": card.skill_level,
+                    "masterRank": card.master_rank,
+                }))
+                .collect::<Vec<_>>(),
+        });
+        let response = recommend_json(
+            &serde_json::to_string(&game).expect("masterdata"),
+            "",
+            &user_json.to_string(),
+            r#"{"liveType": "multi", "target": "score", "limit": 1}"#,
+        )
+        .expect("组卡");
+
+        let parsed: Value = serde_json::from_str(&response).expect("响应");
+        let cards = parsed["decks"][0]["cards"].as_array().expect("cards 数组");
+        assert_eq!(cards.len(), DECK_SIZE);
+        for card in cards {
+            let id = card.as_u64().expect("卡 ID") as CardId;
+            assert!(
+                owned_ids.contains(&id),
+                "{id} 不是玩家持有的卡 ID，返回的可能是候选池索引",
+            );
+        }
     }
 }
