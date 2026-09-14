@@ -1261,6 +1261,48 @@ impl CharacterSearchState<'_> {
                 threshold = self.tracker.threshold();
                 ranked_idx += 1;
             }
+
+            // 排序缓冲只覆盖组内前 RANKED_CAP 张：它决定的是访问顺序，不是
+            // 候选集。组更大时余下的卡仍要逐张过同一个上界——只有被上界拒绝
+            // 才能不展开，按缓冲容量截断会把没被任何界否定过的卡静默丢掉。
+            // 这一段在组不超过 RANKED_CAP 时不产生任何迭代。
+            for &card in group.cards.iter().skip(ranked.len()) {
+                threshold = self.tracker.threshold();
+                if threshold != 0 {
+                    let optimistic_ub = selected_card_ceiling_with_candidate_support_ub(
+                        self.pool,
+                        self.suffix,
+                        self.ctx,
+                        plan,
+                        depth + 1,
+                        &partial,
+                        card,
+                        self.leader.skill,
+                    );
+                    if optimistic_ub <= threshold {
+                        self.stats.ep_continue_prunes += 1;
+                        continue;
+                    }
+                }
+                let next_partial =
+                    partial.with_card(self.pool, self.ctx.is_world_bloom, self.support, card);
+                if threshold != 0 {
+                    let ub = selected_card_ceiling_from_partial(
+                        self.suffix,
+                        self.ctx,
+                        plan,
+                        depth + 1,
+                        &next_partial,
+                        self.leader.skill,
+                    );
+                    if ub <= threshold {
+                        self.stats.ep_continue_prunes += 1;
+                        continue;
+                    }
+                }
+                deck[depth + 1] = card;
+                self.recurse_cards(selected, plan, depth + 1, deck, next_partial, scratch_tail);
+            }
         } else {
             for &card in &group.cards {
                 deck[depth + 1] = card;
