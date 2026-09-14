@@ -171,7 +171,9 @@ pub(super) fn ep_prefilter_keep(
 /// 幸存卡保持原相对顺序（掩码保留，不重排建池次序）。
 ///
 /// 前沿不足额时按加成降序补齐；超额时沿前沿保留加成最高的一段。
-/// 固定卡、固定角色与高加成卡（≥30%）豁免裁剪。
+///
+/// 固定卡与固定角色无条件豁免。高加成卡（≥[`BONUS_EXEMPT_X10`]）也豁免，
+/// 但仅当豁免规模装得进 mask 容量时——见下方实现处的说明。
 pub(super) fn per_character_trim(
     cards: &mut Vec<CardIntermediate>,
     params: &types::BuildParams,
@@ -191,6 +193,17 @@ pub(super) fn per_character_trim(
         }
     };
 
+    // 高加成豁免是安全阀：常规活动里 ≥30% 的卡是少数，不该被单角色名额挤掉。
+    // 但加成地板本身就在 30% 以上的活动（终章满卡账号）会让它豁免掉整个候选
+    // 池，这一档裁剪随之完全失效，容量压力原样上抛成 TooManyCards。豁免规模
+    // 本身就装不进 mask 时它已经不是安全阀，改由前沿规则统一裁剪——前沿以加
+    // 成降序为主键，高加成卡依然优先留下，只是不再无视单角色名额。
+    let exempt_high_bonus = cards
+        .iter()
+        .filter(|card| card.event_bonus.total_x10() >= BONUS_EXEMPT_X10)
+        .count()
+        <= crate::pool::MASK_WORDS * 64;
+
     let mut keep = vec![false; cards.len()];
     let mut by_char: Vec<Vec<usize>> = vec![Vec::new(); 27];
     for (index, card) in cards.iter().enumerate() {
@@ -198,7 +211,7 @@ pub(super) fn per_character_trim(
             || params
                 .fixed_characters
                 .contains(&(card.character_id as i32))
-            || card.event_bonus.total_x10() >= 300
+            || (exempt_high_bonus && card.event_bonus.total_x10() >= BONUS_EXEMPT_X10)
         {
             keep[index] = true;
             continue;
@@ -431,6 +444,8 @@ pub(super) fn keep_card(card: &CardIntermediate, params: &types::BuildParams) ->
     true
 }
 
+/// 单卡活动加成达到该值（0.1% 为单位，即 30%）时豁免逐角色名额裁剪。
+pub(super) const BONUS_EXEMPT_X10: u32 = 300;
 pub(super) const EP_PREFILTER_MIN_POOL: usize = 50;
 pub(super) const PER_CHAR_KEEP: usize = 6;
 /// WL 章节 / 终章的单角色名额：336k cap 与异色差分让低加成高练度卡也可能进最优解，

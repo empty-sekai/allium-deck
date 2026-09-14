@@ -2844,3 +2844,143 @@ fn world_bloom_turn_resolution_covers_real_turn3_chapters() {
     assert_eq!(ctx2.world_bloom_event_turn, Some(2));
     assert_eq!(ctx2.support_deck_count, 20);
 }
+
+#[test]
+fn mysekai_live_normalizes_the_score_target() {
+    // 回归：live_type=mysekai + target=score 曾原样进搜索，而 Score 叶子算的
+    // live 分数公式没有 MySekai 分支，于是按一个无意义的伪分数排序且不报错。
+    let cards = leader_master_cards(6);
+    let card_params = (1..=6)
+        .map(|card_id| types::CardParameter {
+            card_id,
+            level: 1,
+            param1: 100,
+            param2: 100,
+            param3: 100,
+        })
+        .collect::<Vec<_>>();
+    let skills = [types::Skill {
+        id: 10,
+        level: 1,
+        is_after_training: false,
+    }];
+    let effects = [types::SkillEffect {
+        skill_id: 10,
+        skill_level: 1,
+        effect_type: "score_up".to_string(),
+        value: 100,
+        additional_value: None,
+        unit_member_count: None,
+        unit: None,
+        activate_character_rank: None,
+    }];
+    let units = (1..=6)
+        .map(|id| types::GameCharacterUnit {
+            game_character_id: id,
+            unit: "idol".to_string(),
+        })
+        .collect::<Vec<_>>();
+    let game = sample_game(
+        &cards,
+        &card_params,
+        &[],
+        &[],
+        &[],
+        &skills,
+        &effects,
+        &[],
+        &units,
+    );
+    let user = UserProfile {
+        user_cards: (1..=6).map(sample_user_card).collect(),
+        ..UserProfile::default()
+    };
+
+    let params = BuildParams {
+        live_type: LiveType::Mysekai,
+        target: ScoreTarget::Score,
+        ..BuildParams::default()
+    };
+    let (_, ctx) = build_card_pool(&user, &game, &params).expect("建池");
+    assert!(
+        matches!(ctx.target, ScoreTarget::Mysekai),
+        "mysekai live 下的 score 目标应归一为 mysekai，实际 {:?}",
+        ctx.target,
+    );
+
+    // 其余目标本身有明确语义，不受归一影响。
+    for target in [ScoreTarget::Power, ScoreTarget::Skill] {
+        let params = BuildParams {
+            live_type: LiveType::Mysekai,
+            target,
+            ..BuildParams::default()
+        };
+        let (_, ctx) = build_card_pool(&user, &game, &params).expect("建池");
+        assert_eq!(
+            std::mem::discriminant(&ctx.target),
+            std::mem::discriminant(&target),
+            "{target:?} 不应被改写",
+        );
+    }
+}
+
+#[test]
+fn handler_final_chapter_maxed_box_stays_within_mask_capacity() {
+    // 回归：逐角色裁剪豁免加成 ≥30% 的卡，而终章的加成地板本身就在 30% 以上，
+    // 于是整池豁免、裁剪完全失效，满卡账号直接拿到 TooManyCards 而不是结果。
+    const PER_CHAR: i32 = 21;
+    let capacity = crate::pool::MASK_WORDS * 64;
+
+    let mut spec = Vec::new();
+    for character_id in 1..=26i32 {
+        for slot in 0..PER_CHAR {
+            // 综合力递增、加成递减：同角色内互不支配，支配裁剪救不了容量。
+            spec.push((character_id, 4, 1000 + slot * 10));
+        }
+    }
+    assert!(
+        spec.len() > capacity,
+        "候选必须超出 mask 容量才构成回归场景"
+    );
+
+    let mut fixture = pool_constraint_fixture(&spec);
+    // 每张卡按突破档拿到 30.0%~32.0% 的稀有度加成，全员越过豁免阈值。
+    fixture.rarity_rates = (0..PER_CHAR)
+        .map(|master_rank| types::EventRarityBonusRate {
+            event_id: FINAL_CHAPTER_EVENT_ID,
+            card_rarity_type: 4,
+            master_rank,
+            bonus_rate_x10: 320 - master_rank,
+        })
+        .collect();
+    fixture.events = vec![types::Event {
+        id: FINAL_CHAPTER_EVENT_ID,
+        event_type: "world_bloom".to_string(),
+    }];
+    let game = bonus_tier_game(&fixture);
+    let user = UserProfile {
+        user_cards: fixture
+            .master_cards
+            .iter()
+            .enumerate()
+            .map(|(index, card)| user_card_with_rank(card.id, index as i32 % PER_CHAR))
+            .collect(),
+        ..UserProfile::default()
+    };
+
+    let params = BuildParams {
+        target: ScoreTarget::Score,
+        live_type: LiveType::Multi,
+        event_id: Some(FINAL_CHAPTER_EVENT_ID),
+        event_type: Some("world_bloom".to_string()),
+        world_bloom_event_turn: Some(2),
+        ..BuildParams::default()
+    };
+    let (pool, _) = build_card_pool(&user, &game, &params)
+        .expect("终章满卡账号应当能建池，而不是报 TooManyCards");
+    assert!(
+        pool.count() <= capacity,
+        "候选 {} 张仍超出 mask 容量 {capacity}",
+        pool.count(),
+    );
+}

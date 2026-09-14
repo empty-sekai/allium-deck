@@ -119,6 +119,9 @@ pub struct BuildParams {
     /// Live 类型。
     pub live_type: LiveType,
     /// 搜索目标。
+    ///
+    /// `live_type` 为 [`LiveType::Mysekai`] 时，[`ScoreTarget::Score`] 会被归一
+    /// 为 [`ScoreTarget::Mysekai`]——live 分数公式没有 MySekai 分支。
     pub target: ScoreTarget,
     /// 每个目标返回的卡组数量。
     pub limit: usize,

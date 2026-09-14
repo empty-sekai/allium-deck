@@ -161,6 +161,17 @@ impl<'a> PreparedPoolBuild<'a> {
         let game = prepared.game();
         let indexes = prepared.indexes.as_ref();
         validate_build_params(params)?;
+        // MySekai live 只有 mysekai 一个有意义的分数目标：Score 目标算的是
+        // live 分数，那条公式没有 MySekai 分支，留着会按一个无意义的伪分数
+        // 排序且不报错。按 live 类型归一，让两者只有一种组合能进搜索。
+        let mut normalized = params.clone();
+        if matches!(normalized.live_type, crate::types::LiveType::Mysekai)
+            && matches!(normalized.target, crate::types::ScoreTarget::Score)
+        {
+            normalized.target = crate::types::ScoreTarget::Mysekai;
+        }
+        let params = &normalized;
+
         if params.multi_live_score_up_lower_bound.is_some()
             && !matches!(params.live_type, crate::types::LiveType::Multi)
         {
