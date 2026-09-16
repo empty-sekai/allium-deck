@@ -329,7 +329,14 @@ mod tests {
         let pool = pool(1, 4);
         let failed = pool.execute(|| panic!("boom")).await;
         assert_eq!(failed.err(), Some(Rejection::Failed));
-        assert_eq!(pool.metrics.panics.load(Ordering::Relaxed), 1);
+
+        // The reply channel is dropped while the panic unwinds, so the caller learns the
+        // job failed before the thread has caught the panic and counted it. Wait for the
+        // counter rather than assuming the thread got there first.
+        wait_until("the panic to be counted", || {
+            pool.metrics.panics.load(Ordering::Relaxed) == 1
+        })
+        .await;
 
         // The same thread still serves the next request.
         let after = pool.execute(|| 7).await;
