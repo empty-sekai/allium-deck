@@ -1,0 +1,467 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "allium-deck",
+    "version": "0.0.15",
+    "summary": "Deck recommendation for Project Sekai: exact DFS with branch and bound.",
+    "description": "Build parameters are the engine's own contract; every key documented in docs/parameters.md is accepted here, in camelCase or snake_case. The service adds only the request envelope and its own ceilings on `limit` and `timeoutMs`.",
+    "license": { "name": "MIT OR Apache-2.0" }
+  },
+  "servers": [{ "url": "/", "description": "This service" }],
+  "paths": {
+    "/v1/recommend": {
+      "post": {
+        "summary": "Recommend decks",
+        "description": "Builds the candidate pool and searches it. Covers every target and live type, including World Bloom chapters and the final chapter, which are the longest-running shapes.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RecommendRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Ranked decks with their display panel, diagnostics and timing.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RecommendResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Overloaded" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/recommend/challenge-all": {
+      "post": {
+        "summary": "Best challenge deck per character",
+        "description": "A challenge deck is five cards of one character, so this sweeps every character against one shared pool and ranks the results. `liveType` is forced to a challenge type, and `challengeLiveCharacterId` is ignored.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RecommendRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "One deck per character, ranked.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ChallengeAllResponse" }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Overloaded" },
+          "504": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/v1/world-bloom/support-cards": {
+      "post": {
+        "summary": "World Bloom support deck bonuses",
+        "description": "Per-card support bonus for a World Bloom chapter, strongest first.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SupportCardsRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Cards with a support bonus.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "cardId": { "type": "integer" },
+                      "bonus": { "type": "number" }
+                    },
+                    "required": ["cardId", "bonus"]
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Overloaded" }
+        }
+      }
+    },
+    "/v1/music/recommend": {
+      "post": {
+        "summary": "Rank songs for a fixed deck",
+        "description": "Scores every song and difficulty against an already-chosen deck.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/MusicRecommendRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Songs ranked by score." },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Overloaded" }
+        }
+      }
+    },
+    "/v1/live/exact-score": {
+      "post": {
+        "summary": "Exact live score for a chart",
+        "description": "Walks the chart note by note for a given power and skill set.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ExactLiveRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Per-note score detail." },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Overloaded" }
+        }
+      }
+    },
+    "/v1/area-items/recommend": {
+      "post": {
+        "summary": "Area item upgrade order",
+        "description": "Ranks area item upgrades by power gained per coin for the given cards.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "region": { "$ref": "#/components/schemas/Region" },
+                  "user": { "$ref": "#/components/schemas/User" },
+                  "cardIds": { "type": "array", "items": { "type": "integer" } }
+                },
+                "required": ["user", "cardIds"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Upgrades ranked by power per coin." },
+          "400": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "503": { "$ref": "#/components/responses/Overloaded" }
+        }
+      }
+    },
+    "/v1/regions": {
+      "get": {
+        "summary": "Loaded regions and effective limits",
+        "responses": { "200": { "description": "Region inventory and the service ceilings." } }
+      }
+    },
+    "/admin/reload": {
+      "post": {
+        "summary": "Re-read masterdata from disk",
+        "description": "Requires the bearer token the service was started with. The new snapshot replaces the old one atomically; a failed reload leaves the running snapshot in place.",
+        "security": [{ "adminToken": [] }],
+        "responses": {
+          "200": { "description": "The regions that were reloaded." },
+          "400": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "summary": "Liveness",
+        "responses": { "200": { "description": "The process is up." } }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "Readiness",
+        "responses": {
+          "200": { "description": "Masterdata is loaded." },
+          "503": { "description": "No masterdata loaded." }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus metrics",
+        "description": "Includes the per-stage split of each request: queue wait, pool build, and search.",
+        "responses": { "200": { "description": "Text exposition format." } }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "This document",
+        "responses": { "200": { "description": "The OpenAPI description." } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "adminToken": { "type": "http", "scheme": "bearer" }
+    },
+    "responses": {
+      "Error": {
+        "description": "The request was rejected.",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      },
+      "Overloaded": {
+        "description": "The search queue is full. Retry after the interval in the Retry-After header.",
+        "headers": {
+          "Retry-After": { "schema": { "type": "string" } }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/Error" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "invalid_request",
+                  "unknown_region",
+                  "overloaded",
+                  "queue_timeout",
+                  "internal"
+                ]
+              },
+              "message": { "type": "string" }
+            },
+            "required": ["code", "message"]
+          }
+        },
+        "required": ["error"]
+      },
+      "Region": {
+        "type": "string",
+        "description": "A region loaded by this service. Defaults to the service's default region; see GET /v1/regions."
+      },
+      "User": {
+        "description": "The player's card collection, either as an object or as its JSON text.",
+        "oneOf": [{ "type": "object" }, { "type": "string" }]
+      },
+      "Params": {
+        "type": "object",
+        "description": "Build parameters. Every key in docs/parameters.md is accepted, in camelCase or snake_case; unknown keys are ignored. `limit` and `timeoutMs` are lowered to this service's ceilings, reported by GET /v1/regions.",
+        "additionalProperties": true
+      },
+      "RecommendRequest": {
+        "type": "object",
+        "properties": {
+          "region": { "$ref": "#/components/schemas/Region" },
+          "user": { "$ref": "#/components/schemas/User" },
+          "params": { "$ref": "#/components/schemas/Params" }
+        },
+        "required": ["user"]
+      },
+      "SupportCardsRequest": {
+        "type": "object",
+        "properties": {
+          "region": { "$ref": "#/components/schemas/Region" },
+          "user": { "$ref": "#/components/schemas/User" },
+          "params": { "$ref": "#/components/schemas/Params" },
+          "supportMasterMax": { "type": "boolean", "default": false },
+          "supportSkillMax": { "type": "boolean", "default": false },
+          "filterOtherUnit": { "type": "boolean", "default": false }
+        },
+        "required": ["user"]
+      },
+      "MusicRecommendRequest": {
+        "type": "object",
+        "properties": {
+          "region": { "$ref": "#/components/schemas/Region" },
+          "deck": {
+            "type": "object",
+            "properties": {
+              "totalPower": { "type": "integer" },
+              "eventBonusRate": { "type": "number" },
+              "supportDeckBonusRate": { "type": "number" },
+              "cards": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "skillScoreUp": { "type": "number" },
+                    "skillLifeRecovery": { "type": "number" }
+                  }
+                }
+              }
+            }
+          },
+          "liveType": { "$ref": "#/components/schemas/LiveType" },
+          "eventType": {
+            "type": "string",
+            "enum": ["marathon", "cheerful_carnival", "world_bloom"]
+          },
+          "eventId": { "type": "integer" },
+          "skillOrderChooseStrategy": {
+            "type": "string",
+            "enum": ["average", "max", "min", "specific"],
+            "default": "average"
+          },
+          "specificSkillOrder": { "type": "array", "items": { "type": "integer" } },
+          "multiLiveTeammateScoreUp": { "type": "integer" },
+          "multiLiveTeammatePower": { "type": "integer" }
+        },
+        "required": ["deck", "liveType"]
+      },
+      "ExactLiveRequest": {
+        "type": "object",
+        "properties": {
+          "region": { "$ref": "#/components/schemas/Region" },
+          "liveType": { "$ref": "#/components/schemas/LiveType" },
+          "power": { "type": "integer", "minimum": 1 },
+          "skills": { "type": "array", "items": { "type": "number" } },
+          "musicScore": {
+            "description": "The chart, as an object or as its JSON text.",
+            "oneOf": [{ "type": "object" }, { "type": "string" }]
+          },
+          "feverMusicScore": {
+            "oneOf": [{ "type": "object" }, { "type": "string" }]
+          },
+          "multiSumPower": { "type": "integer" }
+        },
+        "required": ["liveType", "power", "musicScore"]
+      },
+      "LiveType": {
+        "type": "string",
+        "enum": [
+          "solo",
+          "auto",
+          "multi",
+          "cheerful",
+          "challenge",
+          "challenge_auto",
+          "mysekai"
+        ]
+      },
+      "Card": {
+        "type": "object",
+        "properties": {
+          "cardId": { "type": "integer" },
+          "powerTotal": { "type": ["integer", "null"] },
+          "eventBonus": { "type": ["number", "null"] },
+          "skillScoreUp": { "type": ["number", "null"] }
+        },
+        "required": ["cardId"]
+      },
+      "Deck": {
+        "type": "object",
+        "properties": {
+          "rank": { "type": "integer" },
+          "targetValue": {
+            "type": "integer",
+            "description": "The search objective's value. Comparable only within one response."
+          },
+          "cards": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Card" },
+            "description": "Five cards in deck order, leader first."
+          },
+          "totalPower": { "type": ["integer", "null"] },
+          "liveScore": { "type": ["integer", "null"] },
+          "eventPoint": { "type": ["integer", "null"] },
+          "multiLiveScoreUp": { "type": ["number", "null"] },
+          "eventBonusTotal": { "type": ["number", "null"] }
+        },
+        "required": ["rank", "targetValue", "cards"]
+      },
+      "Diagnostics": {
+        "type": "object",
+        "properties": {
+          "poolSize": { "type": "integer" },
+          "effectiveLiveType": { "$ref": "#/components/schemas/LiveType" },
+          "leafNodes": { "type": "integer" },
+          "ubPrunes": { "type": "integer" },
+          "leaderPrunes": { "type": "integer" },
+          "epExplored": { "type": "integer" }
+        }
+      },
+      "Timing": {
+        "type": "object",
+        "description": "Milliseconds. The split shows where the time went, not just the total.",
+        "properties": {
+          "queueWaitMs": { "type": "number" },
+          "buildPoolMs": { "type": "number" },
+          "searchMs": { "type": "number" },
+          "totalMs": { "type": "number" }
+        }
+      },
+      "RecommendResponse": {
+        "type": "object",
+        "properties": {
+          "region": { "type": "string" },
+          "decks": { "type": "array", "items": { "$ref": "#/components/schemas/Deck" } },
+          "diagnostics": { "$ref": "#/components/schemas/Diagnostics" },
+          "timing": { "$ref": "#/components/schemas/Timing" },
+          "timedOut": {
+            "type": "boolean",
+            "description": "True when the search hit its deadline. The decks are then the best found so far rather than a proven optimum; see the exactness matrix in docs/parameters.md."
+          }
+        },
+        "required": ["region", "decks", "diagnostics", "timing", "timedOut"]
+      },
+      "ChallengeAllResponse": {
+        "type": "object",
+        "properties": {
+          "region": { "type": "string" },
+          "characters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "rank": { "type": ["integer", "null"] },
+                "characterId": { "type": "integer" },
+                "candidateCount": { "type": "integer" },
+                "searchMs": { "type": "number" },
+                "deck": {
+                  "oneOf": [
+                    { "$ref": "#/components/schemas/Deck" },
+                    { "type": "null" }
+                  ]
+                }
+              }
+            }
+          },
+          "diagnostics": { "$ref": "#/components/schemas/Diagnostics" },
+          "timing": { "$ref": "#/components/schemas/Timing" },
+          "timedOut": { "type": "boolean" }
+        },
+        "required": ["region", "characters", "diagnostics", "timing", "timedOut"]
+      }
+    }
+  }
+}
