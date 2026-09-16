@@ -218,6 +218,55 @@ recommend_cli \
 }
 ```
 
+## HTTP 服务
+
+`server/` 是引擎的 HTTP 服务，独立 crate，不发布到 crates.io。masterdata 常驻内存，
+搜索跑在固定数量的专用线程上，队列有界——满了直接回 503 而不是把请求堆进无界积压。
+
+这是一个直接的实现：它让引擎可以通过 HTTP 用起来，并带上共享服务需要的那几道护栏，
+但**不是调优过的架构，也不是完整的部署方案**。没有 TLS、没有鉴权与配额、没有缓存、
+没有请求取消、不跨实例协调，单次搜索也不并行。完整的边界清单见
+[`server/README.md`](./server/README.md#范围)。
+
+```bash
+# 本仓不携带游戏数据；先导出一份合成 masterdata 就能把服务跑起来
+cargo run --release --example export_synth_masterdata -- ./synth
+
+cd server
+cargo run --release --   --masterdata synth=../synth/masterdata   --music-metas synth=../synth/music_metas.json
+```
+
+```bash
+curl localhost:8080/v1/recommend -H 'content-type: application/json' -d "{
+  \"user\": $(cat ../synth/user.json),
+  \"params\": {\"liveType\": \"multi\", \"target\": \"score\", \"eventId\": 1, \"limit\": 5}
+}"
+```
+
+`params` 就是引擎自己的参数契约（见 `docs/parameters.md`），服务不另造一套方言。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/v1/recommend` | 组卡；覆盖全部 target 与 live type，含 WL 章节与终章 |
+| POST | `/v1/recommend/challenge-all` | 26 个角色各自的最优挑战卡组，带排名 |
+| POST | `/v1/world-bloom/support-cards` | WL 章节的逐卡支援加成 |
+| POST | `/v1/music/recommend` | 对已定卡组给全部曲目/难度打分排序 |
+| POST | `/v1/live/exact-score` | 按谱面逐 note 计算打歌分 |
+| POST | `/v1/area-items/recommend` | 区域道具升级的性价比排序 |
+| GET | `/v1/regions` `/healthz` `/readyz` `/metrics` `/openapi.json` | 区服清单与运维端点 |
+
+每个响应的 `timing` 会给出 queue / 建池 / 搜索的分段耗时，`/metrics` 里是同一组分段的
+直方图——决定 `--workers` 和 `--max-queue` 该设多少时看这个。
+
+```bash
+# 构建上下文是仓库根目录（服务按 path 依赖引擎 crate）
+docker build -f server/Dockerfile -t allium-deck-server .
+docker run --rm -p 8080:8080 -v /path/to/data:/data:ro allium-deck-server   --masterdata cn=/data/masterdata --music-metas cn=/data/music_metas.json
+```
+
+完整配置项、背压与超时语义、错误码见 [`server/README.md`](./server/README.md)；
+镜像的 libc / 分配器 / 运行时基底组合与实测见 [`docker/README.md`](./docker/README.md)。
+
 ## 静态数据
 
 `data/` 内嵌 3 张世界开花（World Bloom）支援卡组加成表。这些表在参考实现中作为仓库静态资源随包携带、不随 masterdata 更新，因此这里用 `include_str!` 内嵌，masterdata 缺失对应文件时回退使用。

@@ -199,6 +199,62 @@ Example output:
 }
 ```
 
+## HTTP server
+
+`server/` is an HTTP service around the engine, in its own crate and not published to
+crates.io. Masterdata stays resident, searches run on a fixed number of dedicated
+threads, and the queue in front of them is bounded — a full queue answers 503 rather
+than absorbing the request into an unbounded backlog.
+
+It is a straightforward implementation: it makes the engine reachable over HTTP with the
+rails a shared service needs, but it is **not a tuned architecture and not a complete
+deployment**. There is no TLS, no authentication or quotas, no caching, no request
+cancellation, no cross-instance coordination, and a single search never spreads across
+cores. The full list of what is left out is in
+[`server/README.en.md`](./server/README.en.md#scope).
+
+```bash
+# This repository carries no game data; export a synthetic set to try the service.
+cargo run --release --example export_synth_masterdata -- ./synth
+
+cd server
+cargo run --release --   --masterdata synth=../synth/masterdata   --music-metas synth=../synth/music_metas.json
+```
+
+```bash
+curl localhost:8080/v1/recommend -H 'content-type: application/json' -d "{
+  \"user\": $(cat ../synth/user.json),
+  \"params\": {\"liveType\": \"multi\", \"target\": \"score\", \"eventId\": 1, \"limit\": 5}
+}"
+```
+
+`params` is the engine's own parameter contract (see `docs/parameters.md`); the service
+adds no dialect of its own.
+
+| Method | Path | What it does |
+| --- | --- | --- |
+| POST | `/v1/recommend` | Build decks; every target and live type, including World Bloom chapters and the final chapter |
+| POST | `/v1/recommend/challenge-all` | The best challenge deck for each of the 26 characters, ranked |
+| POST | `/v1/world-bloom/support-cards` | Per-card support bonus for a World Bloom chapter |
+| POST | `/v1/music/recommend` | Rank every song and difficulty for an already-chosen deck |
+| POST | `/v1/live/exact-score` | Walk a chart note by note for a given power and skill set |
+| POST | `/v1/area-items/recommend` | Rank area item upgrades by power gained per coin |
+| GET | `/v1/regions` `/healthz` `/readyz` `/metrics` `/openapi.json` | Region inventory and operational endpoints |
+
+Each response carries a `timing` split across queue, pool build and search, and
+`/metrics` exposes histograms of the same stages — which is what sizing `--workers` and
+`--max-queue` for your own traffic depends on.
+
+```bash
+# The build context is the repository root: the service depends on the engine by path.
+docker build -f server/Dockerfile -t allium-deck-server .
+docker run --rm -p 8080:8080 -v /path/to/data:/data:ro allium-deck-server   --masterdata cn=/data/masterdata --music-metas cn=/data/music_metas.json
+```
+
+Full configuration, backpressure and timeout semantics, and the error codes are in
+[`server/README.en.md`](./server/README.en.md). The image's libc, allocator and runtime base
+are separate build arguments, measured in [`docker/README.en.md`](./docker/README.en.md).
+
 ## Static data
 
 `data/` embeds the 3 World Bloom support-deck bonus tables. In the reference implementations these tables ship as static repository assets and are not updated with masterdata, so they are embedded here via `include_str!` and used as a fallback when masterdata lacks the corresponding files.
