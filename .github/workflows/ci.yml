@@ -45,4 +45,29 @@ jobs:
         with:
           toolchain: "1.89"
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-features
+      # --locked so this job measures what the crate's own code needs, rather than
+      # tracking whichever MSRV the latest compatible dependency release happens to have.
+      - run: cargo check --all-features --locked
+
+  server:
+    # server/ is its own workspace, so the jobs above do not reach it.
+    name: server
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+      - run: cargo fmt --all --check
+      # The allocator features are mutually exclusive, so they are linted one at a time
+      # rather than with --all-features.
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets --features jemalloc -- -D warnings
+      - run: cargo clippy --all-targets --features mimalloc -- -D warnings
+      - run: cargo test --release
