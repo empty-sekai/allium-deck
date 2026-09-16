@@ -1,0 +1,41 @@
+# Run the server against a masterdata directory you provide.
+#
+#   docker compose -f server/compose.yaml up --build
+#
+# This repository carries no game data. Point ./data at a directory holding
+# `masterdata/*.json` and `music_metas.json`, or generate a synthetic set first:
+#
+#   cargo run --release --example export_synth_masterdata -- server/data
+#
+# The allocator and base image are build arguments; see docker/README.en.md for what the
+# combinations measure out at.
+
+services:
+  deck:
+    build:
+      context: ..
+      dockerfile: server/Dockerfile
+      args:
+        LIBC: gnu
+        ALLOC: ""
+        RUNTIME: distroless
+    image: allium-deck-server
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data:ro
+    command:
+      - --bind=0.0.0.0:8080
+      - --masterdata=cn=/data/masterdata
+      - --music-metas=cn=/data/music_metas.json
+      # Left unset, workers follows the CPUs the container can see.
+      - --workers=4
+      - --max-queue=64
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 2g
+    restart: unless-stopped
+    # There is no shell in the runtime image, so the health check belongs to whatever
+    # runs the container: probe GET /healthz for liveness and GET /readyz for readiness.

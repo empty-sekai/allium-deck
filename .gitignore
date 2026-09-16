@@ -20,3 +20,6 @@ __pycache__/
 
 # wasm crate local build dir (crate has its own [workspace])
 wasm/target/
+
+# server crate local build dir (crate has its own [workspace])
+server/target/

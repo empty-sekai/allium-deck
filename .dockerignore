@@ -1,0 +1,20 @@
+# Build outputs and local scratch: never part of an image build context.
+target/
+server/target/
+wasm/target/
+wasm/pkg/
+pkg/
+dist/
+release/
+.tmp/
+.worktrees/
+.codegraph/
+.git/
+.github/
+# Large fixtures the service does not need at build time.
+testdata/
+tests/
+docs/
+examples/
+scripts/
+tools/
