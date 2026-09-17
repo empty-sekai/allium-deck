@@ -80,9 +80,11 @@ impl CorrelatedBound{
   let independent=(4*top(&pmax,0,5).0*(base+skill*top(&smax,0,5).0+leader*(*smax.iter().max().unwrap_or(&0))as u128)).div_ceil(Q)+1;
   let mut choices:Vec<_>=slopes.iter().enumerate().map(|(i,&lambda)|(quadratic(role_envelope(&members[i],&leaders[i],0,5,0),lambda,base,skill),i)).collect();
   choices.sort_unstable();if choices[0].0 as u128*100>=independent*97{return None;}
+  let plane_count=std::env::var("ALLIUM_CORRELATED_PLANES").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(1).clamp(1,4);
   let n=pool.count();let mut planes=Vec::new();
-  // One best root plane; adding near-identical planes increases cost, not safety.
-  for &(_,i)in choices.iter().take(1){
+  // Multiple individually-admissible planes stay admissible under min().  This
+  // is an experiment knob so the normal v2 baseline remains exactly one plane.
+  for &(_,i)in choices.iter().take(plane_count){
    let lambda=slopes[i];let mut member=vec![[0u64;32];n+1];let mut lead=member.clone();
    for dense in (0..n).rev(){
     member[dense]=member[dense+1];lead[dense]=lead[dense+1];let card=CardIdx::new(dense as u16);let ch=pool.char_id(card)as usize;let s=pool.skill_max(card)as u128;
