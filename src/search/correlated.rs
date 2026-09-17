@@ -45,8 +45,16 @@ fn quadratic(t:u128,lambda:u32,c:u128,b:u128)->u64{
  // put the arithmetic below u128::MAX. +1 also covers final bounded FP noise.
  num.div_ceil(den).saturating_add(1).min(i32::MAX as u128)as u64
 }
+#[inline]
+fn plane_upper_score(plane:&Plane,base:u128,skill:u128,leader:u128,start:usize,slots:usize,used:u32,partial:&PartialDeck)->u64{
+ let Some(m)=plane.member.get(start)else{return u64::MAX};let l=&plane.leader[start];
+ let prefix=skill*R*partial.power as u128+plane.lambda as u128*skill*partial.skill as u128;
+ let prefix_leader=plane.lambda as u128*leader*partial.max_skill as u128;
+ let t=prefix+role_envelope(m,l,used,slots,prefix_leader);
+ quadratic(t,plane.lambda,base,skill)
+}
 impl CorrelatedBound{
- pub(super) fn build(pool:&CardPool,ctx:&SearchContext,hint:Option<(u32,u64)>)->Option<Self>{
+ pub(super) fn build(pool:&CardPool,ctx:&SearchContext,hint:Option<(u32,u64)>,top_k:usize)->Option<Self>{
   if std::env::var_os("ALLIUM_CORRELATED_BOUND").is_some_and(|v|v=="0")
    || ctx.target!=ScoreTarget::Score || ctx.has_event() || ctx.is_final_chapter
    || !ctx.enforce_char_uniqueness || ctx.honor_bonus!=0
@@ -80,10 +88,11 @@ impl CorrelatedBound{
   let independent=(4*top(&pmax,0,5).0*(base+skill*top(&smax,0,5).0+leader*(*smax.iter().max().unwrap_or(&0))as u128)).div_ceil(Q)+1;
   let mut choices:Vec<_>=slopes.iter().enumerate().map(|(i,&lambda)|(quadratic(role_envelope(&members[i],&leaders[i],0,5,0),lambda,base,skill),i)).collect();
   choices.sort_unstable();if choices[0].0 as u128*100>=independent*97{return None;}
-  let plane_count=std::env::var("ALLIUM_CORRELATED_PLANES").ok().and_then(|v|v.parse::<usize>().ok()).unwrap_or(1).clamp(1,4);
+  let plane_setting=std::env::var("ALLIUM_CORRELATED_PLANES").unwrap_or_else(|_|"1".into());
+  let auto_planes=plane_setting.eq_ignore_ascii_case("auto");
+  let plane_count=if auto_planes{if top_k>1{2}else{1}}else{plane_setting.parse::<usize>().unwrap_or(1).clamp(1,4)};
   let n=pool.count();let mut planes=Vec::new();
-  // Multiple individually-admissible planes stay admissible under min().  This
-  // is an experiment knob so the normal v2 baseline remains exactly one plane.
+  // Multiple individually-admissible planes stay admissible under min().
   for &(_,i)in choices.iter().take(plane_count){
    let lambda=slopes[i];let mut member=vec![[0u64;32];n+1];let mut lead=member.clone();
    for dense in (0..n).rev(){
@@ -91,17 +100,33 @@ impl CorrelatedBound{
     let m=skill*R*pool.power_max(card)as u128+lambda as u128*skill*s;let l=m+lambda as u128*leader*s;
     member[dense][ch]=member[dense][ch].max(u64::try_from(m).ok()?);lead[dense][ch]=lead[dense][ch].max(u64::try_from(l).ok()?);
    }planes.push(Plane{lambda,member,leader:lead});
-  }Some(Self{base,skill,leader,planes})
+  }
+  if auto_planes && planes.len()>1{
+   let mut improved=0usize;let mut material=0usize;let mut gain_1pct=0usize;let mut max_delta=0u64;let mut max_gain_ppm=0u64;
+   for card in pool.indices(){
+    let ch=pool.char_id(card);let mut used=UsedSet::new();used.insert(ch);
+    let partial=PartialDeck{power:pool.power_max(card),skill:pool.skill_max(card)as u32,bonus:0,max_skill:pool.skill_max(card),limited_count:0};
+    let start=card.raw()+1;
+    let first=plane_upper_score(&planes[0],base,skill,leader,start,4,used.bits(),&partial);
+    let second=plane_upper_score(&planes[1],base,skill,leader,start,4,used.bits(),&partial);
+    if second<first{
+     improved+=1;let delta=first-second;max_delta=max_delta.max(delta);
+     let gain_ppm=delta.saturating_mul(1_000_000)/first.max(1);max_gain_ppm=max_gain_ppm.max(gain_ppm);
+     if delta.saturating_mul(1000)>=first{material+=1;}
+     if gain_ppm>=10_000{gain_1pct+=1;}
+    }
+   }
+   let keep_second=material>=2 || (improved>=8 && max_delta>=2);
+   if std::env::var_os("ALLIUM_CORRELATED_TRACE").is_some(){eprintln!("correlated-auto top_k={top_k} improved={improved} material={material} gain_1pct={gain_1pct} max_delta={max_delta} max_gain_ppm={max_gain_ppm} keep_second={keep_second}");}
+   if !keep_second{planes.truncate(1);}
+  }
+  Some(Self{base,skill,leader,planes})
  }
  #[inline]
  pub(super) fn upper_bound(&self,start:usize,slots:usize,used:&UsedSet,partial:&PartialDeck)->u64{
   let mut upper=u64::MAX;
   for plane in &self.planes{
-   let Some(m)=plane.member.get(start)else{return u64::MAX};let l=&plane.leader[start];
-   let prefix=self.skill*R*partial.power as u128+plane.lambda as u128*self.skill*partial.skill as u128;
-   let prefix_leader=plane.lambda as u128*self.leader*partial.max_skill as u128;
-   let t=prefix+role_envelope(m,l,used.bits(),slots,prefix_leader);
-   upper=upper.min(quadratic(t,plane.lambda,self.base,self.skill));
+   upper=upper.min(plane_upper_score(plane,self.base,self.skill,self.leader,start,slots,used.bits(),partial));
   }(upper<<32)|upper
  }
 }

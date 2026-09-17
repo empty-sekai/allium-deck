@@ -156,7 +156,7 @@ fn dfs_search_seeded_inner(
     }
 
     let mut state = SearchState {
-        correlated: super::correlated::CorrelatedBound::build(pool, ctx, correlated_hint),
+        correlated: super::correlated::CorrelatedBound::build(pool, ctx, correlated_hint, params.top_k),
         pool,
         ctx,
         suffix,

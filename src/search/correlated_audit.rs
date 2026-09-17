@@ -48,7 +48,7 @@ pub fn audit_correlated_bound(pool: &CardPool, ctx: &SearchContext) -> Correlate
         let p = r.cards.iter().map(|&c| search_pool.power_max(c)).sum::<u32>();
         (p, r.score >> 32)
     });
-    let Some(bound) = CorrelatedBound::build(&search_pool, &search_ctx, hint) else {
+    let Some(bound) = CorrelatedBound::build(&search_pool, &search_ctx, hint, 30) else {
         return report;
     };
     report.active = true;
