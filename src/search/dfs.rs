@@ -35,6 +35,12 @@ impl EpShadowBlock {
 /// DFS 搜索统计。
 #[derive(Clone, Debug, Default)]
 pub struct SearchStats {
+    /// Experimental: visited recursion checkpoints.
+    pub visited_nodes: u64,
+    /// Experimental: search actually hit its deadline.
+    pub deadline_hit: bool,
+    /// Experimental: joint power/skill prunes.
+    pub correlated_prunes: u64,
     /// 求值过的完整队伍数。
     pub leaf_nodes: u64,
     /// 因上界不及当前 Top-K 门限而剪掉的分支数。
@@ -144,11 +150,13 @@ fn dfs_search_seeded_inner(
             matches!(ctx.target, ScoreTarget::Mysekai),
         )),
     };
+    let correlated_hint = seeds.iter().max_by_key(|r| r.score).map(|r| (r.cards.iter().map(|&c| pool.power_max(c)).sum::<u32>(), r.score >> 32));
     for seed_result in seeds {
         tracker.insert(seed_result);
     }
 
     let mut state = SearchState {
+        correlated: super::correlated::CorrelatedBound::build(pool, ctx, correlated_hint),
         pool,
         ctx,
         suffix,
@@ -207,11 +215,14 @@ fn dfs_search_seeded_inner(
         );
     }
 
-    let stats = state.stats.clone();
+    let mut stats = state.stats.clone();
+    stats.visited_nodes = state.node_count;
+    stats.deadline_hit = state.deadline_hit;
     (tracker.into_vec(), stats)
 }
 
 struct SearchState<'a> {
+    correlated: Option<super::correlated::CorrelatedBound>,
     pool: &'a CardPool,
     ctx: &'a SearchContext,
     suffix: &'a SuffixBound,
@@ -296,6 +307,10 @@ impl SearchState<'_> {
         }
 
         let slots = DECK_SIZE - depth;
+        if threshold != 0 && self.correlated.as_ref().is_some_and(|bound| bound.upper_bound(start, slots, &used, &partial) <= threshold) {
+            self.stats.correlated_prunes += 1;
+            return;
+        }
 
         match self.ctx.target {
             ScoreTarget::Power | ScoreTarget::Skill => {

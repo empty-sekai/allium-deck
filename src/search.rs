@@ -19,6 +19,9 @@ pub mod bruteforce;
 pub mod challenge_search;
 /// 单次搜索期间不变的上下文。
 pub mod context;
+mod correlated;
+/// Experimental long-run audit helpers; isolated to the benchmark worktree.
+pub mod correlated_audit;
 /// 通用 DFS / 分支限界搜索。
 pub mod dfs;
 /// 支配裁剪：剔除不可能出现在最优解里的卡。
