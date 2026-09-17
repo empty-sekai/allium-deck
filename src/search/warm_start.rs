@@ -70,6 +70,14 @@ pub(crate) fn warm_start_seeds(
     ctx: &SearchContext,
     top_k: usize,
 ) -> Vec<DeckResult> {
+    if top_k > 1
+        && matches!(ctx.target, ScoreTarget::Score)
+        && !ctx.has_event()
+        && std::env::var_os("ALLIUM_TOPK_WARM_NEIGHBORS").is_some_and(|v| v != "0")
+        && let Some(best) = warm_start_best(pool, ctx)
+    {
+        return one_swap_seed_neighborhood(pool, ctx, best, top_k);
+    }
     if top_k == 0
         || !matches!(ctx.target, ScoreTarget::Score)
         || !ctx.has_event()
@@ -93,6 +101,77 @@ pub(crate) fn warm_start_seeds(
         }
     }
 
+    seeds.sort_unstable_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.cards.cmp(&right.cards))
+    });
+    let mut keys = Vec::with_capacity(top_k);
+    seeds.retain(|seed| {
+        let key = seed.game_card_set_key(pool);
+        if keys.contains(&key) {
+            false
+        } else {
+            keys.push(key);
+            true
+        }
+    });
+    seeds.truncate(top_k);
+    seeds
+}
+
+fn one_swap_seed_neighborhood(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    best: DeckResult,
+    top_k: usize,
+) -> Vec<DeckResult> {
+    let candidate_limit = std::env::var("ALLIUM_TOPK_WARM_CANDIDATES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(64)
+        .clamp(8, pool.count());
+    let base = best.cards;
+    let mut seeds = Vec::with_capacity(1 + DECK_SIZE * candidate_limit);
+    seeds.push(best);
+    let mut slot = 0usize;
+    while slot < DECK_SIZE {
+        if ctx.is_fixed_slot(slot) {
+            slot += 1;
+            continue;
+        }
+        let original = base[slot];
+        for candidate in pool.indices().take(candidate_limit) {
+            if candidate == original || !slot_matches(pool, ctx, slot, candidate) {
+                continue;
+            }
+            if ctx.enforce_char_uniqueness {
+                let cand_char = pool.char_id(candidate);
+                let mut conflict = false;
+                let mut other = 0usize;
+                while other < DECK_SIZE {
+                    if other != slot {
+                        let current = base[other];
+                        if current == candidate || pool.char_id(current) == cand_char {
+                            conflict = true;
+                            break;
+                        }
+                    }
+                    other += 1;
+                }
+                if conflict {
+                    continue;
+                }
+            }
+            let mut deck = base;
+            deck[slot] = candidate;
+            if let Some(score) = leaf_evaluate_checked(pool, ctx, &deck) {
+                seeds.push(DeckResult::new(deck, score));
+            }
+        }
+        slot += 1;
+    }
     seeds.sort_unstable_by(|left, right| {
         right
             .score
