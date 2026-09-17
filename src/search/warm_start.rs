@@ -130,7 +130,7 @@ fn one_swap_seed_neighborhood(
     let candidate_limit = std::env::var("ALLIUM_TOPK_WARM_CANDIDATES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(64)
+        .unwrap_or(if top_k <= 8 { 32 } else { 64 })
         .clamp(8, pool.count());
     let base = best.cards;
     let mut seeds = Vec::with_capacity(1 + DECK_SIZE * candidate_limit);

@@ -154,9 +154,10 @@ fn dfs_search_seeded_inner(
     for seed_result in seeds {
         tracker.insert(seed_result);
     }
+    let correlated_kth = tracker.threshold() >> 32;
 
     let mut state = SearchState {
-        correlated: super::correlated::CorrelatedBound::build(pool, ctx, correlated_hint, params.top_k),
+        correlated: super::correlated::CorrelatedBound::build(pool, ctx, correlated_hint, params.top_k, correlated_kth),
         pool,
         ctx,
         suffix,

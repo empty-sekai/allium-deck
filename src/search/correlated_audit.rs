@@ -1,5 +1,6 @@
 //! Experimental exhaustive auditor for the correlated upper bound.
 //! This module lives only in the isolated benchmark worktree.
+#![allow(missing_docs)]
 use serde::Serialize;
 use crate::{pool::{CardIdx, CardPool}, types::DECK_SIZE};
 use super::{SearchContext, PartialDeck, UsedSet};
@@ -48,7 +49,7 @@ pub fn audit_correlated_bound(pool: &CardPool, ctx: &SearchContext) -> Correlate
         let p = r.cards.iter().map(|&c| search_pool.power_max(c)).sum::<u32>();
         (p, r.score >> 32)
     });
-    let Some(bound) = CorrelatedBound::build(&search_pool, &search_ctx, hint, 30) else {
+    let Some(bound) = CorrelatedBound::build(&search_pool, &search_ctx, hint, 30, 0) else {
         return report;
     };
     report.active = true;

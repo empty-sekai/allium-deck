@@ -54,7 +54,7 @@ fn plane_upper_score(plane:&Plane,base:u128,skill:u128,leader:u128,start:usize,s
  quadratic(t,plane.lambda,base,skill)
 }
 impl CorrelatedBound{
- pub(super) fn build(pool:&CardPool,ctx:&SearchContext,hint:Option<(u32,u64)>,top_k:usize)->Option<Self>{
+ pub(super) fn build(pool:&CardPool,ctx:&SearchContext,hint:Option<(u32,u64)>,top_k:usize,kth_threshold:u64)->Option<Self>{
   if std::env::var_os("ALLIUM_CORRELATED_BOUND").is_some_and(|v|v=="0")
    || ctx.target!=ScoreTarget::Score || ctx.has_event() || ctx.is_final_chapter
    || !ctx.enforce_char_uniqueness || ctx.honor_bonus!=0
@@ -103,6 +103,7 @@ impl CorrelatedBound{
   }
   if auto_planes && planes.len()>1{
    let mut improved=0usize;let mut material=0usize;let mut gain_1pct=0usize;let mut max_delta=0u64;let mut max_gain_ppm=0u64;
+   let mut direct_prunes=0usize;let mut gap_quarter=0usize;let mut gap_half=0usize;let mut gap_sum=0u128;let mut gap_saved=0u128;
    for card in pool.indices(){
     let ch=pool.char_id(card);let mut used=UsedSet::new();used.insert(ch);
     let partial=PartialDeck{power:pool.power_max(card),skill:pool.skill_max(card)as u32,bonus:0,max_skill:pool.skill_max(card),limited_count:0};
@@ -114,10 +115,21 @@ impl CorrelatedBound{
      let gain_ppm=delta.saturating_mul(1_000_000)/first.max(1);max_gain_ppm=max_gain_ppm.max(gain_ppm);
      if delta.saturating_mul(1000)>=first{material+=1;}
      if gain_ppm>=10_000{gain_1pct+=1;}
+     if kth_threshold>0 && first>kth_threshold{
+      let gap=first-kth_threshold;let saved=delta.min(gap);gap_sum+=gap as u128;gap_saved+=saved as u128;
+      if second<=kth_threshold{direct_prunes+=1;}
+      if saved.saturating_mul(4)>=gap{gap_quarter+=1;}
+      if saved.saturating_mul(2)>=gap{gap_half+=1;}
+     }
     }
    }
-   let keep_second=material>=2 || (improved>=8 && max_delta>=2);
-   if std::env::var_os("ALLIUM_CORRELATED_TRACE").is_some(){eprintln!("correlated-auto top_k={top_k} improved={improved} material={material} gain_1pct={gain_1pct} max_delta={max_delta} max_gain_ppm={max_gain_ppm} keep_second={keep_second}");}
+   // Keep the second admissible plane only when a cheap depth-1 probe predicts
+   // material search-tree reduction.  A direct crossing of the current kth
+   // incumbent is decisive; otherwise require at least 6% relative tightening.
+   // The 6% selector separated all >=20% node-reduction cases in the AS
+   // synthetic selector sweep (70 fixtures) without false positives.
+   let keep_second=direct_prunes>0 || max_gain_ppm>=60_000;
+   if std::env::var_os("ALLIUM_CORRELATED_TRACE").is_some(){eprintln!("correlated-auto top_k={top_k} kth={kth_threshold} improved={improved} material={material} gain_1pct={gain_1pct} max_delta={max_delta} max_gain_ppm={max_gain_ppm} direct_prunes={direct_prunes} gap_quarter={gap_quarter} gap_half={gap_half} gap_saved={gap_saved} gap_sum={gap_sum} keep_second={keep_second}");}
    if !keep_second{planes.truncate(1);}
   }
   Some(Self{base,skill,leader,planes})
