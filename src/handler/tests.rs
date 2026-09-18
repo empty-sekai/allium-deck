@@ -5,7 +5,6 @@ use crate::types::{DefaultImage, FINAL_CHAPTER_EVENT_ID};
 
 use super::build::*;
 use super::card_config::apply_card_config;
-use super::filter::*;
 use super::gather::{CardIntermediate, sort_and_gather};
 use super::power::PreparedPowerContext;
 use super::skill::{SkillResult, SkillState, build_skill, is_bfes_skill_pair};
@@ -1699,139 +1698,6 @@ fn make_card(
 }
 
 #[test]
-fn handler_target_trim_power_keeps_top_per_character() {
-    // 530 卡：26 角色各 ~20 张，power_max 从高到低排列
-    let mut cards = Vec::new();
-    for ch in 0..26u8 {
-        for i in 0..21i32 {
-            cards.push(make_card(
-                (ch as i32) * 100 + i,
-                ch,
-                30000 - i * 100, // 第一张最高
-                20,
-            ));
-        }
-    }
-    // 530 卡 < 512 容量
-    assert!(cards.len() > 512);
-
-    let params = BuildParams {
-        target: ScoreTarget::Power,
-        ..BuildParams::default()
-    };
-    target_per_character_trim(&mut cards, &params);
-
-    // 每角色最多 10 张
-    let mut chars_seen = [0u8; 27];
-    for card in &cards {
-        let ch = card.character_id as usize;
-        chars_seen[ch] += 1;
-    }
-    for (ch, &count) in chars_seen.iter().enumerate() {
-        assert!(
-            count <= GENERAL_PER_CHAR_KEEP as u8,
-            "角色 {ch} 有 {count} 张卡，超过上限"
-        );
-    }
-    // 总计 ≤ 260，远小于 512
-    assert!(cards.len() <= 260, "裁剪后仍有 {} 张", cards.len());
-
-    // 每角色的最高 power 卡应被保留
-    for ch in 0..26u8 {
-        let best_id = (ch as i32) * 100; // 该角色第一张（最高 power）
-        assert!(
-            cards.iter().any(|c| c.game_card_id == best_id),
-            "角色 {ch} 最高 power 卡 {best_id} 未被保留"
-        );
-    }
-}
-
-#[test]
-fn handler_target_trim_skill_keeps_top_per_character() {
-    let mut cards = Vec::new();
-    for ch in 0..26u8 {
-        for i in 0..21i32 {
-            cards.push(make_card(
-                (ch as i32) * 100 + i,
-                ch,
-                30000,
-                100 - i as u8, // 第一张最高 skill
-            ));
-        }
-    }
-    assert!(cards.len() > 512);
-
-    let params = BuildParams {
-        target: ScoreTarget::Skill,
-        ..BuildParams::default()
-    };
-    target_per_character_trim(&mut cards, &params);
-
-    let mut chars_seen = [0u8; 27];
-    for card in &cards {
-        let ch = card.character_id as usize;
-        chars_seen[ch] += 1;
-    }
-    for (ch, &count) in chars_seen.iter().enumerate() {
-        assert!(
-            count <= GENERAL_PER_CHAR_KEEP as u8,
-            "角色 {ch} 有 {count} 张卡，超过上限"
-        );
-    }
-    assert!(cards.len() <= 260, "裁剪后仍有 {} 张", cards.len());
-
-    for ch in 0..26u8 {
-        let best_id = (ch as i32) * 100;
-        assert!(
-            cards.iter().any(|c| c.game_card_id == best_id),
-            "角色 {ch} 最高 skill 卡 {best_id} 未被保留"
-        );
-    }
-}
-
-#[test]
-fn handler_target_trim_preserves_fixed_cards_and_characters() {
-    let mut cards = Vec::new();
-    for ch in 0..26u8 {
-        for i in 0..21i32 {
-            cards.push(make_card((ch as i32) * 100 + i, ch, 30000 - i * 100, 20));
-        }
-    }
-
-    // fixed_card: 角色 5 的第 20 张卡（power 较低）
-    let fixed_card_id: i32 = 5 * 100 + 20;
-    let params = BuildParams {
-        target: ScoreTarget::Power,
-        fixed_cards: vec![fixed_card_id],
-        ..BuildParams::default()
-    };
-    target_per_character_trim(&mut cards, &params);
-
-    assert!(
-        cards.iter().any(|c| c.game_card_id == fixed_card_id),
-        "fixed_card 未被保留"
-    );
-
-    // 再测 fixed_characters
-    let mut cards2 = Vec::new();
-    for ch in 0..26u8 {
-        for i in 0..21i32 {
-            cards2.push(make_card((ch as i32) * 100 + i, ch, 30000 - i * 100, 20));
-        }
-    }
-    let params2 = BuildParams {
-        target: ScoreTarget::Power,
-        fixed_characters: vec![3],
-        ..BuildParams::default()
-    };
-    target_per_character_trim(&mut cards2, &params2);
-
-    // 角色 3 的所有卡应被保留（21 张 > 10）
-    let role3_count = cards2.iter().filter(|c| c.character_id == 3).count();
-    assert_eq!(role3_count, 21, "fixed_character=3 的卡未全部保留");
-}
-
-#[test]
 fn forced_leader_character_becomes_a_fixed_character_slot() {
     let cards = vec![
         make_card(100, 1, 30000, 20),
@@ -2025,7 +1891,7 @@ fn handler_forced_leader_reaches_the_search_context_for_a_normal_event() {
 }
 
 #[test]
-fn handler_build_power_large_pool_does_not_error() {
+fn handler_build_power_over_capacity_is_explicit_not_trimmed() {
     // 模拟大账号：26 角色各 25 张卡 = 650 张 > 512
     let mut master_cards = Vec::new();
     let mut card_params = Vec::new();
@@ -2131,10 +1997,10 @@ fn handler_build_power_large_pool_does_not_error() {
         ..BuildParams::default()
     };
 
-    let result = build_card_pool(&user, &game, &params);
-    assert!(result.is_ok(), "大卡池 Power 构建应成功，实际: {result:?}");
-    let (pool, _) = result.unwrap();
-    assert!(pool.count() <= 512, "池子大小应 ≤ 512");
+    assert!(matches!(
+        build_card_pool(&user, &game, &params),
+        Err(BuildError::TooManyCards(_))
+    ));
 }
 
 /// 精确档位组卡的合成上下文：马拉松活动 + 稀有度×突破加成表 + 可选的
@@ -2154,7 +2020,7 @@ struct BonusTierFixture {
 fn bonus_tier_fixture() -> BonusTierFixture {
     let mut master_cards = Vec::new();
     let mut card_params = Vec::new();
-    // 60 张无关 4★（0破，加成 10%）：让池子规模超过 EP_PREFILTER_MIN_POOL，
+    // 60 张无关 4★（0破，加成 10%）：构造较大的活动候选池，
     // EP 预过滤在该活动下会真实触发。
     for id in 1..=60i32 {
         let character_id = (id - 1) % 26 + 1;
@@ -2699,7 +2565,7 @@ fn handler_pool_constraints_world_bloom_tier_keeps_capacity_errors() {
 }
 
 #[test]
-fn handler_pool_constraints_ep_prefilter_preserves_the_fifth_character() {
+fn handler_pool_constraints_preserve_the_fifth_character_without_quality_prefilter() {
     let mut spec = Vec::new();
     for character_id in 1..=4 {
         spec.extend([(character_id, 4, 100); 13]);
@@ -2708,7 +2574,7 @@ fn handler_pool_constraints_ep_prefilter_preserves_the_fifth_character() {
     let fixture = pool_constraint_fixture(&spec);
     let game = bonus_tier_game(&fixture);
     let user = pool_constraint_user(&fixture);
-    // 普通活动走 prepared 预筛；WL 在构建支援种子后走 intermediate 预筛。
+    // Exact pool construction keeps the low-rarity fifth character in both ordinary events and WL.
     for event_type in ["marathon", "world_bloom"] {
         let params = BuildParams {
             target: ScoreTarget::Score,
@@ -2730,7 +2596,7 @@ fn handler_pool_constraints_ep_prefilter_preserves_the_fifth_character() {
 }
 
 #[test]
-fn handler_pool_constraints_ep_prefilter_preserves_the_forced_leader() {
+fn handler_pool_constraints_preserve_the_forced_leader_in_exact_pool() {
     let mut spec = Vec::new();
     for character_id in 1..=5 {
         spec.extend([(character_id, 4, 100); 11]);
@@ -2925,9 +2791,9 @@ fn mysekai_live_normalizes_the_score_target() {
 }
 
 #[test]
-fn handler_final_chapter_maxed_box_stays_within_mask_capacity() {
-    // 回归：逐角色裁剪豁免加成 ≥30% 的卡，而终章的加成地板本身就在 30% 以上，
-    // 于是整池豁免、裁剪完全失效，满卡账号直接拿到 TooManyCards 而不是结果。
+fn handler_final_chapter_maxed_box_reports_capacity_without_pruning() {
+    // Exactness requires a visible capacity error, not a heuristic prefix.
+    // The established 512-bit metadata mask remains one cache line.
     const PER_CHAR: i32 = 21;
     let capacity = crate::pool::MASK_WORDS * 64;
 
@@ -2938,10 +2804,7 @@ fn handler_final_chapter_maxed_box_stays_within_mask_capacity() {
             spec.push((character_id, 4, 1000 + slot * 10));
         }
     }
-    assert!(
-        spec.len() > capacity,
-        "候选必须超出 mask 容量才构成回归场景"
-    );
+    assert_eq!(spec.len(), 546, "保持真实满盒规模回归覆盖");
 
     let mut fixture = pool_constraint_fixture(&spec);
     // 每张卡按突破档拿到 30.0%~32.0% 的稀有度加成，全员越过豁免阈值。
@@ -2976,11 +2839,9 @@ fn handler_final_chapter_maxed_box_stays_within_mask_capacity() {
         world_bloom_event_turn: Some(2),
         ..BuildParams::default()
     };
-    let (pool, _) = build_card_pool(&user, &game, &params)
-        .expect("终章满卡账号应当能建池，而不是报 TooManyCards");
-    assert!(
-        pool.count() <= capacity,
-        "候选 {} 张仍超出 mask 容量 {capacity}",
-        pool.count(),
-    );
+    assert!(fixture.master_cards.len() > capacity);
+    assert!(matches!(
+        build_card_pool(&user, &game, &params),
+        Err(BuildError::TooManyCards(_))
+    ));
 }

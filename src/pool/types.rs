@@ -232,10 +232,13 @@ pub struct RefSkill {
 
 const _: () = assert!(size_of::<RefSkill>() == 2);
 
-/// 单个掩码的机器字数量。
+/// 单个元数据掩码的机器字数量。
+///
+/// One cache line preserves the established 512-card representation. Inputs
+/// exceeding it are rejected explicitly before allocation, never trimmed.
 pub const MASK_WORDS: usize = 8;
 
-/// 512-bit 候选掩码。
+/// 512-bit CardPool metadata mask.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C, align(64))]
 pub struct Mask([u64; MASK_WORDS]);

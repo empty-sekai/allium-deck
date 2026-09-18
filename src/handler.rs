@@ -1,7 +1,7 @@
 //! Pool-building layer: masterdata and player data in, search inputs out.
 //!
 //! [`build_card_pool`] resolves each owned card's power, skill and event bonus,
-//! prunes candidates that cannot appear in an optimal deck, and produces the
+//! applies only hard/exact-safe candidate filters and produces the
 //! [`crate::pool::CardPool`] and [`crate::search::SearchContext`] the search
 //! layer consumes. The `_prepared` and `_fully_prepared` variants reuse
 //! masterdata indexes and per-user preparation across repeated builds, and the
@@ -16,7 +16,6 @@ mod gather;
 mod index;
 mod music;
 mod power;
-mod prune;
 mod skill;
 #[cfg(test)]
 mod tests;
@@ -45,7 +44,7 @@ use build::build_card_pool_fully_prepared_internal;
 pub enum BuildError {
     /// 过滤后无候选卡。
     EmptyPool,
-    /// 候选卡超过 512-bit mask 容量。
+    /// 候选卡超过当前固定宽度 metadata mask 容量。
     TooManyCards(usize),
     /// 参数非法。
     InvalidConfig(String),
