@@ -36,6 +36,12 @@ const RARITY_PLAN: [(&str, usize); 5] = [
     ("rarity_birthday", 4),
 ];
 
+/// The synthetic masterdata stays full-sized (1300 cards), while the default
+/// account owns a broad deterministic subset that fits the exact 512-card mask
+/// contract. Per character this keeps 15 cards across every rarity, including
+/// seven rarity-4 cards so dynamic/special skills remain represented.
+const OWNED_PER_RARITY: [usize; 5] = [2, 2, 2, 7, 2];
+
 /// (rarity 名, maxLevel, trainingMaxLevel, 每维 param 满级值, 特训固定加成/维)
 const RARITY_DATA: [(&str, i32, Option<i32>, i32, i32); 5] = [
     ("rarity_1", 20, None, 1200, 0),
@@ -114,8 +120,10 @@ pub fn generate(seed: u64) -> SynthData {
     let mut card_rows = Vec::new();
     let mut episode_rows = Vec::new();
     let mut user_card_rows = Vec::new();
-    // 每角色最后一张 rarity_4 的卡 ID，用于活动加成卡与默认卡组。
+    let mut owned_card_ids = Vec::new();
+    // 每角色最后一张 rarity_4 的卡 ID 用于活动加成卡；另跟踪默认账号实际拥有的卡。
     let mut last_r4_by_char = vec![0i64; CHARACTER_COUNT as usize + 1];
+    let mut last_owned_by_char = vec![0i64; CHARACTER_COUNT as usize + 1];
     let mut card_id = 0i64;
     let mut episode_id = 0i64;
 
@@ -170,24 +178,27 @@ pub fn generate(seed: u64) -> SynthData {
                     }));
                 }
 
-                // 满配用户卡：满级、满技能、满破、剧情全读、可特训的已特训。
-                let trained = training_max.is_some();
-                user_card_rows.push(json!({
-                    "cardId": card_id,
-                    "level": cap,
-                    "skillLevel": 4,
-                    "masterRank": 5,
-                    "specialTrainingStatus": if trained { "done" } else { "not_doing" },
-                    "defaultImage": if trained { "special_training" } else { "original" },
-                    "episodes": read_episode_ids
-                        .iter()
-                        .map(|id| json!({"cardEpisodeId": id, "scenarioStatus": "already_read"}))
-                        .collect::<Vec<_>>(),
-                }));
+                // 默认账号只拥有一个代表性子集；已拥有的卡仍全部按满配状态生成。
+                if nth < OWNED_PER_RARITY[rarity_index] {
+                    let trained = training_max.is_some();
+                    owned_card_ids.push(card_id);
+                    last_owned_by_char[character_id as usize] = card_id;
+                    user_card_rows.push(json!({
+                        "cardId": card_id,
+                        "level": cap,
+                        "skillLevel": 4,
+                        "masterRank": 5,
+                        "specialTrainingStatus": if trained { "done" } else { "not_doing" },
+                        "defaultImage": if trained { "special_training" } else { "original" },
+                        "episodes": read_episode_ids
+                            .iter()
+                            .map(|id| json!({"cardEpisodeId": id, "scenarioStatus": "already_read"}))
+                            .collect::<Vec<_>>(),
+                    }));
+                }
             }
         }
     }
-    let total_cards = card_id;
 
     // ---- cardRarities / masterLessons / cardMysekaiCanvasBonuses ----
     let rarity_rows = RARITY_DATA
@@ -381,7 +392,7 @@ pub fn generate(seed: u64) -> SynthData {
         .map(|id| json!({"areaItemId": id, "level": 15}))
         .collect();
     let deck_members: Vec<i64> = (1..=5)
-        .map(|character_id| last_r4_by_char[character_id as usize])
+        .map(|character_id| last_owned_by_char[character_id as usize])
         .collect();
     let user = json!({
         "userCards": user_card_rows,
@@ -397,8 +408,9 @@ pub fn generate(seed: u64) -> SynthData {
         "userChallengeLiveSoloDecks": [],
         "userMysekaiFixtureGameCharacterPerformanceBonuses": [],
         "userMysekaiGates": [],
-        // 全卡画布加成，贴近满配账号。
-        "userMysekaiCanvases": (1..=total_cards)
+        // 已拥有卡全部带画布加成，保持账号内部引用一致。
+        "userMysekaiCanvases": owned_card_ids
+            .iter()
             .map(|id| json!({"cardId": id}))
             .collect::<Vec<_>>(),
         "userHonors": [],
@@ -547,9 +559,9 @@ fn skill_archetypes() -> Vec<Value> {
     rows.push(json!({"id": 14, "skillEffects": [
         {"skillEffectType": "score_up", "skillEffectDetails": levels([100, 105, 110, 120])},
         {"skillEffectType": "score_up_unit_count", "activateUnitCount": 1,
-         "skillEffectDetails": levels([110, 115, 120, 130])},
+         "skillEffectDetails": levels([10, 10, 10, 10])},
         {"skillEffectType": "score_up_unit_count", "activateUnitCount": 2,
-         "skillEffectDetails": levels([120, 125, 130, 140])},
+         "skillEffectDetails": levels([20, 20, 20, 20])},
     ]}));
     rows
 }

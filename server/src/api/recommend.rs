@@ -8,13 +8,13 @@ use axum::extract::State;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
+use allium_deck::LiveType;
 use allium_deck::handler::{BuildError, PreparedGameData, UserProfile, build_card_pool_prepared};
 use allium_deck::pool::CardPool;
 use allium_deck::search::{
-    DeckResult, SearchContext, SearchParams, SearchStats, SuffixBound, challenge_search,
-    search_bonus_targets, search_instrumented, summarize_deck,
+    DeckResult, SearchCompletion, SearchContext, SearchParams, SearchStats, challenge_search,
+    compare_deck_results, search_targets, summarize_deck,
 };
-use allium_deck::{LiveType, ScoreTarget};
 
 use super::{ApiError, ApiJson, AppState, UserInput, parse_params};
 use crate::metrics::Outcome;
@@ -63,6 +63,12 @@ pub struct DeckOut {
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostics {
     pub pool_size: usize,
+    pub visited_nodes: u64,
+    pub bound_prunes: u64,
+    pub feasibility_prunes: u64,
+    pub dominance_prunes: u64,
+    pub deadline_hit: bool,
+    pub phases: allium_deck::search::SearchDiagnostics,
     pub effective_live_type: &'static str,
     pub leaf_nodes: u64,
     pub ub_prunes: u64,
@@ -88,6 +94,7 @@ pub struct RecommendResponse {
     pub timing: Timing,
     /// True when the search hit its deadline. The decks are then the best found so far
     /// rather than a proven optimum; see the exactness matrix in `docs/parameters.md`.
+    pub completion: SearchCompletion,
     pub timed_out: bool,
 }
 
@@ -97,6 +104,7 @@ pub struct ChallengeCharacterOut {
     pub rank: Option<usize>,
     pub character_id: i32,
     pub candidate_count: usize,
+    pub completion: SearchCompletion,
     pub search_ms: f64,
     pub deck: Option<DeckOut>,
 }
@@ -108,6 +116,7 @@ pub struct ChallengeAllResponse {
     pub characters: Vec<ChallengeCharacterOut>,
     pub diagnostics: Diagnostics,
     pub timing: Timing,
+    pub completion: SearchCompletion,
     pub timed_out: bool,
 }
 
@@ -136,7 +145,7 @@ async fn run_recommend(
         .execute(move || search_one(&snapshot, &user, params))
         .await?;
 
-    let (decks, diagnostics, build_pool_ms, search_ms, timed_out) = job.value?;
+    let (decks, diagnostics, build_pool_ms, search_ms, completion) = job.value?;
     let queue_wait_ms = job.queue_wait.as_secs_f64() * 1000.0;
     Ok((
         RecommendResponse {
@@ -149,14 +158,15 @@ async fn run_recommend(
                 search_ms,
                 total_ms: 0.0,
             },
-            timed_out,
+            completion,
+            timed_out: completion == SearchCompletion::TimedOut,
         },
         build_pool_ms,
         search_ms,
     ))
 }
 
-type SearchOutput = (Vec<DeckOut>, Diagnostics, f64, f64, bool);
+type SearchOutput = (Vec<DeckOut>, Diagnostics, f64, f64, SearchCompletion);
 
 /// Builds the pool and searches it. Runs on a search thread, never on the runtime.
 fn search_one(
@@ -179,17 +189,10 @@ fn search_one(
         Err(BuildError::EmptyPool) if !params.target_bonus_list.is_empty() => {
             return Ok((
                 Vec::new(),
-                Diagnostics {
-                    pool_size: 0,
-                    effective_live_type: live_type_name(params.live_type),
-                    leaf_nodes: 0,
-                    ub_prunes: 0,
-                    leader_prunes: 0,
-                    ep_explored: 0,
-                },
+                diagnostics_for(0, params.live_type, &SearchStats::default()),
                 build_pool_ms,
                 0.0,
-                false,
+                SearchCompletion::Complete,
             ));
         }
         Err(error) => return Err(ApiError::BadRequest(error.to_string())),
@@ -200,11 +203,10 @@ fn search_one(
         timeout_ms: params.timeout_ms,
     };
     let search_started = Instant::now();
-    let (results, stats) = if params.target_bonus_list.is_empty() {
-        search_instrumented(&pool, &ctx, &search_params)
-    } else {
-        search_bonus_targets(&pool, &ctx, &search_params, &params.target_bonus_list)
-    };
+    let outcome = search_targets(&pool, &ctx, &search_params, &params.target_bonus_list);
+    let completion = outcome.completion();
+    let results = outcome.results;
+    let stats = outcome.stats;
     let search_ms = elapsed_ms(search_started);
 
     let decks = results
@@ -217,7 +219,7 @@ fn search_one(
         diagnostics(&pool, &ctx, &stats),
         build_pool_ms,
         search_ms,
-        hit_deadline(search_ms, params.timeout_ms),
+        completion,
     ))
 }
 
@@ -263,7 +265,7 @@ async fn run_challenge_all(
         .execute(move || sweep_characters(&snapshot, &user, params))
         .await?;
 
-    let (characters, diagnostics, build_pool_ms, search_ms, timed_out) = job.value?;
+    let (characters, diagnostics, build_pool_ms, search_ms, completion) = job.value?;
     let queue_wait_ms = job.queue_wait.as_secs_f64() * 1000.0;
     Ok((
         ChallengeAllResponse {
@@ -276,14 +278,21 @@ async fn run_challenge_all(
                 search_ms,
                 total_ms: 0.0,
             },
-            timed_out,
+            completion,
+            timed_out: completion == SearchCompletion::TimedOut,
         },
         build_pool_ms,
         search_ms,
     ))
 }
 
-type SweepOutput = (Vec<ChallengeCharacterOut>, Diagnostics, f64, f64, bool);
+type SweepOutput = (
+    Vec<ChallengeCharacterOut>,
+    Diagnostics,
+    f64,
+    f64,
+    SearchCompletion,
+);
 
 fn sweep_characters(
     snapshot: &RegionSnapshot,
@@ -297,7 +306,6 @@ fn sweep_characters(
     let (pool, ctx) = build_card_pool_prepared(user, &prepared, &params)
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
     let build_pool_ms = elapsed_ms(build_started);
-    let suffix = SuffixBound::build(&pool, &ctx);
 
     // One deck per character: the ranking across characters is what the sweep is for.
     let search_params = SearchParams {
@@ -306,61 +314,52 @@ fn sweep_characters(
     };
 
     let search_started = Instant::now();
-    let mut totals = SearchStats::default();
-    let mut characters = Vec::with_capacity(26);
-    for character_id in CHARACTER_IDS {
-        let character_started = Instant::now();
-        let (results, stats) = challenge_search::search_character(
-            &pool,
-            &ctx,
-            &suffix,
-            &search_params,
-            character_id as u8,
-        );
-        accumulate(&mut totals, &stats);
-        let candidate_count = pool
-            .indices()
-            .filter(|card| pool.char_id(*card) == character_id as u8)
-            .count();
-        characters.push(ChallengeCharacterOut {
-            rank: None,
-            character_id,
-            candidate_count,
-            search_ms: elapsed_ms(character_started),
-            deck: results
-                .first()
-                .map(|result| deck_out(1, &pool, &ctx, result)),
-        });
-    }
+    let ids = CHARACTER_IDS.map(|id| id as u8).collect::<Vec<_>>();
+    let batch = challenge_search::search_characters_outcome(&pool, &ctx, &search_params, &ids);
     let search_ms = elapsed_ms(search_started);
+    let completion = batch.completion();
+    let mut characters = batch
+        .results
+        .iter()
+        .map(|entry| {
+            let candidate_count = pool
+                .indices()
+                .filter(|&card| pool.char_id(card) == entry.character_id)
+                .count();
+            ChallengeCharacterOut {
+                rank: None,
+                character_id: i32::from(entry.character_id),
+                candidate_count,
+                completion: entry.outcome.completion(),
+                search_ms: entry.search_time.as_secs_f64() * 1000.0,
+                deck: entry
+                    .outcome
+                    .results
+                    .first()
+                    .map(|result| deck_out(1, &pool, &ctx, result)),
+            }
+        })
+        .collect::<Vec<_>>();
 
-    // Rank the characters that produced a deck, best first.
-    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
-    let mut order = characters
+    // Rank exact public-card-set witnesses, rather than duplicating a score-only
+    // ordering in the HTTP layer. Partial rankings remain explicitly timed out.
+    let mut order = batch
+        .results
         .iter()
         .enumerate()
-        .filter_map(|(index, entry)| entry.deck.as_ref().map(|deck| (index, deck.target_value)))
+        .filter_map(|(index, entry)| entry.outcome.results.first().map(|deck| (index, deck)))
         .collect::<Vec<_>>();
-    order.sort_by(|left, right| {
-        let ordering = right.1.cmp(&left.1);
-        if minimize {
-            ordering.reverse()
-        } else {
-            ordering
-        }
-    });
+    order.sort_by(|left, right| compare_deck_results(&pool, &ctx, left.1, right.1));
     for (rank, (index, _)) in order.into_iter().enumerate() {
-        if let Some(entry) = characters.get_mut(index) {
-            entry.rank = Some(rank + 1);
-        }
+        characters[index].rank = Some(rank + 1);
     }
 
     Ok((
         characters,
-        diagnostics(&pool, &ctx, &totals),
+        diagnostics(&pool, &ctx, &batch.stats),
         build_pool_ms,
         search_ms,
-        hit_deadline(search_ms, params.timeout_ms),
+        completion,
     ))
 }
 
@@ -393,21 +392,24 @@ fn deck_out(rank: usize, pool: &CardPool, ctx: &SearchContext, result: &DeckResu
 }
 
 fn diagnostics(pool: &CardPool, ctx: &SearchContext, stats: &SearchStats) -> Diagnostics {
+    diagnostics_for(pool.count(), ctx.effective_live_type(), stats)
+}
+
+fn diagnostics_for(pool_size: usize, live_type: LiveType, stats: &SearchStats) -> Diagnostics {
     Diagnostics {
-        pool_size: pool.count(),
-        effective_live_type: live_type_name(ctx.effective_live_type()),
+        pool_size,
+        effective_live_type: live_type_name(live_type),
+        visited_nodes: stats.visited_nodes,
+        bound_prunes: stats.bound_prunes,
+        feasibility_prunes: stats.feasibility_prunes,
+        dominance_prunes: stats.dominance_prunes,
+        deadline_hit: stats.deadline_hit,
+        phases: stats.diagnostics.clone(),
         leaf_nodes: stats.leaf_nodes,
         ub_prunes: stats.ub_prunes,
         leader_prunes: stats.leader_prunes,
         ep_explored: stats.ep_explored,
     }
-}
-
-fn accumulate(total: &mut SearchStats, part: &SearchStats) {
-    total.leaf_nodes += part.leaf_nodes;
-    total.ub_prunes += part.ub_prunes;
-    total.leader_prunes += part.leader_prunes;
-    total.ep_explored += part.ep_explored;
 }
 
 /// The same spelling the request contract uses, so responses round-trip into requests.
@@ -421,12 +423,6 @@ fn live_type_name(live_type: LiveType) -> &'static str {
         LiveType::ChallengeAuto => "challenge_auto",
         LiveType::Mysekai => "mysekai",
     }
-}
-
-/// The engine returns partial results on expiry rather than an error, so whether the
-/// deadline was reached is inferred from the wall clock it was measured against.
-fn hit_deadline(search_ms: f64, timeout_ms: u64) -> bool {
-    timeout_ms != 0 && search_ms >= timeout_ms as f64
 }
 
 fn elapsed_ms(from: Instant) -> f64 {

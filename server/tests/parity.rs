@@ -11,6 +11,7 @@
 #[path = "../fixtures/synthetic.rs"]
 mod synth_masterdata;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -47,6 +48,41 @@ fn fixture() -> &'static Path {
 
 fn user_json() -> String {
     std::fs::read_to_string(fixture().join("user.json")).expect("user fixture")
+}
+
+/// Extend the normal 390-card account just beyond the public exact mask capacity.
+/// Added cards use conservative legal progression state; the test is about the
+/// candidate-count contract, not about a particular cultivation preset.
+fn oversized_user_json() -> String {
+    let mut user: serde_json::Value = serde_json::from_str(&user_json()).expect("user json");
+    let cards = user["userCards"].as_array_mut().expect("userCards");
+    let mut owned = cards
+        .iter()
+        .filter_map(|card| card["cardId"].as_u64())
+        .collect::<HashSet<_>>();
+    let target = allium_deck::pool::MASK_WORDS * 64 + 1;
+    for card_id in 1..=1300u64 {
+        if cards.len() >= target {
+            break;
+        }
+        if owned.insert(card_id) {
+            cards.push(serde_json::json!({
+                "cardId": card_id,
+                "level": 1,
+                "skillLevel": 1,
+                "masterRank": 0,
+                "specialTrainingStatus": "not_doing",
+                "defaultImage": "original",
+                "episodes": []
+            }));
+        }
+    }
+    assert_eq!(
+        cards.len(),
+        target,
+        "oversized fixture must cross capacity by one"
+    );
+    serde_json::to_string(&user).expect("oversized user serializes")
 }
 
 fn config() -> Config {
@@ -115,8 +151,14 @@ fn engine_decks(params_json: &str) -> Vec<Vec<u16>> {
         .expect("masterdata loads");
     let user = parse_user_profile_json(&user_json()).expect("user parses");
     let params = parse_build_params_json(params_json).expect("params parse");
-    allium_deck::engine::recommend(&user, &owned.as_ref(), &params)
-        .expect("engine recommends")
+    let outcome =
+        allium_deck::engine::recommend(&user, &owned.as_ref(), &params).expect("engine recommends");
+    assert_eq!(
+        outcome.completion(),
+        allium_deck::search::SearchCompletion::Complete
+    );
+    outcome
+        .results
         .iter()
         .map(|deck| deck.cards.to_vec())
         .collect()
@@ -243,6 +285,49 @@ async fn challenge_all_ranks_one_deck_per_character() {
     }
     ranks.sort_unstable();
     assert_eq!(ranks, (1..=ranks.len() as u64).collect::<Vec<_>>());
+
+    state.pool.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn exact_capacity_overflow_is_an_explicit_http_error() {
+    let (router, state) = app(config());
+    let body = format!(
+        "{{\"user\":{},\"params\":{{\"liveType\":\"multi\",\"target\":\"score\",\"limit\":1}}}}",
+        oversized_user_json()
+    );
+
+    let (status, value) = post(&router, "/v1/recommend", body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{value}");
+    assert_eq!(value["error"]["code"], "invalid_request");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("mask") && message.contains("513")),
+        "capacity error was not explicit: {value}"
+    );
+
+    state.pool.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn challenge_all_reports_solver_timeout_not_elapsed_time_guessing() {
+    let (router, state) = app(config());
+    let params = r#"{"target":"score","limit":1,"timeoutMs":1}"#;
+
+    let (status, body) = post(&router, "/v1/recommend/challenge-all", request_body(params)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["completion"], "timed_out", "{body}");
+    assert_eq!(body["timedOut"], true, "{body}");
+    assert_eq!(body["diagnostics"]["deadlineHit"], true, "{body}");
+    assert!(
+        body["characters"]
+            .as_array()
+            .is_some_and(|characters| characters
+                .iter()
+                .any(|entry| entry["completion"] == "timed_out")),
+        "shared-budget expiry did not reach per-character outcomes: {body}"
+    );
 
     state.pool.shutdown();
 }
