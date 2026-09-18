@@ -18,10 +18,10 @@ const EP_SHADOW_MIN_DEPTH: usize = 3;
 /// In Score/no-event search every legal result is encoded as `(live, live)`,
 /// so the full 64-bit objective has exactly the same total order as `live`.
 #[inline(always)]
-fn score_noevent_threshold_live(threshold: u64) -> u32 {
+fn score_noevent_threshold_numerator(threshold: u64) -> i64 {
     let live = threshold as u32;
     debug_assert_eq!(threshold >> 32, live as u64);
-    live
+    SuffixBound::score_noevent_threshold_numerator(live)
 }
 
 #[derive(Clone, Copy)]
@@ -506,13 +506,13 @@ impl SearchState<'_> {
                     .dense_suffix_ceiling(start, &partial, DECK_SIZE - depth);
                 global.min(dense) < threshold
             } else if matches!(self.ctx.target, ScoreTarget::Score) {
-                self.suffix.upper_bound_score_noevent_live(
+                self.suffix.upper_bound_score_noevent_numerator(
                     self.pool,
                     &deck[..depth],
                     &used,
                     &partial,
                     DECK_SIZE - depth,
-                ) < score_noevent_threshold_live(threshold)
+                ) < score_noevent_threshold_numerator(threshold)
             } else {
                 self.suffix.upper_bound_with_depth(depth, &used, &partial) < threshold
             };
@@ -714,10 +714,10 @@ impl SearchState<'_> {
         slots: usize,
         threshold: u64,
     ) {
-        let threshold_live = if threshold == 0 {
+        let threshold_numerator = if threshold == 0 {
             0
         } else {
-            score_noevent_threshold_live(threshold)
+            score_noevent_threshold_numerator(threshold)
         };
         let pre = self.suffix.precompute_layer_score_noevent(&used, slots);
         let mut dense = start;
@@ -725,8 +725,8 @@ impl SearchState<'_> {
             if threshold != 0 {
                 let live_ceil = self
                     .suffix
-                    .score_noevent_dense_live_ceiling(dense, &partial, slots);
-                if live_ceil < threshold_live {
+                    .score_noevent_dense_live_numerator_ceiling(dense, &partial, slots);
+                if live_ceil < threshold_numerator {
                     self.stats.mono_break_prunes += 1;
                     break;
                 }
@@ -759,10 +759,12 @@ impl SearchState<'_> {
                 let tight_leader = (partial.max_skill as u32)
                     .max(self.pool.skill_max(card) as u32)
                     .max(remaining_best_skill as u32);
-                let live_ub =
-                    self.suffix
-                        .score_noevent_live_ceiling(tight_power, tight_skill, tight_leader);
-                if live_ub < threshold_live {
+                let live_numerator = self.suffix.score_noevent_live_numerator_ceiling(
+                    tight_power,
+                    tight_skill,
+                    tight_leader,
+                );
+                if live_numerator < threshold_numerator {
                     self.stats.ep_continue_prunes += 1;
                     continue;
                 }

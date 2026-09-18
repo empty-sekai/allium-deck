@@ -7,6 +7,7 @@ use super::context::SearchContext;
 use super::evaluate::calc_mysekai_internal;
 
 const JOINT_SUPPORT_BUCKET: u32 = 1024;
+const LIVE_SCORE_BOUND_SCALE: i64 = 1_000_000;
 
 /// 已选角色集合。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -268,20 +269,21 @@ impl SuffixBound {
     /// 已选卡取该场景下的精确综合力，剩余槽取每角色场景最大值 top-k。
     /// 任意补全的真实 full-unit 集合是 allowed 的子集且场景值单调，故可采纳。
     #[inline(always)]
-    pub(crate) fn upper_bound_score_noevent_live(
+    pub(crate) fn upper_bound_score_noevent_numerator(
         &self,
         pool: &CardPool,
         chosen: &[CardIdx],
         used_chars: &UsedSet,
         partial: &PartialDeck,
         slots_left: usize,
-    ) -> u32 {
+    ) -> i64 {
         debug_assert!(matches!(self.target, ScoreTarget::Score));
         debug_assert!(!self.has_event);
         if self.noev_tables.is_empty() {
             let packed = self.upper_bound_for_slots(slots_left, used_chars, partial);
-            debug_assert_eq!(packed >> 32, (packed as u32) as u64);
-            return packed as u32;
+            let live = packed as u32;
+            debug_assert_eq!(packed >> 32, live as u64);
+            return live as i64 * LIVE_SCORE_BOUND_SCALE;
         }
         let mut allowed = 0x3fu8;
         let mut attr_uniform = 0xffu8;
@@ -309,7 +311,7 @@ impl SuffixBound {
             first_unused_val_u16(&self.skill_order, &self.skill_vals, used_chars.bits());
         let leader_ub = (partial.max_skill as u32).max(best_unused as u32);
 
-        let mut best = self.noev_scenario_live_ceiling(
+        let mut best = self.noev_scenario_live_numerator(
             pool,
             chosen,
             allowed,
@@ -322,7 +324,7 @@ impl SuffixBound {
         if chosen.is_empty() {
             let mut attr = 0usize;
             while attr < 6 {
-                let ub = self.noev_scenario_live_ceiling(
+                let ub = self.noev_scenario_live_numerator(
                     pool,
                     chosen,
                     allowed,
@@ -338,7 +340,7 @@ impl SuffixBound {
                 attr += 1;
             }
         } else if attr_uniform != 0xff {
-            let ub = self.noev_scenario_live_ceiling(
+            let ub = self.noev_scenario_live_numerator(
                 pool,
                 chosen,
                 allowed,
@@ -357,7 +359,7 @@ impl SuffixBound {
 
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
-    fn noev_scenario_live_ceiling(
+    fn noev_scenario_live_numerator(
         &self,
         pool: &CardPool,
         chosen: &[CardIdx],
@@ -367,7 +369,7 @@ impl SuffixBound {
         slots_left: usize,
         total_skill: u32,
         leader_ub: u32,
-    ) -> u32 {
+    ) -> i64 {
         let attr_full = attr_opt < 6;
         let mut power = 0u32;
         let mut idx = 0usize;
@@ -376,7 +378,7 @@ impl SuffixBound {
             idx += 1;
         }
         power += self.noev_tail(allowed, attr_opt, used, slots_left);
-        self.score_noevent_live_ceiling(power, total_skill, leader_ub)
+        self.score_noevent_live_numerator_ceiling(power, total_skill, leader_ub)
     }
 
     #[inline(always)]
@@ -630,9 +632,25 @@ impl SuffixBound {
     }
 
     /// Score/no-event has a strictly live-score-ordered objective because its
-    /// public key is `(live_score, live_score)`.  Returning the same live upper
-    /// bound directly avoids event-point work in the candidate hot loop without
-    /// changing any strict-bound decision.
+    /// public key is `(live_score, live_score)`.  Bound pruning can compare the
+    /// pre-division numerator against `threshold * 1_000_000`: for non-negative
+    /// N, `floor(N / D) < T` iff `N < T * D`.
+    #[inline(always)]
+    pub(crate) fn score_noevent_live_numerator_ceiling(
+        &self,
+        power_ub: u32,
+        skill_ub: u32,
+        leader_ub: u32,
+    ) -> i64 {
+        debug_assert!(matches!(self.target, ScoreTarget::Score));
+        debug_assert!(!self.has_event);
+        let power_ub = self.clamp_power_total(power_ub + self.honor_bonus);
+        let numerator = self.calc_live_score_bound_numerator(power_ub, skill_ub, leader_ub);
+        debug_assert!(numerator >= 0);
+        numerator
+    }
+
+    #[cfg(test)]
     #[inline(always)]
     pub(crate) fn score_noevent_live_ceiling(
         &self,
@@ -640,12 +658,13 @@ impl SuffixBound {
         skill_ub: u32,
         leader_ub: u32,
     ) -> u32 {
-        debug_assert!(matches!(self.target, ScoreTarget::Score));
-        debug_assert!(!self.has_event);
-        let power_ub = self.clamp_power_total(power_ub + self.honor_bonus);
-        let live = self.calc_live_score_bound(power_ub, skill_ub, leader_ub);
-        debug_assert!(live >= 0);
-        live as u32
+        (self.score_noevent_live_numerator_ceiling(power_ub, skill_ub, leader_ub)
+            / LIVE_SCORE_BOUND_SCALE) as u32
+    }
+
+    #[inline(always)]
+    pub(crate) const fn score_noevent_threshold_numerator(live: u32) -> i64 {
+        live as i64 * LIVE_SCORE_BOUND_SCALE
     }
 
     /// Generic target-aware ceiling from admissible aggregate inputs.
@@ -704,7 +723,12 @@ impl SuffixBound {
     }
 
     #[inline(always)]
-    fn calc_live_score_bound(&self, power_total: u32, skill_total: u32, leader_ub: u32) -> i32 {
+    fn calc_live_score_bound_numerator(
+        &self,
+        power_total: u32,
+        skill_total: u32,
+        leader_ub: u32,
+    ) -> i64 {
         let rate_1m = match self.effective_live_type {
             LiveType::Multi | LiveType::Cheerful => {
                 let max_slot_5x =
@@ -733,8 +757,14 @@ impl SuffixBound {
         let active_1m = self.active_1m_coeff * power_sum;
         match self.effective_live_type {
             LiveType::Mysekai => 0,
-            _ => ((rate_1m * power_total as i64 * 4 + active_1m) / 1_000_000) as i32,
+            _ => rate_1m * power_total as i64 * 4 + active_1m,
         }
+    }
+
+    #[inline(always)]
+    fn calc_live_score_bound(&self, power_total: u32, skill_total: u32, leader_ub: u32) -> i32 {
+        (self.calc_live_score_bound_numerator(power_total, skill_total, leader_ub)
+            / LIVE_SCORE_BOUND_SCALE) as i32
     }
 
     #[inline(always)]
@@ -743,14 +773,14 @@ impl SuffixBound {
             .map_or(power_total, |cap| power_total.min(cap))
     }
 
-    /// Score/no-event dense-aware suffix live-score ceiling.
+    /// Score/no-event dense-aware suffix ceiling in pre-division numerator units.
     #[inline(always)]
-    pub(crate) fn score_noevent_dense_live_ceiling(
+    pub(crate) fn score_noevent_dense_live_numerator_ceiling(
         &self,
         dense_start: usize,
         partial: &PartialDeck,
         slots: usize,
-    ) -> u32 {
+    ) -> i64 {
         let tail_power = self
             .dense_power_tail
             .get(dense_start)
@@ -766,7 +796,7 @@ impl SuffixBound {
             .get(dense_start)
             .copied()
             .unwrap_or(0) as u32;
-        self.score_noevent_live_ceiling(
+        self.score_noevent_live_numerator_ceiling(
             partial.power + tail_power,
             partial.skill + tail_skill,
             (partial.max_skill as u32).max(tail_leader),
