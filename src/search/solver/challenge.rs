@@ -7,7 +7,7 @@ use web_time::Instant;
 use crate::pool::{CardIdx, CardPool};
 use crate::types::DECK_SIZE;
 
-use crate::search::SimpleTopKTracker;
+use crate::search::TopKTracker;
 use crate::search::context::SearchContext;
 use crate::search::evaluate::{leaf_evaluate_challenge_score_checked, leaf_evaluate_checked};
 use crate::search::suffix::{PartialDeck, SuffixBound};
@@ -279,15 +279,7 @@ pub fn search_all_characters(
         merged.extend(results);
     }
 
-    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
-    merged.sort_unstable_by(|left, right| {
-        let ordering = crate::search::deck_result_cmp(left, right);
-        if minimize {
-            ordering.reverse()
-        } else {
-            ordering
-        }
-    });
+    merged.sort_unstable_by(|left, right| crate::search::deck_result_cmp(pool, ctx, left, right));
     merged.truncate(params.top_k);
     stats.deadline_hit |= deadline.hit;
     (merged, stats)
@@ -318,8 +310,7 @@ fn search_with_character_filter(
         return (Vec::new(), crate::search::SearchStats::default());
     }
 
-    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
-    let mut tracker = SimpleTopKTracker::new(params.top_k, minimize, pool);
+    let mut tracker = TopKTracker::new(params.top_k);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     let mut stats = crate::search::SearchStats::default();
     let candidates = ordered_candidates(pool, ctx, character_id);
@@ -330,6 +321,7 @@ fn search_with_character_filter(
         return search_combo_top1(pool, ctx, &candidates, tracker, deadline);
     }
     // Maximization ceilings cannot prune a minimum-power search.
+    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
     let bounds = if minimize
         || !crate::search::tuning::SearchTuning::load().bounds
         || ctx.has_event()
@@ -365,7 +357,7 @@ fn search_combo_top1(
     pool: &CardPool,
     ctx: &SearchContext,
     candidates: &[CardIdx],
-    mut tracker: SimpleTopKTracker,
+    mut tracker: TopKTracker,
     deadline: &mut ChallengeDeadline,
 ) -> (Vec<DeckResult>, crate::search::SearchStats) {
     let mut stats = crate::search::SearchStats::default();
@@ -422,7 +414,7 @@ fn search_combo_top1(
                         stats.leaf_nodes += 1;
                         stats.visited_nodes += 1;
                         if let Some(candidate) = leaf_evaluate_challenge(pool, ctx, &deck) {
-                            tracker.insert(candidate);
+                            tracker.insert(pool, ctx, candidate);
                         }
                     }
                 }
@@ -466,7 +458,7 @@ fn challenge_recurse(
     start: usize,
     deck: &mut [CardIdx; DECK_SIZE],
     partial: PartialDeck,
-    tracker: &mut SimpleTopKTracker,
+    tracker: &mut TopKTracker,
     stats: &mut crate::search::SearchStats,
     deadline: &mut ChallengeDeadline,
 ) {
@@ -477,13 +469,13 @@ fn challenge_recurse(
     if depth == DECK_SIZE {
         stats.leaf_nodes += 1;
         if let Some(candidate) = leaf_evaluate_challenge(pool, ctx, deck) {
-            tracker.insert(candidate);
+            tracker.insert(pool, ctx, candidate);
         }
         return;
     }
 
     let remaining = DECK_SIZE - depth;
-    let threshold = tracker.threshold();
+    let threshold = tracker.cutoff();
     // Equal-score branches can still improve the tracker's card-order tie-break.
     if let (Some(bounds), Some(threshold)) = (bounds, threshold)
         && bounds.ceiling(suffix, start, &partial, remaining) < threshold

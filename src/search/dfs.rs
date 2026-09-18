@@ -11,6 +11,7 @@ use super::bonus_reach::BonusReach;
 use super::context::SearchContext;
 use super::placement::evaluate_candidate;
 use super::suffix::{PartialDeck, SuffixBound, UsedSet};
+use super::tracker::TopKTracker;
 use super::types::{DeckResult, SearchParams};
 use super::warm_start::sorted_final_chapter_leaders;
 
@@ -151,12 +152,8 @@ fn dfs_search_seeded_inner(
     };
 
     let mut tracker = match bonus_targets {
-        Some(targets) => SearchTracker::Bonus(BonusBucketTracker::new(params.top_k, pool, targets)),
-        None => SearchTracker::TopK(TopKTracker::new(
-            params.top_k,
-            pool,
-            matches!(ctx.target, ScoreTarget::Mysekai),
-        )),
+        Some(targets) => SearchTracker::Bonus(BonusBucketTracker::new(params.top_k, targets)),
+        None => SearchTracker::TopK(TopKTracker::new(params.top_k)),
     };
     let correlated_hint = seeds.iter().max_by_key(|r| r.score).map(|r| {
         (
@@ -165,7 +162,7 @@ fn dfs_search_seeded_inner(
         )
     });
     for seed_result in seeds {
-        tracker.insert(seed_result);
+        tracker.insert(pool, ctx, seed_result);
     }
     let correlated_kth = tracker.threshold() >> 32;
 
@@ -1334,7 +1331,7 @@ impl SearchTracker {
         match self {
             Self::TopK(tracker) => {
                 if let Some(candidate) = evaluate_candidate(pool, ctx, deck) {
-                    tracker.insert(candidate);
+                    tracker.insert(pool, ctx, candidate);
                 }
             }
             Self::Bonus(tracker) => {
@@ -1344,7 +1341,7 @@ impl SearchTracker {
                     let total = super::evaluate::resolve_total_bonus(pool, ctx, &candidate.cards);
                     let target = (candidate.score >> 32) as u32;
                     if total == f64::from(target) / 2.0 {
-                        tracker.insert(candidate);
+                        tracker.insert(pool, ctx, candidate);
                     }
                 })
             }
@@ -1352,10 +1349,10 @@ impl SearchTracker {
     }
 
     #[inline(always)]
-    fn insert(&mut self, candidate: DeckResult) {
+    fn insert(&mut self, pool: &CardPool, ctx: &SearchContext, candidate: DeckResult) {
         match self {
-            Self::TopK(tracker) => tracker.insert(candidate),
-            Self::Bonus(tracker) => tracker.insert(candidate),
+            Self::TopK(tracker) => tracker.insert(pool, ctx, candidate),
+            Self::Bonus(tracker) => tracker.insert(pool, ctx, candidate),
         }
     }
 
@@ -1372,7 +1369,7 @@ struct BonusBucketTracker {
 }
 
 impl BonusBucketTracker {
-    fn new(top_k: usize, pool: &CardPool, targets: &[i32]) -> Self {
+    fn new(top_k: usize, targets: &[i32]) -> Self {
         let mut target_x2 = targets
             .iter()
             .copied()
@@ -1384,19 +1381,19 @@ impl BonusBucketTracker {
         Self {
             buckets: target_x2
                 .into_iter()
-                .map(|target| (target, TopKTracker::new(top_k, pool, false)))
+                .map(|target| (target, TopKTracker::new(top_k)))
                 .collect(),
         }
     }
 
     #[inline(always)]
-    fn insert(&mut self, candidate: DeckResult) {
+    fn insert(&mut self, pool: &CardPool, ctx: &SearchContext, candidate: DeckResult) {
         let target = (candidate.score >> 32) as u32;
         if let Ok(index) = self
             .buckets
             .binary_search_by_key(&target, |(target, _)| *target)
         {
-            self.buckets[index].1.insert(candidate);
+            self.buckets[index].1.insert(pool, ctx, candidate);
         }
     }
 
@@ -1483,15 +1480,6 @@ fn partial_bonus_add(
     (bonus, 0)
 }
 
-pub(super) struct TopKTracker {
-    top_k: usize,
-    game_ids: Vec<u16>,
-    powers: Vec<u32>,
-    power_tiebreak: bool,
-    results: Vec<DeckResult>,
-    keys: Vec<[u16; DECK_SIZE]>,
-}
-
 #[inline(always)]
 fn highest_upper_bound_lane(upper_bounds: &[u64; EP_SHADOW_BLOCK_WIDTH], mask: u16) -> usize {
     let mut remaining = mask;
@@ -1510,95 +1498,6 @@ fn highest_upper_bound_lane(upper_bounds: &[u64; EP_SHADOW_BLOCK_WIDTH], mask: u
     best_lane
 }
 
-impl TopKTracker {
-    pub(super) fn new(top_k: usize, pool: &CardPool, power_tiebreak: bool) -> Self {
-        Self {
-            top_k,
-            game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
-            powers: pool.indices().map(|card| pool.power_max(card)).collect(),
-            power_tiebreak,
-            results: Vec::with_capacity(top_k),
-            keys: Vec::with_capacity(top_k),
-        }
-    }
-
-    pub(super) fn threshold(&self) -> u64 {
-        if self.results.len() < self.top_k {
-            0
-        } else {
-            self.results.last().map(|result| result.score).unwrap_or(0)
-        }
-    }
-
-    /// mysekai 的量化分值会产生大量并列（power 按 45k 一档进桶），并列内若按
-    /// 卡序或插入序取舍，limit=1 与 limit>1 会给出互斥的结果集。这里以
-    /// 总战力降序、队长 cardId 升序作为并列时的规范次序（与参考实现的
-    /// compareDeck 一致），使任意 top_k 的结果集单调一致。
-    #[inline(always)]
-    fn cmp_candidate(&self, left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
-        let ordering = right.score.cmp(&left.score);
-        if self.power_tiebreak && ordering == std::cmp::Ordering::Equal {
-            return self
-                .power_sum(right)
-                .cmp(&self.power_sum(left))
-                .then_with(|| {
-                    self.game_ids[left.cards[0].raw()].cmp(&self.game_ids[right.cards[0].raw()])
-                });
-        }
-        ordering.then_with(|| left.cards.cmp(&right.cards))
-    }
-
-    #[inline]
-    fn power_sum(&self, result: &DeckResult) -> u32 {
-        result
-            .cards
-            .iter()
-            .map(|card| self.powers[card.raw()])
-            .sum()
-    }
-
-    pub(super) fn insert(&mut self, candidate: DeckResult) {
-        if self.results.len() >= self.top_k
-            && let Some(last) = self.results.last()
-            && !self.cmp_candidate(&candidate, last).is_lt()
-        {
-            return;
-        }
-        let candidate_key = self.game_card_set_key(&candidate);
-        if let Some(existing_pos) = self.keys.iter().position(|key| *key == candidate_key) {
-            if !self
-                .cmp_candidate(&candidate, &self.results[existing_pos])
-                .is_lt()
-            {
-                return;
-            }
-            self.results.remove(existing_pos);
-            self.keys.remove(existing_pos);
-        }
-        let pos = self
-            .results
-            .iter()
-            .position(|existing| self.cmp_candidate(&candidate, existing).is_lt())
-            .unwrap_or(self.results.len());
-        self.results.insert(pos, candidate);
-        self.keys.insert(pos, candidate_key);
-        if self.results.len() > self.top_k {
-            self.results.pop();
-            self.keys.pop();
-        }
-    }
-
-    pub(super) fn into_vec(self) -> Vec<DeckResult> {
-        self.results
-    }
-
-    pub(super) fn game_card_set_key(&self, result: &DeckResult) -> [u16; 5] {
-        let mut cards = result.cards.map(|card| self.game_ids[card.raw()]);
-        cards.sort_unstable();
-        cards
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn dfs_search_power_len_for_test(
     pool: &CardPool,
@@ -1607,7 +1506,7 @@ pub(crate) fn dfs_search_power_len_for_test(
     top_k: usize,
     ctx: &SearchContext,
 ) -> Vec<DeckResult> {
-    let mut tracker = TopKTracker::new(top_k, pool, false);
+    let mut tracker = TopKTracker::new(top_k);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     recurse_power_len_for_test(
         pool,
@@ -1638,7 +1537,7 @@ fn recurse_power_len_for_test(
     ctx: &SearchContext,
 ) {
     if depth == target_len {
-        tracker.insert(DeckResult::new(*deck, partial.power as u64));
+        tracker.insert(pool, ctx, DeckResult::new(*deck, partial.power as u64));
         return;
     }
 

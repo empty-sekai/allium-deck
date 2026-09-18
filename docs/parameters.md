@@ -97,7 +97,7 @@ Per-rarity defaults (`rarity1Config` … `rarity4Config`, `rarityBirthdayConfig`
 
 ## Exactness by mode
 
-"Exact" means the returned Top-K score sequence provably matches full enumeration (verified against a brute-force reference in the test suite). Tied decks are interchangeable: when several sets share a score, the engine's representative may differ from another enumeration order.
+"Exact" means the returned distinct Top-K results match full legal enumeration under the canonical ordering below. Equal objective values do not make public card sets interchangeable. With the same immutable pool, context and a completed search, increasing `limit` preserves the smaller result list as a prefix.
 
 | Mode | Path | Guarantee |
 | --- | --- | --- |
@@ -116,6 +116,8 @@ The full proof obligations and counterexample regressions are recorded in [exact
 
 Exactness is conditional on a successful, non-timed-out search. A timeout turns the solver into best-effort and sets `SearchStats::deadline_hit`. If hard filtering still leaves more cards than the fixed metadata mask can represent (currently 512), pool construction returns `TooManyCards` rather than silently producing an approximate deck.
 
-Result ordering: decks are ranked by the search objective descending. The Mysekai objective quantizes deck power into 45k buckets, so ties are common; tied decks rank by total power descending, then leader card id ascending, consistently for every `limit`. Challenge live decks are always five cards of one character, for every target including `power`/`skill`.
+Result ordering uses one total order for every solver: objective descending (only minimizing `power` reverses this field), then actual resolved and capped total power descending for `mysekai`, then the ascending sorted public card-ID set, then the ascending concrete legal input-slot card IDs, and finally the prepared-pool variant ordinals. The last field selects a deterministic cultivation representative within the same immutable pool; rebuilding a different pool does not promise the same dense ordinals. Distinct means a public card-ID set, not a slot permutation or cultivation variant. A fixed or forced leader remains a role constraint; the display order materialized by the evaluator is not fed back as a new Specific input order. Exact bonus requests deduplicate separately in each tier.
+
+This canonical contract replaces the historical traversal-dependent tie representatives and the Mysekai metadata-upper-bound tiebreak. Challenge live decks are always five cards of one character, for every target including `power`/`skill`.
 
 No-event `score` exactness cost: without an event, the builder keeps every hard-filtered candidate that fits the exact metadata capacity; it does not use a bonus-blind quality trim. Search combines the scenario-aware suffix bound with the role-aware correlated power/skill bound. The latter is an admissible relaxation of the coupled score formula and is guarded by exhaustive prefix-vs-completion property tests. Special-skill resolution (unit-count / different-unit / reference skills) is still performed only at exact leaves; bounds use per-card maxima, so unresolved coupling can make the relaxation loose but cannot make it underestimate a completion.

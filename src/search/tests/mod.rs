@@ -13,6 +13,7 @@ mod prepared_search;
 mod property_bounds;
 mod property_matrix;
 
+mod canonical_topk;
 mod case7_audit;
 mod dominance_contract;
 mod fractional_bonus;
@@ -500,11 +501,7 @@ fn exhaustive_challenge_results(pool: &CardPool, search_ctx: &SearchContext) -> 
             }
         }
     }
-    let minimize = search_ctx.minimize && matches!(search_ctx.target, ScoreTarget::Power);
-    results.sort_unstable_by(|a, b| {
-        let order = deck_result_cmp(a, b);
-        if minimize { order.reverse() } else { order }
-    });
+    results.sort_unstable_by(|a, b| deck_result_cmp(pool, search_ctx, a, b));
     let mut seen = std::collections::HashSet::new();
     results.retain(|result| seen.insert(result.game_card_set_key(pool)));
     results
@@ -567,92 +564,12 @@ fn final_chapter_auto_oracle(
     ctx: &SearchContext,
     top_k: usize,
 ) -> Vec<DeckResult> {
-    let mut best_by_set: Vec<([u16; DECK_SIZE], DeckResult)> = Vec::new();
-    for leader in pool.indices() {
-        let leader_char = pool.char_id(leader);
-        let mut deck = [leader; DECK_SIZE];
-        fn rec(
-            pool: &CardPool,
-            ctx: &SearchContext,
-            leader: CardIdx,
-            leader_char: u8,
-            start: usize,
-            depth: usize,
-            used_chars: u32,
-            deck: &mut [CardIdx; DECK_SIZE],
-            best_by_set: &mut Vec<([u16; DECK_SIZE], DeckResult)>,
-        ) {
-            if depth == DECK_SIZE {
-                let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) else {
-                    return;
-                };
-                let candidate = DeckResult::new(*deck, score);
-                let mut key = candidate.cards.map(|card| pool.game_id(card));
-                key.sort_unstable();
-                if let Some((_, existing)) = best_by_set.iter_mut().find(|(seen, _)| *seen == key) {
-                    if candidate.score > existing.score
-                        || (candidate.score == existing.score && candidate.cards < existing.cards)
-                    {
-                        *existing = candidate;
-                    }
-                } else {
-                    best_by_set.push((key, candidate));
-                }
-                return;
-            }
-            let need = DECK_SIZE - depth;
-            let mut dense = start;
-            while dense < pool.count() {
-                if pool.count() - dense < need {
-                    break;
-                }
-                let card = CardIdx::new(dense as u16);
-                dense += 1;
-                if card == leader {
-                    continue;
-                }
-                let char_id = pool.char_id(card);
-                if char_id == leader_char || used_chars & (1u32 << char_id) != 0 {
-                    continue;
-                }
-                deck[depth] = card;
-                rec(
-                    pool,
-                    ctx,
-                    leader,
-                    leader_char,
-                    dense,
-                    depth + 1,
-                    used_chars | (1u32 << char_id),
-                    deck,
-                    best_by_set,
-                );
-            }
-        }
-        rec(
-            pool,
-            ctx,
-            leader,
-            leader_char,
-            0,
-            1,
-            1u32 << leader_char,
-            &mut deck,
-            &mut best_by_set,
-        );
-    }
-    let mut results = best_by_set
-        .into_iter()
-        .map(|(_, result)| result)
-        .collect::<Vec<_>>();
-    results.sort_unstable_by(|left, right| {
-        right
-            .score
-            .cmp(&left.score)
-            .then_with(|| left.cards.cmp(&right.cards))
-    });
-    results.truncate(top_k);
-    results
+    ExactOracle::new(pool, ctx)
+        .search(&SearchParams {
+            top_k,
+            timeout_ms: 0,
+        })
+        .0
 }
 
 fn assert_property_scores(

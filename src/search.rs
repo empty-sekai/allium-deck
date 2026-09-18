@@ -38,7 +38,7 @@ use alternatives::deck_matches_fixed_slots;
 use alternatives::{expand_alternatives, expand_dominated_alternatives};
 pub use prepared::PreparedSearch;
 use solver::{final_chapter, numeric::search_simple_target};
-use tracker::{SimpleTopKTracker, deck_result_cmp};
+use tracker::{TopKTracker, deck_result_cmp};
 mod placement;
 mod problem;
 /// 角色感知的后缀上界，用于剪枝。

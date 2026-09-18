@@ -3,7 +3,7 @@ use super::power::search_power_scenarios;
 use crate::pool::{CardIdx, CardPool};
 use crate::search::DeckResult;
 use crate::search::{
-    SearchContext, SearchParams, SearchStats, SimpleTopKTracker, evaluate, placement, tuning,
+    SearchContext, SearchParams, SearchStats, TopKTracker, evaluate, placement, tuning,
 };
 use crate::types::{DECK_SIZE, ScoreTarget};
 use std::time::Duration;
@@ -56,7 +56,7 @@ struct SimpleExactState<'a> {
     global_power_min: u32,
     global_skill_max: u32,
     bounds_enabled: bool,
-    tracker: SimpleTopKTracker,
+    tracker: TopKTracker,
     stats: SearchStats,
     deadline: Option<Instant>,
 }
@@ -111,7 +111,7 @@ fn search_simple_target_exact(
         global_power_min,
         global_skill_max,
         bounds_enabled: tuning.bounds && tuning.simple_bound,
-        tracker: SimpleTopKTracker::new(params.top_k, minimize, pool),
+        tracker: TopKTracker::new(params.top_k),
         stats: SearchStats::default(),
         deadline: (params.timeout_ms != 0)
             .then(|| Instant::now() + Duration::from_millis(params.timeout_ms)),
@@ -135,7 +135,7 @@ impl SimpleExactState<'_> {
         if !self.bounds_enabled {
             return false;
         }
-        let Some(threshold) = self.tracker.threshold() else {
+        let Some(threshold) = self.tracker.cutoff() else {
             return false;
         };
         let slots = DECK_SIZE - depth;
@@ -214,7 +214,7 @@ impl SimpleExactState<'_> {
         if depth == DECK_SIZE {
             self.stats.leaf_nodes += 1;
             if let Some(candidate) = placement::evaluate_candidate(self.pool, self.ctx, deck) {
-                self.tracker.insert(candidate);
+                self.tracker.insert(self.pool, self.ctx, candidate);
             }
             return;
         }

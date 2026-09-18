@@ -1,7 +1,7 @@
 //! Exact reconstruction of card sets removed by certified dominance.
-use super::{DeckResult, SearchContext, SearchParams, dfs, evaluate};
+use super::{DeckResult, SearchContext, SearchParams, placement, tracker::TopKTracker};
 use crate::pool::{CardIdx, CardPool};
-use crate::types::{DECK_SIZE, ScoreTarget};
+use crate::types::DECK_SIZE;
 
 /// Top-K 支配替代展开。
 ///
@@ -55,13 +55,9 @@ pub(super) fn expand_alternatives(
         return results;
     }
 
-    let mut tracker = dfs::TopKTracker::new(
-        params.top_k,
-        pool,
-        matches!(ctx.target, ScoreTarget::Mysekai),
-    );
+    let mut tracker = TopKTracker::new(params.top_k);
     for result in &results {
-        tracker.insert(*result);
+        tracker.insert(pool, ctx, *result);
     }
     for result in &results {
         let mut deck = result.cards;
@@ -86,10 +82,11 @@ pub(super) fn expand_alternatives(
             if !deck_matches_fixed_slots(pool, ctx, &rotated) {
                 continue;
             }
-            let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, &rotated) else {
+            let Some(candidate) = placement::evaluate_candidate(pool, ctx, &rotated) else {
                 continue;
             };
-            tracker.insert(DeckResult::new(rotated, score));
+            let score = candidate.score;
+            tracker.insert(pool, ctx, candidate);
             expand_substitutions(
                 pool,
                 ctx,
@@ -143,7 +140,7 @@ fn expand_substitutions(
     deck: &mut [CardIdx; DECK_SIZE],
     node_score: u64,
     from_slot: usize,
-    tracker: &mut dfs::TopKTracker,
+    tracker: &mut TopKTracker,
 ) {
     let threshold = tracker.threshold();
     if threshold != 0 && node_score < threshold {
@@ -168,10 +165,11 @@ fn expand_substitutions(
         for &alt in alternatives[original.raw()].iter().chain(member_alts) {
             deck[slot] = alt;
             // 支配卡与被支配卡同角色，角色唯一性与固定角色槽位约束自然保持。
-            let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) else {
+            let Some(candidate) = placement::evaluate_candidate(pool, ctx, deck) else {
                 continue;
             };
-            tracker.insert(DeckResult::new(*deck, score));
+            let score = candidate.score;
+            tracker.insert(pool, ctx, candidate);
             expand_substitutions(
                 pool,
                 ctx,

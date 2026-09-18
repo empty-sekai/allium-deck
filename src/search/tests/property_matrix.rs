@@ -144,6 +144,7 @@ fn long_exact_all_scene_property_matrix() {
             }
         }
         assert_property_scores(pool, ctx, &got, &expected, label);
+        assert_property_results(pool, &got, &expected, label);
     }
 
     for case in 0..256u64 {
@@ -285,6 +286,12 @@ fn long_exact_all_scene_property_matrix() {
             &expected,
             &format!("case {case} final-auto"),
         );
+        assert_property_results(
+            &pool,
+            &got,
+            &expected,
+            &format!("case {case} final-auto canonical"),
+        );
         checks += 1;
 
         // Exact bonus buckets: enumerate every public card set, choose up to two
@@ -318,16 +325,8 @@ fn long_exact_all_scene_property_matrix() {
             // BonusBucketTracker returns target buckets in descending target
             // order. targets is sampled from brute-force Bonus results, which
             // are already ranked by the encoded bonus descending.
-            let expected = targets
-                .iter()
-                .flat_map(|target| {
-                    all_bonus
-                        .iter()
-                        .filter(move |result| (result.score >> 32) == (*target as u64 * 2))
-                        .take(params.top_k)
-                        .copied()
-                })
-                .collect::<Vec<_>>();
+            let (expected, _) =
+                ExactOracle::new(&pool, &bonus).search_bonus_targets(&params, &targets);
             if got.iter().map(|r| r.score).collect::<Vec<_>>()
                 != expected.iter().map(|r| r.score).collect::<Vec<_>>()
             {

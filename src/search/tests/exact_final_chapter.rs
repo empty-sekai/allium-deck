@@ -37,38 +37,48 @@ fn search_final_chapter_auto_leader_small_pool_returns_result() {
 
 #[test]
 fn search_final_chapter_fixed_leader_top_k_recovers_member_pruned_alternatives() {
-    let pool = build_pool(&final_chapter_member_cards());
-    let mut search_ctx = final_chapter_ctx(&pool);
-    search_ctx.fixed_character_ids = vec![5];
-    let params = SearchParams {
-        top_k: 3,
-        timeout_ms: 0,
-    };
+    // Preserve the original numeric counterexample and also exercise a
+    // canonical-order-preserving deletion (W's public ID precedes X's).
+    for canonical_prunable in [false, true] {
+        let mut cards = final_chapter_member_cards();
+        if canonical_prunable {
+            cards[2].game_id = 899;
+        }
+        let pool = build_pool(&cards);
+        let mut search_ctx = final_chapter_ctx(&pool);
+        search_ctx.fixed_character_ids = vec![5];
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
 
-    // 前提：Y 第一轮被裁；X 第一轮幸存、member 轮被 W 支配。
-    let dominance = eliminate_dominated(&pool, &search_ctx);
-    assert_eq!(dominance.after, dominance.before - 1);
-    let member = dominance::compute_member_dominance(&dominance.pool, &dominance.ctx);
-    assert!(!member.keep[0], "X should be member-dominated by W");
-    assert_eq!(member.alternatives[1], vec![CardIdx::new(0)]);
+        // 前提：Y 第一轮被裁；X 第一轮幸存、member 轮被 W 支配。
+        let dominance = eliminate_dominated(&pool, &search_ctx);
+        assert_eq!(dominance.after, dominance.before - 1);
+        let member = dominance::compute_member_dominance(&dominance.pool, &dominance.ctx);
+        assert_eq!(member.keep[0], !canonical_prunable);
+        if canonical_prunable {
+            assert_eq!(member.alternatives[1], vec![CardIdx::new(0)]);
+        }
 
-    let results = search(&pool, &search_ctx, &params);
-    let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
-    assert_results_match_bruteforce(&pool, &results, &brute);
-    assert!(
-        results[1]
-            .cards
-            .iter()
-            .any(|card| pool.game_id(*card) == 900),
-        "rank 1 should contain the member-pruned card 900",
-    );
-    assert!(
-        results[2]
-            .cards
-            .iter()
-            .any(|card| pool.game_id(*card) == 901),
-        "rank 2 should contain the chained first-pass card 901",
-    );
+        let results = search(&pool, &search_ctx, &params);
+        let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_results_match_bruteforce(&pool, &results, &brute);
+        assert!(
+            results[1]
+                .cards
+                .iter()
+                .any(|card| pool.game_id(*card) == 900),
+            "rank 1 should contain the member-pruned card 900",
+        );
+        assert!(
+            results[2]
+                .cards
+                .iter()
+                .any(|card| pool.game_id(*card) == 901),
+            "rank 2 should contain the chained first-pass card 901",
+        );
+    }
 }
 
 #[test]
@@ -104,55 +114,58 @@ fn search_final_chapter_fixed_leader_card_top_k_recovers_member_pruned_alternati
 
 #[test]
 fn search_final_chapter_top_k_restores_member_alternative_behind_leader_dedup() {
-    // W(922) member 位支配 X(921)，且 W 是自身集合的最佳队长（技能 90）：
+    // W 在数值上 member 支配 X；同时验证原始 ID 和满足 canonical 替换的 ID。
+    // W 是自身集合的最佳队长（技能 90）：
     // tracker 按集合去重后 W 只出现在队长槽，member 替代必须经队长轮换才能触发。
     // 集合 B={Y,X,fillers} 的最优排列是 Y 作队长（称号 6）、X 作队员。
-    let cards = [
-        skill_card(920, 2, 300, 10),
-        skill_card(921, 1, 300, 10),
-        skill_card(922, 1, 305, 90),
-        skill_card(923, 3, 400, 10),
-        skill_card(924, 4, 410, 10),
-        skill_card(925, 5, 420, 10),
-    ];
-    let pool = build_pool(&cards);
-    let mut search_ctx = final_chapter_ctx(&pool);
-    search_ctx.leader_honor_bonus[0] = 6;
-    search_ctx.leader_honor_bonus[1] = 5;
-    search_ctx.event_type = Some(EventType::Marathon);
-    search_ctx.skill_scores[1] = [10.0; 6];
-    let params = SearchParams {
-        top_k: 2,
-        timeout_ms: 0,
-    };
+    for canonical_prunable in [false, true] {
+        let cards = [
+            skill_card(920, 2, 300, 10),
+            skill_card(921, 1, 300, 10),
+            skill_card(if canonical_prunable { 919 } else { 922 }, 1, 305, 90),
+            skill_card(923, 3, 400, 10),
+            skill_card(924, 4, 410, 10),
+            skill_card(925, 5, 420, 10),
+        ];
+        let pool = build_pool(&cards);
+        let mut search_ctx = final_chapter_ctx(&pool);
+        search_ctx.leader_honor_bonus[0] = 6;
+        search_ctx.leader_honor_bonus[1] = 5;
+        search_ctx.event_type = Some(EventType::Marathon);
+        search_ctx.skill_scores[1] = [10.0; 6];
+        let params = SearchParams {
+            top_k: 2,
+            timeout_ms: 0,
+        };
 
-    // 前提：X 第一轮靠称号幸存，member 轮被 W 支配。
-    let dominance = eliminate_dominated(&pool, &search_ctx);
-    assert_eq!(dominance.after, dominance.before);
-    let member = dominance::compute_member_dominance(&dominance.pool, &dominance.ctx);
-    assert!(!member.keep[1], "X should be member-dominated by W");
+        // 前提：X 第一轮靠称号幸存，member 轮被 W 支配。
+        let dominance = eliminate_dominated(&pool, &search_ctx);
+        assert_eq!(dominance.after, dominance.before);
+        let member = dominance::compute_member_dominance(&dominance.pool, &dominance.ctx);
+        assert_eq!(member.keep[1], !canonical_prunable);
 
-    let results = search(&pool, &search_ctx, &params);
-    assert_eq!(results.len(), 2);
-    let expected_deck = [
-        CardIdx::new(0),
-        CardIdx::new(1),
-        CardIdx::new(3),
-        CardIdx::new(4),
-        CardIdx::new(5),
-    ];
-    let expected = evaluate::leaf_evaluate_checked(&pool, &search_ctx, &expected_deck)
-        .expect("expected arrangement must evaluate");
-    let rank1_game_ids = {
-        let mut ids = results[1].cards.map(|card| pool.game_id(card));
-        ids.sort_unstable();
-        ids
-    };
-    assert_eq!(rank1_game_ids, [920, 921, 923, 924, 925]);
-    assert_eq!(
-        results[1].score, expected,
-        "rank 1 must carry the best arrangement score (Y leader, X member)",
-    );
+        let results = search(&pool, &search_ctx, &params);
+        assert_eq!(results.len(), 2);
+        let expected_deck = [
+            CardIdx::new(0),
+            CardIdx::new(1),
+            CardIdx::new(3),
+            CardIdx::new(4),
+            CardIdx::new(5),
+        ];
+        let expected = evaluate::leaf_evaluate_checked(&pool, &search_ctx, &expected_deck)
+            .expect("expected arrangement must evaluate");
+        let rank1_game_ids = {
+            let mut ids = results[1].cards.map(|card| pool.game_id(card));
+            ids.sort_unstable();
+            ids
+        };
+        assert_eq!(rank1_game_ids, [920, 921, 923, 924, 925]);
+        assert_eq!(
+            results[1].score, expected,
+            "rank 1 must carry the best arrangement score (Y leader, X member)",
+        );
+    }
 }
 
 #[test]

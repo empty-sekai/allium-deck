@@ -47,7 +47,7 @@ fn challenge_all_searches_each_character_and_merges() {
             challenge_search::search_character(&pool, &search_ctx, &suffix, &params, char_id);
         reference.extend(found);
     }
-    reference.sort_unstable_by(deck_result_cmp);
+    reference.sort_unstable_by(|a, b| deck_result_cmp(&pool, &search_ctx, a, b));
     reference.truncate(params.top_k);
     assert_eq!(results, reference, "challenge_all 应等于逐角色归并");
 }
@@ -135,7 +135,7 @@ fn challenge_live_power_and_skill_targets_search_same_character_decks() {
                 challenge_search::search_character(&pool, &search_ctx, &suffix, &params, char_id);
             reference.extend(found);
         }
-        reference.sort_unstable_by(deck_result_cmp);
+        reference.sort_unstable_by(|a, b| deck_result_cmp(&pool, &search_ctx, a, b));
         reference.truncate(params.top_k);
         assert_eq!(
             results, reference,

@@ -277,6 +277,14 @@ fn support_deficit_affordable(
 fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -> bool {
     debug_assert_eq!(pool.char_id(lhs), pool.char_id(rhs));
 
+    // Rounded/capped objectives can tie despite strict numeric improvement.
+    // Replacing one public ID by a larger ID then worsens the canonical set;
+    // for the same ID, replacing an earlier prepared variant also worsens ties.
+    // Componentwise dominance alone therefore does not certify this deletion.
+    if (pool.game_id(lhs), lhs.raw()) > (pool.game_id(rhs), rhs.raw()) {
+        return false;
+    }
+
     let lhs_values = pool.power_values(lhs);
     let rhs_values = pool.power_values(rhs);
     let lhs_lut = pool.power_lut(lhs);
@@ -304,6 +312,8 @@ fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -
     let rhs_bonus = pool.event_bonus_exact(rhs);
     if lhs_bonus.base_x10() < rhs_bonus.base_x10()
         || lhs_bonus.limited_x10() < rhs_bonus.limited_x10()
+        || (ctx.card_bonus_count_limit < crate::types::DECK_SIZE
+            && (lhs_bonus.limited_x10() == 0) != (rhs_bonus.limited_x10() == 0))
     {
         return false;
     }

@@ -1,7 +1,7 @@
 //! Additive top-K dynamic programming over unit/attribute power scenarios.
 use crate::pool::{CardIdx, CardPool};
 use crate::search::{
-    DeckResult, SearchContext, SearchParams, SearchStats, SimpleTopKTracker, evaluate,
+    DeckResult, SearchContext, SearchParams, SearchStats, TopKTracker, evaluate, placement,
 };
 use crate::types::DECK_SIZE;
 
@@ -22,7 +22,7 @@ pub(super) fn search_power_scenarios(
     // already processed. A discarded partial state can therefore never re-enter
     // the final top K.
     let state_limit = params.top_k.max(1);
-    let mut tracker = SimpleTopKTracker::new(params.top_k, false, pool);
+    let mut tracker = TopKTracker::new(params.top_k);
     let mut stats = SearchStats::default();
 
     let mut scenarios = Vec::with_capacity(49);
@@ -56,6 +56,7 @@ pub(super) fn search_power_scenarios(
                 right
                     .0
                     .cmp(&left.0)
+                    .then_with(|| pool.game_id(left.1).cmp(&pool.game_id(right.1)))
                     .then_with(|| left.1.raw().cmp(&right.1.raw()))
             });
             // 同一 game_id 的养成变体互斥（同一张卡），只保留场景值最高的一个：
@@ -105,6 +106,9 @@ pub(super) fn search_power_scenarios(
                     right
                         .additive_power
                         .cmp(&left.additive_power)
+                        .then_with(|| {
+                            partial_public_key(pool, left).cmp(&partial_public_key(pool, right))
+                        })
                         .then_with(|| left.cards.cmp(&right.cards))
                 });
                 states[count + 1].truncate(state_limit);
@@ -113,10 +117,19 @@ pub(super) fn search_power_scenarios(
 
         for state in &states[DECK_SIZE] {
             stats.leaf_nodes += 1;
-            if let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, &state.cards) {
-                tracker.insert(DeckResult::new(state.cards, score));
+            if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &state.cards) {
+                tracker.insert(pool, ctx, candidate);
             }
         }
     }
     (tracker.into_vec(), stats)
+}
+
+fn partial_public_key(pool: &CardPool, state: &PowerPartial) -> [u16; DECK_SIZE] {
+    let mut ids = [u16::MAX; DECK_SIZE];
+    for (id, &card) in ids.iter_mut().zip(&state.cards[..state.len]) {
+        *id = pool.game_id(card);
+    }
+    ids.sort_unstable();
+    ids
 }

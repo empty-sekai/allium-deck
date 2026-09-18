@@ -58,7 +58,7 @@ impl<'a> ExactOracle<'a> {
         let mut results = Vec::new();
         let mut stats = BruteForceStats::default();
         for target in targets {
-            let mut tracker = BruteForceTopK::new(params.top_k, false, self.pool);
+            let mut tracker = BruteForceTopK::new(params.top_k, self.pool, self.context);
             tracker.bonus_target = Some(target);
             enumerate(
                 self.pool,
@@ -81,8 +81,7 @@ impl<'a> ExactOracle<'a> {
         if params.top_k == 0 || pool.count() < DECK_SIZE {
             return (Vec::new(), BruteForceStats::default());
         }
-        let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
-        let mut tracker = BruteForceTopK::new(params.top_k, minimize, pool);
+        let mut tracker = BruteForceTopK::new(params.top_k, pool, ctx);
         let mut stats = BruteForceStats::default();
         enumerate(
             pool,
@@ -172,20 +171,22 @@ fn enumerate(
     }
 }
 
-struct BruteForceTopK {
+struct BruteForceTopK<'a> {
     bonus_target: Option<i32>,
     top_k: usize,
-    minimize: bool,
+    pool: &'a CardPool,
+    ctx: &'a SearchContext,
     game_ids: Vec<u16>,
     results: Vec<DeckResult>,
 }
 
-impl BruteForceTopK {
-    fn new(top_k: usize, minimize: bool, pool: &CardPool) -> Self {
+impl<'a> BruteForceTopK<'a> {
+    fn new(top_k: usize, pool: &'a CardPool, ctx: &'a SearchContext) -> Self {
         Self {
             bonus_target: None,
             top_k,
-            minimize,
+            pool,
+            ctx,
             game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
             results: Vec::with_capacity(top_k),
         }
@@ -214,12 +215,37 @@ impl BruteForceTopK {
     }
 
     fn is_better(&self, candidate: &DeckResult, incumbent: &DeckResult) -> bool {
-        let cmp = deck_result_cmp(candidate, incumbent);
-        if self.minimize {
-            cmp.is_gt()
+        let objective = if self.ctx.minimize && self.ctx.target == ScoreTarget::Power {
+            candidate.score.cmp(&incumbent.score)
         } else {
-            cmp.is_lt()
-        }
+            incumbent.score.cmp(&candidate.score)
+        };
+        let order = objective
+            .then_with(|| {
+                if self.ctx.target == ScoreTarget::Mysekai {
+                    let power = |result: &DeckResult| {
+                        self.ctx.clamp_power_total(
+                            super::evaluate::resolve_power_for_cards(self.pool, &result.cards)
+                                + self.ctx.honor_bonus,
+                        )
+                    };
+                    power(incumbent).cmp(&power(candidate))
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then_with(|| {
+                self.game_card_set_key(candidate)
+                    .cmp(&self.game_card_set_key(incumbent))
+            })
+            .then_with(|| {
+                candidate
+                    .cards
+                    .map(|card| self.pool.game_id(card))
+                    .cmp(&incumbent.cards.map(|card| self.pool.game_id(card)))
+            })
+            .then_with(|| candidate.cards.cmp(&incumbent.cards));
+        order.is_lt()
     }
 
     fn into_vec(self) -> Vec<DeckResult> {
@@ -235,12 +261,4 @@ impl BruteForceTopK {
         cards.sort_unstable();
         cards
     }
-}
-
-#[inline(always)]
-fn deck_result_cmp(left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
-    right
-        .score
-        .cmp(&left.score)
-        .then_with(|| left.cards.cmp(&right.cards))
 }

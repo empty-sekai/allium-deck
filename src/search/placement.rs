@@ -30,7 +30,10 @@ pub(super) fn evaluate_candidate(
         return best;
     }
     if !problem.needs_placement_search() {
-        return leaf_evaluate_checked(pool, ctx, deck).map(|score| DeckResult::new(*deck, score));
+        let mut work = *deck;
+        let fixed = problem.fixed_prefix.max(usize::from(ctx.is_final_chapter));
+        sort_exchangeable(pool, &mut work, fixed);
+        return leaf_evaluate_checked(pool, ctx, &work).map(|score| DeckResult::new(work, score));
     }
     let mut work = *deck;
     let mut best = None;
@@ -38,9 +41,10 @@ pub(super) fn evaluate_candidate(
         // In this model the concrete evaluator canonically orders the members;
         // only the leader role remains observable.
         for slot in 0..DECK_SIZE {
-            work.swap(0, slot);
-            promote(pool, ctx, &work, &mut best);
-            work.swap(0, slot);
+            let mut assignment = *deck;
+            assignment.swap(0, slot);
+            sort_exchangeable(pool, &mut assignment, 1);
+            promote(pool, ctx, &assignment, &mut best);
         }
     } else {
         permute(pool, ctx, &mut work, problem.fixed_prefix, &mut best);
@@ -76,11 +80,12 @@ fn promote(
     let Some(score) = leaf_evaluate_checked(pool, ctx, deck) else {
         return;
     };
+    let candidate = DeckResult::new(*deck, score);
     if best
         .as_ref()
-        .is_none_or(|old| score > old.score || (score == old.score && *deck < old.cards))
+        .is_none_or(|old| super::tracker::deck_result_cmp(pool, ctx, &candidate, old).is_lt())
     {
-        *best = Some(DeckResult::new(*deck, score));
+        *best = Some(candidate);
     }
 }
 
@@ -155,4 +160,8 @@ fn visit_bonus_permutations(
         visit_bonus_permutations(pool, ctx, deck, slot + 1, visit);
         deck.swap(slot, other);
     }
+}
+
+fn sort_exchangeable(pool: &CardPool, deck: &mut [CardIdx; DECK_SIZE], fixed: usize) {
+    deck[fixed..].sort_unstable_by_key(|&card| (pool.game_id(card), card.raw()));
 }
