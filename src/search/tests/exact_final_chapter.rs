@@ -355,6 +355,48 @@ fn exact_final_chapter_auto_matches_exhaustive_leader_oracle_randomized() {
 }
 
 #[test]
+fn final_seed_traversal_never_changes_unlimited_canonical_results() {
+    for case in 0..16u64 {
+        let cards = randomized_exact_cards(0x5EED_0000 + case, 12, 6);
+        let pool = build_pool(&cards);
+        let mut final_ctx = final_chapter_ctx(&pool);
+        final_ctx.is_world_bloom = true;
+        final_ctx.event_type = Some(EventType::WorldBloom);
+        final_ctx.diff_attr_bonus = [0, 0, 11, 29, 59, 101];
+        final_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
+        for character in 1usize..=6 {
+            final_ctx.support_decks_by_character[character] =
+                support_deck_for_property(&pool, character + case as usize);
+        }
+        let params = SearchParams {
+            top_k: 4,
+            timeout_ms: 0,
+        };
+        let seeded = search_exact(&pool, &final_ctx, &params);
+        let unseeded = crate::search::tuning::with_tuning(
+            crate::search::tuning::SearchTuning {
+                final_seeds: false,
+                ..Default::default()
+            },
+            || search_exact(&pool, &final_ctx, &params),
+        );
+        assert_property_results(
+            &pool,
+            &seeded,
+            &unseeded,
+            &format!("Final seed equivalence case {case}"),
+        );
+        assert_property_scores(
+            &pool,
+            &final_ctx,
+            &seeded,
+            &unseeded,
+            &format!("Final seed objective case {case}"),
+        );
+    }
+}
+
+#[test]
 fn final_chapter_all_skill_orders_match_explicit_oracle() {
     for case in 0..12u64 {
         let cards = randomized_exact_cards(0xF0AD_1000 + case, 11, 6);

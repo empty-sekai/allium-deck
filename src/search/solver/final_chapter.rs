@@ -464,6 +464,14 @@ struct MemberBeamState {
     key: u64,
 }
 
+#[inline(always)]
+fn member_beam_cmp(left: &MemberBeamState, right: &MemberBeamState) -> std::cmp::Ordering {
+    right
+        .key
+        .cmp(&left.key)
+        .then_with(|| left.cards.cmp(&right.cards))
+}
+
 fn seed_auto_leader_beam(
     pool: &CardPool,
     ctx: &SearchContext,
@@ -527,6 +535,13 @@ fn seed_auto_leader_beam_for_leader(
     if candidates.len() < MEMBER_COUNT {
         return;
     }
+    // The member key is leader-dependent but state-independent.  Computing it
+    // once per candidate avoids repeating support-penalty scans for every beam
+    // prefix; this changes only seed ranking cost, never the proof search.
+    let candidate_keys = candidates
+        .iter()
+        .map(|&card| final_chapter_member_key(pool, ctx, leader_char, card))
+        .collect::<Vec<_>>();
     let mut beam = vec![MemberBeamState {
         cards: [leader; DECK_SIZE],
         len: 0,
@@ -548,6 +563,7 @@ fn seed_auto_leader_beam_for_leader(
                 }
                 stats.diagnostics.seed_states += 1;
                 let card = candidates[idx];
+                let member_key = candidate_keys[idx];
                 idx += 1;
                 let char_id = pool.char_id(card);
                 if state.used_chars & (1u32 << char_id) != 0 {
@@ -560,22 +576,22 @@ fn seed_auto_leader_beam_for_leader(
                     len: state.len + 1,
                     start: idx,
                     used_chars: state.used_chars | (1u32 << char_id),
-                    key: state.key + final_chapter_member_key(pool, ctx, leader_char, card),
+                    key: state.key + member_key,
                 });
             }
         }
         if next.is_empty() {
             break;
         }
-        next.sort_unstable_by(|left, right| {
-            right
-                .key
-                .cmp(&left.key)
-                .then_with(|| left.cards.cmp(&right.cards))
-        });
         if next.len() > beam_width {
+            // Beam membership is heuristic-only.  The comparator is a total
+            // order, so selecting the first beam_width elements preserves the
+            // exact same seed set as a full sort while reducing O(n log n)
+            // sorting of discarded states to linear partitioning.
+            next.select_nth_unstable_by(beam_width, member_beam_cmp);
             next.truncate(beam_width);
         }
+        next.sort_unstable_by(member_beam_cmp);
         beam = next;
         depth += 1;
     }
