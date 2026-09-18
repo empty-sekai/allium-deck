@@ -4,10 +4,10 @@
 //! the HTTP service without first assembling a masterdata directory. The benchmark's
 //! deterministic generator already produces tables with the real schema and a
 //! realistic shape — 26 characters, 1300 cards, a fully levelled account — so this
-//! example writes that set out in the layout the loaders expect.
+//! tool writes that set out in the layout the loaders expect.
 //!
 //! ```text
-//! cargo run --release --example export_synth_masterdata -- ./synth
+//! cargo run --release --manifest-path server/Cargo.toml --bin export_synth_masterdata -- ./synth
 //!
 //! ./synth/masterdata/*.json   # the tables
 //! ./synth/music_metas.json
@@ -17,7 +17,7 @@
 //! The numbers are synthetic, so timings taken against them are for comparing runs
 //! with each other, not for predicting behaviour on real data.
 
-#[path = "../benches/synth_masterdata/mod.rs"]
+#[path = "../synth_masterdata.rs"]
 mod synth_masterdata;
 
 use std::path::{Path, PathBuf};

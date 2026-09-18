@@ -215,7 +215,7 @@ cores. The full list of what is left out is in
 
 ```bash
 # This repository carries no game data; export a synthetic set to try the service.
-cargo run --release --example export_synth_masterdata -- ./synth
+cargo run --release --manifest-path server/Cargo.toml --bin export_synth_masterdata -- ./synth
 
 cd server
 cargo run --release --   --masterdata synth=../synth/masterdata   --music-metas synth=../synth/music_metas.json

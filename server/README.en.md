@@ -39,7 +39,7 @@ deterministic synthetic set the benchmarks use — 26 characters, 1300 cards, a 
 levelled account:
 
 ```bash
-cargo run --release --example export_synth_masterdata -- ./synth
+cargo run --release --manifest-path server/Cargo.toml --bin export_synth_masterdata -- ./synth
 
 cd server
 cargo run --release -- \
@@ -78,8 +78,8 @@ curl localhost:8080/v1/recommend -H 'content-type: application/json' -d "{
 ```
 
 With real data, point `--masterdata` at a directory of flat masterdata `*.json` tables
-and `--music-metas` at a `music_metas.json`. Sources for both are listed in
-[`examples/recommend.rs`](../examples/recommend.rs).
+and `--music-metas` at a `music_metas.json`. The repository defines the input format but does not prescribe a
+data source.
 
 ## Endpoints
 

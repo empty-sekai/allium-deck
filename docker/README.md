@@ -159,7 +159,8 @@ docker build -f server/Dockerfile --build-arg ALLOC=mimalloc .
   单轮测量会给出看似精确的排名，但打乱顺序重测时后五个组合的名次会互相翻转，
   因此这里只给中位数与范围。
 - 数据是本仓自带的确定性合成集（26 角色 / 1300 卡 / 满配账号），由
-  `cargo run --release --example export_synth_masterdata` 生成，不含任何游戏数据。
+  `cargo run --release --manifest-path server/Cargo.toml --bin export_synth_masterdata`
+  生成，不含任何游戏数据。
   合成账号比真实账号大，所以 B 类的绝对耗时不代表真实 World Bloom 请求。
 - 宿主 Docker Desktop（WSL2），容器限 4 CPU / 4 GiB，`--workers 4`。
 - 压测客户端与服务端在同一台机器上，会互相争 CPU。
