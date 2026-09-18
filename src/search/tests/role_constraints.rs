@@ -123,3 +123,50 @@ fn final_chapter_multiple_fixed_slots_remain_required() {
         );
     }
 }
+
+#[test]
+fn final_solo_specific_enumerates_free_member_order() {
+    let pool = build_pool(&randomized_exact_cards(0xF111_5501, 8, 6));
+    for live_type in [LiveType::Solo, LiveType::Auto] {
+        for fixed in [false, true] {
+            let mut ctx = final_chapter_ctx(&pool);
+            ctx.live_type = live_type;
+            ctx.live_skill_order = LiveSkillOrder::Specific;
+            ctx.specific_skill_order = Some([4, 0, 3, 1, 2]);
+            ctx.skill_scores[0] = [0.07, 0.19, 0.41, 0.31, 0.13, 0.37];
+            ctx.skill_scores[1] = [0.11, 0.09, 0.43, 0.13, 0.31, 0.27];
+            ctx.skill_scores[2] = [0.07, 0.19, 0.41, 0.31, 0.13, 0.37];
+            if fixed {
+                ctx.fixed_character_ids = vec![2];
+            }
+            let params = SearchParams {
+                top_k: 3,
+                timeout_ms: 0,
+            };
+            let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
+            let actual = search(&pool, &ctx, &params);
+            assert_property_scores(
+                &pool,
+                &ctx,
+                &actual,
+                &expected,
+                "Final Solo Specific free members",
+            );
+            assert_property_results(&pool, &actual, &expected, "Final Solo Specific canonical");
+        }
+    }
+}
+
+#[test]
+fn final_checked_leaf_enforces_multi_skill_lower_bound() {
+    let pool = build_pool(&five_unique_cards());
+    let mut ctx = final_chapter_ctx(&pool);
+    ctx.multi_live_score_up_lower_bound = Some(1_000.0);
+    let params = SearchParams {
+        top_k: 3,
+        timeout_ms: 0,
+    };
+    let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
+    assert!(expected.is_empty());
+    assert!(search(&pool, &ctx, &params).is_empty());
+}

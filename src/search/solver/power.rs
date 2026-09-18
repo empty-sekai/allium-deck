@@ -82,7 +82,7 @@ pub(super) fn search_power_scenarios(
         };
         let mut states = vec![Vec::<PowerPartial>::new(); DECK_SIZE + 1];
         states[0].push(seed);
-        for choices in by_character.into_iter().skip(1) {
+        for choices in by_character {
             if choices.is_empty() {
                 continue;
             }

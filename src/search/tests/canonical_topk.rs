@@ -244,3 +244,16 @@ fn canonical_legal_assignments_match_independent_oracle() {
         }
     }
 }
+
+#[test]
+fn power_scenarios_include_every_representable_character_group() {
+    let pool = build_pool(&five_unique_cards()); // includes character zero
+    let ctx = ready_ctx(&pool, ScoreTarget::Power);
+    let params = SearchParams {
+        top_k: 1,
+        timeout_ms: 0,
+    };
+    let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
+    assert_eq!(expected.len(), 1);
+    assert_eq!(search(&pool, &ctx, &params), expected);
+}
