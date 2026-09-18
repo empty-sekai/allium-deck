@@ -126,8 +126,8 @@ impl CorrelatedBound{
    // Keep the second admissible plane only when a cheap depth-1 probe predicts
    // material search-tree reduction.  A direct crossing of the current kth
    // incumbent is decisive; otherwise require at least 6% relative tightening.
-   // The 6% selector separated all >=20% node-reduction cases in the AS
-   // synthetic selector sweep (70 fixtures) without false positives.
+   // This selector changes only the cost of evaluating a second admissible plane;
+   // exactness is unchanged whether the second plane is retained or dropped.
    let keep_second=direct_prunes>0 || max_gain_ppm>=60_000;
    if std::env::var_os("ALLIUM_CORRELATED_TRACE").is_some(){eprintln!("correlated-auto top_k={top_k} kth={kth_threshold} improved={improved} material={material} gain_1pct={gain_1pct} max_delta={max_delta} max_gain_ppm={max_gain_ppm} direct_prunes={direct_prunes} gap_quarter={gap_quarter} gap_half={gap_half} gap_saved={gap_saved} gap_sum={gap_sum} keep_second={keep_second}");}
    if !keep_second{planes.truncate(1);}

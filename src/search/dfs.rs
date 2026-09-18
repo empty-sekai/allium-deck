@@ -35,11 +35,11 @@ impl EpShadowBlock {
 /// DFS 搜索统计。
 #[derive(Clone, Debug, Default)]
 pub struct SearchStats {
-    /// Experimental: visited recursion checkpoints.
+    /// Visited recursion checkpoints.
     pub visited_nodes: u64,
-    /// Experimental: search actually hit its deadline.
+    /// Whether the search hit its deadline.
     pub deadline_hit: bool,
-    /// Experimental: joint power/skill prunes.
+    /// Branches pruned by the correlated power/skill bound.
     pub correlated_prunes: u64,
     /// 求值过的完整队伍数。
     pub leaf_nodes: u64,
