@@ -1,5 +1,6 @@
 //! Additive top-K dynamic programming over unit/attribute power scenarios.
 use crate::pool::{CardIdx, CardPool};
+use crate::search::budget::SearchBudget;
 use crate::search::{
     DeckResult, SearchContext, SearchParams, SearchStats, TopKTracker, evaluate, placement,
 };
@@ -16,6 +17,7 @@ pub(super) fn search_power_scenarios(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
+    budget: &mut SearchBudget,
 ) -> (Vec<DeckResult>, SearchStats) {
     // For an additive scenario, keeping the best K partial states at each
     // cardinality is exact: every future choice is independent of the cards
@@ -37,7 +39,10 @@ pub(super) fn search_power_scenarios(
         }
     }
 
-    for (unit_all, attr_all) in scenarios {
+    'scenarios: for (unit_all, attr_all) in scenarios {
+        if budget.expired() {
+            break;
+        }
         let mut by_character = vec![Vec::<(u32, CardIdx)>::new(); 27];
         for card in pool.indices() {
             if unit_all.is_some_and(|unit| pool.unit_mask_raw(card) & (1u8 << unit) == 0) {
@@ -83,6 +88,9 @@ pub(super) fn search_power_scenarios(
         let mut states = vec![Vec::<PowerPartial>::new(); DECK_SIZE + 1];
         states[0].push(seed);
         for choices in by_character {
+            if budget.expired() {
+                break 'scenarios;
+            }
             if choices.is_empty() {
                 continue;
             }
@@ -95,6 +103,10 @@ pub(super) fn search_power_scenarios(
                 let previous = states[count].clone();
                 for state in previous {
                     for &(power, card) in &choices {
+                        if budget.expired_sampled() {
+                            break 'scenarios;
+                        }
+                        stats.visited_nodes += 1;
                         let mut next = state;
                         next.cards[count] = card;
                         next.len = count + 1;
@@ -115,6 +127,7 @@ pub(super) fn search_power_scenarios(
             }
         }
 
+        stats.diagnostics.power_scenarios_completed += 1;
         for state in &states[DECK_SIZE] {
             stats.leaf_nodes += 1;
             if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &state.cards) {
@@ -122,6 +135,8 @@ pub(super) fn search_power_scenarios(
             }
         }
     }
+    stats.deadline_hit = budget.hit;
+    stats.finalize();
     (tracker.into_vec(), stats)
 }
 

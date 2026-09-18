@@ -285,7 +285,7 @@ fn fractional_final_leader_bounds_and_dominance_match_ordered_oracle() {
                     timeout_ms: 0,
                 };
                 let expected = ExactOracle::new(&pool, &ctx).search(&params).0;
-                let actual = search(&pool, &ctx, &params);
+                let actual = search_exact(&pool, &ctx, &params);
                 assert_property_scores(
                     &pool,
                     &ctx,

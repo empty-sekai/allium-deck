@@ -1,8 +1,4 @@
-use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
+use super::budget::SearchBudget;
 
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, LiveType, ScoreTarget};
@@ -33,14 +29,42 @@ impl EpShadowBlock {
     }
 }
 
-/// DFS 搜索统计。
-#[derive(Clone, Debug, Default)]
+/// Work split by phase; these diagnostics are not solver-independent node units.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct SearchDiagnostics {
+    /// Seed frontier checkpoints, never proof-carrying states.
+    pub seed_states: u64,
+    /// Complete candidate sets evaluated by incumbent generation.
+    pub seed_leaves: u64,
+    /// Complete candidate sets evaluated by the exact frontier.
+    pub proof_leaves: u64,
+    /// Reconstruction frontier checkpoints.
+    pub alternative_states: u64,
+    /// Complete candidate sets evaluated during dominance reconstruction.
+    pub alternative_leaves: u64,
+    /// Fully processed additive power scenarios.
+    pub power_scenarios_completed: u64,
+    /// Auto/fixed leader jobs inspected by the proof search.
+    pub leader_jobs: u64,
+}
+
+/// Search work and actual solver termination, not elapsed-time estimates.
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct SearchStats {
-    /// Experimental: visited recursion checkpoints.
+    /// Proof-frontier checkpoints (DFS prefixes, grouped states or DP transitions).
+    /// Excludes seed and reconstruction work; granularity depends on the solver.
     pub visited_nodes: u64,
-    /// Experimental: search actually hit its deadline.
+    /// True only when a phase stopped work because its shared deadline expired.
     pub deadline_hit: bool,
-    /// Experimental: joint power/skill prunes.
+    /// Bound rejection decisions, not the number of descendant decks eliminated.
+    pub bound_prunes: u64,
+    /// Candidate/prefix rejection decisions caused by hard feasibility constraints.
+    pub feasibility_prunes: u64,
+    /// Candidates removed by certified dominance (including member-only removal).
+    pub dominance_prunes: u64,
+    /// Phase-specific work; seed evaluations never count as proof leaves.
+    pub diagnostics: SearchDiagnostics,
+    /// Compatibility counter: joint power/skill bound rejections.
     pub correlated_prunes: u64,
     /// 求值过的完整队伍数。
     pub leaf_nodes: u64,
@@ -60,14 +84,64 @@ pub struct SearchStats {
     pub mono_break_prunes: u64,
 }
 
+impl SearchStats {
+    /// The single completion source of truth.
+    pub fn completion(&self) -> super::SearchCompletion {
+        if self.deadline_hit {
+            super::SearchCompletion::TimedOut
+        } else {
+            super::SearchCompletion::Complete
+        }
+    }
+
+    pub(crate) fn finalize(&mut self) {
+        self.bound_prunes = self.ub_prunes
+            + self.leader_prunes
+            + self.correlated_prunes
+            + self.ep_break_prunes
+            + self.ep_continue_prunes
+            + self.mono_break_prunes;
+        self.diagnostics.proof_leaves = self
+            .leaf_nodes
+            .saturating_sub(self.diagnostics.seed_leaves)
+            .saturating_sub(self.diagnostics.alternative_leaves);
+    }
+
+    /// Merge disjoint pieces of one operation, preserving any incomplete phase.
+    pub fn accumulate(&mut self, part: &Self) {
+        self.deadline_hit |= part.deadline_hit;
+        self.visited_nodes += part.visited_nodes;
+        self.leaf_nodes += part.leaf_nodes;
+        self.bound_prunes += part.bound_prunes;
+        self.feasibility_prunes += part.feasibility_prunes;
+        self.dominance_prunes += part.dominance_prunes;
+        self.ub_prunes += part.ub_prunes;
+        self.leader_prunes += part.leader_prunes;
+        self.correlated_prunes += part.correlated_prunes;
+        self.ep_candidates += part.ep_candidates;
+        self.ep_break_prunes += part.ep_break_prunes;
+        self.ep_continue_prunes += part.ep_continue_prunes;
+        self.ep_explored += part.ep_explored;
+        self.mono_break_prunes += part.mono_break_prunes;
+        self.diagnostics.seed_states += part.diagnostics.seed_states;
+        self.diagnostics.seed_leaves += part.diagnostics.seed_leaves;
+        self.diagnostics.proof_leaves += part.diagnostics.proof_leaves;
+        self.diagnostics.alternative_states += part.diagnostics.alternative_states;
+        self.diagnostics.alternative_leaves += part.diagnostics.alternative_leaves;
+        self.diagnostics.power_scenarios_completed += part.diagnostics.power_scenarios_completed;
+        self.diagnostics.leader_jobs += part.diagnostics.leader_jobs;
+    }
+}
+
 /// 执行精确 DFS/B&B 搜索。
 pub fn dfs_search(
     pool: &CardPool,
     ctx: &SearchContext,
     suffix: &SuffixBound,
     params: &SearchParams,
-) -> Vec<DeckResult> {
-    dfs_search_seeded(pool, ctx, suffix, params, None)
+) -> super::SearchOutcome<Vec<DeckResult>> {
+    let (results, stats) = dfs_search_instrumented(pool, ctx, suffix, params, None);
+    super::SearchOutcome::new(results, stats)
 }
 
 /// 单次 DFS 为每个精确活动加成档位保留独立 Top-K。
@@ -90,18 +164,6 @@ pub fn dfs_search_bonus_targets(
     )
 }
 
-pub(crate) fn dfs_search_seeded(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    suffix: &SuffixBound,
-    params: &SearchParams,
-    seed: Option<DeckResult>,
-) -> Vec<DeckResult> {
-    let seeds = seed.into_iter().collect::<Vec<_>>();
-    let (results, _) = dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None, None);
-    results
-}
-
 /// 与 [`dfs_search`] 相同，额外返回剪枝统计。
 pub fn dfs_search_instrumented(
     pool: &CardPool,
@@ -114,16 +176,6 @@ pub fn dfs_search_instrumented(
     dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None, None)
 }
 
-pub(crate) fn dfs_search_instrumented_with_seeds(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    suffix: &SuffixBound,
-    params: &SearchParams,
-    seeds: Vec<DeckResult>,
-) -> (Vec<DeckResult>, SearchStats) {
-    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None, None)
-}
-
 fn dfs_search_seeded_inner(
     pool: &CardPool,
     ctx: &SearchContext,
@@ -133,6 +185,29 @@ fn dfs_search_seeded_inner(
     bonus_targets: Option<&[i32]>,
     bonus_reach: Option<&BonusReach>,
 ) -> (Vec<DeckResult>, SearchStats) {
+    let mut budget = SearchBudget::from_params(params);
+    dfs_search_with_budget(
+        pool,
+        ctx,
+        suffix,
+        params,
+        seeds,
+        bonus_targets,
+        bonus_reach,
+        &mut budget,
+    )
+}
+
+pub(crate) fn dfs_search_with_budget(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+    params: &SearchParams,
+    seeds: Vec<DeckResult>,
+    bonus_targets: Option<&[i32]>,
+    bonus_reach: Option<&BonusReach>,
+    budget: &mut SearchBudget,
+) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
     }
@@ -140,16 +215,19 @@ fn dfs_search_seeded_inner(
     // Seeds and combination leaves solve the same exact placement problem.
     // Align fixed slots first, then optimize every observable free role. A seed
     // must never be downgraded merely to match a combination-only oracle.
-    let seeds = seeds
-        .into_iter()
-        .filter_map(|seed| canonicalize_seed_result(pool, ctx, seed))
-        .collect::<Vec<_>>();
-
-    let deadline = if params.timeout_ms == 0 {
-        None
-    } else {
-        Some(Instant::now() + Duration::from_millis(params.timeout_ms))
-    };
+    let mut seed_stats = SearchStats::default();
+    let mut canonical_seeds = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        if budget.expired_sampled() {
+            break;
+        }
+        seed_stats.leaf_nodes += 1;
+        seed_stats.diagnostics.seed_leaves += 1;
+        if let Some(seed) = canonicalize_seed_result(pool, ctx, seed) {
+            canonical_seeds.push(seed);
+        }
+    }
+    let seeds = canonical_seeds;
 
     let mut tracker = match bonus_targets {
         Some(targets) => SearchTracker::Bonus(BonusBucketTracker::new(params.top_k, targets)),
@@ -164,6 +242,11 @@ fn dfs_search_seeded_inner(
     for seed_result in seeds {
         tracker.insert(pool, ctx, seed_result);
     }
+    if budget.expired() {
+        seed_stats.deadline_hit = true;
+        seed_stats.finalize();
+        return (tracker.into_vec(), seed_stats);
+    }
     let correlated_kth = tracker.threshold() >> 32;
 
     let mut state = SearchState {
@@ -177,15 +260,15 @@ fn dfs_search_seeded_inner(
         pool,
         ctx,
         suffix,
-        deadline,
+        budget,
         tracker: &mut tracker,
         bonus_reach,
         node_count: 0,
-        deadline_hit: false,
-        stats: SearchStats::default(),
+        stats: seed_stats,
         avx512_candidate_mask: crate::simd::avx512_available(),
         bounds_enabled: super::tuning::SearchTuning::load().bounds,
     };
+    state.budget.expired();
     let mut deck = [CardIdx::new(0); DECK_SIZE];
 
     if ctx.is_final_chapter {
@@ -235,7 +318,8 @@ fn dfs_search_seeded_inner(
 
     let mut stats = state.stats.clone();
     stats.visited_nodes = state.node_count;
-    stats.deadline_hit = state.deadline_hit;
+    stats.deadline_hit = state.budget.hit;
+    stats.finalize();
     (tracker.into_vec(), stats)
 }
 
@@ -324,12 +408,11 @@ struct SearchState<'a> {
     pool: &'a CardPool,
     ctx: &'a SearchContext,
     suffix: &'a SuffixBound,
-    deadline: Option<Instant>,
+    budget: &'a mut SearchBudget,
     tracker: &'a mut SearchTracker,
     /// Bonus-target reachability bitsets; `None` on every non-bucket path.
     bonus_reach: Option<&'a BonusReach>,
     node_count: u64,
-    deadline_hit: bool,
     stats: SearchStats,
     avx512_candidate_mask: bool,
     bounds_enabled: bool,
@@ -530,7 +613,7 @@ impl SearchState<'_> {
                 fixed_leader,
                 bonus_x10 + self.pool.event_bonus(card).total_x10() as u32,
             );
-            if self.deadline_hit {
+            if self.budget.hit {
                 return;
             }
         }
@@ -1249,23 +1332,11 @@ impl SearchState<'_> {
 
     #[inline(always)]
     fn timed_out(&mut self) -> bool {
-        // 粘性中止：一旦过线，后续所有调用都立刻返回 true，整棵搜索树逐层退出；
-        // 否则 1024 抽检里未命中的调用会继续推进搜索，timeout_ms 形同虚设。
-        if self.deadline_hit {
+        if self.budget.hit {
             return true;
         }
         self.node_count = self.node_count.wrapping_add(1);
-        let Some(deadline) = self.deadline else {
-            return false;
-        };
-        if self.node_count & 1023 != 0 {
-            return false;
-        }
-        if Instant::now() >= deadline {
-            self.deadline_hit = true;
-            return true;
-        }
-        false
+        self.budget.expired_sampled()
     }
 
     #[inline(always)]

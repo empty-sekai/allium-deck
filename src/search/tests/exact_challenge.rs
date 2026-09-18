@@ -24,7 +24,7 @@ fn challenge_all_searches_each_character_and_merges() {
         timeout_ms: 0,
     };
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     assert!(!results.is_empty(), "challenge_all 必须给出结果");
 
     // 每个卡组都必须是同角色的合法挑战队伍。
@@ -66,7 +66,7 @@ fn challenge_single_character_pool_keeps_direct_search() {
         timeout_ms: 0,
     };
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     let suffix = SuffixBound::build(&pool, &search_ctx);
     let (direct, _) = challenge_search::search(&pool, &search_ctx, &suffix, &params);
     assert_eq!(results, direct);
@@ -114,7 +114,7 @@ fn challenge_live_power_and_skill_targets_search_same_character_decks() {
             timeout_ms: 0,
         };
 
-        let results = search(&pool, &search_ctx, &params);
+        let results = search_exact(&pool, &search_ctx, &params);
         assert!(!results.is_empty(), "challenge × {target:?} 必须给出结果");
         for result in &results {
             let leader_char = pool.char_id(result.cards[0]);

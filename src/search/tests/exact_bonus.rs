@@ -25,7 +25,7 @@ fn search_power_scenarios_matches_bruteforce_with_unit_and_attr_bonuses() {
     let pool = builder.freeze();
     let search_ctx = ready_ctx(&pool, ScoreTarget::Power);
     let expected = brute_force_best(&pool, &search_ctx);
-    let actual = search(
+    let actual = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -140,7 +140,7 @@ fn search_dfs_bonus_noevent_matches_bruteforce_with_suffix_max_break() {
         timeout_ms: 0,
     };
 
-    let best = dfs_search(&pool, &search_ctx, &suffix, &params)
+    let best = dfs_search_exact(&pool, &search_ctx, &suffix, &params)
         .first()
         .map(|result| result.score)
         .unwrap_or(0);
@@ -245,7 +245,7 @@ fn search_bonus_targets_matches_single_pass_bruteforce_buckets() {
     };
     let targets = [150, 250];
 
-    let default_actual = search(&pool, &search_ctx, &params);
+    let default_actual = search_exact(&pool, &search_ctx, &params);
     let (default_expected, _) = brute_force_search(&pool, &search_ctx, &params);
     assert_eq!(default_actual, default_expected);
 

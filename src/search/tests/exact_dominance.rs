@@ -106,14 +106,14 @@ fn search_dominance_preserves_best_score() {
         top_k: 1,
         timeout_ms: 0,
     };
-    let before = dfs_search(&pool, &search_ctx, &suffix, &params)
+    let before = dfs_search_exact(&pool, &search_ctx, &suffix, &params)
         .first()
         .map(|result| result.score)
         .unwrap_or(0);
 
     let dominance = eliminate_dominated(&pool, &search_ctx);
     let compacted_suffix = SuffixBound::build(&dominance.pool, &dominance.ctx);
-    let after = dfs_search(&dominance.pool, &dominance.ctx, &compacted_suffix, &params)
+    let after = dfs_search_exact(&dominance.pool, &dominance.ctx, &compacted_suffix, &params)
         .first()
         .map(|result| result.score)
         .unwrap_or(0);
@@ -145,7 +145,7 @@ fn search_top_k_recovers_dominated_alternatives() {
     let dominance = eliminate_dominated(&pool, &search_ctx);
     assert_eq!(dominance.after, dominance.before - 1);
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
     assert_results_match_bruteforce(&pool, &results, &brute);
     assert!(
@@ -179,7 +179,7 @@ fn search_top_k_recovers_multi_slot_dominated_alternatives() {
     let dominance = eliminate_dominated(&pool, &search_ctx);
     assert_eq!(dominance.after, dominance.before - 2);
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
     assert_results_match_bruteforce(&pool, &results, &brute);
     assert_eq!(results.len(), 4);
@@ -210,7 +210,7 @@ fn search_power_top_k_dedups_cultivation_variants() {
         timeout_ms: 0,
     };
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
     assert_results_match_bruteforce(&pool, &results, &brute);
     assert!(
@@ -241,7 +241,7 @@ fn exact_top_k_ties_preserve_canonical_card_sets() {
     for target in [ScoreTarget::Score, ScoreTarget::Power, ScoreTarget::Skill] {
         let mut search_ctx = ready_ctx(&pool, target);
         search_ctx.skill_scores[0] = [0.2; 6];
-        let got = search(&pool, &search_ctx, &params);
+        let got = search_exact(&pool, &search_ctx, &params);
         let (expected, _) = brute_force_search(&pool, &search_ctx, &params);
         assert_property_results(&pool, &got, &expected, &format!("tie no-event {target:?}"));
     }
@@ -253,7 +253,7 @@ fn exact_top_k_ties_preserve_canonical_card_sets() {
     event_ctx.live_type = LiveType::Multi;
     event_ctx.event_type = Some(EventType::Marathon);
     event_ctx.skill_scores[1] = [0.2; 6];
-    let got = search(&pool, &event_ctx, &params);
+    let got = search_exact(&pool, &event_ctx, &params);
     let (expected, _) = brute_force_search(&pool, &event_ctx, &params);
     assert_property_results(&pool, &got, &expected, "tie multi-event");
 }

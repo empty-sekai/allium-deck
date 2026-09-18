@@ -70,7 +70,7 @@ fn audit_case7_ordered_feasible_set() {
     let (production, stats) = search_instrumented(&pool, &context, &params);
     let (combination, _) = brute_force_search(&pool, &context, &params);
     let suffix = SuffixBound::build(&pool, &context);
-    let unseeded = dfs_search(&pool, &context, &suffix, &params);
+    let unseeded = dfs_search_exact(&pool, &context, &suffix, &params);
     let ordered = ordered_exhaustive(&pool, &context, 4);
     let raw_seeds = warm_start::warm_start_seeds(&pool, &context, 4);
     let mut results = serde_json::Map::new();

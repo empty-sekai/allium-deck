@@ -2262,6 +2262,11 @@ fn bonus_tier_pool_keeps_master_rank_bonus_cards_and_hits_exact_tiers() {
         },
         &[33],
     );
+    assert_eq!(
+        decks.completion(),
+        crate::search::SearchCompletion::Complete
+    );
+    let decks = decks.results;
     assert!(!decks.is_empty(), "33 档应能组出卡组");
     for deck in &decks {
         let total_x10: u32 = deck
@@ -2385,7 +2390,7 @@ fn pool_constraint_search(
     ctx: &crate::search::SearchContext,
     params: &BuildParams,
 ) -> Vec<crate::search::DeckResult> {
-    crate::search::search_targets(
+    let outcome = crate::search::search_targets(
         pool,
         ctx,
         &crate::search::SearchParams {
@@ -2393,7 +2398,12 @@ fn pool_constraint_search(
             timeout_ms: 10_000,
         },
         &params.target_bonus_list,
-    )
+    );
+    assert_eq!(
+        outcome.completion(),
+        crate::search::SearchCompletion::Complete
+    );
+    outcome.results
 }
 
 #[test]

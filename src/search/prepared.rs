@@ -4,6 +4,7 @@ use super::{
     DeckResult, SearchContext, SearchParams, SearchStats, SuffixBound, dfs, eliminate_dominated,
     remap_results, warm_start,
 };
+use super::{SearchOutcome, budget::SearchBudget};
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, ScoreTarget};
 use std::sync::Arc;
@@ -75,13 +76,17 @@ impl PreparedSearch {
         {
             return None;
         }
+        let mut budget = SearchBudget::from_params(params);
         let seeds = self.warm_seeds.iter().copied().take(params.top_k).collect();
-        let (compacted_results, stats) = dfs::dfs_search_instrumented_with_seeds(
+        let (compacted_results, mut stats) = dfs::dfs_search_with_budget(
             &self.pool,
             &self.ctx,
             &self.suffix,
             params,
             seeds,
+            None,
+            None,
+            &mut budget,
         );
         let remapped = remap_results(compacted_results, &self.original_indices);
         let expanded = expand_dominated_alternatives(
@@ -90,7 +95,21 @@ impl PreparedSearch {
             &self.alternatives,
             params,
             remapped,
+            &mut budget,
+            &mut stats,
         );
+        stats.deadline_hit |= budget.hit;
+        stats.finalize();
         Some((expanded, stats))
+    }
+    /// Execute a compatible prepared query without dropping its completion record.
+    pub fn search(
+        &self,
+        original_pool: &CardPool,
+        original_ctx: &SearchContext,
+        params: &SearchParams,
+    ) -> Option<SearchOutcome<Vec<DeckResult>>> {
+        self.search_instrumented(original_pool, original_ctx, params)
+            .map(|(results, stats)| SearchOutcome::new(results, stats))
     }
 }

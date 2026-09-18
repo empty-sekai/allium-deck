@@ -61,7 +61,7 @@ fn prepared_multi_event_search_matches_standard_pipeline() {
         timeout_ms: 0,
     };
 
-    let expected = search(&pool, &search_ctx, &params);
+    let expected = search_exact(&pool, &search_ctx, &params);
     let prepared = PreparedSearch::build(&pool, &search_ctx, params.top_k).unwrap();
     let (actual, _) = prepared
         .search_instrumented(&pool, &search_ctx, &params)
@@ -101,5 +101,5 @@ fn prepared_plan_rejects_a_changed_query_or_pool_instance() {
     // Moving the original immutable pool does not invalidate its plan.
     let moved = Box::new(pool);
     let (actual, _) = prepared.search_instrumented(&moved, &ctx, &params).unwrap();
-    assert_eq!(actual, search(&moved, &ctx, &params));
+    assert_eq!(actual, search_exact(&moved, &ctx, &params));
 }

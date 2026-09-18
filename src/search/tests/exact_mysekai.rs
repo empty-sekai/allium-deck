@@ -103,7 +103,7 @@ fn search_dfs_mysekai_matches_bruteforce_with_suffix_max_break() {
         timeout_ms: 0,
     };
 
-    let best = dfs_search(&pool, &search_ctx, &suffix, &params)
+    let best = dfs_search_exact(&pool, &search_ctx, &suffix, &params)
         .first()
         .map(|result| result.score)
         .unwrap_or(0);
@@ -138,7 +138,7 @@ fn mysekai_top_k_is_monotone_across_limits() {
     let search_ctx = ready_ctx(&pool, ScoreTarget::Mysekai);
 
     let run = |top_k: usize| {
-        search(
+        search_exact(
             &pool,
             &search_ctx,
             &SearchParams {

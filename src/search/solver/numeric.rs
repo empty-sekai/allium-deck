@@ -2,20 +2,17 @@
 use super::power::search_power_scenarios;
 use crate::pool::{CardIdx, CardPool};
 use crate::search::DeckResult;
+use crate::search::budget::SearchBudget;
 use crate::search::{
     SearchContext, SearchParams, SearchStats, TopKTracker, evaluate, placement, tuning,
 };
 use crate::types::{DECK_SIZE, ScoreTarget};
-use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
 
 pub(crate) fn search_simple_target(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
+    budget: &mut SearchBudget,
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
@@ -33,10 +30,10 @@ pub(crate) fn search_simple_target(
         && ctx.multi_live_score_up_lower_bound.is_none()
         && ctx.power_total_cap.is_none()
     {
-        return search_power_scenarios(pool, ctx, params);
+        return search_power_scenarios(pool, ctx, params, budget);
     }
 
-    search_simple_target_exact(pool, ctx, params)
+    search_simple_target_exact(pool, ctx, params, budget)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -58,13 +55,14 @@ struct SimpleExactState<'a> {
     bounds_enabled: bool,
     tracker: TopKTracker,
     stats: SearchStats,
-    deadline: Option<Instant>,
+    budget: &'a mut SearchBudget,
 }
 
 fn search_simple_target_exact(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
+    budget: &mut SearchBudget,
 ) -> (Vec<DeckResult>, SearchStats) {
     let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
     let mut cards = pool.indices().collect::<Vec<_>>();
@@ -113,8 +111,7 @@ fn search_simple_target_exact(
         bounds_enabled: tuning.bounds && tuning.simple_bound,
         tracker: TopKTracker::new(params.top_k),
         stats: SearchStats::default(),
-        deadline: (params.timeout_ms != 0)
-            .then(|| Instant::now() + Duration::from_millis(params.timeout_ms)),
+        budget,
     };
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     let mut selected_game_ids = [u16::MAX; DECK_SIZE];
@@ -126,6 +123,8 @@ fn search_simple_target_exact(
         &mut selected_game_ids,
         SimpleRelaxedPartial::default(),
     );
+    state.stats.deadline_hit = state.budget.hit;
+    state.stats.finalize();
     (state.tracker.into_vec(), state.stats)
 }
 
@@ -181,20 +180,7 @@ impl SimpleExactState<'_> {
 
     #[inline(always)]
     fn timed_out(&mut self) -> bool {
-        if self.stats.deadline_hit {
-            return true;
-        }
-        let Some(deadline) = self.deadline else {
-            return false;
-        };
-        if self.stats.visited_nodes & 1023 != 0 {
-            return false;
-        }
-        if Instant::now() >= deadline {
-            self.stats.deadline_hit = true;
-            return true;
-        }
-        false
+        self.budget.expired_sampled()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -226,6 +212,9 @@ impl SimpleExactState<'_> {
         let is_fixed = self.ctx.is_fixed_slot(depth);
         let mut pos = if is_fixed { 0 } else { min_free_pos };
         while pos < self.cards.len() {
+            if self.budget.expired_sampled() {
+                return;
+            }
             if !is_fixed && self.cards.len() - pos < DECK_SIZE - depth {
                 break;
             }
@@ -233,6 +222,7 @@ impl SimpleExactState<'_> {
             pos += 1;
             let game_id = self.pool.game_id(card);
             if selected_game_ids[..depth].contains(&game_id) {
+                self.stats.feasibility_prunes += 1;
                 continue;
             }
             if self
@@ -240,17 +230,20 @@ impl SimpleExactState<'_> {
                 .fixed_card_at(depth)
                 .is_some_and(|required| required != game_id)
             {
+                self.stats.feasibility_prunes += 1;
                 continue;
             }
             let char_id = self.pool.char_id(card);
             let fixed_char = self.ctx.fixed_character_at(depth);
             if fixed_char.is_some_and(|required| required != char_id) {
+                self.stats.feasibility_prunes += 1;
                 continue;
             }
             if self.ctx.enforce_char_uniqueness && used_chars & (1u32 << char_id) != 0 {
                 // Preserve the public fixed-character semantics: an explicitly
                 // repeated fixed character may occupy another fixed slot.
                 if fixed_char != Some(char_id) {
+                    self.stats.feasibility_prunes += 1;
                     continue;
                 }
             }

@@ -18,19 +18,19 @@ fn exact_power_skill_and_world_bloom_match_bruteforce_randomized() {
         let mut power_ctx = ready_ctx(&pool, ScoreTarget::Power);
         power_ctx.fixed_card_ids = vec![pool.game_id(CardIdx::new(0))];
         power_ctx.fixed_character_ids = vec![2];
-        let got = search(&pool, &power_ctx, &params);
+        let got = search_exact(&pool, &power_ctx, &params);
         let (expected, _) = brute_force_search(&pool, &power_ctx, &params);
         assert_property_results(&pool, &got, &expected, &format!("case {case} power-max"));
 
         let mut minimize_ctx = power_ctx.clone();
         minimize_ctx.minimize = true;
-        let got = search(&pool, &minimize_ctx, &params);
+        let got = search_exact(&pool, &minimize_ctx, &params);
         let (expected, _) = brute_force_search(&pool, &minimize_ctx, &params);
         assert_property_results(&pool, &got, &expected, &format!("case {case} power-min"));
 
         let mut skill_ctx = ready_ctx(&pool, ScoreTarget::Skill);
         skill_ctx.fixed_character_ids = vec![1];
-        let got = search(&pool, &skill_ctx, &params);
+        let got = search_exact(&pool, &skill_ctx, &params);
         let (expected, _) = brute_force_search(&pool, &skill_ctx, &params);
         assert_property_results(&pool, &got, &expected, &format!("case {case} skill"));
 
@@ -43,7 +43,7 @@ fn exact_power_skill_and_world_bloom_match_bruteforce_randomized() {
         wl_ctx.skill_scores[1] = [0.17, 0.13, 0.11, 0.07, 0.05, 0.19];
         wl_ctx.diff_attr_bonus = [0, 0, 7, 19, 41, 83];
         wl_ctx.support_deck = support_deck_for_property(&pool, case as usize);
-        let got = search(&pool, &wl_ctx, &params);
+        let got = search_exact(&pool, &wl_ctx, &params);
         let (expected, _) = brute_force_search(&pool, &wl_ctx, &params);
         if got.iter().map(|result| result.score).collect::<Vec<_>>()
             != expected
@@ -52,7 +52,7 @@ fn exact_power_skill_and_world_bloom_match_bruteforce_randomized() {
                 .collect::<Vec<_>>()
         {
             let suffix = SuffixBound::build(&pool, &wl_ctx);
-            let direct = dfs_search(&pool, &wl_ctx, &suffix, &params);
+            let direct = dfs_search_exact(&pool, &wl_ctx, &suffix, &params);
             eprintln!("WL diagnostic case={case}");
             for (name, results) in [
                 ("search", &got),
@@ -91,7 +91,7 @@ fn exact_power_skill_special_skills_and_variants_match_bruteforce() {
         skill_ctx.skill_reference_strategy = reference;
         skill_ctx.fixed_card_ids = vec![pool.game_id(CardIdx::new(0))];
         skill_ctx.fixed_character_ids = vec![2];
-        let got = search(&pool, &skill_ctx, &params);
+        let got = search_exact(&pool, &skill_ctx, &params);
         let (expected, _) = brute_force_search(&pool, &skill_ctx, &params);
         assert_property_scores(
             &pool,
@@ -105,13 +105,13 @@ fn exact_power_skill_special_skills_and_variants_match_bruteforce() {
     let mut power_max = ready_ctx(&pool, ScoreTarget::Power);
     power_max.fixed_card_ids = vec![pool.game_id(CardIdx::new(1))];
     power_max.fixed_character_ids = vec![3];
-    let got = search(&pool, &power_max, &params);
+    let got = search_exact(&pool, &power_max, &params);
     let (expected, _) = brute_force_search(&pool, &power_max, &params);
     assert_property_scores(&pool, &power_max, &got, &expected, "special power-max");
 
     let mut power_min = power_max.clone();
     power_min.minimize = true;
-    let got = search(&pool, &power_min, &params);
+    let got = search_exact(&pool, &power_min, &params);
     let (expected, _) = brute_force_search(&pool, &power_min, &params);
     assert_property_scores(&pool, &power_min, &got, &expected, "special power-min");
 }

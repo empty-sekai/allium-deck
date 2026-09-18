@@ -78,3 +78,44 @@ pub struct SearchParams {
     /// 超时后返回的是当时已收集到的结果，不是错误——因此超时的搜索不一定完整。
     pub timeout_ms: u64,
 }
+
+/// Whether every proof obligation of this operation was discharged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchCompletion {
+    /// Canonical Top-K is proven for the complete supported feasible set.
+    Complete,
+    /// Only legal, exactly evaluated incumbents are returned; Top-K is unproven.
+    TimedOut,
+}
+
+/// Results and the actual termination/work record of one search operation.
+/// Completion is derived from stats, so two mutable status fields cannot disagree.
+#[derive(Clone, Debug)]
+#[must_use = "Inspect completion() before treating results as an exact Top-K"]
+pub struct SearchOutcome<T> {
+    /// Complete results or the legal incumbents collected before expiry.
+    pub results: T,
+    /// Includes the sticky deadline flag and phase diagnostics.
+    pub stats: super::SearchStats,
+}
+
+impl<T> SearchOutcome<T> {
+    /// Actual completion, never inferred from wall-clock duration.
+    pub fn completion(&self) -> SearchCompletion {
+        self.stats.completion()
+    }
+
+    /// Transform results without dropping their completion record.
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> SearchOutcome<U> {
+        SearchOutcome {
+            results: f(self.results),
+            stats: self.stats,
+        }
+    }
+
+    pub(crate) fn new(results: T, mut stats: super::SearchStats) -> Self {
+        stats.finalize();
+        Self { results, stats }
+    }
+}

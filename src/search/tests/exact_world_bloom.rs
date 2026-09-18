@@ -32,7 +32,7 @@ fn search_world_bloom_support_penalty_blocks_first_pass_domination() {
     let dominance = eliminate_dominated(&pool, &search_ctx);
     assert_eq!(dominance.after, dominance.before);
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
     assert_results_match_bruteforce(&pool, &results, &brute);
     assert!(

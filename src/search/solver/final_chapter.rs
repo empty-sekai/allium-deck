@@ -1,8 +1,4 @@
-use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
+use crate::search::budget::SearchBudget as DeadlineGuard;
 
 use crate::pool::{CardIdx, CardPool};
 use crate::types::DECK_SIZE;
@@ -21,57 +17,6 @@ const RANKED_CAP: usize = 32;
 
 /// `recurse_cards` 排序候选缓冲的单槽：(上界, 卡, 落子后的局部状态)。
 type RankedSlot = (u64, CardIdx, CardPartial);
-/// 递归热路径每 1024 个节点才真正读一次时钟：`Instant::now()` 在 wasm 上是
-/// `performance.now()` 的 JS 调用，逐节点读会主导终章搜索耗时。一旦过线即置粘性
-/// 标志，之后所有调用立刻返回 true，整棵递归逐层退出（与 `dfs.rs` 同一约定）。
-struct DeadlineGuard {
-    deadline: Option<Instant>,
-    node_count: u32,
-    hit: bool,
-}
-
-impl DeadlineGuard {
-    fn new(deadline: Option<Instant>) -> Self {
-        Self {
-            deadline,
-            node_count: 0,
-            hit: false,
-        }
-    }
-
-    /// 逐次读时钟：只用于每队长 / 每 job 的外层循环（调用量为个位数量级）。
-    #[inline]
-    fn expired(&mut self) -> bool {
-        if self.hit {
-            return true;
-        }
-        let Some(deadline) = self.deadline else {
-            return false;
-        };
-        if Instant::now() >= deadline {
-            self.hit = true;
-            return true;
-        }
-        false
-    }
-
-    /// 采样读时钟：用于递归内部的高频调用点。
-    #[inline(always)]
-    fn expired_sampled(&mut self) -> bool {
-        if self.hit {
-            return true;
-        }
-        if self.deadline.is_none() {
-            return false;
-        }
-        self.node_count = self.node_count.wrapping_add(1);
-        if self.node_count & 1023 != 0 {
-            return false;
-        }
-        self.expired()
-    }
-}
-
 #[derive(Clone)]
 struct CharGroup {
     char_id: u8,
@@ -275,6 +220,7 @@ pub(crate) fn search_fixed_leader(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
+    guard: &mut DeadlineGuard,
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
@@ -282,15 +228,16 @@ pub(crate) fn search_fixed_leader(
     let Some(leader_char) = ctx.final_chapter_leader_character() else {
         return (Vec::new(), SearchStats::default());
     };
-    search_leaders(pool, ctx, params, Some(leader_char))
+    search_leaders(pool, ctx, params, Some(leader_char), guard)
 }
 
 pub(crate) fn search_auto_leader(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
+    guard: &mut DeadlineGuard,
 ) -> (Vec<DeckResult>, SearchStats) {
-    search_leaders(pool, ctx, params, None)
+    search_leaders(pool, ctx, params, None, guard)
 }
 
 fn search_leaders(
@@ -298,17 +245,12 @@ fn search_leaders(
     ctx: &SearchContext,
     params: &SearchParams,
     leader_char_filter: Option<u8>,
+    guard: &mut DeadlineGuard,
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
     }
 
-    let deadline = if params.timeout_ms == 0 {
-        None
-    } else {
-        Some(Instant::now() + Duration::from_millis(params.timeout_ms))
-    };
-    let mut guard = DeadlineGuard::new(deadline);
     let suffix = SuffixBound::build(pool, ctx);
     // member 位图由 search_instrumented 统一计算（含支援惩罚维度与替代记录），
     // 经 ctx 透传；空位图等价全保留。
@@ -323,7 +265,7 @@ fn search_leaders(
             params,
             &suffix,
             &member_keep,
-            &mut guard,
+            guard,
             tracker,
             stats,
         );
@@ -332,12 +274,15 @@ fn search_leaders(
     if let Some(leader_char) = leader_char_filter {
         leader_chars.push(leader_char);
     } else {
-        for character_id in 1..=26 {
+        for character_id in 0..=26 {
             leader_chars.push(character_id);
         }
     }
 
     for leader_char in leader_chars {
+        if guard.expired() {
+            break;
+        }
         let groups = build_char_groups(pool, ctx, leader_char, &member_keep, params.top_k);
         if groups.len() < MEMBER_COUNT {
             continue;
@@ -360,6 +305,7 @@ fn search_leaders(
             if guard.expired() {
                 break;
             }
+            stats.diagnostics.leader_jobs += 1;
             let leader_const = build_leader_const(pool, ctx, leader);
             let leader_ceiling =
                 character_ceiling(&suffix, ctx, &groups, &group_suffix, 0, &[], &leader_const);
@@ -370,7 +316,15 @@ fn search_leaders(
             }
             // Seed only a leader whose admissible ceiling survives the current
             // incumbent. Seeding is heuristic ordering work, never proof work.
-            seed_leader_groups(pool, ctx, &groups, &leader_const, &mut tracker);
+            seed_leader_groups(
+                pool,
+                ctx,
+                &groups,
+                &leader_const,
+                &mut tracker,
+                &mut stats,
+                guard,
+            );
             if tracker.threshold() != 0 && leader_ceiling < tracker.threshold() {
                 stats.leader_prunes += 1;
                 continue;
@@ -385,13 +339,15 @@ fn search_leaders(
                 support: ctx.support_deck_for_leader(leader_char),
                 tracker: &mut tracker,
                 stats: &mut stats,
-                deadline: &mut guard,
+                deadline: guard,
                 leader: leader_const,
             };
             state.recurse_chars(0, 0, &mut selected);
         }
     }
 
+    stats.deadline_hit = guard.hit;
+    stats.finalize();
     (tracker.into_vec(), stats)
 }
 
@@ -405,11 +361,14 @@ fn search_auto_leaders_two_phase(
     mut tracker: TopKTracker,
     mut stats: SearchStats,
 ) -> (Vec<DeckResult>, SearchStats) {
-    seed_auto_leader_beam(pool, ctx, member_keep, &mut tracker, &mut stats);
+    seed_auto_leader_beam(pool, ctx, member_keep, &mut tracker, &mut stats, guard);
 
     let mut jobs = Vec::new();
     let mut group_sets = Vec::new();
-    for leader_char in 1..=26 {
+    for leader_char in 0..=26 {
+        if guard.expired() {
+            break;
+        }
         let groups = build_char_groups(pool, ctx, leader_char, member_keep, params.top_k);
         if groups.len() < MEMBER_COUNT {
             continue;
@@ -428,6 +387,10 @@ fn search_auto_leaders_two_phase(
         // Exact auto-leader jobs cover every surviving card.  The warm beam may
         // rank/filter seeds, but the proof-carrying search frontier may not.
         for leader in leaders {
+            if guard.expired() {
+                break;
+            }
+            stats.diagnostics.leader_jobs += 1;
             let leader_const = build_leader_const(pool, ctx, leader);
             let ceiling =
                 character_ceiling(suffix, ctx, &groups, &group_suffix, 0, &[], &leader_const);
@@ -458,7 +421,15 @@ fn search_auto_leaders_two_phase(
             continue;
         }
         let group_set = &group_sets[job.group_set];
-        seed_leader_groups(pool, ctx, &group_set.groups, &job.leader, &mut tracker);
+        seed_leader_groups(
+            pool,
+            ctx,
+            &group_set.groups,
+            &job.leader,
+            &mut tracker,
+            &mut stats,
+            guard,
+        );
         if tracker.threshold() != 0 && job.ceiling < tracker.threshold() {
             stats.leader_prunes += 1;
             continue;
@@ -479,6 +450,8 @@ fn search_auto_leaders_two_phase(
         state.recurse_chars(0, 0, &mut selected);
     }
 
+    stats.deadline_hit = guard.hit;
+    stats.finalize();
     (tracker.into_vec(), stats)
 }
 
@@ -497,7 +470,11 @@ fn seed_auto_leader_beam(
     member_keep: &[bool],
     tracker: &mut TopKTracker,
     stats: &mut SearchStats,
+    guard: &mut DeadlineGuard,
 ) {
+    if !seeds_enabled() || guard.expired() {
+        return;
+    }
     const LEADER_LIMIT: usize = 16;
     const MEMBER_LIMIT: usize = 96;
     const BEAM_WIDTH: usize = 256;
@@ -514,6 +491,9 @@ fn seed_auto_leader_beam(
         .collect::<Vec<_>>();
 
     for leader in leaders {
+        if guard.expired() {
+            return;
+        }
         seed_auto_leader_beam_for_leader(
             pool,
             ctx,
@@ -523,9 +503,10 @@ fn seed_auto_leader_beam(
             leader,
             MEMBER_LIMIT,
             BEAM_WIDTH,
+            guard,
         );
     }
-    improve_final_chapter_results(pool, ctx, tracker, stats);
+    improve_final_chapter_results(pool, ctx, tracker, stats, guard);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -538,6 +519,7 @@ fn seed_auto_leader_beam_for_leader(
     leader: CardIdx,
     member_limit: usize,
     beam_width: usize,
+    guard: &mut DeadlineGuard,
 ) {
     let leader_char = pool.char_id(leader);
     let candidates =
@@ -556,8 +538,15 @@ fn seed_auto_leader_beam_for_leader(
     while depth < MEMBER_COUNT {
         let mut next = Vec::with_capacity(beam_width.min(beam.len() * candidates.len()));
         for state in &beam {
+            if guard.expired_sampled() {
+                return;
+            }
             let mut idx = state.start;
             while idx < candidates.len() {
+                if guard.expired_sampled() {
+                    return;
+                }
+                stats.diagnostics.seed_states += 1;
                 let card = candidates[idx];
                 idx += 1;
                 let char_id = pool.char_id(card);
@@ -594,7 +583,11 @@ fn seed_auto_leader_beam_for_leader(
         return;
     }
     for state in beam {
+        if guard.expired_sampled() {
+            return;
+        }
         stats.leaf_nodes += 1;
+        stats.diagnostics.seed_leaves += 1;
         if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &state.cards) {
             tracker.insert(pool, ctx, candidate);
         }
@@ -606,13 +599,17 @@ fn improve_final_chapter_results(
     ctx: &SearchContext,
     tracker: &mut TopKTracker,
     stats: &mut SearchStats,
+    guard: &mut DeadlineGuard,
 ) {
     let mut pass = 0usize;
     while pass < 1 {
         let seeds = tracker.results().to_vec();
         let mut changed = false;
         for seed in seeds {
-            changed |= insert_one_swap_variants(pool, ctx, seed, tracker, stats);
+            if guard.expired() {
+                return;
+            }
+            changed |= insert_one_swap_variants(pool, ctx, seed, tracker, stats, guard);
         }
         if !changed {
             break;
@@ -627,6 +624,7 @@ fn insert_one_swap_variants(
     seed: DeckResult,
     tracker: &mut TopKTracker,
     stats: &mut SearchStats,
+    guard: &mut DeadlineGuard,
 ) -> bool {
     const SWAP_CANDIDATE_LIMIT: usize = 128;
 
@@ -641,6 +639,10 @@ fn insert_one_swap_variants(
     while slot < DECK_SIZE {
         let original = deck[slot];
         for &candidate in &candidates {
+            if guard.expired_sampled() {
+                return changed;
+            }
+            stats.diagnostics.seed_states += 1;
             if candidate == leader || pool.char_id(candidate) == leader_char {
                 continue;
             }
@@ -662,6 +664,7 @@ fn insert_one_swap_variants(
             }
             deck[slot] = candidate;
             stats.leaf_nodes += 1;
+            stats.diagnostics.seed_leaves += 1;
             if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &deck) {
                 if candidate.score > seed.score {
                     changed = true;
@@ -774,7 +777,12 @@ fn seed_leader_groups(
     groups: &[CharGroup],
     leader: &LeaderConst,
     tracker: &mut TopKTracker,
+    stats: &mut SearchStats,
+    guard: &mut DeadlineGuard,
 ) {
+    if !seeds_enabled() || guard.expired() {
+        return;
+    }
     let prefix_len = groups.len().min(FINAL_CHAPTER_SEED_GROUP_PREFIX);
     if prefix_len < MEMBER_COUNT {
         return;
@@ -787,6 +795,10 @@ fn seed_leader_groups(
             while c + 1 < prefix_len {
                 let mut d = c + 1;
                 while d < prefix_len {
+                    if guard.expired_sampled() {
+                        return;
+                    }
+                    stats.diagnostics.seed_states += 1;
                     let indices = [a, b, c, d];
                     let mut deck = [leader.leader; DECK_SIZE];
                     let mut slot = 0usize;
@@ -794,6 +806,8 @@ fn seed_leader_groups(
                         deck[slot + 1] = groups[indices[slot]].cards[0];
                         slot += 1;
                     }
+                    stats.leaf_nodes += 1;
+                    stats.diagnostics.seed_leaves += 1;
                     if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &deck) {
                         tracker.insert(pool, ctx, candidate);
                     }
@@ -803,6 +817,8 @@ fn seed_leader_groups(
                         if group.cards.len() > 1 {
                             let mut alt = deck;
                             alt[variant + 1] = group.cards[1];
+                            stats.leaf_nodes += 1;
+                            stats.diagnostics.seed_leaves += 1;
                             if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &alt)
                             {
                                 tracker.insert(pool, ctx, candidate);
@@ -1008,6 +1024,7 @@ impl CharacterSearchState<'_> {
         if self.deadline.expired_sampled() {
             return;
         }
+        self.stats.visited_nodes += 1;
         if depth == MEMBER_COUNT {
             let mut ordered = *selected;
             order_card_groups(self.groups, &mut ordered);
@@ -1078,6 +1095,7 @@ impl CharacterSearchState<'_> {
         if self.deadline.expired_sampled() {
             return;
         }
+        self.stats.visited_nodes += 1;
         if depth == MEMBER_COUNT {
             self.stats.leaf_nodes += 1;
             if let Some(candidate) = placement::evaluate_candidate(self.pool, self.ctx, deck) {
@@ -1733,5 +1751,17 @@ fn insert_topk_u32(values: &mut [u32], value: u32) {
             break;
         }
         slot += 1;
+    }
+}
+
+#[inline]
+fn seeds_enabled() -> bool {
+    #[cfg(test)]
+    {
+        crate::search::tuning::SearchTuning::load().final_seeds
+    }
+    #[cfg(not(test))]
+    {
+        true
     }
 }

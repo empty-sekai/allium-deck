@@ -1,5 +1,6 @@
 //! Exact reconstruction of card sets removed by certified dominance.
 use super::{DeckResult, SearchContext, SearchParams, placement, tracker::TopKTracker};
+use super::{SearchStats, budget::SearchBudget};
 use crate::pool::{CardIdx, CardPool};
 use crate::types::DECK_SIZE;
 
@@ -19,8 +20,10 @@ pub(super) fn expand_dominated_alternatives(
     alternatives: &[Vec<CardIdx>],
     params: &SearchParams,
     results: Vec<DeckResult>,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) -> Vec<DeckResult> {
-    expand_alternatives(pool, ctx, alternatives, &[], params, results)
+    expand_alternatives(pool, ctx, alternatives, &[], params, results, budget, stats)
 }
 
 /// `member_alternatives` 仅在 member 槽位（slot >= 1）参与回换：终章 member 裁剪
@@ -37,6 +40,8 @@ pub(super) fn expand_alternatives(
     member_alternatives: &[Vec<CardIdx>],
     params: &SearchParams,
     results: Vec<DeckResult>,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) -> Vec<DeckResult> {
     if params.top_k <= 1 {
         return results;
@@ -60,6 +65,9 @@ pub(super) fn expand_alternatives(
         tracker.insert(pool, ctx, *result);
     }
     for result in &results {
+        if budget.expired() {
+            break;
+        }
         let mut deck = result.cards;
         expand_substitutions(
             pool,
@@ -70,18 +78,25 @@ pub(super) fn expand_alternatives(
             result.score,
             0,
             &mut tracker,
+            budget,
+            stats,
         );
         if !rotate_leader {
             continue;
         }
         let mut slot = 1usize;
         while slot < DECK_SIZE {
+            if budget.expired_sampled() {
+                break;
+            }
             let mut rotated = result.cards;
             rotated.swap(0, slot);
             slot += 1;
             if !deck_matches_fixed_slots(pool, ctx, &rotated) {
                 continue;
             }
+            stats.leaf_nodes += 1;
+            stats.diagnostics.alternative_leaves += 1;
             let Some(candidate) = placement::evaluate_candidate(pool, ctx, &rotated) else {
                 continue;
             };
@@ -96,6 +111,8 @@ pub(super) fn expand_alternatives(
                 score,
                 0,
                 &mut tracker,
+                budget,
+                stats,
             );
         }
     }
@@ -141,9 +158,16 @@ fn expand_substitutions(
     node_score: u64,
     from_slot: usize,
     tracker: &mut TopKTracker,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) {
+    if budget.expired_sampled() {
+        return;
+    }
+    stats.diagnostics.alternative_states += 1;
     let threshold = tracker.threshold();
     if threshold != 0 && node_score < threshold {
+        stats.ub_prunes += 1;
         return;
     }
     let mut slot = from_slot;
@@ -163,8 +187,13 @@ fn expand_substitutions(
             &[]
         };
         for &alt in alternatives[original.raw()].iter().chain(member_alts) {
+            if budget.expired_sampled() {
+                break;
+            }
             deck[slot] = alt;
             // 支配卡与被支配卡同角色，角色唯一性与固定角色槽位约束自然保持。
+            stats.leaf_nodes += 1;
+            stats.diagnostics.alternative_leaves += 1;
             let Some(candidate) = placement::evaluate_candidate(pool, ctx, deck) else {
                 continue;
             };
@@ -179,6 +208,8 @@ fn expand_substitutions(
                 score,
                 slot + 1,
                 tracker,
+                budget,
+                stats,
             );
         }
         deck[slot] = original;

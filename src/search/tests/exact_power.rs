@@ -43,7 +43,7 @@ fn search_minimize_power_matches_bruteforce_worst() {
     let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
     search_ctx.minimize = true;
 
-    let results = search(
+    let results = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -65,7 +65,7 @@ fn search_minimize_power_matches_bruteforce_worst() {
     // 反向验证：同池 maximize 应严格更大（取最强 5 张）。
     let mut max_ctx = ready_ctx(&pool, ScoreTarget::Power);
     max_ctx.minimize = false;
-    let max_results = search(
+    let max_results = search_exact(
         &pool,
         &max_ctx,
         &SearchParams {

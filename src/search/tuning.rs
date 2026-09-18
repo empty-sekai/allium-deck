@@ -13,6 +13,8 @@ pub(super) struct SearchTuning {
     pub warm_candidate_limit: Option<usize>,
     pub world_bloom_attr_matching: bool,
     pub final_attr_dp: bool,
+    #[cfg(test)]
+    pub final_seeds: bool,
 }
 
 impl Default for SearchTuning {
@@ -28,6 +30,8 @@ impl Default for SearchTuning {
             warm_candidate_limit: None,
             world_bloom_attr_matching: true,
             final_attr_dp: true,
+            #[cfg(test)]
+            final_seeds: true,
         }
     }
 }
@@ -58,6 +62,8 @@ impl SearchTuning {
                 .and_then(|value| value.parse().ok()),
             world_bloom_attr_matching: enabled("ALLIUM_WL_ATTR_MATCH"),
             final_attr_dp: enabled("ALLIUM_FINAL_ATTR_DP"),
+            #[cfg(test)]
+            final_seeds: true,
         }
     }
 }

@@ -30,7 +30,7 @@ fn search_final_chapter_auto_leader_small_pool_returns_result() {
         timeout_ms: 0,
     };
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     assert_eq!(results.len(), 1);
     assert!(!search_ctx.has_fixed_leader());
 }
@@ -61,7 +61,7 @@ fn search_final_chapter_fixed_leader_top_k_recovers_member_pruned_alternatives()
             assert_eq!(member.alternatives[1], vec![CardIdx::new(0)]);
         }
 
-        let results = search(&pool, &search_ctx, &params);
+        let results = search_exact(&pool, &search_ctx, &params);
         let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
         assert_results_match_bruteforce(&pool, &results, &brute);
         assert!(
@@ -90,7 +90,7 @@ fn search_final_chapter_auto_leader_top_k_recovers_member_pruned_alternatives() 
         timeout_ms: 0,
     };
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
     assert_results_match_bruteforce(&pool, &results, &brute);
 }
@@ -107,7 +107,7 @@ fn search_final_chapter_fixed_leader_card_top_k_recovers_member_pruned_alternati
         timeout_ms: 0,
     };
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
     assert_results_match_bruteforce(&pool, &results, &brute);
 }
@@ -144,7 +144,7 @@ fn search_final_chapter_top_k_restores_member_alternative_behind_leader_dedup() 
         let member = dominance::compute_member_dominance(&dominance.pool, &dominance.ctx);
         assert_eq!(member.keep[1], !canonical_prunable);
 
-        let results = search(&pool, &search_ctx, &params);
+        let results = search_exact(&pool, &search_ctx, &params);
         assert_eq!(results.len(), 2);
         let expected_deck = [
             CardIdx::new(0),
@@ -210,7 +210,7 @@ fn search_final_chapter_world_bloom_support_penalty_keeps_member_candidates() {
         "support-listed A must not member-dominate B",
     );
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
     assert_results_match_bruteforce(&pool, &results, &brute);
     assert!(
@@ -319,7 +319,7 @@ fn final_chapter_auto_leader_must_not_truncate_support_safe_variant_set() {
         "oracle should prefer the five support-safe rank-4 variants"
     );
 
-    let got = search(&pool, &search_ctx, &params);
+    let got = search_exact(&pool, &search_ctx, &params);
     assert_results_match_bruteforce(&pool, &got, &oracle);
 }
 
@@ -348,7 +348,7 @@ fn exact_final_chapter_auto_matches_exhaustive_leader_oracle_randomized() {
             top_k: 3,
             timeout_ms: 0,
         };
-        let got = search(&pool, &final_ctx, &params);
+        let got = search_exact(&pool, &final_ctx, &params);
         let expected = final_chapter_auto_oracle(&pool, &final_ctx, params.top_k);
         assert_property_results(&pool, &got, &expected, &format!("case {case} final-auto"));
     }
@@ -383,7 +383,7 @@ fn final_chapter_all_skill_orders_match_explicit_oracle() {
                 top_k: 3,
                 timeout_ms: 0,
             };
-            let got = search(&pool, &search_ctx, &params);
+            let got = search_exact(&pool, &search_ctx, &params);
             let expected = final_chapter_auto_oracle(&pool, &search_ctx, params.top_k);
             assert_property_scores(
                 &pool,
@@ -395,7 +395,7 @@ fn final_chapter_all_skill_orders_match_explicit_oracle() {
 
             let mut fixed = search_ctx.clone();
             fixed.fixed_character_ids = vec![pool.char_id(CardIdx::new(0))];
-            let got = search(&pool, &fixed, &params);
+            let got = search_exact(&pool, &fixed, &params);
             let (expected, _) = brute_force_search(&pool, &fixed, &params);
             assert_property_scores(
                 &pool,

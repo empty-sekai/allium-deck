@@ -19,7 +19,7 @@ fn search_fixed_card_constraint_is_respected() {
     let pool = build_pool(&cards);
     let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
     search_ctx.fixed_card_ids = vec![150];
-    let results = search(
+    let results = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -37,7 +37,7 @@ fn search_fixed_character_constraint_is_respected() {
     let pool = build_pool(&five_unique_cards());
     let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
     search_ctx.fixed_character_ids = vec![1, 3];
-    let results = search(
+    let results = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -59,7 +59,7 @@ fn search_fixed_card_and_character_can_combine() {
     let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
     search_ctx.fixed_card_ids = vec![102]; // game_id 102 = char 2（见 five_unique_cards）
     search_ctx.fixed_character_ids = vec![4];
-    let results = search(
+    let results = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -107,7 +107,7 @@ fn forced_leader_character_is_ignored_when_unset() {
 #[test]
 fn forced_leader_character_keeps_that_character_in_the_deck() {
     let pool = build_pool(&six_cards_with_weak_first());
-    let unconstrained = search(
+    let unconstrained = search_exact(
         &pool,
         &ready_ctx(&pool, ScoreTarget::Power),
         &SearchParams {
@@ -126,7 +126,7 @@ fn forced_leader_character_keeps_that_character_in_the_deck() {
 
     let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
     search_ctx.forced_leader_character_id = Some(0);
-    let results = search(
+    let results = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -152,7 +152,7 @@ fn forced_leader_character_wins_over_a_fixed_card_in_another_slot() {
     search_ctx.fixed_card_ids = vec![104]; // game_id 104 = char 4
     search_ctx.forced_leader_character_id = Some(1);
 
-    let results = search(
+    let results = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -191,7 +191,7 @@ fn forced_leader_search_matches_bruteforce_for_every_target() {
             search_ctx.event_type = Some(EventType::Marathon);
             search_ctx.forced_leader_character_id = Some(leader);
 
-            let results = search(&pool, &search_ctx, &params);
+            let results = search_exact(&pool, &search_ctx, &params);
             let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
             assert_results_match_bruteforce(&pool, &results, &brute);
             assert!(
@@ -217,7 +217,7 @@ fn forced_leader_holds_for_every_top_k_deck() {
     search_ctx.event_type = Some(EventType::Marathon);
     search_ctx.forced_leader_character_id = Some(2);
 
-    let results = search(
+    let results = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -244,7 +244,7 @@ fn forced_leader_survives_minimize_and_fixed_characters() {
         top_k: 2,
         timeout_ms: 0,
     };
-    let results = search(&pool, &minimize_ctx, &params);
+    let results = search_exact(&pool, &minimize_ctx, &params);
     let (brute, _) = brute_force_search(&pool, &minimize_ctx, &params);
     assert_results_match_bruteforce(&pool, &results, &brute);
     for result in &results {
@@ -257,7 +257,7 @@ fn forced_leader_survives_minimize_and_fixed_characters() {
     combined_ctx.event_type = Some(EventType::Marathon);
     combined_ctx.fixed_character_ids = vec![1, 5];
     combined_ctx.forced_leader_character_id = Some(5);
-    let results = search(&pool, &combined_ctx, &params);
+    let results = search_exact(&pool, &combined_ctx, &params);
     assert!(!results.is_empty());
     for result in &results {
         assert!(result.cards.iter().any(|card| pool.char_id(*card) == 1));
@@ -273,7 +273,7 @@ fn forced_leader_for_an_absent_character_returns_nothing() {
     search_ctx.event_type = Some(EventType::Marathon);
     search_ctx.forced_leader_character_id = Some(20); // 池里没有的角色
 
-    let results = search(
+    let results = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -295,13 +295,13 @@ fn forced_leader_does_not_change_results_when_it_matches_the_natural_leader() {
     let mut free_ctx = ready_ctx(&pool, ScoreTarget::Score);
     free_ctx.live_type = LiveType::Multi;
     free_ctx.event_type = Some(EventType::Marathon);
-    let free = search(&pool, &free_ctx, &params);
+    let free = search_exact(&pool, &free_ctx, &params);
     assert!(!free.is_empty());
     let natural_leader = leader_character_of(&pool, &free_ctx, &free[0].cards);
 
     let mut forced_ctx = free_ctx.clone();
     forced_ctx.forced_leader_character_id = Some(natural_leader);
-    let forced = search(&pool, &forced_ctx, &params);
+    let forced = search_exact(&pool, &forced_ctx, &params);
 
     assert_eq!(forced[0].score, free[0].score);
     assert_eq!(
@@ -330,7 +330,7 @@ fn search_top_k_dominated_alternatives_respect_fixed_slots() {
         timeout_ms: 0,
     };
 
-    let results = search(&pool, &search_ctx, &params);
+    let results = search_exact(&pool, &search_ctx, &params);
     let (brute, _) = brute_force_search(&pool, &search_ctx, &params);
     assert_results_match_bruteforce(&pool, &results, &brute);
     for result in &results {
@@ -368,7 +368,7 @@ fn simple_target_search_preserves_large_fixed_character_prefixes() {
                 top_k: 3,
                 timeout_ms: 0,
             };
-            let actual = search(&pool, &search_ctx, &params);
+            let actual = search_exact(&pool, &search_ctx, &params);
             let (expected, _) = brute_force_search(&pool, &search_ctx, &params);
             assert_eq!(actual.len(), params.top_k);
             assert_results_match_bruteforce(&pool, &actual, &expected);

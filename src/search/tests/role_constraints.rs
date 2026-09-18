@@ -144,7 +144,7 @@ fn final_solo_specific_enumerates_free_member_order() {
                 timeout_ms: 0,
             };
             let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
-            let actual = search(&pool, &ctx, &params);
+            let actual = search_exact(&pool, &ctx, &params);
             assert_property_scores(
                 &pool,
                 &ctx,
@@ -168,5 +168,5 @@ fn final_checked_leaf_enforces_multi_skill_lower_bound() {
     };
     let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
     assert!(expected.is_empty());
-    assert!(search(&pool, &ctx, &params).is_empty());
+    assert!(search_exact(&pool, &ctx, &params).is_empty());
 }

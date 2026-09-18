@@ -18,6 +18,7 @@ pub mod bruteforce;
 /// 挑战 live 搜索：五张同角色，逐角色搜索后归并。
 pub use solver::challenge as challenge_search;
 mod alternatives;
+mod budget;
 /// 单次搜索期间不变的上下文。
 pub mod context;
 mod correlated;
@@ -51,24 +52,44 @@ pub mod warm_start;
 
 pub use bruteforce::{BruteForceStats, ExactOracle, brute_force_search};
 pub use context::{SearchContext, SupportDeck};
-pub use dfs::{SearchStats, dfs_search};
+pub use dfs::{SearchDiagnostics, SearchStats, dfs_search};
 pub use dominance::eliminate_dominated;
 pub use evaluate::{
     calc_event_point, decode_u18, leaf_evaluate, resolve_power_for_cards, summarize_deck,
 };
 pub use suffix::{PartialDeck, SuffixBound, UsedSet};
-pub use types::{DeckResult, DeckResultSummary, SearchParams};
+pub use types::{DeckResult, DeckResultSummary, SearchCompletion, SearchOutcome, SearchParams};
 pub use warm_start::warm_start;
+
+/// Compare two legal deck results using the same canonical total order as every
+/// exact Top-K tracker. This is the stable ordering contract for public result
+/// sets and cross-solver/challenge aggregation; callers must not reimplement
+/// score-only ordering because objective ties have deterministic public-set and
+/// placement tie-breaks.
+pub fn compare_deck_results(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    left: &DeckResult,
+    right: &DeckResult,
+) -> std::cmp::Ordering {
+    tracker::deck_result_cmp(pool, ctx, left, right)
+}
 
 #[cfg(test)]
 use crate::pool::CardIdx;
 use crate::pool::CardPool;
 use crate::types::{DECK_SIZE, ScoreTarget};
+use budget::SearchBudget;
 
-/// 执行完整搜索流水线：dominance 裁剪、上界构建、热启动、DFS/B&B。
-pub fn search(pool: &CardPool, ctx: &SearchContext, params: &SearchParams) -> Vec<DeckResult> {
-    let (results, _) = search_instrumented(pool, ctx, params);
-    results
+/// Execute the complete search pipeline and return its completion certificate.
+/// Only `SearchCompletion::Complete` certifies canonical Top-K; `TimedOut`
+/// contains legal, exactly evaluated incumbents, not a proven ranking.
+pub fn search(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+) -> SearchOutcome<Vec<DeckResult>> {
+    search_outcome(pool, ctx, params)
 }
 
 /// 带统计信息的搜索。
@@ -77,10 +98,34 @@ pub fn search_instrumented(
     ctx: &SearchContext,
     params: &SearchParams,
 ) -> (Vec<DeckResult>, SearchStats) {
+    let outcome = search_outcome(pool, ctx, params);
+    (outcome.results, outcome.stats)
+}
+
+/// Search with an explicit completion certificate and phase-aware work record.
+/// The single cooperative deadline includes preparation, seeds and reconstruction.
+fn search_outcome(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+) -> SearchOutcome<Vec<DeckResult>> {
+    let mut budget = SearchBudget::from_params(params);
+    let (results, mut stats) = search_with_budget(pool, ctx, params, &mut budget);
+    stats.deadline_hit |= budget.hit;
+    SearchOutcome::new(results, stats)
+}
+
+fn search_with_budget(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    budget: &mut SearchBudget,
+) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
     }
 
+    let mut phase_stats = SearchStats::default();
     let problem = problem::DeckProblem::from_context(ctx);
 
     // 挑战 live 的队伍必须五张同角色，该约束对所有 target 生效，必须先于
@@ -92,22 +137,34 @@ pub fn search_instrumented(
         // 留着多个角色则是 challenge_all，必须逐角色搜索后归并——无约束搜索
         // 会产出跨角色的非法卡组，组合数也是逐角色之和的数个量级。
         return match single_challenge_character(pool) {
-            Some(_) => challenge_search::search(pool, ctx, &suffix, params),
-            None => challenge_search::search_all_characters(pool, ctx, &suffix, params),
+            Some(_) => challenge_search::search_with_budget(pool, ctx, &suffix, params, budget),
+            None => challenge_search::search_all_characters_with_budget(
+                pool, ctx, &suffix, params, budget,
+            ),
         };
     }
 
     if problem.family == problem::SolverFamily::NumericObjective {
-        return search_simple_target(pool, ctx, params);
+        return search_simple_target(pool, ctx, params, budget);
     }
 
     let dominance = eliminate_dominated(pool, ctx);
+    phase_stats.dominance_prunes = (dominance.before - dominance.after) as u64;
+    if budget.expired() {
+        phase_stats.deadline_hit = true;
+        return (Vec::new(), phase_stats);
+    }
     let mut search_pool = dominance.pool;
     let mut search_ctx = dominance.ctx;
     let mut original_indices = dominance.original_indices;
     let alternatives = dominance.alternatives;
     if search_ctx.is_final_chapter {
         let member = dominance::compute_member_dominance(&search_pool, &search_ctx);
+        phase_stats.dominance_prunes += member.keep.iter().filter(|&&keep| !keep).count() as u64;
+        if budget.expired() {
+            phase_stats.deadline_hit = true;
+            return (Vec::new(), phase_stats);
+        }
         // member 裁剪的替代记录映射回原始索引，并与第一轮 alternatives 做跨轮链闭包：
         // 真实次优卡组的 member 位可能是第一轮就被裁的卡（根 x），而 x 又被 member 轮
         // 裁掉（根 r）——从 r 出发必须能一步回换到它们（issue #7）。
@@ -155,24 +212,33 @@ pub fn search_instrumented(
                 &search_ctx,
                 &search_pool.indices().collect::<Vec<_>>(),
             );
-        let (compacted_results, stats) =
+        let (compacted_results, mut stats) =
             if grouped_constraints && search_ctx.final_chapter_leader_character().is_some() {
-                final_chapter::search_fixed_leader(&search_pool, &search_ctx, params)
+                final_chapter::search_fixed_leader(&search_pool, &search_ctx, params, budget)
             } else if grouped_constraints && !search_ctx.has_fixed_leader() {
-                final_chapter::search_auto_leader(&search_pool, &search_ctx, params)
+                final_chapter::search_auto_leader(&search_pool, &search_ctx, params, budget)
             } else {
                 let suffix = SuffixBound::build(&search_pool, &search_ctx);
-                let seeds = warm_start::warm_start_best(&search_pool, &search_ctx)
-                    .into_iter()
-                    .collect();
-                dfs::dfs_search_instrumented_with_seeds(
+                let seeds = warm_start::warm_start_best_with_budget(
+                    &search_pool,
+                    &search_ctx,
+                    budget,
+                    &mut phase_stats,
+                )
+                .into_iter()
+                .collect();
+                dfs::dfs_search_with_budget(
                     &search_pool,
                     &search_ctx,
                     &suffix,
                     params,
                     seeds,
+                    None,
+                    None,
+                    budget,
                 )
             };
+        stats.accumulate(&phase_stats);
         let remapped = remap_results(compacted_results, &original_indices);
         let expanded = expand_alternatives(
             pool,
@@ -181,15 +247,44 @@ pub fn search_instrumented(
             &member_alternatives,
             params,
             remapped,
+            budget,
+            &mut stats,
         );
+        stats.deadline_hit |= budget.hit;
+        stats.finalize();
         return (expanded, stats);
     }
     let suffix = SuffixBound::build(&search_pool, &search_ctx);
-    let seeds = warm_start::warm_start_seeds(&search_pool, &search_ctx, params.top_k);
-    let (compacted_results, stats) =
-        dfs::dfs_search_instrumented_with_seeds(&search_pool, &search_ctx, &suffix, params, seeds);
+    let seeds = warm_start::warm_start_seeds_with_budget(
+        &search_pool,
+        &search_ctx,
+        params.top_k,
+        budget,
+        &mut phase_stats,
+    );
+    let (compacted_results, mut stats) = dfs::dfs_search_with_budget(
+        &search_pool,
+        &search_ctx,
+        &suffix,
+        params,
+        seeds,
+        None,
+        None,
+        budget,
+    );
+    stats.accumulate(&phase_stats);
     let remapped = remap_results(compacted_results, &original_indices);
-    let expanded = expand_dominated_alternatives(pool, ctx, &alternatives, params, remapped);
+    let expanded = expand_dominated_alternatives(
+        pool,
+        ctx,
+        &alternatives,
+        params,
+        remapped,
+        budget,
+        &mut stats,
+    );
+    stats.deadline_hit |= budget.hit;
+    stats.finalize();
     (expanded, stats)
 }
 
@@ -200,6 +295,21 @@ pub fn search_bonus_targets(
     params: &SearchParams,
     targets: &[i32],
 ) -> (Vec<DeckResult>, SearchStats) {
+    let mut budget = SearchBudget::from_params(params);
+    let (results, mut stats) =
+        search_bonus_targets_with_budget(pool, ctx, params, targets, &mut budget);
+    stats.deadline_hit |= budget.hit;
+    stats.finalize();
+    (results, stats)
+}
+
+fn search_bonus_targets_with_budget(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    targets: &[i32],
+    budget: &mut SearchBudget,
+) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0
         || pool.count() < DECK_SIZE
         || targets.is_empty()
@@ -209,7 +319,16 @@ pub fn search_bonus_targets(
     }
     let suffix = SuffixBound::build(pool, ctx);
     let bonus_reach = bonus_reach::BonusReach::build(pool);
-    dfs::dfs_search_bonus_targets(pool, ctx, &suffix, params, targets, &bonus_reach)
+    dfs::dfs_search_with_budget(
+        pool,
+        ctx,
+        &suffix,
+        params,
+        Vec::new(),
+        Some(targets),
+        Some(&bonus_reach),
+        budget,
+    )
 }
 
 /// 统一搜索入口（engine 与 wasm 共用，避免入口分叉）：
@@ -219,12 +338,8 @@ pub fn search_targets(
     ctx: &SearchContext,
     params: &SearchParams,
     target_bonus_list: &[i32],
-) -> Vec<DeckResult> {
-    if target_bonus_list.is_empty() {
-        search(pool, ctx, params)
-    } else {
-        search_bonus_targets(pool, ctx, params, target_bonus_list).0
-    }
+) -> SearchOutcome<Vec<DeckResult>> {
+    search_targets_outcome(pool, ctx, params, target_bonus_list)
 }
 
 /// 池里只有一个角色时返回它；challenge 池保留多角色即为 challenge_all。
@@ -265,3 +380,20 @@ fn remap_results(
 
 #[cfg(test)]
 mod tests;
+
+/// Unified ordinary/tiered search, preserving completion and all work statistics.
+/// Each requested exact bonus tier has its own canonical Top-K tracker, but all
+/// tiers share this operation's deadline.
+fn search_targets_outcome(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    target_bonus_list: &[i32],
+) -> SearchOutcome<Vec<DeckResult>> {
+    if target_bonus_list.is_empty() {
+        search_outcome(pool, ctx, params)
+    } else {
+        let (results, stats) = search_bonus_targets(pool, ctx, params, target_bonus_list);
+        SearchOutcome::new(results, stats)
+    }
+}

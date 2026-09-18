@@ -100,7 +100,7 @@ fn canonical_topk_mysekai_ties_use_resolved_and_capped_power_not_upper_bounds() 
         ctx.live_type = LiveType::Mysekai;
         ctx.power_total_cap = cap;
         for top_k in [1, 3, 6, 30] {
-            let actual = search(
+            let actual = search_exact(
                 &pool,
                 &ctx,
                 &SearchParams {
@@ -154,7 +154,7 @@ fn canonical_topk_dominance_must_preserve_tied_public_identity() {
     let mut ctx = ready_ctx(&pool, ScoreTarget::Score);
     ctx.base_score = 0.0;
     for top_k in [1, 2, 8, 30] {
-        let actual = search(
+        let actual = search_exact(
             &pool,
             &ctx,
             &SearchParams {
@@ -194,7 +194,7 @@ fn canonical_topk_same_game_variants_share_one_set_and_a_stable_representative()
     let mut ctx = ready_ctx(&pool, ScoreTarget::Score);
     ctx.base_score = 0.0;
     for top_k in [1, 2, 8, 30] {
-        let actual = search(
+        let actual = search_exact(
             &pool,
             &ctx,
             &SearchParams {
@@ -234,7 +234,7 @@ fn canonical_legal_assignments_match_independent_oracle() {
                     top_k,
                     timeout_ms: 0,
                 };
-                let actual = search(&pool, &ctx, &params);
+                let actual = search_exact(&pool, &ctx, &params);
                 let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
                 assert_eq!(
                     actual, expected,
@@ -255,5 +255,5 @@ fn power_scenarios_include_every_representable_character_group() {
     };
     let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
     assert_eq!(expected.len(), 1);
-    assert_eq!(search(&pool, &ctx, &params), expected);
+    assert_eq!(search_exact(&pool, &ctx, &params), expected);
 }

@@ -33,7 +33,7 @@ fn search_multi_score_up_lower_bound_filters_invalid_decks() {
     let mut search_ctx = ready_ctx(&pool, ScoreTarget::Power);
     search_ctx.live_type = LiveType::Multi;
     search_ctx.multi_live_score_up_lower_bound = Some(1_000.0);
-    let results = search(
+    let results = search_exact(
         &pool,
         &search_ctx,
         &SearchParams {
@@ -151,7 +151,7 @@ fn search_dfs_matches_bruteforce_for_best_deck() {
         timeout_ms: 0,
     };
 
-    let results = dfs_search(&pool, &search_ctx, &suffix, &params);
+    let results = dfs_search_exact(&pool, &search_ctx, &suffix, &params);
     let best = results.first().map(|result| result.score).unwrap_or(0);
 
     let mut brute = 0u64;
@@ -296,7 +296,7 @@ fn search_dfs_score_noevent_does_not_break_before_higher_skill_same_power_state(
         timeout_ms: 0,
     };
 
-    let results = dfs_search(&pool, &search_ctx, &suffix, &params);
+    let results = dfs_search_exact(&pool, &search_ctx, &suffix, &params);
     let best = results.first().map(|result| result.score).unwrap_or(0);
 
     let lower = leaf_evaluate(

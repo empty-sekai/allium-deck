@@ -1,4 +1,5 @@
 //! Shared fixtures and helpers for independently named exactness contracts.
+mod completion;
 mod constraints;
 mod exact_bonus;
 mod exact_challenge;
@@ -543,7 +544,7 @@ fn check_challenge_ranking(target: ScoreTarget, skill: u8, minimize: bool) {
                         top_k,
                         timeout_ms: 0,
                     };
-                    let actual = search(&pool, &search_ctx, &params);
+                    let actual = search_exact(&pool, &search_ctx, &params);
                     assert_eq!(
                         actual,
                         expected[..top_k.min(expected.len())],
@@ -828,4 +829,22 @@ fn longtail_support(pool: &CardPool, salt: usize) -> SupportDeck {
 fn median_f64(values: &mut [f64]) -> f64 {
     values.sort_by(f64::total_cmp);
     values[(values.len() - 1) / 2]
+}
+
+/// An incomplete result cannot make an exactness regression green by accident.
+fn search_exact(pool: &CardPool, ctx: &SearchContext, params: &SearchParams) -> Vec<DeckResult> {
+    let outcome = super::search(pool, ctx, params);
+    assert_eq!(outcome.completion(), SearchCompletion::Complete);
+    outcome.results
+}
+
+fn dfs_search_exact(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+    params: &SearchParams,
+) -> Vec<DeckResult> {
+    let outcome = super::dfs_search(pool, ctx, suffix, params);
+    assert_eq!(outcome.completion(), SearchCompletion::Complete);
+    outcome.results
 }
