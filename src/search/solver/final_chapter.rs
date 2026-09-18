@@ -7,11 +7,13 @@ use web_time::Instant;
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
 
-use super::context::{SearchContext, SupportDeck};
-use super::dfs::SearchStats;
-use super::evaluate::{calc_event_point, decode_u18, leaf_evaluate_checked, resolve_power_target};
-use super::suffix::SuffixBound;
-use super::types::{DeckResult, SearchParams};
+use crate::search::context::{SearchContext, SupportDeck};
+use crate::search::dfs::SearchStats;
+use crate::search::evaluate::{
+    calc_event_point, decode_u18, leaf_evaluate_checked, resolve_power_target,
+};
+use crate::search::suffix::SuffixBound;
+use crate::search::types::{DeckResult, SearchParams};
 
 const MEMBER_COUNT: usize = 4;
 const FINAL_CHAPTER_SEED_GROUP_PREFIX: usize = 6;
@@ -896,7 +898,7 @@ fn build_char_groups(
     top_k: usize,
 ) -> Vec<CharGroup> {
     let leader_member_keep = (top_k == 1).then(|| {
-        super::dominance::compute_member_dominance_for_leader(pool, ctx, leader_char).keep
+        crate::search::dominance::compute_member_dominance_for_leader(pool, ctx, leader_char).keep
     });
     let mut by_char = vec![Vec::<CardIdx>::new(); 27];
     for card in pool.indices() {
@@ -984,7 +986,8 @@ fn build_leader_const(pool: &CardPool, ctx: &SearchContext, leader: CardIdx) -> 
         extra_bonus_ub: final_chapter_extra_bonus_bound(pool, ctx, leader, &[], MEMBER_COUNT),
         support_bonus_ub: final_chapter_support_bonus_bound_for_leader(pool, ctx, leader),
         leader_attr_set: 1u8 << pool.attr(leader),
-        use_group_attr_dp: ctx.is_world_bloom && super::tuning::SearchTuning::load().final_attr_dp,
+        use_group_attr_dp: ctx.is_world_bloom
+            && crate::search::tuning::SearchTuning::load().final_attr_dp,
     }
 }
 
@@ -2019,7 +2022,7 @@ impl TopKTracker {
     fn new(top_k: usize, pool: &CardPool) -> Self {
         Self {
             top_k,
-            bounds_enabled: super::tuning::SearchTuning::load().bounds,
+            bounds_enabled: crate::search::tuning::SearchTuning::load().bounds,
             game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
             results: Vec::with_capacity(top_k),
         }

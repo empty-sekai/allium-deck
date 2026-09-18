@@ -7,11 +7,11 @@ use web_time::Instant;
 use crate::pool::{CardIdx, CardPool};
 use crate::types::DECK_SIZE;
 
-use super::SimpleTopKTracker;
-use super::context::SearchContext;
-use super::evaluate::{leaf_evaluate_challenge_score_checked, leaf_evaluate_checked};
-use super::suffix::{PartialDeck, SuffixBound};
-use super::types::{DeckResult, SearchParams};
+use crate::search::SimpleTopKTracker;
+use crate::search::context::SearchContext;
+use crate::search::evaluate::{leaf_evaluate_challenge_score_checked, leaf_evaluate_checked};
+use crate::search::suffix::{PartialDeck, SuffixBound};
+use crate::search::types::{DeckResult, SearchParams};
 use crate::types::{LiveType, ScoreTarget};
 
 struct ChallengeDeadline {
@@ -213,7 +213,7 @@ pub fn search(
     ctx: &SearchContext,
     suffix: &SuffixBound,
     params: &SearchParams,
-) -> (Vec<DeckResult>, super::SearchStats) {
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
     let mut deadline = ChallengeDeadline::from_params(params);
     let (results, mut stats) =
         search_with_character_filter(pool, ctx, suffix, params, None, &mut deadline);
@@ -231,7 +231,7 @@ pub fn search_character(
     suffix: &SuffixBound,
     params: &SearchParams,
     character_id: u8,
-) -> (Vec<DeckResult>, super::SearchStats) {
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
     let mut deadline = ChallengeDeadline::from_params(params);
     let (results, mut stats) =
         search_with_character_filter(pool, ctx, suffix, params, Some(character_id), &mut deadline);
@@ -250,7 +250,7 @@ pub fn search_all_characters(
     ctx: &SearchContext,
     suffix: &SuffixBound,
     params: &SearchParams,
-) -> (Vec<DeckResult>, super::SearchStats) {
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
     let mut deadline = ChallengeDeadline::from_params(params);
 
     let mut present = [false; 27];
@@ -259,7 +259,7 @@ pub fn search_all_characters(
     }
 
     let mut merged = Vec::new();
-    let mut stats = super::SearchStats::default();
+    let mut stats = crate::search::SearchStats::default();
     for (character_id, present) in present.iter().copied().enumerate() {
         if !present {
             continue;
@@ -281,7 +281,7 @@ pub fn search_all_characters(
 
     let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
     merged.sort_unstable_by(|left, right| {
-        let ordering = super::deck_result_cmp(left, right);
+        let ordering = crate::search::deck_result_cmp(left, right);
         if minimize {
             ordering.reverse()
         } else {
@@ -293,7 +293,7 @@ pub fn search_all_characters(
     (merged, stats)
 }
 
-fn accumulate_stats(total: &mut super::SearchStats, part: &super::SearchStats) {
+fn accumulate_stats(total: &mut crate::search::SearchStats, part: &crate::search::SearchStats) {
     total.visited_nodes += part.visited_nodes;
     total.deadline_hit |= part.deadline_hit;
     total.leaf_nodes += part.leaf_nodes;
@@ -313,25 +313,25 @@ fn search_with_character_filter(
     params: &SearchParams,
     character_id: Option<u8>,
     deadline: &mut ChallengeDeadline,
-) -> (Vec<DeckResult>, super::SearchStats) {
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE || deadline.expired() {
-        return (Vec::new(), super::SearchStats::default());
+        return (Vec::new(), crate::search::SearchStats::default());
     }
 
     let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
     let mut tracker = SimpleTopKTracker::new(params.top_k, minimize, pool);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
-    let mut stats = super::SearchStats::default();
+    let mut stats = crate::search::SearchStats::default();
     let candidates = ordered_candidates(pool, ctx, character_id);
     if candidates.len() < DECK_SIZE {
-        return (Vec::new(), super::SearchStats::default());
+        return (Vec::new(), crate::search::SearchStats::default());
     }
     if params.top_k == 1 && ctx.fixed_card_ids.is_empty() {
         return search_combo_top1(pool, ctx, &candidates, tracker, deadline);
     }
     // Maximization ceilings cannot prune a minimum-power search.
     let bounds = if minimize
-        || !super::tuning::SearchTuning::load().bounds
+        || !crate::search::tuning::SearchTuning::load().bounds
         || ctx.has_event()
         || matches!(ctx.target, ScoreTarget::Bonus | ScoreTarget::Mysekai)
     {
@@ -367,8 +367,8 @@ fn search_combo_top1(
     candidates: &[CardIdx],
     mut tracker: SimpleTopKTracker,
     deadline: &mut ChallengeDeadline,
-) -> (Vec<DeckResult>, super::SearchStats) {
-    let mut stats = super::SearchStats::default();
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
+    let mut stats = crate::search::SearchStats::default();
     let game_ids = candidates
         .iter()
         .map(|card| pool.game_id(*card))
@@ -439,8 +439,8 @@ fn leaf_evaluate_challenge(
     ctx: &SearchContext,
     deck: &[CardIdx; DECK_SIZE],
 ) -> Option<DeckResult> {
-    if super::problem::DeckProblem::from_context(ctx).needs_placement_search() {
-        return super::placement::evaluate_candidate(pool, ctx, deck);
+    if crate::search::problem::DeckProblem::from_context(ctx).needs_placement_search() {
+        return crate::search::placement::evaluate_candidate(pool, ctx, deck);
     }
     let score = if matches!(
         ctx.effective_live_type(),
@@ -467,7 +467,7 @@ fn challenge_recurse(
     deck: &mut [CardIdx; DECK_SIZE],
     partial: PartialDeck,
     tracker: &mut SimpleTopKTracker,
-    stats: &mut super::SearchStats,
+    stats: &mut crate::search::SearchStats,
     deadline: &mut ChallengeDeadline,
 ) {
     stats.visited_nodes += 1;
