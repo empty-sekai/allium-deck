@@ -1,4 +1,4 @@
-//! EXPERIMENT v2: role-aware power/skill envelope with an incumbent-derived slope.
+//! Exact role-aware power/skill upper envelope with an incumbent-derived slope.
 //!
 //! Let P be power, S skill sum, L leader skill, and rate <= C+B*S+D*L.
 //! For any positive slope lambda, maximize the LINEAR expression

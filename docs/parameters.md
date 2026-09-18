@@ -11,7 +11,7 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | `liveType` / `live_type` | string | `"solo"` | `solo`, `auto`, `multi`, `cheerful`, `challenge`, `challenge_auto`, `mysekai`. |
 | `limit` | int | 10 | Number of decks returned (Top-K). Distinct card sets. Max 100. |
 | `member` | int | absent | Compatibility field; only 5 (or absent) is supported. |
-| `timeoutMs` / `timeout_ms` | int | 300000 | Search deadline in milliseconds, max 300000. On expiry the best results found so far are returned (anytime behavior); exactness is only guaranteed when the search finishes before the deadline. |
+| `timeoutMs` / `timeout_ms` | int | 300000 | Public JSON search deadline in milliseconds; valid range `1..=300000`. On expiry the legal incumbents found so far are returned (anytime behavior); exactness is certified only when completion is `Complete`. The lower-level `SearchParams` API additionally reserves `0` for an unlimited internal search. |
 | `minimize` | bool | false | Weakest-deck search. Only meaningful with `target=power`; ignored otherwise. |
 
 ## Event context
@@ -116,7 +116,7 @@ Exact tiers compare the evaluated bonus itself, not the rounded half-percent ran
 
 The full proof obligations and counterexample regressions are recorded in [exactness-proof.md](exactness-proof.md). Dominance pruning compares power, skill, event bonus, attribute, unit mask — and, in World Bloom, the support-deck displacement caused by using a support-listed card in the main deck. Heuristics are permitted only for incumbent seeding or visit order; they never remove candidates from a proof-carrying frontier.
 
-Exactness is conditional on a successful, non-timed-out search. A timeout turns the solver into best-effort and sets `SearchStats::deadline_hit`. If hard filtering still leaves more cards than the fixed metadata mask can represent (currently 512), pool construction returns `TooManyCards` rather than silently producing an approximate deck.
+Exactness is conditional on `SearchCompletion::Complete`. On timeout, every returned incumbent is still legal and exactly evaluated, but canonical Top-K completeness is unproven; `SearchStats::deadline_hit` is set and completion is `TimedOut`. If hard filtering still leaves more cards than the fixed metadata mask can represent (currently 512), pool construction returns `TooManyCards` rather than silently producing an approximate deck.
 
 Compact representation limits are checked before pool packing. Besides the 512-candidate mask, the current model uses 16-bit public card IDs, 18-bit per-card power profiles, 8-bit skill values, 12-bit main-card bonus totals in tenths, 15 distinct nonzero limited-bonus values, and 255 distinct entries in each special-skill table. A real event skill cap is applied before the width check. Identical special-skill content is interned, so duplicate entries do not consume distinct capacity. Unrepresentable values return a typed `BuildError::CapacityExceeded`; they are not saturated, truncated, silently removed, or allowed to panic in the arena builder.
 
