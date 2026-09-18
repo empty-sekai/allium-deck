@@ -1264,7 +1264,7 @@ mod tests {
     use crate::search::context::SupportDeck;
     use crate::types::EventType;
 
-    fn ctx(live_type: LiveType) -> SearchContext {
+    pub(super) fn ctx(live_type: LiveType) -> SearchContext {
         SearchContext {
             target: ScoreTarget::Score,
             fixed_card_ids: Vec::new(),
@@ -1343,3 +1343,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod dynamic_bounds;

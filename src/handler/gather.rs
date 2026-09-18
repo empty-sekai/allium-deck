@@ -1,3 +1,4 @@
+use super::{BuildError, capacity};
 use crate::pool::{CardPool, EventBonusExact, PoolBuilder, SkillSlot};
 use crate::types::{DefaultImage, LiveType, PowerDetail, ScoreTarget, SkillInfo};
 
@@ -203,7 +204,7 @@ fn fixed_slot_rank(
     fixed_card_ids: &[u16],
     fixed_character_ids: &[u8],
 ) -> Option<usize> {
-    let game_card_id = card.game_card_id.max(0).min(u16::MAX as i32) as u16;
+    let game_card_id = card.game_card_id as u16;
     if let Some(pos) = fixed_card_ids.iter().position(|id| *id == game_card_id) {
         return Some(pos);
     }
@@ -260,7 +261,8 @@ pub(crate) fn sort_and_gather(
     fixed_card_ids: &[u16],
     fixed_character_ids: &[u8],
     include_details: bool,
-) -> (CardPool, Vec<FullPrecisionCard>, GatheredContext) {
+) -> Result<(CardPool, Vec<FullPrecisionCard>, GatheredContext), BuildError> {
+    capacity::validate_cards(&cards)?;
     if fixed_card_ids.is_empty() && fixed_character_ids.is_empty() {
         cards.sort_by(|left, right| {
             compare_cards(left, right, target, has_event, effective_live_type)
@@ -280,9 +282,9 @@ pub(crate) fn sort_and_gather(
     }
 
     let mut builder = PoolBuilder::new(cards.len() as u16);
-    let mut unit_count_idx = 0u8;
-    let mut diff_idx = 0u8;
-    let mut ref_idx = 0u8;
+    let mut unit_counts = Vec::new();
+    let mut diffs = Vec::new();
+    let mut references = Vec::new();
     let mut full = if include_details {
         Vec::with_capacity(cards.len())
     } else {
@@ -301,22 +303,31 @@ pub(crate) fn sort_and_gather(
         let (power_values, power_lut) = encode_power(&card);
         let mut slot = card.skill.slot;
         if let Some(skill) = card.skill.unit_count {
-            unit_count_idx = unit_count_idx.saturating_add(1);
-            builder.add_unit_count_skill(skill);
+            let (unit_count_idx, added) =
+                capacity::intern(&mut unit_counts, skill, "distinct unit-count skills")?;
+            if added {
+                builder.add_unit_count_skill(skill);
+            }
             slot = SkillSlot {
                 skill_type: 1,
                 value: unit_count_idx,
             };
         } else if let Some(skill) = card.skill.diff {
-            diff_idx = diff_idx.saturating_add(1);
-            builder.add_diff_skill(skill);
+            let (diff_idx, added) =
+                capacity::intern(&mut diffs, skill, "distinct different-unit skills")?;
+            if added {
+                builder.add_diff_skill(skill);
+            }
             slot = SkillSlot {
                 skill_type: 2,
                 value: diff_idx,
             };
         } else if let Some(skill) = card.skill.ref_skill {
-            ref_idx = ref_idx.saturating_add(1);
-            builder.add_ref_skill(skill);
+            let (ref_idx, added) =
+                capacity::intern(&mut references, skill, "distinct reference skills")?;
+            if added {
+                builder.add_ref_skill(skill);
+            }
             slot = SkillSlot {
                 skill_type: 3,
                 value: ref_idx,
@@ -334,7 +345,7 @@ pub(crate) fn sort_and_gather(
         builder.set_char_id(dense, card.character_id);
         builder.set_attr(dense, card.attr);
         builder.set_unit_mask(dense, card.unit_mask_raw);
-        builder.set_game_id(dense, card.game_card_id.max(0).min(u16::MAX as i32) as u16);
+        builder.set_game_id(dense, card.game_card_id as u16);
         builder.mark_char(card.character_id, dense);
         builder.mark_attr(card.attr, dense);
         for bit in 0..6u8 {
@@ -354,7 +365,7 @@ pub(crate) fn sort_and_gather(
             .push(matches!(card.default_image, DefaultImage::SpecialTraining));
         if include_details {
             full.push(FullPrecisionCard {
-                game_card_id: card.game_card_id.max(0).min(u16::MAX as i32) as u16,
+                game_card_id: card.game_card_id as u16,
                 card_rarity_type: card.card_rarity_type,
                 character_id: card.character_id,
                 attr: card.attr,
@@ -377,5 +388,5 @@ pub(crate) fn sort_and_gather(
         }
     }
 
-    (builder.freeze(), full, gathered)
+    Ok((builder.freeze(), full, gathered))
 }

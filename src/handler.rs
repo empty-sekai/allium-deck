@@ -9,6 +9,7 @@
 //! aligned with the pool's dense card indexes.
 
 mod build;
+mod capacity;
 mod card_config;
 mod event_bonus;
 mod filter;
@@ -46,6 +47,15 @@ pub enum BuildError {
     EmptyPool,
     /// 候选卡超过当前固定宽度 metadata mask 容量。
     TooManyCards(usize),
+    /// A value or an interned table cannot be represented by the compact pool.
+    CapacityExceeded {
+        /// Compact field or side table which cannot represent the input.
+        field: &'static str,
+        /// Required value or number of distinct entries.
+        value: u64,
+        /// Largest exactly representable value or entry count.
+        max: u64,
+    },
     /// 参数非法。
     InvalidConfig(String),
 }
@@ -55,6 +65,10 @@ impl Display for BuildError {
         match self {
             Self::EmptyPool => f.write_str("候选卡池为空"),
             Self::TooManyCards(count) => write!(f, "候选卡数量超过 mask 容量: {count}"),
+            Self::CapacityExceeded { field, value, max } => write!(
+                f,
+                "{field} exceeds exact representation capacity: {value} > {max}"
+            ),
             Self::InvalidConfig(reason) => write!(f, "构建参数非法: {reason}"),
         }
     }

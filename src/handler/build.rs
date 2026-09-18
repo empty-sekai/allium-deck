@@ -240,9 +240,9 @@ impl<'a> PreparedPoolBuild<'a> {
             result
         };
 
-        let mut prepare_card = |mut user_card: Cow<'a, types::UserCard>| {
+        let mut prepare_card = |mut user_card: Cow<'a, types::UserCard>| -> Result<(), BuildError> {
             let Some(card_data) = indexes.card_data(user_card.card_id) else {
-                return;
+                return Ok(());
             };
             let master = &card_data.master;
             if !configs_are_noop
@@ -254,13 +254,13 @@ impl<'a> PreparedPoolBuild<'a> {
                     game.card_episodes,
                 )
             {
-                return;
+                return Ok(());
             }
             if card_data.unit_mask == 0 {
-                return;
+                return Ok(());
             }
             let Some(attr) = card_data.attr else {
-                return;
+                return Ok(());
             };
             let default_image_kind = default_image_kind(&user_card.default_image);
             let after_training = is_after_training(&user_card.special_training_status);
@@ -285,6 +285,7 @@ impl<'a> PreparedPoolBuild<'a> {
                         ctx,
                     )
                 })
+                .transpose()?
                 .unwrap_or((EventBonusExact::default(), false, false));
             let leader_honor_bonus = if event_ctx.is_some() {
                 usize::try_from(master.character_id)
@@ -329,14 +330,15 @@ impl<'a> PreparedPoolBuild<'a> {
                 leader_honor_bonus,
                 leader_limit_bonus,
             });
+            Ok(())
         };
         if let Some(normalized_cards) = normalized_cards {
             for user_card in normalized_cards {
-                prepare_card(Cow::Owned(user_card));
+                prepare_card(Cow::Owned(user_card))?;
             }
         } else {
             for user_card in &user.user_cards {
-                prepare_card(Cow::Borrowed(user_card));
+                prepare_card(Cow::Borrowed(user_card))?;
             }
         }
 
@@ -408,7 +410,7 @@ impl<'a> PreparedPoolBuild<'a> {
                         character_rank,
                         event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
                         skill_state,
-                    ),
+                    )?,
                 ));
             }
             let skill_state_controls_image =
@@ -864,7 +866,7 @@ pub(super) fn build_card_pool_fully_prepared_internal(
     if cards.is_empty() {
         return Err(BuildError::EmptyPool);
     }
-    // The fixed-width metadata mask (currently 1024 bits) is a capacity contract. If hard filtering does
+    // The fixed-width metadata mask (currently 512 bits) is a capacity contract. If hard filtering does
     // not fit, return an explicit capacity error instead of silently deleting
     // candidates.  An error is compatible with exactness; an approximate deck
     // is not.  A future wide-mask fallback can extend capacity without changing
@@ -891,7 +893,7 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         &fixed_card_ids,
         &fixed_character_ids,
         include_details,
-    );
+    )?;
     let mut search_ctx = build_search_context(
         gathered,
         &support_seeds,

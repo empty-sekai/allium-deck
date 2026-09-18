@@ -1,7 +1,7 @@
+use super::{BuildError, capacity};
 use crate::pool::EventBonusExact;
 use crate::types::{Attr, EventType, FINAL_CHAPTER_EVENT_ID, Unit};
 
-use super::BuildError;
 use super::types::{
     BuildParams, EventCard, EventCardBonusLimit, EventDeckBonus, EventHonorBonus,
     EventRarityBonusRate, EventSkillScoreUpLimit, GameData, MasterCard, UserCard,
@@ -478,7 +478,7 @@ pub(crate) fn build_card_event_bonus(
     support_unit_unrestricted: bool,
     limited_bonus_x10: i32,
     event_ctx: &EventContext,
-) -> (EventBonusExact, bool, bool) {
+) -> Result<(EventBonusExact, bool, bool), BuildError> {
     let rarity_bonus_x10 = load_rarity_bonus_x10(user_card, master, event_ctx);
     let custom_char =
         custom_character_matches(master, support_unit, support_unit_unrestricted, event_ctx);
@@ -509,16 +509,20 @@ pub(crate) fn build_card_event_bonus(
             }
         }
     }
-    let base_bonus_x10 = rarity_bonus_x10 + custom_bonus_x2 * 5 + deck_bonus_x10;
-
-    (
-        EventBonusExact::from_x10(
-            base_bonus_x10.clamp(0, u16::MAX as i32) as u16,
-            limited_bonus_x10.clamp(0, u16::MAX as i32) as u16,
-        ),
+    let base_bonus_x10 =
+        (i64::from(rarity_bonus_x10) + i64::from(custom_bonus_x2) * 5 + i64::from(deck_bonus_x10))
+            .max(0) as u64;
+    let limited_bonus_x10 = limited_bonus_x10.max(0) as u64;
+    capacity::ensure(
+        "card event bonus (tenths)",
+        base_bonus_x10 + limited_bonus_x10,
+        u64::from(crate::pool::EventBonusHot::MAX_TOTAL_X10),
+    )?;
+    Ok((
+        EventBonusExact::from_x10(base_bonus_x10 as u16, limited_bonus_x10 as u16),
         custom_char || deck_char,
         custom_attr || deck_attr,
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -631,7 +635,7 @@ mod tests {
         };
 
         let (bonus, has_char, _) =
-            build_card_event_bonus(&user_card, &card_master, 0, None, None, true, 0, &ctx);
+            build_card_event_bonus(&user_card, &card_master, 0, None, None, true, 0, &ctx).unwrap();
         assert_eq!(bonus.base_x10(), 255);
         assert!(has_char);
     }
@@ -704,7 +708,8 @@ mod tests {
             true,
             0,
             &ctx,
-        );
+        )
+        .unwrap();
         assert_eq!(bonus.base_x10(), 2);
         assert_eq!(bonus.base_rate(), 0.2);
     }

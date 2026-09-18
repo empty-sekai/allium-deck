@@ -1,4 +1,5 @@
 //! handler 管线测试。
+mod capacity;
 
 use crate::pool::EventBonusExact;
 use crate::types::{DefaultImage, FINAL_CHAPTER_EVENT_ID};
@@ -634,7 +635,8 @@ fn handler_build_skill_covers_normal_unit_count_diff_and_ref() {
         0,
         Some(140),
         SkillState::BeforeTraining,
-    );
+    )
+    .unwrap();
     assert_eq!(
         normal.slot,
         SkillSlot {
@@ -678,7 +680,8 @@ fn handler_build_skill_covers_normal_unit_count_diff_and_ref() {
         0,
         None,
         SkillState::BeforeTraining,
-    );
+    )
+    .unwrap();
     assert_eq!(unit_count.slot.skill_type, 1);
     assert_eq!(
         unit_count
@@ -718,7 +721,8 @@ fn handler_build_skill_covers_normal_unit_count_diff_and_ref() {
         0,
         None,
         SkillState::BeforeTraining,
-    );
+    )
+    .unwrap();
     assert_eq!(
         diff.diff,
         Some(crate::pool::DiffSkill {
@@ -762,7 +766,8 @@ fn handler_build_skill_covers_normal_unit_count_diff_and_ref() {
         0,
         Some(140),
         SkillState::BeforeTraining,
-    );
+    )
+    .unwrap();
     assert_eq!(
         ref_skill.ref_skill,
         Some(crate::pool::RefSkill { rate: 20, max: 40 })
@@ -1248,7 +1253,8 @@ fn handler_sort_and_gather_reindexes_dense_order() {
         &[],
         &[],
         false,
-    );
+    )
+    .unwrap();
     assert_eq!(pool.count(), 3);
     assert_eq!(pool.game_id(pool.card_idx(0).unwrap()), 3);
     assert_eq!(pool.game_id(pool.card_idx(1).unwrap()), 2);
@@ -1291,7 +1297,15 @@ fn handler_sort_and_gather_moves_fixed_card_states_before_members() {
                 } else {
                     None
                 },
-                skill_min: skill_max,
+                // The reference state has a 70-point addition; this fixture
+                // must describe the same upper bound as the real encoder.
+                skill_min: if game_card_id == 949
+                    && matches!(default_image, crate::types::DefaultImage::Original)
+                {
+                    skill_max - 70
+                } else {
+                    skill_max
+                },
                 skill_max,
                 full: crate::types::SkillInfo {
                     skill_id: if game_card_id == 949 {
@@ -1337,7 +1351,8 @@ fn handler_sort_and_gather_moves_fixed_card_states_before_members() {
         &[949],
         &[],
         true,
-    );
+    )
+    .unwrap();
 
     assert_eq!(pool.game_id(pool.card_idx(0).unwrap()), 949);
     assert_eq!(pool.game_id(pool.card_idx(1).unwrap()), 949);
