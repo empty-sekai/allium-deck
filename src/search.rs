@@ -19,6 +19,7 @@ pub mod bruteforce;
 pub mod challenge_search;
 /// 单次搜索期间不变的上下文。
 pub mod context;
+mod correlated;
 /// 通用 DFS / 分支限界搜索。
 pub mod dfs;
 /// 支配裁剪：剔除不可能出现在最优解里的卡。
