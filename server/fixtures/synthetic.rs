@@ -1,10 +1,10 @@
-//! 基准测试用的确定性合成 masterdata 生成器。
+//! Server parity tests and local smoke checks use this deterministic synthetic data.
 //!
 //! 产出与真实 masterdata 目录同名、同 schema 的原始 JSON 表（`cards.json`、
 //! `skills.json`、`eventDeckBonuses.json` 等），外加 music metas 与一份满配用户
 //! 数据，规模贴近真实（26 角色、1300 卡、约 20 个技能原型、区域道具/剧情/突破/
 //! 活动加成全套）。所有数值都是合成的，不包含任何游戏资产或真实数据，
-//! `cargo bench` 对任何人开箱可跑。
+//! The export-synth-masterdata utility produces the same fixture for local use.
 //!
 //! 生成结果走引擎自己的 `MasterdataSources::from_strings` →
 //! `OwnedGameData::from_sources` 解析路径，schema 正确性由真实解析代码保证。

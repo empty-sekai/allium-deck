@@ -32,7 +32,7 @@
 26 角色、1300 张卡，外加一个满配账号：
 
 ```bash
-cargo run --release --example export_synth_masterdata -- ./synth
+cargo run --manifest-path server/Cargo.toml --release --bin export-synth-masterdata -- ./synth
 
 cd server
 cargo run --release -- \
@@ -70,7 +70,7 @@ curl localhost:8080/v1/recommend -H 'content-type: application/json' -d "{
 ```
 
 换成真实数据时，`--masterdata` 指向平铺着 masterdata `*.json` 的目录，`--music-metas`
-指向 `music_metas.json`。两者的公开来源列在 [`examples/recommend.rs`](../examples/recommend.rs)。
+指向 `music_metas.json`。两者的公开来源列在 [`src/bin/recommend_cli.rs`](../src/bin/recommend_cli.rs)。
 
 ## 端点
 

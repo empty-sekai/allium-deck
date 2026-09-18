@@ -1,5 +1,5 @@
-//! Experimental exhaustive auditor for the correlated upper bound.
-//! This module lives only in the isolated benchmark worktree.
+//! Exhaustive auditor for correlated upper-bound admissibility.
+//! Compiled only for tests or the explicit diagnostics feature.
 #![allow(missing_docs)]
 use super::correlated::CorrelatedBound;
 use super::evaluate::leaf_evaluate_checked;

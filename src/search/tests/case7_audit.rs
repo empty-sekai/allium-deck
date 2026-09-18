@@ -76,7 +76,7 @@ fn audit_case7_ordered_feasible_set() {
     let mut results = serde_json::Map::new();
     for (name, rows) in [
         ("production", &production),
-        ("combination_oracle", &combination),
+        ("independent_ordered_oracle", &combination),
         ("no_dominance_unseeded_dfs", &unseeded),
         ("ordered_exhaustive", &ordered),
         ("raw_warm_seeds", &raw_seeds),
@@ -123,10 +123,8 @@ fn audit_case7_ordered_feasible_set() {
 
 #[test]
 fn specific_order_fixture_preserves_the_true_ordered_optimum() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/exactness/case7_specific_order.json"
-    ))
-    .unwrap();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("fixtures/case7_specific_order.json")).unwrap();
     let cards = fixture["cards"]
         .as_array()
         .unwrap()

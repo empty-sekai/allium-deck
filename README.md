@@ -230,7 +230,7 @@ recommend_cli \
 
 ```bash
 # 本仓不携带游戏数据；先导出一份合成 masterdata 就能把服务跑起来
-cargo run --release --example export_synth_masterdata -- ./synth
+cargo run --manifest-path server/Cargo.toml --release --bin export-synth-masterdata -- ./synth
 
 cd server
 cargo run --release --   --masterdata synth=../synth/masterdata   --music-metas synth=../synth/music_metas.json

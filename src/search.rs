@@ -21,7 +21,8 @@ mod alternatives;
 /// 单次搜索期间不变的上下文。
 pub mod context;
 mod correlated;
-/// Experimental long-run audit helpers; isolated to the benchmark worktree.
+/// Exhaustive bound auditing; intended for tests and opt-in diagnostics.
+#[cfg(any(test, feature = "diagnostics"))]
 pub mod correlated_audit;
 /// 通用 DFS / 分支限界搜索。
 pub mod dfs;
