@@ -381,12 +381,12 @@ fn card_event_bonus_for_display(
     card: CardIdx,
     is_leader: bool,
 ) -> f64 {
-    let mut total = pool.event_bonus(card).total_rate();
+    let mut total_x10 = u32::from(pool.event_bonus(card).total_x10());
     if ctx.is_final_chapter && is_leader {
-        total += ctx.leader_honor_bonus_at(card.raw()) as f64;
-        total += ctx.leader_limit_bonus_at(card.raw()) as f64;
+        total_x10 += ctx.leader_honor_bonus_x10_at(card.raw());
+        total_x10 += ctx.leader_limit_bonus_x10_at(card.raw());
     }
-    total
+    f64::from(total_x10) / 10.0
 }
 
 #[inline(always)]
@@ -613,8 +613,8 @@ pub(crate) fn resolve_total_bonus(
         }
 
         if ctx.is_final_chapter && pos == 0 {
-            total_x10 += u64::from(ctx.leader_honor_bonus_at(card.raw())) * 10;
-            total_x10 += u64::from(ctx.leader_limit_bonus_at(card.raw())) * 10;
+            total_x10 += u64::from(ctx.leader_honor_bonus_x10_at(card.raw()));
+            total_x10 += u64::from(ctx.leader_limit_bonus_x10_at(card.raw()));
         }
         pos += 1;
     }
@@ -637,8 +637,7 @@ pub(crate) fn card_proxy_bonus(
 ) -> u32 {
     let mut total = pool.event_bonus(card).total_ceil();
     if ctx.is_final_chapter && is_leader {
-        total += ctx.leader_honor_bonus_at(card.raw());
-        total += ctx.leader_limit_bonus_at(card.raw());
+        total += ctx.leader_bonus_upper_at(card.raw());
     }
     total
 }
@@ -1302,8 +1301,8 @@ mod tests {
             card_bonus_count_limit: DECK_SIZE,
             honor_bonus: 0,
             power_total_cap: None,
-            leader_honor_bonus: Vec::new(),
-            leader_limit_bonus: Vec::new(),
+            leader_honor_bonus_x10: Vec::new(),
+            leader_limit_bonus_x10: Vec::new(),
             final_chapter_member_keep: Vec::new(),
             skill_is_after_training: Vec::new(),
             trained_to_special_image: Vec::new(),

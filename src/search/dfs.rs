@@ -1474,8 +1474,7 @@ fn partial_bonus_add(
     // relaxation; the exact evaluator alone applies the event's cap.
     let mut bonus = pool.event_bonus(card).total_ceil();
     if ctx.is_final_chapter && is_leader {
-        bonus += ctx.leader_honor_bonus_at(card.raw());
-        bonus += ctx.leader_limit_bonus_at(card.raw());
+        bonus += ctx.leader_bonus_upper_at(card.raw());
     }
     (bonus, 0)
 }

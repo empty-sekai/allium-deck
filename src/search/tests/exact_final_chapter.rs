@@ -129,8 +129,8 @@ fn search_final_chapter_top_k_restores_member_alternative_behind_leader_dedup() 
         ];
         let pool = build_pool(&cards);
         let mut search_ctx = final_chapter_ctx(&pool);
-        search_ctx.leader_honor_bonus[0] = 6;
-        search_ctx.leader_honor_bonus[1] = 5;
+        search_ctx.leader_honor_bonus_x10[0] = (6) * 10;
+        search_ctx.leader_honor_bonus_x10[1] = (5) * 10;
         search_ctx.event_type = Some(EventType::Marathon);
         search_ctx.skill_scores[1] = [10.0; 6];
         let params = SearchParams {
@@ -189,7 +189,7 @@ fn search_final_chapter_world_bloom_support_penalty_keeps_member_candidates() {
     search_ctx.is_world_bloom = true;
     search_ctx.event_type = Some(EventType::WorldBloom);
     search_ctx.fixed_character_ids = vec![7];
-    search_ctx.leader_limit_bonus[2] = 1;
+    search_ctx.leader_limit_bonus_x10[2] = 10;
     let support = SupportDeck {
         cards: vec![(900, 5.0), (998, 1.0)],
         count: 1,
@@ -339,8 +339,10 @@ fn exact_final_chapter_auto_matches_exhaustive_leader_oracle_randomized() {
                 support_deck_for_property(&pool, character + case as usize);
         }
         for dense in 0..pool.count() {
-            final_ctx.leader_honor_bonus[dense] = ((dense * 3 + case as usize) % 9) as u16;
-            final_ctx.leader_limit_bonus[dense] = ((dense * 5 + case as usize) % 7) as u16;
+            final_ctx.leader_honor_bonus_x10[dense] =
+                (((dense * 3 + case as usize) % 9) as u16) * 10;
+            final_ctx.leader_limit_bonus_x10[dense] =
+                (((dense * 5 + case as usize) % 7) as u16) * 10;
         }
         let params = SearchParams {
             top_k: 3,

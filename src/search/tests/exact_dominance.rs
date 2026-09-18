@@ -97,8 +97,8 @@ fn search_dominance_preserves_best_score() {
     ];
     let pool = build_pool(&cards);
     let mut search_ctx = ctx(ScoreTarget::Power);
-    search_ctx.leader_honor_bonus = vec![0; pool.count()];
-    search_ctx.leader_limit_bonus = vec![0; pool.count()];
+    search_ctx.leader_honor_bonus_x10 = vec![0; pool.count()];
+    search_ctx.leader_limit_bonus_x10 = vec![0; pool.count()];
     search_ctx.skill_is_after_training = vec![false; pool.count()];
     search_ctx.trained_to_special_image = vec![false; pool.count()];
     let suffix = SuffixBound::build(&pool, &search_ctx);

@@ -878,8 +878,8 @@ fn leader_dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: Car
     {
         return false;
     }
-    if ctx.leader_honor_bonus_at(lhs.raw()) < ctx.leader_honor_bonus_at(rhs.raw())
-        || ctx.leader_limit_bonus_at(lhs.raw()) < ctx.leader_limit_bonus_at(rhs.raw())
+    if ctx.leader_honor_bonus_x10_at(lhs.raw()) < ctx.leader_honor_bonus_x10_at(rhs.raw())
+        || ctx.leader_limit_bonus_x10_at(lhs.raw()) < ctx.leader_limit_bonus_x10_at(rhs.raw())
     {
         return false;
     }
@@ -979,9 +979,7 @@ fn build_leader_const(pool: &CardPool, ctx: &SearchContext, leader: CardIdx) -> 
         leader,
         power: pool.power_max(leader),
         skill: pool.skill_max(leader) as u32,
-        base_bonus_const: eb.base_ceil()
-            + ctx.leader_honor_bonus_at(leader.raw())
-            + ctx.leader_limit_bonus_at(leader.raw()),
+        base_bonus_const: eb.base_ceil() + ctx.leader_bonus_upper_at(leader.raw()),
         limited_bonus: eb.limited_ceil(),
         limited_count,
         extra_bonus_ub: final_chapter_extra_bonus_bound(pool, ctx, leader, &[], MEMBER_COUNT),

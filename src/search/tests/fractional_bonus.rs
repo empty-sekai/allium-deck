@@ -265,3 +265,41 @@ fn exact_tier_fractional_limited_and_support_matrix_matches_ordered_oracle() {
         }
     }
 }
+
+#[test]
+fn fractional_final_leader_bounds_and_dominance_match_ordered_oracle() {
+    for case in 0..16u64 {
+        let pool = build_pool(&randomized_exact_cards(0xF10A_0000 + case, 9, 6));
+        let mut ctx = final_chapter_ctx(&pool);
+        ctx.is_world_bloom = true;
+        ctx.event_type = Some(EventType::WorldBloom);
+        for card in pool.indices() {
+            ctx.leader_honor_bonus_x10[card.raw()] = ((card.raw() * 3 + case as usize) % 13) as u16;
+            ctx.leader_limit_bonus_x10[card.raw()] = ((card.raw() * 7 + case as usize) % 17) as u16;
+        }
+        for fixed in [false, true] {
+            ctx.fixed_character_ids = if fixed { vec![2] } else { vec![] };
+            for top_k in [1, 3, 8] {
+                let params = SearchParams {
+                    top_k,
+                    timeout_ms: 0,
+                };
+                let expected = ExactOracle::new(&pool, &ctx).search(&params).0;
+                let actual = search(&pool, &ctx, &params);
+                assert_property_scores(
+                    &pool,
+                    &ctx,
+                    &actual,
+                    &expected,
+                    "Final fractional leader bonus",
+                );
+                assert_property_results(
+                    &pool,
+                    &actual,
+                    &expected,
+                    "Final fractional canonical results",
+                );
+            }
+        }
+    }
+}

@@ -90,10 +90,10 @@ pub struct SearchContext {
     pub honor_bonus: u32,
     /// 综合力上限；超过后按上限计算。
     pub power_total_cap: Option<u32>,
-    /// 每张卡作为队长时的称号加成，按稠密卡索引。
-    pub leader_honor_bonus: Vec<u16>,
-    /// 每张卡作为队长时的当期限定加成，按稠密卡索引。
-    pub leader_limit_bonus: Vec<u16>,
+    /// 每张卡作为队长时的称号加成（百分比 × 10），按稠密卡索引。
+    pub leader_honor_bonus_x10: Vec<u16>,
+    /// 每张卡作为队长时的当期限定加成（百分比 × 10），按稠密卡索引。
+    pub leader_limit_bonus_x10: Vec<u16>,
     /// 终章 member 支配裁剪后仍保留的卡，按稠密卡索引。
     pub final_chapter_member_keep: Vec<bool>,
     /// 每张卡取用的技能是否为花后技能，按稠密卡索引。
@@ -111,14 +111,14 @@ impl SearchContext {
             "skill_is_after_training length must match pool count",
         );
         assert_eq!(
-            self.leader_honor_bonus.len(),
+            self.leader_honor_bonus_x10.len(),
             keep.len(),
-            "leader_honor_bonus length must match pool count",
+            "leader_honor_bonus_x10 length must match pool count",
         );
         assert_eq!(
-            self.leader_limit_bonus.len(),
+            self.leader_limit_bonus_x10.len(),
             keep.len(),
-            "leader_limit_bonus length must match pool count",
+            "leader_limit_bonus_x10 length must match pool count",
         );
         assert_eq!(
             self.trained_to_special_image.len(),
@@ -128,8 +128,8 @@ impl SearchContext {
 
         let mut remapped = self.clone();
         remapped.skill_is_after_training = remap_vec(&self.skill_is_after_training, keep);
-        remapped.leader_honor_bonus = remap_vec(&self.leader_honor_bonus, keep);
-        remapped.leader_limit_bonus = remap_vec(&self.leader_limit_bonus, keep);
+        remapped.leader_honor_bonus_x10 = remap_vec(&self.leader_honor_bonus_x10, keep);
+        remapped.leader_limit_bonus_x10 = remap_vec(&self.leader_limit_bonus_x10, keep);
         remapped.final_chapter_member_keep = remap_vec(&self.final_chapter_member_keep, keep);
         remapped.trained_to_special_image = remap_vec(&self.trained_to_special_image, keep);
         remapped
@@ -256,16 +256,30 @@ impl SearchContext {
             .map_or(power_total, |cap| power_total.min(cap))
     }
 
-    /// 读取指定卡位的终章称号加成。
+    /// 读取指定卡位的终章称号加成（百分比 × 10）。
     #[inline(always)]
-    pub fn leader_honor_bonus_at(&self, dense_idx: usize) -> u32 {
-        self.leader_honor_bonus.get(dense_idx).copied().unwrap_or(0) as u32
+    pub fn leader_honor_bonus_x10_at(&self, dense_idx: usize) -> u32 {
+        self.leader_honor_bonus_x10
+            .get(dense_idx)
+            .copied()
+            .unwrap_or(0) as u32
     }
 
-    /// 读取指定卡位的终章当期队长加成。
+    /// 读取指定卡位的终章当期队长加成（百分比 × 10）。
     #[inline(always)]
-    pub fn leader_limit_bonus_at(&self, dense_idx: usize) -> u32 {
-        self.leader_limit_bonus.get(dense_idx).copied().unwrap_or(0) as u32
+    pub fn leader_limit_bonus_x10_at(&self, dense_idx: usize) -> u32 {
+        self.leader_limit_bonus_x10
+            .get(dense_idx)
+            .copied()
+            .unwrap_or(0) as u32
+    }
+
+    /// Integer-percent upper relaxation of the exact leader-only bonus.
+    /// Both components remain in tenths until their final upward rounding.
+    #[inline(always)]
+    pub(crate) fn leader_bonus_upper_at(&self, dense_idx: usize) -> u32 {
+        (self.leader_honor_bonus_x10_at(dense_idx) + self.leader_limit_bonus_x10_at(dense_idx))
+            .div_ceil(10)
     }
 
     /// 判断终章 member 候选是否保留。

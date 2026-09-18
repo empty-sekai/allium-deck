@@ -110,6 +110,8 @@ Per-rarity defaults (`rarity1Config` … `rarity4Config`, `rarityBirthdayConfig`
 | `skill` | full-candidate B&B with a per-card skill-max relaxation | Exact, including Top-K |
 | `bonus` (`targetBonusList`) | dedicated exact-reachability DFS per bonus tier | Exact per tier, including Top-K |
 
+Leader-only honor and limited bonuses also remain in integer tenths throughout preparation and evaluation. Only upper bounds round them upward to whole percentages. The low-level context and full-precision card fields carry an explicit `_x10` suffix; public result bonuses remain percentage values. A nonzero fractional leader bonus cannot trigger the legacy zero-entry default.
+
 Exact tiers compare the evaluated bonus itself, not the rounded half-percent ranking key. A 4.8%, 4.9%, 5.1% or 5.2% deck does not hit a request for 5%. Main-card components are summed in integer tenths before display conversion. Limited-count events enumerate tier-observable assignments; cultivation variants and assignments compete independently within each requested tier. The independent `ExactOracle::search_bonus_targets` enumerates these feasible sets directly rather than filtering the overall Bonus winners.
 
 The full proof obligations and counterexample regressions are recorded in [exactness-proof.md](exactness-proof.md). Dominance pruning compares power, skill, event bonus, attribute, unit mask — and, in World Bloom, the support-deck displacement caused by using a support-listed card in the main deck. Heuristics are permitted only for incumbent seeding or visit order; they never remove candidates from a proof-carrying frontier.

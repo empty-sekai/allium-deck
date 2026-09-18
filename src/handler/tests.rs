@@ -1,5 +1,6 @@
 //! handler 管线测试。
 mod capacity;
+mod fractional_leader;
 
 use crate::pool::EventBonusExact;
 use crate::types::{DefaultImage, FINAL_CHAPTER_EVENT_ID};
@@ -1241,8 +1242,8 @@ fn handler_sort_and_gather_reindexes_dense_order() {
             full: crate::types::SkillInfo::default(),
         },
         event_bonus: EventBonusExact::from_whole(1, 1),
-        leader_honor_bonus: 0,
-        leader_limit_bonus: 0,
+        leader_honor_bonus_x10: 0,
+        leader_limit_bonus_x10: 0,
         ep_sort_key: power_max as i64,
     };
     let (pool, _, _) = sort_and_gather(
@@ -1327,8 +1328,8 @@ fn handler_sort_and_gather_moves_fixed_card_states_before_members() {
                 },
             },
             event_bonus: EventBonusExact::from_whole(1, 1),
-            leader_honor_bonus: 0,
-            leader_limit_bonus: 0,
+            leader_honor_bonus_x10: 0,
+            leader_limit_bonus_x10: 0,
             ep_sort_key: power_max as i64,
         }
     };
@@ -1669,7 +1670,7 @@ fn handler_build_card_pool_end_to_end_minimal() {
     );
     assert_eq!(ctx.music_rate_pct, 100);
     assert_eq!(ctx.target, ScoreTarget::Score);
-    assert_eq!(ctx.leader_honor_bonus.len(), 3);
+    assert_eq!(ctx.leader_honor_bonus_x10.len(), 3);
 }
 
 fn make_card(
@@ -1706,8 +1707,8 @@ fn make_card(
         event_bonus: EventBonusExact::from_whole(0, 0),
         has_char_bonus: false,
         has_attr_bonus: false,
-        leader_honor_bonus: 0,
-        leader_limit_bonus: 0,
+        leader_honor_bonus_x10: 0,
+        leader_limit_bonus_x10: 0,
         ep_sort_key: power_max as i64,
     }
 }

@@ -135,8 +135,8 @@ fn ctx(target: ScoreTarget) -> SearchContext {
         card_bonus_count_limit: DECK_SIZE,
         honor_bonus: 0,
         power_total_cap: None,
-        leader_honor_bonus: Vec::new(),
-        leader_limit_bonus: Vec::new(),
+        leader_honor_bonus_x10: Vec::new(),
+        leader_limit_bonus_x10: Vec::new(),
         final_chapter_member_keep: Vec::new(),
         skill_is_after_training: Vec::new(),
         trained_to_special_image: Vec::new(),
@@ -145,8 +145,8 @@ fn ctx(target: ScoreTarget) -> SearchContext {
 
 fn ready_ctx(pool: &CardPool, target: ScoreTarget) -> SearchContext {
     let mut ctx = ctx(target);
-    ctx.leader_honor_bonus = vec![0; pool.count()];
-    ctx.leader_limit_bonus = vec![0; pool.count()];
+    ctx.leader_honor_bonus_x10 = vec![0; pool.count()];
+    ctx.leader_limit_bonus_x10 = vec![0; pool.count()];
     ctx.skill_is_after_training = vec![false; pool.count()];
     ctx.trained_to_special_image = vec![false; pool.count()];
     ctx
@@ -431,7 +431,7 @@ fn final_chapter_ctx(pool: &CardPool) -> SearchContext {
     search_ctx.live_type = LiveType::Multi;
     search_ctx.live_skill_order = LiveSkillOrder::Average;
     search_ctx.best_skill_as_leader = false;
-    search_ctx.leader_honor_bonus[0] = 5;
+    search_ctx.leader_honor_bonus_x10[0] = (5) * 10;
     search_ctx
 }
 

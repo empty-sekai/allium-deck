@@ -39,9 +39,9 @@ pub(crate) struct CardIntermediate {
     /// 是否命中属性 bonus 轴。
     pub has_attr_bonus: bool,
     /// 终章 leader honor bonus。
-    pub leader_honor_bonus: u16,
+    pub leader_honor_bonus_x10: u16,
     /// 终章 leader limit bonus。
-    pub leader_limit_bonus: u16,
+    pub leader_limit_bonus_x10: u16,
     /// Score/Mysekai 排序键。
     pub ep_sort_key: i64,
 }
@@ -84,15 +84,15 @@ pub struct FullPrecisionCard {
     /// 精确 skill 上界。
     pub skill_max_exact: u8,
     /// leader honor bonus。
-    pub leader_honor_bonus: u16,
+    pub leader_honor_bonus_x10: u16,
     /// leader limit bonus。
-    pub leader_limit_bonus: u16,
+    pub leader_limit_bonus_x10: u16,
 }
 
 pub(crate) struct GatheredContext {
     pub(crate) skill_max: Vec<u8>,
-    pub(crate) leader_honor_bonus: Vec<u16>,
-    pub(crate) leader_limit_bonus: Vec<u16>,
+    pub(crate) leader_honor_bonus_x10: Vec<u16>,
+    pub(crate) leader_limit_bonus_x10: Vec<u16>,
     pub(crate) skill_is_after_training: Vec<bool>,
     pub(crate) trained_to_special_image: Vec<bool>,
 }
@@ -292,8 +292,8 @@ pub(crate) fn sort_and_gather(
     };
     let mut gathered = GatheredContext {
         skill_max: Vec::with_capacity(cards.len()),
-        leader_honor_bonus: Vec::with_capacity(cards.len()),
-        leader_limit_bonus: Vec::with_capacity(cards.len()),
+        leader_honor_bonus_x10: Vec::with_capacity(cards.len()),
+        leader_limit_bonus_x10: Vec::with_capacity(cards.len()),
         skill_is_after_training: Vec::with_capacity(cards.len()),
         trained_to_special_image: Vec::with_capacity(cards.len()),
     };
@@ -355,8 +355,12 @@ pub(crate) fn sort_and_gather(
         }
 
         gathered.skill_max.push(card.skill.skill_max);
-        gathered.leader_honor_bonus.push(card.leader_honor_bonus);
-        gathered.leader_limit_bonus.push(card.leader_limit_bonus);
+        gathered
+            .leader_honor_bonus_x10
+            .push(card.leader_honor_bonus_x10);
+        gathered
+            .leader_limit_bonus_x10
+            .push(card.leader_limit_bonus_x10);
         gathered
             .skill_is_after_training
             .push(card.skill.full.is_after_training);
@@ -382,8 +386,8 @@ pub(crate) fn sort_and_gather(
                 power_max_exact: card.power.power_max,
                 skill_min_exact: card.skill.skill_min,
                 skill_max_exact: card.skill.skill_max,
-                leader_honor_bonus: card.leader_honor_bonus,
-                leader_limit_bonus: card.leader_limit_bonus,
+                leader_honor_bonus_x10: card.leader_honor_bonus_x10,
+                leader_limit_bonus_x10: card.leader_limit_bonus_x10,
             });
         }
     }

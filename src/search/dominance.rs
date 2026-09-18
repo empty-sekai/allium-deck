@@ -318,8 +318,8 @@ fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -
         return false;
     }
     if ctx.is_final_chapter
-        && (ctx.leader_honor_bonus_at(lhs.raw()) < ctx.leader_honor_bonus_at(rhs.raw())
-            || ctx.leader_limit_bonus_at(lhs.raw()) < ctx.leader_limit_bonus_at(rhs.raw()))
+        && (ctx.leader_honor_bonus_x10_at(lhs.raw()) < ctx.leader_honor_bonus_x10_at(rhs.raw())
+            || ctx.leader_limit_bonus_x10_at(lhs.raw()) < ctx.leader_limit_bonus_x10_at(rhs.raw()))
     {
         return false;
     }

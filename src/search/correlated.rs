@@ -129,7 +129,7 @@ impl CorrelatedBound {
             || ctx.is_final_chapter
             || !ctx.enforce_char_uniqueness
             || ctx.honor_bonus != 0
-            || ctx.leader_honor_bonus.iter().any(|&x| x != 0)
+            || ctx.leader_honor_bonus_x10.iter().any(|&x| x != 0)
             || ctx.live_skill_order != LiveSkillOrder::Average
         {
             return None;

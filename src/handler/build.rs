@@ -112,8 +112,8 @@ pub(super) struct PreparedCardSeed<'a> {
     pub(super) event_bonus: EventBonusExact,
     pub(super) has_char_bonus: bool,
     pub(super) has_attr_bonus: bool,
-    pub(super) leader_honor_bonus: u16,
-    pub(super) leader_limit_bonus: u16,
+    pub(super) leader_honor_bonus_x10: u16,
+    pub(super) leader_limit_bonus_x10: u16,
 }
 
 pub(super) struct PreparedCardBuild<'a> {
@@ -126,8 +126,8 @@ pub(super) struct PreparedCardBuild<'a> {
     event_bonus: EventBonusExact,
     has_char_bonus: bool,
     has_attr_bonus: bool,
-    leader_honor_bonus: u16,
-    leader_limit_bonus: u16,
+    leader_honor_bonus_x10: u16,
+    leader_limit_bonus_x10: u16,
     skill_options: [Option<(SkillState, SkillResult)>; 2],
     skill_state_controls_image: bool,
 }
@@ -233,7 +233,13 @@ impl<'a> PreparedPoolBuild<'a> {
                         && ch < 27
                         && owned_honors.contains(&entry.honor_id)
                     {
-                        result[ch] = result[ch].wrapping_add(entry.bonus_rate.max(0) as u16);
+                        let total_x10 = u64::from(result[ch]) + entry.bonus_rate.max(0) as u64 * 10;
+                        super::capacity::ensure(
+                            "leader honor bonus (tenths)",
+                            total_x10,
+                            u64::from(u16::MAX),
+                        )?;
+                        result[ch] = total_x10 as u16;
                     }
                 }
             }
@@ -287,7 +293,7 @@ impl<'a> PreparedPoolBuild<'a> {
                 })
                 .transpose()?
                 .unwrap_or((EventBonusExact::default(), false, false));
-            let leader_honor_bonus = if event_ctx.is_some() {
+            let leader_honor_bonus_x10 = if event_ctx.is_some() {
                 usize::try_from(master.character_id)
                     .ok()
                     .filter(|ch| *ch < 27)
@@ -296,10 +302,20 @@ impl<'a> PreparedPoolBuild<'a> {
             } else {
                 0
             };
-            let leader_limit_bonus = if event_ctx.is_some() {
-                // leader 向量按整型百分比消费；x10 → 百分比在此收口。
+            let leader_limit_bonus_x10 = if event_ctx.is_some() {
+                // Keep the source's tenths through evaluation. A fractional
+                // nonzero entry must not become the legacy zero/default case.
                 let from_table = limited_entry
-                    .map(|(_, leader)| (leader.max(0) / 10) as u16)
+                    .map(|(_, leader)| -> Result<u16, BuildError> {
+                        let exact_x10 = leader.max(0) as u64;
+                        super::capacity::ensure(
+                            "leader limited bonus (tenths)",
+                            exact_x10,
+                            u64::from(u16::MAX),
+                        )?;
+                        Ok(exact_x10 as u16)
+                    })
+                    .transpose()?
                     .unwrap_or(0);
                 if from_table == 0
                     && limited_entry.is_some()
@@ -308,8 +324,8 @@ impl<'a> PreparedPoolBuild<'a> {
                     )
                 {
                     // legacy 终章：当期卡行缺 leaderBonusRate 时队长兜底 20%
-                    // （与参照实现一致；本地合成行恰好全部缺该字段）。
-                    20
+                    // The compact context stores this exact 20% as 200 tenths.
+                    200
                 } else {
                     from_table
                 }
@@ -327,8 +343,8 @@ impl<'a> PreparedPoolBuild<'a> {
                 event_bonus,
                 has_char_bonus,
                 has_attr_bonus,
-                leader_honor_bonus,
-                leader_limit_bonus,
+                leader_honor_bonus_x10,
+                leader_limit_bonus_x10,
             });
             Ok(())
         };
@@ -425,8 +441,8 @@ impl<'a> PreparedPoolBuild<'a> {
                 event_bonus: seed.event_bonus,
                 has_char_bonus: seed.has_char_bonus,
                 has_attr_bonus: seed.has_attr_bonus,
-                leader_honor_bonus: seed.leader_honor_bonus,
-                leader_limit_bonus: seed.leader_limit_bonus,
+                leader_honor_bonus_x10: seed.leader_honor_bonus_x10,
+                leader_limit_bonus_x10: seed.leader_limit_bonus_x10,
                 skill_options,
                 skill_state_controls_image,
             });
@@ -727,8 +743,8 @@ pub(super) fn build_search_context(
                 None
             }
         }),
-        leader_honor_bonus: gathered.leader_honor_bonus,
-        leader_limit_bonus: gathered.leader_limit_bonus,
+        leader_honor_bonus_x10: gathered.leader_honor_bonus_x10,
+        leader_limit_bonus_x10: gathered.leader_limit_bonus_x10,
         final_chapter_member_keep: vec![true; card_count],
         skill_is_after_training: gathered.skill_is_after_training,
         trained_to_special_image: gathered.trained_to_special_image,
@@ -788,8 +804,8 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         let event_bonus = prepared_card.event_bonus;
         let has_char_bonus = prepared_card.has_char_bonus;
         let has_attr_bonus = prepared_card.has_attr_bonus;
-        let leader_honor_bonus = prepared_card.leader_honor_bonus;
-        let leader_limit_bonus = prepared_card.leader_limit_bonus;
+        let leader_honor_bonus_x10 = prepared_card.leader_honor_bonus_x10;
+        let leader_limit_bonus_x10 = prepared_card.leader_limit_bonus_x10;
         let skill_options = prepared_card.skill_options.clone();
         let skill_state_controls_image = prepared_card.skill_state_controls_image;
 
@@ -821,8 +837,8 @@ pub(super) fn build_card_pool_fully_prepared_internal(
                 event_bonus,
                 has_char_bonus,
                 has_attr_bonus,
-                leader_honor_bonus,
-                leader_limit_bonus,
+                leader_honor_bonus_x10,
+                leader_limit_bonus_x10,
                 ep_sort_key,
             };
 

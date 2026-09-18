@@ -141,8 +141,8 @@ fn search_dfs_matches_bruteforce_for_best_deck() {
     ];
     let pool = build_pool(&cards);
     let mut search_ctx = ctx(ScoreTarget::Power);
-    search_ctx.leader_honor_bonus = vec![0; pool.count()];
-    search_ctx.leader_limit_bonus = vec![0; pool.count()];
+    search_ctx.leader_honor_bonus_x10 = vec![0; pool.count()];
+    search_ctx.leader_limit_bonus_x10 = vec![0; pool.count()];
     search_ctx.skill_is_after_training = vec![false; pool.count()];
     search_ctx.trained_to_special_image = vec![false; pool.count()];
     let suffix = SuffixBound::build(&pool, &search_ctx);
@@ -286,8 +286,8 @@ fn search_dfs_score_noevent_does_not_break_before_higher_skill_same_power_state(
     let mut search_ctx = ctx(ScoreTarget::Score);
     search_ctx.live_type = LiveType::Multi;
     search_ctx.skill_scores[1] = [10.0; 6];
-    search_ctx.leader_honor_bonus = vec![0; pool.count()];
-    search_ctx.leader_limit_bonus = vec![0; pool.count()];
+    search_ctx.leader_honor_bonus_x10 = vec![0; pool.count()];
+    search_ctx.leader_limit_bonus_x10 = vec![0; pool.count()];
     search_ctx.skill_is_after_training = vec![false; pool.count()];
     search_ctx.trained_to_special_image = vec![false; pool.count()];
     let suffix = SuffixBound::build(&pool, &search_ctx);
