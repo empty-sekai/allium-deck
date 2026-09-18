@@ -1,12 +1,12 @@
-# Allium Deck exactness proof and production search contract
+# Allium Deck exactness proof
 
-This document records the proof obligations for the production recommendation
-paths.  It is intentionally stricter than a benchmark claim: heuristic
-procedures are allowed to choose visit order or seed incumbents, but they are
-not allowed to remove a feasible candidate from the proof-carrying search
-frontier.
+This document states the end-to-end exactness argument for the recommendation
+searches. It is intentionally stronger than a benchmark claim: heuristic
+procedures may choose visit order or seed incumbents, but only mathematically
+admissible rules may remove search space. Detailed proofs for every pruning
+rule are collected in [pruning-proof.md](pruning-proof.md).
 
-The production contract in this document is:
+The exactness guarantee is:
 
 - pool construction either preserves the complete supported candidate set or
   returns an explicit capacity / representation error;
@@ -586,5 +586,5 @@ comparisons = 3840 checks.
 The permanent `case7` fixture is especially important: the historical
 production result was 285069864403781, the historical oracle reported
 276690383207334, while the independently established optimum is
-288690521835152. The lesson is part of the acceptance contract: agreement with
+288690521835152. The lesson is part of the correctness argument: agreement with
 a heuristic or incomplete oracle is not evidence of exactness.

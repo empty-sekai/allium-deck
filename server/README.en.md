@@ -73,6 +73,7 @@ curl localhost:8080/v1/recommend -H 'content-type: application/json' -d "{
   ],
   "diagnostics": { "poolSize": 156, "effectiveLiveType": "multi", "leafNodes": 145 },
   "timing": { "queueWaitMs": 0.03, "buildPoolMs": 1.12, "searchMs": 0.38, "totalMs": 10.49 },
+  "completion": "complete",
   "timedOut": false
 }
 ```
@@ -145,11 +146,14 @@ request to hold a thread for five minutes. The service lowers both to its own ce
 instead of rejecting the request, so asking for more returns a smaller answer rather
 than an error. `GET /v1/regions` reports the ceilings in force.
 
-When a search reaches its deadline it returns the best decks found so far and the
-response sets `"timedOut": true`. Those decks are not a proven optimum — see the
-exactness matrix in [`docs/parameters.md`](../docs/parameters.md). A World Bloom final
-chapter request against a large collection is the shape most likely to hit this; raise
-`--max-search-timeout-ms` if your deployment would rather wait than approximate.
+When the shared `SearchBudget` actually observes its deadline, the response returns the
+legal incumbents found so far with `"completion": "timed_out"` and `"timedOut": true`.
+Completion comes directly from the solver's `SearchStats.deadline_hit`; the HTTP layer does
+not infer it from outer elapsed time. Every returned deck has been exactly evaluated, but
+canonical Top-K completeness is **not proven**. See [`docs/parameters.md`](../docs/parameters.md)
+and [`docs/exactness-proof.md`](../docs/exactness-proof.md). Large World Bloom Final searches
+are the shape most likely to hit the budget; raise `--max-search-timeout-ms` if the deployment
+would rather wait longer.
 
 ## Errors
 

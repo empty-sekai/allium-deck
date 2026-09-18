@@ -4,7 +4,7 @@
 
 Project Sekai 组卡推荐引擎的 Rust 实现，专攻 **DFS / 分支限界（B&B）精确搜索**。
 
-给定玩家卡组、活动加成与目标（综合力 / 技能 / 活动点数 / MySekai 等），在巨大的组合空间里搜出最优的 5 张卡编成。核心数据结构用 SoA（结构体数组）+ 位运算组织，配合角色感知的后缀上界与支配剪枝，把单次搜索压到亚毫秒级。
+给定玩家卡组、活动加成与目标（综合力 / 技能 / 活动点数 / MySekai 等），在巨大的组合空间里搜出最优的 5 张卡编成。核心数据结构用 SoA（结构体数组）+ 位运算组织，配合角色感知的后缀上界与支配剪枝；常规 260-card Top-1 / Top-8 热路径已经进入亚毫秒级，更重的 Top-K 与对抗输入见下方实测。
 
 ## 关于实现来源
 
@@ -22,9 +22,25 @@ Project Sekai 组卡推荐引擎的 Rust 实现，专攻 **DFS / 分支限界（
 
 `CardPool` 采用列式 SoA 布局，每列 64 字节对齐。典型候选池（130–260 张卡）整体 **~7–12 KB**，加上 `SearchContext`、`SuffixBound` 等搜索期结构，热路径数据适合驻留在现代服务器 CPU 的 L1 data cache 内（EPYC 9K85 每核 L1d = 48 KiB）。叶子评估遍历卡组时按列顺序访问，尽量减少无关 cache line 和 TLB 压力。
 
-> 性能（AMD EPYC 9K85，固定单核，release profile：`opt-level=3` / `lto="fat"` / `codegen-units=1` / `target-cpu=znver5`）：masterdata 常驻内存时，完整建池 cache miss（包含当前用户和参数的准备）典型约为 **0.6 ms**。10 个不同账号的多人活动 Top-8 搜索中，账号均值的纯算术平均为 **0.3270 ms**，范围为 **0.1017–0.8369 ms**。在这一典型场景中，`v0.0.6` 相比 `v0.0.5` 的建池约快 **20×**，搜索约快 **5–10×**。
->
-> 建池数字不包含 masterdata 文件读取或 JSON 解析。x86-64 在运行时检测 AVX-512F/BW；不支持的 CPU 和其他架构自动使用 scalar fallback。实际耗时会随账号规模、活动规则、目标和候选池变化；20× 建池和 5–10× 搜索提升描述仅针对典型多人活动组卡，不是所有模式的性能保证。
+## 性能
+
+下面是当前最终代码在 **AMD EPYC 9K85** 上的原生 release 实测。进程固定在 CPU 2，并限制为 80% CPU；每个场景都使用 260 张合成候选卡。`建池` 是从已经解析好的玩家数据构造 `CardPool` / 搜索上下文的时间；`搜索` 包含支配裁剪、上界构造、warm start、主搜索与 Top-K 替代恢复，不包含 fixture 文件读取和 JSON 解析。
+
+| 场景 | Top-K | 建池 | 搜索 p50 | 搜索 p95 |
+| --- | ---: | ---: | ---: | ---: |
+| balanced / Solo / 无活动 | 1 | 0.390 ms | **0.632 ms** | 0.656 ms |
+| balanced / Solo / 无活动 | 8 | 0.359 ms | **0.747 ms** | 0.767 ms |
+| balanced / Multi / 无活动 | 8 | 0.371 ms | **0.365 ms** | 0.401 ms |
+| balanced / Solo / 活动 | 8 | 0.382 ms | **1.468 ms** | 2.057 ms |
+| tradeoff / Solo / 无活动 | 1 | 0.338 ms | **0.994 ms** | 1.012 ms |
+| tradeoff / Solo / 无活动 | 8 | 0.340 ms | **4.378 ms** | 21.329 ms |
+| tradeoff / Solo / 无活动 | 100 | 0.345 ms | **13.467 ms** | 34.460 ms |
+
+`balanced260` 用来代表常规高练度卡池；`tradeoff260` 刻意让同角色的 power / skill 强负相关，是用于放大搜索长尾的压力输入。实际耗时会随账号规模、活动规则、目标和 Top-K 改变，所以这里同时给 p50 / p95，而不是只挑最快的一次。
+
+最终候选还做了更重的分布级 A/B：普通压力集 Top-1 / 8 / 30 / 100 的 p50 相比上一条精确基线分别降低约 **20.2% / 14.8% / 16.7% / 17.7%**；Final-auto 分别降低约 **20.6% / 17.0% / 15.2% / 7.7%**。所有双方都完整结束的对应样本结果完全一致，2 秒压力超时的数量也没有增加。
+
+x86-64 会在运行时检测 AVX-512F/BW；不支持的 CPU 和其他架构自动使用 scalar fallback。
 
 ## 对外 API
 
@@ -43,9 +59,9 @@ let result_json = recommend_json(
 
 内部走两阶段：`handler::build_card_pool`（建池）→ `search::search`（搜索）。结构体入口 `engine::recommend` 可绕过 JSON 序列化。
 
-返回 `{"decks": [{"cards": [id; 5], "score": u64}]}`——`cards` 是游戏卡 ID，按站位顺序、队长在前。综合力、live 分数等面板明细不在其中，需要时用 `handler::build_card_pool` + `search::summarize_deck`（`src/bin/recommend_cli.rs` 是完整示例）。
+返回 `{"decks": [...], "completion": "complete", "stats": {...}}`。`cards` 是游戏卡 ID，按站位顺序、队长在前；`score` 是搜索排序键。综合力、live 分数等面板明细不在其中，需要时用 `handler::build_card_pool` + `search::summarize_deck`（`src/bin/recommend_cli.rs` 是完整示例）。
 
-完整参数契约（全部字段、默认值、取值范围）与**逐模式精确性矩阵**（哪些模式对暴力枚举精确、哪些是启发式）见 [docs/parameters.md](docs/parameters.md)。
+完整参数与模式说明见 [docs/parameters.md](docs/parameters.md)。搜索完整结束时，各受支持模式都返回精确 Top-K；超时会显式返回 `timed_out`，不会伪装成完整结果。整体正确性说明见 [docs/exactness-proof.md](docs/exactness-proof.md)，每一种剪枝为什么不会漏解的形式化证明见 [docs/pruning-proof.md](docs/pruning-proof.md)。
 
 ## 模块地图
 
@@ -55,7 +71,7 @@ let result_json = recommend_json(
 | `types` | 公共标识符与枚举（`Unit` / `Attr` / `LiveType` / `ScoreTarget`），以及逐卡解析后的综合力与技能数值 |
 | `handler` | 建池层：候选裁剪、综合力/技能/活动加成预计算、WL 支援卡组、构建搜索上下文 |
 | `pool` | SoA 卡池：列式存储、位图、对齐布局、冻结后只读 |
-| `search` | 搜索层：支配剪枝、后缀上界、warm start、按目标/场景分派的 B&B、叶子精确评估 |
+| `search` | 搜索层：支配剪枝、后缀上界、warm start、按目标/场景分派 B&B / DP / 专用求解器、叶子精确评估 |
 | `auxiliary` | 非搜索路径的辅助计算：区域道具推荐、曲目推荐、精确打歌分（`wasm` 直接导出） |
 
 ## 数据流
@@ -72,7 +88,7 @@ params JSON ─→ parse_build_params_json ──→ BuildParams
                           ▼
         build_card_pool (handler)              // 建池
           ├─ 每张用户卡：综合力 / 技能 / 活动加成预计算
-          ├─ 候选裁剪（按活动点数 / 逐角色）
+          ├─ 硬约束过滤与安全预处理（不做质量前缀截断）
           ├─ 排序灌入 SoA CardPool
           └─ 构建 SearchContext（含 WL 支援卡组）
                           │
@@ -81,8 +97,8 @@ params JSON ─→ parse_build_params_json ──→ BuildParams
           ├─ 逐角色支配裁剪
           ├─ 角色感知后缀上界（B&B 剪枝核心）
           ├─ warm start 下界（贪心 + 1-swap）
-          └─ 按 target / 场景分派 DFS：
-               Power / Skill / Score / MySekai / challenge / 终章
+          └─ 按 target / 场景分派：
+               Score / MySekai B&B、Power DP / B&B、Skill B&B、Challenge、终章
                           │
                           ▼
                   Vec<DeckResult> → JSON
@@ -90,7 +106,7 @@ params JSON ─→ parse_build_params_json ──→ BuildParams
 
 ## 依赖与构建
 
-只依赖 `serde` / `serde_json` / `thiserror`，无图形/异步/系统库依赖，可独立秒级编译：
+原生核心只依赖 `serde` / `serde_json` / `thiserror`；wasm32 额外使用 `web-time` 提供单调时钟。没有图形、异步或系统库依赖，可独立编译：
 
 ```bash
 cargo build --release
@@ -104,6 +120,7 @@ cargo build --release
 | --- | --- | --- |
 | Rust | 本仓库（crates.io `allium-deck`） | 引擎本体 |
 | JavaScript / 浏览器 | [`wasm/`](wasm)（npm `@empty-sekai/allium-deck-wasm`） | WASM 绑定，见下方导出表 |
+| Python | [`allium-deck-python`](https://github.com/empty-sekai/allium-deck-python)（PyPI `allium-sekai-deck`） | 预编译 abi3 wheel，含 `allium_deck` API 与 LunaBot 兼容门面，无需本地 Rust 工具链 |
 
 ### WASM 接口面
 
@@ -121,7 +138,6 @@ cargo build --release
 
 `recommendBatch` 系列暂未提供。options 键名为 snake_case（兼容 camelCase 别名），
 输出键名为 snake_case。`recommend_embedded` 仍保留在 `embedded` feature 下。
-| Python | [`allium-deck-python`](https://github.com/empty-sekai/allium-deck-python)（PyPI `allium-sekai-deck`） | 预编译 abi3 wheel，含 `allium_deck` API 与 LunaBot 兼容门面，无需本地 Rust 工具链 |
 
 ## CLI
 
@@ -132,7 +148,7 @@ cargo build --release
 ```bash
 # 方式1: 下载预编译二进制 (以 linux-x86_64 为例)
 curl -L -o recommend_cli \
-  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.12/recommend_cli-v0.0.12-linux-x86_64
+  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.15/recommend_cli-v0.0.15-linux-x86_64
 chmod +x recommend_cli
 ./recommend_cli [OPTIONS]
 
@@ -203,6 +219,8 @@ recommend_cli \
 
 ```json
 {
+  "completion": "complete",
+  "timed_out": false,
   "effective_params": { "target": "Score", "live_type": "Multi", "boost": 10 },
   "diagnostics": { "pool_size": 78, "effective_live_type": "Multi" },
   "timing": { "build_pool_ms": 1.4, "search_ms": 0.4 },
@@ -233,7 +251,9 @@ recommend_cli \
 cargo run --manifest-path server/Cargo.toml --release --bin export-synth-masterdata -- ./synth
 
 cd server
-cargo run --release --   --masterdata synth=../synth/masterdata   --music-metas synth=../synth/music_metas.json
+cargo run --release -- \
+  --masterdata synth=../synth/masterdata \
+  --music-metas synth=../synth/music_metas.json
 ```
 
 ```bash
@@ -271,66 +291,20 @@ docker run --rm -p 8080:8080 -v /path/to/data:/data:ro allium-deck-server   --ma
 
 `data/` 内嵌 3 张世界开花（World Bloom）支援卡组加成表。这些表在参考实现中作为仓库静态资源随包携带、不随 masterdata 更新，因此这里用 `include_str!` 内嵌，masterdata 缺失对应文件时回退使用。
 
-## 测试
+## 精确性
 
-- 单元测试：散落各模块 `#[cfg(test)]`（pool / search / handler）。
-- Eval fixtures：`tests/fixtures/eval` 使用小型可审计数据固定火数、协力/Cheerful、技能顺序、WL、MySekai 等评分规则。
-- 搜索结果正确性由以下单元测试用**暴力枚举**验证：
-  - `search_dfs_matches_bruteforce_for_best_deck`
-  - `search_dfs_bonus_noevent_matches_bruteforce_with_suffix_max_break`
-  - `search_dfs_mysekai_matches_bruteforce_with_suffix_max_break`
-  - `search_suffix_bound_is_sound_and_zero_pool_is_zero`
-  - `search_dominance_preserves_best_score`
-- `tests/benchmark_proof.rs` 用无剪枝暴力枚举对照正式搜索，含三个暴力对照测试和一个数据集校验测试：
-  - `rust_bruteforce_matches_exact_on_full_testdata_pools`（暴力对照）：从本仓库小型 fixtures 抽样，按原输入构建完整卡池，对正式搜索与暴力枚举比较结果。只选择完整卡池组合数不超过 `ALLIUM_BF_CANDIDATE_LIMIT` 的 fixture。
-  - `rust_bruteforce_matches_exact_top_k_on_issue2_fixture`（Top-K 回归）：锁住 [issue #2](https://github.com/empty-sekai/allium-deck/issues/2) 的 fixture `real/mass_392500_score_multi_ev`，验证普通主搜索路径的 Top-K 支配替代展开。该池组合数约 7000 万，需以 `ALLIUM_BF_TOP_K=3 ALLIUM_BF_CANDIDATE_LIMIT=100000000` 运行。
-  - `rust_bruteforce_matches_exact_on_large_filtered_pools`（暴力对照）：针对高练度大卡池。先丢弃 1/2 星卡（`ALLIUM_BF_MIN_RARITY`），再按角色对 power / skill / event-bonus 各维度保留前 N 张（`ALLIUM_BF_PER_CHAR_KEEP`），把卡池压到可暴力枚举的规模，再做暴力对照。这是覆盖高练度高价值候选区的 stress 子集，不声称是完整大卡池的证明：被裁掉的低价值卡仍可能进入某些 Top-K 次优解。
-  - `testdata_corpus_layers_are_classified`（数据集校验）：核对当前 fixture 清单分层与目标分布，输出 `target/benchmark-proof/report.md` 与 JSON 明细。
-- 相关环境变量：`ALLIUM_BF_TOP_K`、`ALLIUM_BF_CASE_LIMIT` / `ALLIUM_BF_LARGE_CASE_LIMIT`、`ALLIUM_BF_CANDIDATE_LIMIT` / `ALLIUM_BF_LARGE_CANDIDATE_LIMIT`、`ALLIUM_BF_MIN_RARITY`、`ALLIUM_BF_PER_CHAR_KEEP`。缺少 masterdata 时这些对照测试会跳过。
+这里的“精确”指的是：**只要搜索以 `Complete` 结束，返回的就是完整可行集合按统一排序规则得到的真正 Top-K**，不是依赖随机种子或经验阈值的近似答案。Score、活动分、MySekai、World Bloom、终章、Challenge、Power、Skill 和精确加成档位都遵守这条规则。
 
-## Soundness
+实现里仍然有 warm start、beam、one-swap 等启发式，但它们只用于更早找到好解、提高分支限界阈值或调整访问顺序；不会拿来删除尚未被数学上界否定的候选。无约束 Power 使用精确的 49-scenario DP，其余 Power / Skill 走完整候选集上的有界搜索。
 
-每个剪枝机制经代码审计和暴力枚举测试验证。
+搜索有显式 deadline。命中 deadline 时返回 `TimedOut`，已经找到的卡组仍是合法且精确评分的，但这时**不声称 Top-K 已证明完整**。同样，如果硬过滤后候选超过当前 512 张表示上限，或者紧凑元数据无法无损编码，会直接返回容量错误，不会为了继续运行而静默删卡。
 
-**支配剪枝（`dominance.rs`）——Sound ✅**
+形式化正确性分成两份文档：
 
-只比较**同一角色**内的两张卡（`pool.char_id(a) == pool.char_id(b)`）。淘汰 B 的前提是 A 在以下所有维度上 ≥ B：
+- [**Exactness proof**](docs/exactness-proof.md)：定义可行集合、统一 Top-K 排序、各 solver 的完整性与 timeout / capacity 边界。
+- [**Pruning proof**](docs/pruning-proof.md)：逐项证明每一种会真正删除搜索空间的规则，并给出对应代码位置；只负责排序或提供初始解的启发式会被明确排除在“剪枝”之外。
 
-- 8 种编队组合的综合力（逐槽 u18 解码后比较）
-- 技能（同类型才可比；Score Up 比数值，Unit Count 比同 unit 的各人数加成，Diff 比 base 和 increment，Ref 比 rate 和 max）
-- 活动加成（base 和 limited 分别比较）
-- 属性相同（否则对 diff-attr 奖励的贡献不同，不能断言 B 无害）
-- Unit mask 是超集（rhs_mask ⊆ lhs_mask，避免丢失候选编队）
-
-替换安全：把 B 换成 A，在任何目标下分数不降。World Bloom 活动同样走支配剪枝；支援卡组独立保存在 `SearchContext`，不会因为主搜索池压缩而丢支援候选，且支配关系要求属性相同，因此 diff-attr 奖励不会被异色替换破坏。
-
-Top-K（`top_k > 1`）下被支配卡参与的组合本身可能是合法的次优解，仅靠裁剪会丢名次（曾为 [issue #2](https://github.com/empty-sekai/allium-deck/issues/2)）。普通主搜索路径现在会在裁剪时记录支配映射（链压缩到存活根），搜索后对每个结果做**替代回换展开**：设真实 Top-K 中有含被裁卡的卡组 D，把其中每张被裁卡换成支配根得到 D'，由支配性 score(D') ≥ score(D) ≥ 第 K 名阈值，D' 必在裁剪池的精确 Top-K 里；从 D' 逐槽（含多槽组合）把支配根换回被裁卡并重新评估、合并，即可还原该路径下丢失的次优解。回换分数单调不升，按当前第 K 名阈值剪枝；`top_k = 1` 跳过展开，主搜索路径零开销。终章 member 侧还有额外裁剪，Top-K 替代展开另见 [issue #7](https://github.com/empty-sekai/allium-deck/issues/7)。
-
-**后缀上界（`suffix.rs`）——Sound ✅**
-
-上界计算的核心是**角色感知聚合**：按 power / skill / bonus 三个维度分别对 27 个角色取单卡最大值，然后取未使用角色中 top-N 求和。因为每角色至多选一张卡，任何实际编队的各维度总和都不可能超过所在维度的 top-N 角色最大值的和。三个维度的 top-N 可能取到不同角色，这是保守高估，不会漏解。
-
-在此基础上做了多层收紧：
-
-- **Exclusion delta**：当选了一张卡后，将该角色从 suffix 中排除，重新降级到下一个可用角色。获取 ex-lusion delta 时完全绕过分支，用 compact bit index + popcount 直接定位。
-- **Dense suffix tail**：从 SoA 右端向左扫描，根据实际出现的角色单调收窄。随 DFS 位置推进，`ceiling(i+1) ≤ ceiling(i)`，一旦跌到阈值以下可以安全 break 整层。
-- **World Bloom extra bound**：在 support deck 和 diff-attr 上限上加额外一层 ceiling，取各维度最紧值。
-- **叶子评估**（`evaluate.rs`）使用实际的同组人数 `unit_counts[unit].clamp(1, 5)` 查表，1-5 人效果为精确值，非近似。
-
-**Power / Skill 路径——不保证最优 ❌**
-
-`search_instrumented`（`mod.rs:37-38`）对 Power 和 Skill 目标不走完整 B&B，而是取排序后前缀（Power 28 张每角色 ≤6，Skill 20 张每角色 ≤3）内枚举。前缀外的卡被直接丢弃，没有上界证明能安全裁剪——纯粹的性能取舍。
-
-实际风险很低：Power / Skill 是纯加性目标，没有跨卡技能协同，每角色的最优卡就是 power_max / skill_max 最高的那张。一个角色有 4 张以上技能卡、且最优解必须用第 4 张的情况极端罕见。但这不是形式化保证。
-
-**小结**
-
-| 目标 | 算法 | Sound | 说明 |
-| --- | --- | --- | --- |
-| Score / Mysekai | 完整 B&B | ✅ | 支配剪枝 + 角色感知后缀上界 + 多层收紧 |
-| 终章 | 角色分组 + B&B | ✅ | leader × member 两段 DFS |
-| Challenge | 暴力枚举 | ✅ | 无剪枝，仅 game_id 去重 |
-| Power / Skill | 前缀 DFS | ❌ | 28/20 张限制，每角色 6/3 上限 |
+验证层用于找反例和防回归，而不是代替证明。目前固定门禁包括 256 × 15 = **3840** 条跨场景独立对照、针对历史反例和边界条件的专项测试，以及 native / server / Rust 1.89 / WASM / Node / Chrome 的跨运行时一致性检查。
 
 ## 许可证
 

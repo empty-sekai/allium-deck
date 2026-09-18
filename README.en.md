@@ -4,7 +4,7 @@ English | [简体中文](./README.md)
 
 A Rust implementation of a Project Sekai deck recommendation engine, focused on **exact DFS / branch-and-bound (B&B) search**.
 
-Given a player's card collection, event bonuses, and an objective (power / skill / event points / MySekai, etc.), it searches a huge combinatorial space for the optimal 5-card deck. The core data structures are organized as SoA (structure of arrays) plus bit manipulation, combined with character-aware suffix upper bounds and dominance pruning, bringing a single search down to the sub-millisecond range.
+Given a player's card collection, event bonuses, and an objective (power / skill / event points / MySekai, etc.), it searches a huge combinatorial space for the optimal 5-card deck. The core data structures are organized as SoA (structure of arrays) plus bit manipulation, combined with character-aware suffix upper bounds and dominance pruning. Conventional 260-card Top-1 / Top-8 hot paths are now sub-millisecond; heavier Top-K and adversarial cases are shown in the measurements below.
 
 ## About the implementation
 
@@ -22,9 +22,25 @@ On top of that, this implementation is not a line-by-line translation: the **low
 
 `CardPool` uses a columnar SoA layout with each column aligned to 64 bytes. A typical candidate pool (130–260 cards) is **~7–12 KB** in total; together with search-time structures such as `SearchContext` and `SuffixBound`, the hot-path data fits in the L1 data cache of a modern server CPU (EPYC 9K85: 48 KiB L1d per core). Leaf evaluation walks the deck in column order, minimizing traffic to unrelated cache lines and TLB pressure.
 
-> Performance (AMD EPYC 9K85, pinned to a single core, release profile: `opt-level=3` / `lto="fat"` / `codegen-units=1` / `target-cpu=znver5`): with masterdata resident in memory, a full pool build on cache miss (including preparation of the current user and parameters) typically takes about **0.6 ms**. Across multiplayer event Top-8 searches on 10 different accounts, the plain arithmetic mean of the per-account averages is **0.3270 ms**, with a range of **0.1017–0.8369 ms**. In this typical scenario, `v0.0.6` builds pools about **20×** faster and searches about **5–10×** faster than `v0.0.5`.
->
-> Pool-build numbers exclude masterdata file reads and JSON parsing. On x86-64, AVX-512F/BW is detected at runtime; unsupported CPUs and other architectures automatically fall back to scalar code. Actual timings vary with account size, event rules, objective, and candidate pool; the 20× pool-build and 5–10× search figures describe typical multiplayer event deck building only, not a performance guarantee for every mode.
+## Performance
+
+The table below is measured from the current final code on an **AMD EPYC 9K85**, release build, pinned to CPU 2 with an 80% CPU quota. Every row uses a synthetic 260-card pool. `Pool build` covers construction of `CardPool` and the search context from already-parsed user data; `search` includes dominance, bound construction, warm start, the main solver, and Top-K alternative recovery, while excluding fixture I/O and JSON parsing.
+
+| Scenario | Top-K | Pool build | Search p50 | Search p95 |
+| --- | ---: | ---: | ---: | ---: |
+| balanced / Solo / no event | 1 | 0.390 ms | **0.632 ms** | 0.656 ms |
+| balanced / Solo / no event | 8 | 0.359 ms | **0.747 ms** | 0.767 ms |
+| balanced / Multi / no event | 8 | 0.371 ms | **0.365 ms** | 0.401 ms |
+| balanced / Solo / event | 8 | 0.382 ms | **1.468 ms** | 2.057 ms |
+| tradeoff / Solo / no event | 1 | 0.338 ms | **0.994 ms** | 1.012 ms |
+| tradeoff / Solo / no event | 8 | 0.340 ms | **4.378 ms** | 21.329 ms |
+| tradeoff / Solo / no event | 100 | 0.345 ms | **13.467 ms** | 34.460 ms |
+
+`balanced260` represents a conventional developed collection. `tradeoff260` deliberately makes power and skill strongly anti-correlated within a character and is used to expose search-tail behavior. Real latency depends on the account, event rules, objective, and Top-K, so the table reports distributions rather than a single best run.
+
+A separate, heavier release A/B suite shows ordinary stress-search p50 improving over the previous exact baseline by about **20.2% / 14.8% / 16.7% / 17.7%** at Top-1 / 8 / 30 / 100. Final-auto improves by about **20.6% / 17.0% / 15.2% / 7.7%** at the same K values. Every paired run that completed on both sides returned identical results, and the number of 2-second stress timeouts did not increase.
+
+On x86-64, AVX-512F/BW is selected at runtime; unsupported CPUs and other architectures fall back to scalar code.
 
 ## Public API
 
@@ -43,9 +59,9 @@ let result_json = recommend_json(
 
 Internally it runs two stages: `handler::build_card_pool` (pool building) → `search::search` (search). The typed entry point `engine::recommend` bypasses JSON serialization.
 
-The response is `{"decks": [{"cards": [id; 5], "score": u64}]}`, where `cards` holds game card ids in deck order, leader first. Panel details such as total power and live score are not included: build the pool with `handler::build_card_pool` and summarise results with `search::summarize_deck` (`src/bin/recommend_cli.rs` is a worked example).
+The response is `{"decks": [...], "completion": "complete", "stats": {...}}`. `cards` holds game card ids in deck order, leader first; `score` is the search ordering key. Panel details such as total power and live score are not included: build the pool with `handler::build_card_pool` and summarize results with `search::summarize_deck` (`src/bin/recommend_cli.rs` is a worked example).
 
-The complete parameter contract (all fields, defaults, value ranges) and the **per-mode exactness matrix** (which modes are exact against brute force and which are heuristic) are in [docs/parameters.md](docs/parameters.md).
+The complete parameter reference is in [docs/parameters.md](docs/parameters.md). Every supported mode returns exact Top-K when the search completes; a deadline is reported explicitly as `timed_out` rather than being presented as a complete result. See [docs/exactness-proof.md](docs/exactness-proof.md) for end-to-end exactness and [docs/pruning-proof.md](docs/pruning-proof.md) for the formal proof of every search-space pruning rule.
 
 ## Module map
 
@@ -55,7 +71,7 @@ The complete parameter contract (all fields, defaults, value ranges) and the **p
 | `types` | Shared identifiers and enums (`Unit` / `Attr` / `LiveType` / `ScoreTarget`), plus the per-card resolved power and skill values |
 | `handler` | Pool-building layer: candidate pruning, precomputation of power / skill / event bonus, WL support deck, search context construction |
 | `pool` | SoA card pool: columnar storage, bitmaps, aligned layout, read-only once frozen |
-| `search` | Search layer: dominance pruning, suffix upper bounds, warm start, B&B dispatched by objective/scenario, exact leaf evaluation |
+| `search` | Search layer: dominance pruning, suffix upper bounds, warm start, B&B / DP / specialized solvers dispatched by objective/scenario, exact leaf evaluation |
 
 ## Data flow
 
@@ -71,7 +87,7 @@ params JSON ─→ parse_build_params_json ──→ BuildParams
                           ▼
         build_card_pool (handler)              // pool building
           ├─ per user card: precompute power / skill / event bonus
-          ├─ candidate pruning (by event points / per character)
+          ├─ hard filtering + proven-safe preprocessing (no quality-prefix truncation)
           ├─ sorted insertion into the SoA CardPool
           └─ build SearchContext (incl. WL support deck)
                           │
@@ -114,7 +130,7 @@ Run a full recommendation from the command line, printing pool-build/search timi
 ```bash
 # Option 1: download a prebuilt binary (linux-x86_64 shown)
 curl -L -o recommend_cli \
-  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.12/recommend_cli-v0.0.12-linux-x86_64
+  https://github.com/empty-sekai/allium-deck/releases/download/v0.0.15/recommend_cli-v0.0.15-linux-x86_64
 chmod +x recommend_cli
 ./recommend_cli [OPTIONS]
 
@@ -184,6 +200,8 @@ Example output:
 
 ```json
 {
+  "completion": "complete",
+  "timed_out": false,
   "effective_params": { "target": "Score", "live_type": "Multi", "boost": 10 },
   "diagnostics": { "pool_size": 78, "effective_live_type": "Multi" },
   "timing": { "build_pool_ms": 1.4, "search_ms": 0.4 },
@@ -218,7 +236,9 @@ cores. The full list of what is left out is in
 cargo run --manifest-path server/Cargo.toml --release --bin export-synth-masterdata -- ./synth
 
 cd server
-cargo run --release --   --masterdata synth=../synth/masterdata   --music-metas synth=../synth/music_metas.json
+cargo run --release -- \
+  --masterdata synth=../synth/masterdata \
+  --music-metas synth=../synth/music_metas.json
 ```
 
 ```bash
@@ -259,66 +279,20 @@ are separate build arguments, measured in [`docker/README.en.md`](./docker/READM
 
 `data/` embeds the 3 World Bloom support-deck bonus tables. In the reference implementations these tables ship as static repository assets and are not updated with masterdata, so they are embedded here via `include_str!` and used as a fallback when masterdata lacks the corresponding files.
 
-## Testing
+## Exactness
 
-- Unit tests: `#[cfg(test)]` modules throughout (pool / search / handler).
-- Eval fixtures: `tests/fixtures/eval` pins the scoring rules — boost multipliers, multi/Cheerful, skill order, World Bloom, MySekai, etc. — with small auditable data.
-- Search-result correctness is verified against **brute-force enumeration** by these unit tests:
-  - `search_dfs_matches_bruteforce_for_best_deck`
-  - `search_dfs_bonus_noevent_matches_bruteforce_with_suffix_max_break`
-  - `search_dfs_mysekai_matches_bruteforce_with_suffix_max_break`
-  - `search_suffix_bound_is_sound_and_zero_pool_is_zero`
-  - `search_dominance_preserves_best_score`
-- `tests/benchmark_proof.rs` cross-checks the production search against pruning-free brute-force enumeration, with three brute-force comparison tests and one corpus validation test:
-  - `rust_bruteforce_matches_exact_on_full_testdata_pools` (brute-force cross-check): samples the small fixtures in this repository, builds the complete card pool from the original inputs, and compares the production search against brute-force enumeration. Only fixtures whose full-pool combination count stays within `ALLIUM_BF_CANDIDATE_LIMIT` are selected.
-  - `rust_bruteforce_matches_exact_top_k_on_issue2_fixture` (Top-K regression): pins the [issue #2](https://github.com/empty-sekai/allium-deck/issues/2) fixture `real/mass_392500_score_multi_ev` and verifies the Top-K dominance-substitution expansion on the ordinary main search path. The pool has roughly 70 million combinations; run with `ALLIUM_BF_TOP_K=3 ALLIUM_BF_CANDIDATE_LIMIT=100000000`.
-  - `rust_bruteforce_matches_exact_on_large_filtered_pools` (brute-force cross-check): targets large pools of highly developed accounts. It first drops 1★/2★ cards (`ALLIUM_BF_MIN_RARITY`), then keeps the per-character top N cards in each of the power / skill / event-bonus dimensions (`ALLIUM_BF_PER_CHAR_KEEP`), compressing the pool to a brute-forceable size before cross-checking. This is a stress subset covering the high-value candidate region of developed accounts, not a proof for the full large pool: pruned low-value cards may still appear in some Top-K runner-up decks.
-  - `testdata_corpus_layers_are_classified` (corpus check): validates the layering and target distribution of the current fixture inventory, writing `target/benchmark-proof/report.md` plus JSON details.
-- Related environment variables: `ALLIUM_BF_TOP_K`, `ALLIUM_BF_CASE_LIMIT` / `ALLIUM_BF_LARGE_CASE_LIMIT`, `ALLIUM_BF_CANDIDATE_LIMIT` / `ALLIUM_BF_LARGE_CANDIDATE_LIMIT`, `ALLIUM_BF_MIN_RARITY`, `ALLIUM_BF_PER_CHAR_KEEP`. These cross-check tests are skipped when masterdata is absent.
+Here, “exact” has a specific meaning: **when the search finishes with `Complete`, the returned decks are the true Top-K of the full supported feasible set under one deterministic ordering**. This applies to Score, event score, MySekai, World Bloom, Final Chapter, Challenge, Power, Skill, and exact bonus tiers.
 
-## Soundness
+Warm starts, beams, one-swap neighborhoods, and similar heuristics are still useful, but only to find incumbents earlier or choose visit order; they never delete a candidate that has not been ruled out by a proved bound. Unconstrained Power uses an exact 49-scenario DP, and the remaining Power / Skill cases search the full candidate set with admissible bounds.
 
-Every pruning mechanism has been verified by code audit and brute-force enumeration tests.
+Search deadlines are explicit. If a deadline is observed, the result is `TimedOut`: every returned deck is legal and exactly evaluated, but Top-K completeness is **not** claimed. Likewise, if hard filtering leaves more than the current 512-card representation can hold, or compact metadata cannot be encoded losslessly, the engine returns a capacity error instead of silently dropping cards.
 
-**Dominance pruning (`dominance.rs`) — Sound ✅**
+The correctness argument is split into two documents:
 
-Only compares two cards belonging to the **same character** (`pool.char_id(a) == pool.char_id(b)`). B is eliminated only when A is ≥ B in all of the following dimensions:
+- [**Exactness proof**](docs/exactness-proof.md) defines the feasible set, deterministic Top-K order, solver completeness, and the timeout / capacity boundary.
+- [**Pruning proof**](docs/pruning-proof.md) proves every rule that actually removes search space and maps each proof back to the implementation. Heuristics that only reorder work or seed an incumbent are explicitly separated from pruning.
 
-- power for all 8 formation combinations (compared after per-slot u18 decoding)
-- skill (only comparable within the same type; Score Up compares the value, Unit Count compares the per-count bonuses for the same unit, Diff compares base and increment, Ref compares rate and max)
-- event bonus (base and limited compared separately)
-- same attribute (otherwise their contributions to the diff-attr bonus differ, and B cannot be declared harmless)
-- unit mask is a superset (rhs_mask ⊆ lhs_mask, so no candidate formation is lost)
-
-Substitution safety: replacing B with A never lowers the score under any objective. World Bloom events go through the same dominance pruning; the support deck is stored separately in `SearchContext`, so support candidates are not lost when the main search pool is compressed, and dominance requires equal attributes, so the diff-attr bonus cannot be broken by a different-attribute substitution.
-
-Under Top-K (`top_k > 1`), combinations containing dominated cards may themselves be legitimate runner-up decks; pruning alone would lose ranks (formerly [issue #2](https://github.com/empty-sekai/allium-deck/issues/2)). The ordinary main search path now records a dominance map at pruning time (chains compressed to their surviving roots) and, after the search, performs a **substitution back-expansion** on every result: suppose the true Top-K contains a deck D that uses pruned cards; replacing each pruned card with its dominating root yields D', and by dominance score(D') ≥ score(D) ≥ the K-th threshold, so D' is necessarily in the exact Top-K of the pruned pool. Starting from D', substituting the dominating roots back with the pruned cards slot by slot (including multi-slot combinations), re-evaluating and merging, recovers the runner-up decks lost along this path. Back-substitution scores are monotonically non-increasing and are pruned against the current K-th threshold; `top_k = 1` skips the expansion entirely, so the main search path pays zero overhead. The final chapter has additional pruning on the member side; its Top-K substitution expansion is tracked in [issue #7](https://github.com/empty-sekai/allium-deck/issues/7).
-
-**Suffix upper bound (`suffix.rs`) — Sound ✅**
-
-The core of the upper bound is **character-aware aggregation**: for each of the three dimensions power / skill / bonus, take the per-character single-card maximum over the 27 characters, then sum the top-N over unused characters. Since at most one card per character can be picked, the per-dimension total of any actual formation cannot exceed the sum of that dimension's top-N per-character maxima. The three dimensions may pick different characters — a conservative overestimate that never loses a solution.
-
-Several tightening layers sit on top:
-
-- **Exclusion delta**: once a card is chosen, its character is excluded from the suffix and demoted to the next available character. The exclusion delta is obtained branch-free, using a compact bit index + popcount to locate it directly.
-- **Dense suffix tail**: scans from the right end of the SoA leftwards, monotonically narrowing based on the characters actually present. As the DFS position advances, `ceiling(i+1) ≤ ceiling(i)`, so once it drops below the threshold the whole level can safely break.
-- **World Bloom extra bound**: an extra ceiling layer over the support deck and the diff-attr cap, taking the tightest value per dimension.
-- **Leaf evaluation** (`evaluate.rs`) uses the actual same-unit member count `unit_counts[unit].clamp(1, 5)` for table lookups; the 1–5-member effects are exact values, not approximations.
-
-**Power / Skill paths — no optimality guarantee ❌**
-
-`search_instrumented` (`mod.rs:37-38`) does not run the full B&B for the Power and Skill objectives; it enumerates within a sorted prefix instead (Power: 28 cards with ≤6 per character; Skill: 20 cards with ≤3 per character). Cards outside the prefix are simply discarded, with no upper-bound proof that this is safe — a pure performance trade-off.
-
-The practical risk is low: Power / Skill are purely additive objectives with no cross-card skill synergy, and each character's best card is simply the one with the highest power_max / skill_max. A character having more than 4 skill cards where the optimum must use the 4th is extremely rare. But this is not a formal guarantee.
-
-**Summary**
-
-| Objective | Algorithm | Sound | Notes |
-| --- | --- | --- | --- |
-| Score / Mysekai | full B&B | ✅ | dominance pruning + character-aware suffix bound + tightening layers |
-| Final chapter | character grouping + B&B | ✅ | leader × member two-stage DFS |
-| Challenge | brute-force enumeration | ✅ | no pruning, only game_id dedup |
-| Power / Skill | prefix DFS | ❌ | 28/20-card limit, ≤6/≤3 per character |
+Tests are used to find counterexamples and prevent regressions, not as a substitute for those proofs. The fixed release gates currently include **3,840** independent cross-scenario comparisons (256 × 15), dedicated historical-counterexample and boundary tests, and cross-runtime validation across native, server, Rust 1.89, WASM, Node, and Chrome.
 
 ## License
 
