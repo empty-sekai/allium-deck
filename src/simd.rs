@@ -157,7 +157,7 @@ pub(crate) unsafe fn unused_character_mask_16(char_ids: *const u8, used_chars: u
     }
 }
 
-/// Returns one bit per upper bound that is strictly above `threshold`.
+/// Returns one bit per upper bound that is at least `threshold`.
 ///
 /// The caller guarantees that `upper_bounds` contains at least 16 entries.
 #[cfg(test)]
@@ -194,7 +194,7 @@ unsafe fn upper_bound_mask_16_scalar(upper_bounds: *const u64, threshold: u64) -
         let mut mask = 0u16;
         let mut lane = 0usize;
         while lane < 16 {
-            mask |= ((*upper_bounds.add(lane) > threshold) as u16) << lane;
+            mask |= ((*upper_bounds.add(lane) >= threshold) as u16) << lane;
             lane += 1;
         }
         mask
@@ -496,8 +496,8 @@ pub(crate) unsafe fn upper_bound_mask_16_avx512_unchecked(
         let threshold = _mm512_set1_epi64(threshold as i64);
         let lower = _mm512_loadu_si512(upper_bounds.cast::<__m512i>());
         let upper = _mm512_loadu_si512(upper_bounds.add(8).cast::<__m512i>());
-        let lower_mask = _mm512_cmp_epu64_mask::<6>(lower, threshold) as u16;
-        let upper_mask = _mm512_cmp_epu64_mask::<6>(upper, threshold) as u16;
+        let lower_mask = _mm512_cmp_epu64_mask::<5>(lower, threshold) as u16;
+        let upper_mask = _mm512_cmp_epu64_mask::<5>(upper, threshold) as u16;
         lower_mask | (upper_mask << 8)
     }
 }
@@ -540,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn dispatched_mask_rejects_bounds_at_or_below_threshold() {
+    fn dispatched_mask_keeps_bounds_equal_to_threshold() {
         let upper_bounds = [
             0,
             1,
@@ -564,7 +564,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .fold(0u16, |mask, (lane, upper)| {
-                mask | (((upper > 10) as u16) << lane)
+                mask | (((upper >= 10) as u16) << lane)
             });
         assert_eq!(actual, expected);
     }
