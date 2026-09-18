@@ -150,14 +150,25 @@ fn dfs_search_seeded_inner(
             matches!(ctx.target, ScoreTarget::Mysekai),
         )),
     };
-    let correlated_hint = seeds.iter().max_by_key(|r| r.score).map(|r| (r.cards.iter().map(|&c| pool.power_max(c)).sum::<u32>(), r.score >> 32));
+    let correlated_hint = seeds.iter().max_by_key(|r| r.score).map(|r| {
+        (
+            r.cards.iter().map(|&c| pool.power_max(c)).sum::<u32>(),
+            r.score >> 32,
+        )
+    });
     for seed_result in seeds {
         tracker.insert(seed_result);
     }
     let correlated_kth = tracker.threshold() >> 32;
 
     let mut state = SearchState {
-        correlated: super::correlated::CorrelatedBound::build(pool, ctx, correlated_hint, params.top_k, correlated_kth),
+        correlated: super::correlated::CorrelatedBound::build(
+            pool,
+            ctx,
+            correlated_hint,
+            params.top_k,
+            correlated_kth,
+        ),
         pool,
         ctx,
         suffix,
@@ -308,7 +319,12 @@ impl SearchState<'_> {
         }
 
         let slots = DECK_SIZE - depth;
-        if threshold != 0 && self.correlated.as_ref().is_some_and(|bound| bound.upper_bound(start, slots, &used, &partial) <= threshold) {
+        if threshold != 0
+            && self
+                .correlated
+                .as_ref()
+                .is_some_and(|bound| bound.upper_bound(start, slots, &used, &partial) <= threshold)
+        {
             self.stats.correlated_prunes += 1;
             return;
         }

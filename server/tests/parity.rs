@@ -5,10 +5,10 @@
 //! exactly, order included. A shell that reorders, re-ranks, or silently rewrites
 //! parameters fails here.
 //!
-//! The fixtures come from the benchmark's deterministic generator, so these tests need
+//! The fixtures come from the server's deterministic generator, so these tests need
 //! no game data and run anywhere.
 
-#[path = "../../benches/synth_masterdata/mod.rs"]
+#[path = "../src/synth_masterdata.rs"]
 mod synth_masterdata;
 
 use std::path::{Path, PathBuf};
