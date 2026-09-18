@@ -17,6 +17,24 @@ fn search_leaf_evaluate_encodes_targets() {
 }
 
 #[test]
+fn score_noevent_live_ceiling_is_identical_to_the_packed_score_order() {
+    let pool = build_pool(&five_unique_cards());
+    let search_ctx = ready_ctx(&pool, ScoreTarget::Score);
+    assert!(!search_ctx.has_event());
+    let suffix = SuffixBound::build(&pool, &search_ctx);
+
+    for power in [0, 100, 1_500, 50_000, 500_000] {
+        for skill in [0, 25, 100, 500] {
+            for leader in [0, 30, 120, 500] {
+                let live = suffix.score_noevent_live_ceiling(power, skill, leader);
+                let packed = suffix.ceiling(power, 0, skill, leader);
+                assert_eq!(packed, ((live as u64) << 32) | live as u64);
+            }
+        }
+    }
+}
+
+#[test]
 fn search_leaf_evaluate_score_path_consumes_music_skill_tables() {
     let pool = build_pool(&five_unique_cards());
     let deck = collect_first_five(&pool);

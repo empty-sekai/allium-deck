@@ -15,6 +15,15 @@ const EP_DENSE_BREAK_STRIDE: usize = 4;
 const EP_SHADOW_BLOCK_WIDTH: usize = 16;
 const EP_SHADOW_MIN_DEPTH: usize = 3;
 
+/// In Score/no-event search every legal result is encoded as `(live, live)`,
+/// so the full 64-bit objective has exactly the same total order as `live`.
+#[inline(always)]
+fn score_noevent_threshold_live(threshold: u64) -> u32 {
+    let live = threshold as u32;
+    debug_assert_eq!(threshold >> 32, live as u64);
+    live
+}
+
 #[derive(Clone, Copy)]
 struct EpShadowBlock {
     upper_bounds: [u64; EP_SHADOW_BLOCK_WIDTH],
@@ -489,25 +498,25 @@ impl SearchState<'_> {
 
         let threshold = self.threshold();
         if threshold != 0 {
-            let upper_bound =
-                if matches!(self.ctx.target, ScoreTarget::Score) && self.ctx.has_event() {
-                    let global = self.suffix.upper_bound_with_depth(depth, &used, &partial);
-                    let dense =
-                        self.suffix
-                            .dense_suffix_ceiling(start, &partial, DECK_SIZE - depth);
-                    global.min(dense)
-                } else if matches!(self.ctx.target, ScoreTarget::Score) {
-                    self.suffix.upper_bound_score_noevent(
-                        self.pool,
-                        &deck[..depth],
-                        &used,
-                        &partial,
-                        DECK_SIZE - depth,
-                    )
-                } else {
-                    self.suffix.upper_bound_with_depth(depth, &used, &partial)
-                };
-            if upper_bound < threshold {
+            let prunable = if matches!(self.ctx.target, ScoreTarget::Score) && self.ctx.has_event()
+            {
+                let global = self.suffix.upper_bound_with_depth(depth, &used, &partial);
+                let dense = self
+                    .suffix
+                    .dense_suffix_ceiling(start, &partial, DECK_SIZE - depth);
+                global.min(dense) < threshold
+            } else if matches!(self.ctx.target, ScoreTarget::Score) {
+                self.suffix.upper_bound_score_noevent_live(
+                    self.pool,
+                    &deck[..depth],
+                    &used,
+                    &partial,
+                    DECK_SIZE - depth,
+                ) < score_noevent_threshold_live(threshold)
+            } else {
+                self.suffix.upper_bound_with_depth(depth, &used, &partial) < threshold
+            };
+            if prunable {
                 self.stats.ub_prunes += 1;
                 return;
             }
@@ -705,14 +714,19 @@ impl SearchState<'_> {
         slots: usize,
         threshold: u64,
     ) {
+        let threshold_live = if threshold == 0 {
+            0
+        } else {
+            score_noevent_threshold_live(threshold)
+        };
         let pre = self.suffix.precompute_layer_score_noevent(&used, slots);
         let mut dense = start;
         while dense < self.pool.count() {
             if threshold != 0 {
-                let ceil = self
+                let live_ceil = self
                     .suffix
-                    .score_noevent_dense_ceiling(dense, &partial, slots);
-                if ceil < threshold {
+                    .score_noevent_dense_live_ceiling(dense, &partial, slots);
+                if live_ceil < threshold_live {
                     self.stats.mono_break_prunes += 1;
                     break;
                 }
@@ -745,10 +759,10 @@ impl SearchState<'_> {
                 let tight_leader = (partial.max_skill as u32)
                     .max(self.pool.skill_max(card) as u32)
                     .max(remaining_best_skill as u32);
-                let ub = self
-                    .suffix
-                    .ceiling(tight_power, 0, tight_skill, tight_leader);
-                if ub < threshold {
+                let live_ub =
+                    self.suffix
+                        .score_noevent_live_ceiling(tight_power, tight_skill, tight_leader);
+                if live_ub < threshold_live {
                     self.stats.ep_continue_prunes += 1;
                     continue;
                 }
