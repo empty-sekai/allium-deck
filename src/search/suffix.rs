@@ -80,6 +80,7 @@ pub struct SuffixBound {
     multi_teammate_power: Option<i32>,
     live_skill_order: LiveSkillOrder,
     is_world_bloom: bool,
+    attr_matching: bool,
     is_final_chapter: bool,
     limited_bonus_cap: usize,
     extra_bonus_ub: u32,
@@ -104,12 +105,38 @@ pub struct SuffixBound {
     dense_power_bonus_1024_tail: Vec<[u32; DECK_SIZE + 1]>,
     joint_ep_512: Vec<u32>,
     joint_ep_1024: Vec<u32>,
+    /// World Bloom dense suffix: for each attr, bitset of characters having at
+    /// least one card of that attr at/after the dense index.  This feeds an
+    /// exact 5x27 bipartite matching relaxation for reachable attribute count.
+    dense_attr_char_tail: Vec<[u32; 5]>,
     /// Score/no-event 场景表：[allowed_unit_subset(64) * 7 + attr_opt] -> per-char max。
     /// attr_opt: 0..6 = 全同属性 attr id，6 = 无全同属性。空表示未启用。
     noev_tables: Vec<[u32; CHAR_MASK_COUNT]>,
 }
 
 const _: () = assert!(size_of::<SuffixBound>() <= 736);
+
+fn world_bloom_extra_bonus_fallback(ctx: &SearchContext) -> u32 {
+    if !ctx.is_world_bloom {
+        return ctx.extra_bonus_ub;
+    }
+    let diff = ctx.diff_attr_bonus.iter().copied().max().unwrap_or(0) as u32;
+    let mut bonuses = ctx
+        .support_deck
+        .cards
+        .iter()
+        .map(|(_, bonus)| *bonus)
+        .filter(|bonus| bonus.is_finite() && *bonus > 0.0)
+        .collect::<Vec<_>>();
+    bonuses.sort_unstable_by(|left, right| right.total_cmp(left));
+    let support = bonuses
+        .into_iter()
+        .take(ctx.support_deck.count as usize)
+        .sum::<f64>()
+        .ceil()
+        .clamp(0.0, u32::MAX as f64) as u32;
+    ctx.extra_bonus_ub.max(diff.saturating_add(support))
+}
 
 impl SuffixBound {
     /// 基于卡池构建一次性后缀上界数据。
@@ -196,9 +223,10 @@ impl SuffixBound {
             multi_teammate_power: ctx.multi_teammate_power,
             live_skill_order: ctx.live_skill_order,
             is_world_bloom: ctx.is_world_bloom,
+            attr_matching: super::tuning::SearchTuning::load().world_bloom_attr_matching,
             is_final_chapter: ctx.is_final_chapter,
             limited_bonus_cap: ctx.card_bonus_count_limit,
-            extra_bonus_ub: ctx.extra_bonus_ub,
+            extra_bonus_ub: world_bloom_extra_bonus_fallback(ctx),
             diff_attr_bonus: ctx.diff_attr_bonus,
             support_cards: ctx.support_deck.cards.clone(),
             support_count: ctx.support_deck.count as usize,
@@ -220,6 +248,11 @@ impl SuffixBound {
             dense_power_bonus_1024_tail: Vec::new(),
             joint_ep_512: Vec::new(),
             joint_ep_1024: Vec::new(),
+            dense_attr_char_tail: if ctx.is_world_bloom {
+                build_dense_attr_char_tail(pool)
+            } else {
+                Vec::new()
+            },
             noev_tables: if matches!(ctx.target, ScoreTarget::Score) && !ctx.has_event() {
                 build_noev_tables(pool)
             } else {
@@ -1179,13 +1212,16 @@ impl SuffixBound {
         selected_len: usize,
         candidate_game_id: u16,
         rest: usize,
+        dense_start: usize,
+        used_chars: u32,
     ) -> u32 {
         if !self.is_world_bloom {
             return self.extra_bonus_ub;
         }
 
         let current_attrs = attr_set.count_ones() as usize;
-        let max_attrs = (current_attrs + rest).min(DECK_SIZE);
+        let novel_ub = self.reachable_novel_attr_ub(attr_set, dense_start, used_chars, rest);
+        let max_attrs = (current_attrs + novel_ub).min(DECK_SIZE);
         let mut diff_ub = 0u32;
         let mut count = current_attrs;
         while count <= max_attrs {
@@ -1206,13 +1242,16 @@ impl SuffixBound {
         selected: &[u16; DECK_SIZE],
         selected_len: usize,
         rest: usize,
+        dense_start: usize,
+        used_chars: u32,
     ) -> u32 {
         if !self.is_world_bloom {
             return self.extra_bonus_ub;
         }
 
         let current_attrs = attr_set.count_ones() as usize;
-        let max_attrs = (current_attrs + rest).min(DECK_SIZE);
+        let novel_ub = self.reachable_novel_attr_ub(attr_set, dense_start, used_chars, rest);
+        let max_attrs = (current_attrs + novel_ub).min(DECK_SIZE);
         let mut diff_ub = 0u32;
         let mut count = current_attrs;
         while count <= max_attrs {
@@ -1223,6 +1262,53 @@ impl SuffixBound {
         let support_sum = self.support_sum_excluding(selected, selected_len);
 
         diff_ub + support_sum.ceil() as u32
+    }
+
+    /// Maximum number of NEW attributes that any legal completion can add,
+    /// relaxed only by constraints unrelated to (character, attr, dense start).
+    /// Every feasible completion induces a matching from its novel attributes to
+    /// distinct unused characters; therefore maximum bipartite matching is an
+    /// admissible upper bound on attribute diversity.
+    #[inline]
+    fn reachable_novel_attr_ub(
+        &self,
+        attr_set: u8,
+        dense_start: usize,
+        used_chars: u32,
+        rest: usize,
+    ) -> usize {
+        if !self.attr_matching {
+            return rest;
+        }
+        if rest == 0 || self.dense_attr_char_tail.is_empty() {
+            return if self.dense_attr_char_tail.is_empty() {
+                rest
+            } else {
+                0
+            };
+        }
+        let Some(masks) = self.dense_attr_char_tail.get(dense_start) else {
+            return 0;
+        };
+        let mut owner = [u8::MAX; 27];
+        let mut matched = 0usize;
+        for attr in 0..5usize {
+            if attr_set & (1u8 << attr) != 0 {
+                continue;
+            }
+            let available = masks[attr] & !used_chars;
+            if available == 0 {
+                continue;
+            }
+            let mut seen = 0u32;
+            if augment_attr_matching(attr as u8, masks, used_chars, &mut owner, &mut seen) {
+                matched += 1;
+                if matched >= rest {
+                    return rest;
+                }
+            }
+        }
+        matched.min(rest)
     }
 
     #[inline(always)]
@@ -1800,6 +1886,48 @@ pub(crate) fn card_scenario_power(
         unit += 1;
     }
     best
+}
+
+fn build_dense_attr_char_tail(pool: &CardPool) -> Vec<[u32; 5]> {
+    let n = pool.count();
+    let mut tail = vec![[0u32; 5]; n + 1];
+    let mut dense = n;
+    while dense > 0 {
+        dense -= 1;
+        tail[dense] = tail[dense + 1];
+        let card = CardIdx::new(dense as u16);
+        let attr = pool.attr(card) as usize;
+        let char_id = pool.char_id(card);
+        if attr < 5 && char_id < 27 {
+            tail[dense][attr] |= 1u32 << char_id;
+        }
+    }
+    tail
+}
+
+#[inline]
+fn augment_attr_matching(
+    attr: u8,
+    masks: &[u32; 5],
+    used_chars: u32,
+    owner: &mut [u8; 27],
+    seen_chars: &mut u32,
+) -> bool {
+    let mut available = masks[attr as usize] & !used_chars & !*seen_chars;
+    while available != 0 {
+        let char_id = available.trailing_zeros() as usize;
+        let bit = 1u32 << char_id;
+        available &= available - 1;
+        *seen_chars |= bit;
+        let previous = owner[char_id];
+        if previous == u8::MAX
+            || augment_attr_matching(previous, masks, used_chars, owner, seen_chars)
+        {
+            owner[char_id] = attr;
+            return true;
+        }
+    }
+    false
 }
 
 fn build_noev_tables(pool: &CardPool) -> Vec<[u32; CHAR_MASK_COUNT]> {

@@ -1,12 +1,15 @@
 //! Experimental exhaustive auditor for the correlated upper bound.
 //! This module lives only in the isolated benchmark worktree.
 #![allow(missing_docs)]
-use serde::Serialize;
-use crate::{pool::{CardIdx, CardPool}, types::DECK_SIZE};
-use super::{SearchContext, PartialDeck, UsedSet};
 use super::correlated::CorrelatedBound;
 use super::evaluate::leaf_evaluate_checked;
 use super::warm_start::warm_start_best;
+use super::{PartialDeck, SearchContext, UsedSet};
+use crate::{
+    pool::{CardIdx, CardPool},
+    types::DECK_SIZE,
+};
+use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct BoundViolation {
@@ -46,7 +49,11 @@ pub fn audit_correlated_bound(pool: &CardPool, ctx: &SearchContext) -> Correlate
         return report;
     }
     let hint = warm_start_best(&search_pool, &search_ctx).map(|r| {
-        let p = r.cards.iter().map(|&c| search_pool.power_max(c)).sum::<u32>();
+        let p = r
+            .cards
+            .iter()
+            .map(|&c| search_pool.power_max(c))
+            .sum::<u32>();
         (p, r.score >> 32)
     });
     let Some(bound) = CorrelatedBound::build(&search_pool, &search_ctx, hint, 30, 0) else {
@@ -157,10 +164,16 @@ fn recurse(
 
 #[inline]
 fn slot_matches(pool: &CardPool, ctx: &SearchContext, depth: usize, card: CardIdx) -> bool {
-    if ctx.fixed_card_at(depth).is_some_and(|id| pool.game_id(card) != id) {
+    if ctx
+        .fixed_card_at(depth)
+        .is_some_and(|id| pool.game_id(card) != id)
+    {
         return false;
     }
-    if ctx.fixed_character_at(depth).is_some_and(|id| pool.char_id(card) != id) {
+    if ctx
+        .fixed_character_at(depth)
+        .is_some_and(|id| pool.char_id(card) != id)
+    {
         return false;
     }
     true

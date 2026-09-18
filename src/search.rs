@@ -29,14 +29,17 @@ pub mod dominance;
 /// 叶子求值：把一副确定的队伍算成分数。
 pub mod evaluate;
 mod final_chapter;
+mod placement;
+mod problem;
 /// 角色感知的后缀上界，用于剪枝。
 pub mod suffix;
+mod tuning;
 /// 搜索的输入参数与结果类型。
 pub mod types;
 /// 热启动：先用贪心加一次换位得到一个可用下界。
 pub mod warm_start;
 
-pub use bruteforce::{BruteForceStats, brute_force_search};
+pub use bruteforce::{BruteForceStats, ExactOracle, brute_force_search};
 pub use context::{SearchContext, SupportDeck};
 pub use dfs::{SearchStats, dfs_search};
 pub use dominance::eliminate_dominated;
@@ -46,6 +49,12 @@ pub use evaluate::{
 pub use suffix::{PartialDeck, SuffixBound, UsedSet};
 pub use types::{DeckResult, DeckResultSummary, SearchParams};
 pub use warm_start::warm_start;
+
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant;
 
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, ScoreTarget};
@@ -140,10 +149,12 @@ pub fn search_instrumented(
         return (Vec::new(), SearchStats::default());
     }
 
+    let problem = problem::DeckProblem::from_context(ctx);
+
     // 挑战 live 的队伍必须五张同角色，该约束对所有 target 生效，必须先于
     // Power/Skill 通用路径分发：`simple_target_recurse` 无条件要求角色唯一，
     // 会在 challenge 下永远凑不齐 5 张而静默返回空集。
-    if !ctx.enforce_char_uniqueness {
+    if problem.family == problem::SolverFamily::SameCharacter {
         let suffix = SuffixBound::build(pool, ctx);
         // 池里只剩一个角色时（调用方已指定 challenge_live_character_id）直接搜；
         // 留着多个角色则是 challenge_all，必须逐角色搜索后归并——无约束搜索
@@ -154,7 +165,7 @@ pub fn search_instrumented(
         };
     }
 
-    if matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill) {
+    if problem.family == problem::SolverFamily::NumericObjective {
         return search_simple_target(pool, ctx, params);
     }
 
@@ -201,23 +212,29 @@ pub fn search_instrumented(
         } else {
             search_ctx.final_chapter_member_keep = member_keep;
         }
-        let (compacted_results, stats) = if search_ctx.final_chapter_leader_character().is_some() {
-            final_chapter::search_fixed_leader(&search_pool, &search_ctx, params)
-        } else if !search_ctx.has_fixed_leader() {
-            final_chapter::search_auto_leader(&search_pool, &search_ctx, params)
-        } else {
-            let suffix = SuffixBound::build(&search_pool, &search_ctx);
-            let seeds = warm_start::warm_start_best(&search_pool, &search_ctx)
-                .into_iter()
-                .collect();
-            dfs::dfs_search_instrumented_with_seeds(
-                &search_pool,
-                &search_ctx,
-                &suffix,
-                params,
-                seeds,
-            )
-        };
+        // Grouped Final search currently models only an optional leader role.
+        // Multiple fixed slots use the complete slot-aware DFS, never a grouped
+        // solver that silently omits their constraints.
+        let grouped_constraints =
+            search_ctx.fixed_card_ids.is_empty() && search_ctx.fixed_character_ids.len() <= 1;
+        let (compacted_results, stats) =
+            if grouped_constraints && search_ctx.final_chapter_leader_character().is_some() {
+                final_chapter::search_fixed_leader(&search_pool, &search_ctx, params)
+            } else if grouped_constraints && !search_ctx.has_fixed_leader() {
+                final_chapter::search_auto_leader(&search_pool, &search_ctx, params)
+            } else {
+                let suffix = SuffixBound::build(&search_pool, &search_ctx);
+                let seeds = warm_start::warm_start_best(&search_pool, &search_ctx)
+                    .into_iter()
+                    .collect();
+                dfs::dfs_search_instrumented_with_seeds(
+                    &search_pool,
+                    &search_ctx,
+                    &suffix,
+                    params,
+                    seeds,
+                )
+            };
         let remapped = remap_results(compacted_results, &original_indices);
         let expanded = expand_alternatives(
             pool,
@@ -462,113 +479,271 @@ fn search_simple_target(
     ctx: &SearchContext,
     params: &SearchParams,
 ) -> (Vec<DeckResult>, SearchStats) {
-    const POWER_PREFIX: usize = 28;
-    const POWER_PER_CHAR: usize = 6;
-    const SKILL_PREFIX: usize = 20;
-    const SKILL_PER_CHAR: usize = 3;
-    const SCORE_NOEV_PREFIX: usize = 30;
-    const SCORE_NOEV_PER_CHAR: usize = 6;
-
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
     }
 
+    // The unconstrained maximizing Power case has a stronger exact 49-scenario
+    // additive DP.  Every other Power/Skill request uses the proof-carrying B&B
+    // below; heuristic quality-prefix truncation is deliberately forbidden.
     if matches!(ctx.target, ScoreTarget::Power)
         && !ctx.minimize
         && ctx.enforce_char_uniqueness
         && ctx.fixed_card_ids.is_empty()
         && ctx.fixed_character_ids.is_empty()
         && ctx.forced_leader_character_id.is_none()
+        && ctx.multi_live_score_up_lower_bound.is_none()
+        && ctx.power_total_cap.is_none()
     {
         return search_power_scenarios(pool, ctx, params);
     }
 
-    let (prefix_len, per_char_cap) = match ctx.target {
-        ScoreTarget::Power => (POWER_PREFIX, POWER_PER_CHAR),
-        ScoreTarget::Skill => (SKILL_PREFIX, SKILL_PER_CHAR),
-        _ => (SCORE_NOEV_PREFIX, SCORE_NOEV_PER_CHAR),
-    };
+    search_simple_target_exact(pool, ctx, params)
+}
 
-    let mut cards: Vec<CardIdx> = pool.indices().collect();
+#[derive(Clone, Copy, Default)]
+struct SimpleRelaxedPartial {
+    power_max_sum: u32,
+    power_min_sum: u32,
+    skill_max_sum: u32,
+    leader_skill_max: u32,
+}
+
+struct SimpleExactState<'a> {
+    pool: &'a CardPool,
+    ctx: &'a SearchContext,
+    cards: Vec<CardIdx>,
+    card_power_min: Vec<u32>,
+    global_power_max: u32,
+    global_power_min: u32,
+    global_skill_max: u32,
+    bounds_enabled: bool,
+    tracker: SimpleTopKTracker,
+    stats: SearchStats,
+    deadline: Option<Instant>,
+}
+
+fn search_simple_target_exact(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+) -> (Vec<DeckResult>, SearchStats) {
     let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
-    cards.sort_unstable_by(|a, b| {
-        let (ka, kb) = match ctx.target {
-            ScoreTarget::Power => (pool.power_max(*a) as u64, pool.power_max(*b) as u64),
-            ScoreTarget::Skill => (pool.skill_max(*a) as u64, pool.skill_max(*b) as u64),
-            _ => {
-                let ka = pool.power_max(*a) as u64 * (256 + pool.skill_max(*a) as u64);
-                let kb = pool.power_max(*b) as u64 * (256 + pool.skill_max(*b) as u64);
-                (ka, kb)
+    let mut cards = pool.indices().collect::<Vec<_>>();
+    let card_power_min = pool
+        .indices()
+        .map(|card| {
+            let values = pool.power_values(card);
+            let lut = pool.power_lut(card);
+            (0..8)
+                .map(|idx| evaluate::decode_u18(values, lut, idx))
+                .min()
+                .unwrap_or(0)
+        })
+        .collect::<Vec<_>>();
+    cards.sort_unstable_by(|left, right| {
+        let ordering = match ctx.target {
+            ScoreTarget::Power if minimize => {
+                card_power_min[left.raw()].cmp(&card_power_min[right.raw()])
             }
+            ScoreTarget::Power => pool.power_max(*right).cmp(&pool.power_max(*left)),
+            ScoreTarget::Skill => pool.skill_max(*right).cmp(&pool.skill_max(*left)),
+            _ => std::cmp::Ordering::Equal,
         };
-        // minimize 时按质量升序取最弱前缀；否则降序取最强。
-        let ordering = if minimize { ka.cmp(&kb) } else { kb.cmp(&ka) };
-        ordering.then_with(|| a.raw().cmp(&b.raw()))
+        ordering.then_with(|| left.raw().cmp(&right.raw()))
     });
-
-    let mut prefix = Vec::with_capacity(prefix_len + 8);
-    let mut in_prefix = vec![false; pool.count()];
-    let mut char_counts = [0usize; 27];
-
-    for &card in &cards {
-        let gid = pool.game_id(card);
-        let cid = pool.char_id(card);
-        if (ctx.fixed_card_ids.contains(&gid) || ctx.fixed_character_ids.contains(&cid))
-            && !in_prefix[card.raw()]
-        {
-            in_prefix[card.raw()] = true;
-            char_counts[(cid as usize).min(26)] += 1;
-            prefix.push(card);
-        }
-    }
-
-    // Fixed-character alternatives occupy one slot, not one slot per card.
-    // Reserve the ordinary candidate budget for the still-unfixed slots even
-    // when the fixed prefix itself exceeds the usual search prefix length.
-    let fixed_slots = ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len();
-    let free_budget = if fixed_slots >= DECK_SIZE {
-        0
-    } else {
-        prefix_len.saturating_sub(fixed_slots)
-    };
-    let prefix_limit = prefix.len() + free_budget;
-    for &card in &cards {
-        if prefix.len() >= prefix_limit {
-            break;
-        }
-        if in_prefix[card.raw()] {
-            continue;
-        }
-        let ch = (pool.char_id(card) as usize).min(26);
-        if char_counts[ch] >= per_char_cap {
-            continue;
-        }
-        char_counts[ch] += 1;
-        in_prefix[card.raw()] = true;
-        prefix.push(card);
-    }
-
-    if prefix.len() < DECK_SIZE {
-        return (Vec::new(), SearchStats::default());
-    }
-
-    let mut tracker = SimpleTopKTracker::new(params.top_k, minimize, pool);
-    let mut deck = [prefix[0]; DECK_SIZE];
-    let mut stats = SearchStats::default();
-    simple_target_recurse(
+    let global_power_max = pool
+        .indices()
+        .map(|card| pool.power_max(card))
+        .max()
+        .unwrap_or(0);
+    let global_power_min = card_power_min.iter().copied().min().unwrap_or(0);
+    let global_skill_max = pool
+        .indices()
+        .map(|card| pool.skill_max(card) as u32)
+        .max()
+        .unwrap_or(0);
+    let tuning = tuning::SearchTuning::load();
+    let mut state = SimpleExactState {
         pool,
         ctx,
-        &prefix,
+        cards,
+        card_power_min,
+        global_power_max,
+        global_power_min,
+        global_skill_max,
+        bounds_enabled: tuning.bounds && tuning.simple_bound,
+        tracker: SimpleTopKTracker::new(params.top_k, minimize, pool),
+        stats: SearchStats::default(),
+        deadline: (params.timeout_ms != 0)
+            .then(|| Instant::now() + Duration::from_millis(params.timeout_ms)),
+    };
+    let mut deck = [CardIdx::new(0); DECK_SIZE];
+    let mut selected_game_ids = [u16::MAX; DECK_SIZE];
+    state.recurse(
         0,
         0,
-        crate::pool::Mask::EMPTY,
         0,
         &mut deck,
-        &mut tracker,
-        &mut stats,
+        &mut selected_game_ids,
+        SimpleRelaxedPartial::default(),
     );
+    (state.tracker.into_vec(), state.stats)
+}
 
-    (tracker.into_vec(), stats)
+impl SimpleExactState<'_> {
+    #[inline(always)]
+    fn bound_can_prune(&self, depth: usize, partial: SimpleRelaxedPartial) -> bool {
+        if !self.bounds_enabled {
+            return false;
+        }
+        let Some(threshold) = self.tracker.threshold() else {
+            return false;
+        };
+        let slots = DECK_SIZE - depth;
+        match self.ctx.target {
+            ScoreTarget::Power if self.ctx.minimize => {
+                // Every resolved card power is at least the minimum of that
+                // card's eight precomputed power contexts.  Reusing the global
+                // minimum for every free slot only relaxes constraints further,
+                // hence this is an admissible LOWER bound for minimization.
+                let lower_raw = partial
+                    .power_min_sum
+                    .saturating_add(self.global_power_min.saturating_mul(slots as u32))
+                    .saturating_add(self.ctx.honor_bonus);
+                let lower = self.ctx.clamp_power_total(lower_raw) as u64;
+                lower > threshold
+            }
+            ScoreTarget::Power => {
+                // Per-card power_max is an independent relaxation of unit/attr
+                // coupling. Reusing the global maximum ignores uniqueness and
+                // card reuse, so it can only make the upper bound larger.
+                let upper_raw = partial
+                    .power_max_sum
+                    .saturating_add(self.global_power_max.saturating_mul(slots as u32))
+                    .saturating_add(self.ctx.honor_bonus);
+                let upper = self.ctx.clamp_power_total(upper_raw) as u64;
+                upper < threshold
+            }
+            ScoreTarget::Skill => {
+                // The encoded Skill target is 10*leader + 2*sum(other four)
+                // = 2*sum(all) + 8*leader. skill_max is a per-card upper bound
+                // for normal/unit-count/diff/reference resolution, and ignoring
+                // uniqueness/reuse is again a relaxation.
+                let total_skill = partial
+                    .skill_max_sum
+                    .saturating_add(self.global_skill_max.saturating_mul(slots as u32));
+                let leader = partial.leader_skill_max.max(self.global_skill_max);
+                let upper = (2u64 * total_skill as u64).saturating_add(8u64 * leader as u64);
+                upper < threshold
+            }
+            _ => false,
+        }
+    }
+
+    #[inline(always)]
+    fn timed_out(&mut self) -> bool {
+        if self.stats.deadline_hit {
+            return true;
+        }
+        let Some(deadline) = self.deadline else {
+            return false;
+        };
+        if self.stats.visited_nodes & 1023 != 0 {
+            return false;
+        }
+        if Instant::now() >= deadline {
+            self.stats.deadline_hit = true;
+            return true;
+        }
+        false
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn recurse(
+        &mut self,
+        depth: usize,
+        min_free_pos: usize,
+        used_chars: u32,
+        deck: &mut [CardIdx; DECK_SIZE],
+        selected_game_ids: &mut [u16; DECK_SIZE],
+        partial: SimpleRelaxedPartial,
+    ) {
+        self.stats.visited_nodes = self.stats.visited_nodes.wrapping_add(1);
+        if self.timed_out() {
+            return;
+        }
+        if depth == DECK_SIZE {
+            self.stats.leaf_nodes += 1;
+            if let Some(candidate) = placement::evaluate_candidate(self.pool, self.ctx, deck) {
+                self.tracker.insert(candidate);
+            }
+            return;
+        }
+        if self.bound_can_prune(depth, partial) {
+            self.stats.ub_prunes += 1;
+            return;
+        }
+
+        let is_fixed = self.ctx.is_fixed_slot(depth);
+        let mut pos = if is_fixed { 0 } else { min_free_pos };
+        while pos < self.cards.len() {
+            if !is_fixed && self.cards.len() - pos < DECK_SIZE - depth {
+                break;
+            }
+            let card = self.cards[pos];
+            pos += 1;
+            let game_id = self.pool.game_id(card);
+            if selected_game_ids[..depth].contains(&game_id) {
+                continue;
+            }
+            if self
+                .ctx
+                .fixed_card_at(depth)
+                .is_some_and(|required| required != game_id)
+            {
+                continue;
+            }
+            let char_id = self.pool.char_id(card);
+            let fixed_char = self.ctx.fixed_character_at(depth);
+            if fixed_char.is_some_and(|required| required != char_id) {
+                continue;
+            }
+            if self.ctx.enforce_char_uniqueness && used_chars & (1u32 << char_id) != 0 {
+                // Preserve the public fixed-character semantics: an explicitly
+                // repeated fixed character may occupy another fixed slot.
+                if fixed_char != Some(char_id) {
+                    continue;
+                }
+            }
+
+            deck[depth] = card;
+            selected_game_ids[depth] = game_id;
+            let next = SimpleRelaxedPartial {
+                power_max_sum: partial
+                    .power_max_sum
+                    .saturating_add(self.pool.power_max(card)),
+                power_min_sum: partial
+                    .power_min_sum
+                    .saturating_add(self.card_power_min[card.raw()]),
+                skill_max_sum: partial
+                    .skill_max_sum
+                    .saturating_add(self.pool.skill_max(card) as u32),
+                leader_skill_max: partial
+                    .leader_skill_max
+                    .max(self.pool.skill_max(card) as u32),
+            };
+            let next_min_free = if is_fixed { min_free_pos } else { pos };
+            self.recurse(
+                depth + 1,
+                next_min_free,
+                used_chars | (1u32 << char_id),
+                deck,
+                selected_game_ids,
+                next,
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -685,77 +860,6 @@ fn search_power_scenarios(
         }
     }
     (tracker.into_vec(), stats)
-}
-
-fn simple_target_recurse(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    prefix: &[CardIdx],
-    depth: usize,
-    min_free_idx: usize,
-    used_cards: crate::pool::Mask,
-    used_chars: u32,
-    deck: &mut [CardIdx; DECK_SIZE],
-    tracker: &mut SimpleTopKTracker,
-    stats: &mut SearchStats,
-) {
-    if depth == DECK_SIZE {
-        stats.leaf_nodes += 1;
-        if let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) {
-            tracker.insert(DeckResult::new(*deck, score));
-        }
-        return;
-    }
-
-    let is_fixed = ctx.is_fixed_slot(depth);
-    let scan_from = if is_fixed { 0 } else { min_free_idx };
-
-    let mut idx = scan_from;
-    while idx < prefix.len() {
-        if used_cards.test(idx) {
-            idx += 1;
-            continue;
-        }
-        let card = prefix[idx];
-        let char_id = pool.char_id(card);
-        let fixed_char_at_depth = ctx.fixed_character_at(depth);
-        if used_chars & (1u32 << char_id) != 0 {
-            // 固定角色槽位允许同一角色的另一张卡入队
-            if fixed_char_at_depth != Some(char_id) {
-                idx += 1;
-                continue;
-            }
-        }
-        if let Some(game_id) = ctx.fixed_card_at(depth)
-            && pool.game_id(card) != game_id
-        {
-            idx += 1;
-            continue;
-        }
-        if let Some(character_id) = fixed_char_at_depth
-            && char_id != character_id
-        {
-            idx += 1;
-            continue;
-        }
-        deck[depth] = card;
-        let next_min_free = if is_fixed { min_free_idx } else { idx + 1 };
-        let mut next_used_cards = used_cards;
-        next_used_cards.set(idx);
-        simple_target_recurse(
-            pool,
-            ctx,
-            prefix,
-            depth + 1,
-            next_min_free,
-            next_used_cards,
-            used_chars | (1u32 << char_id),
-            deck,
-            tracker,
-            stats,
-        );
-        idx += 1;
-    }
 }
 
 struct SimpleTopKTracker {

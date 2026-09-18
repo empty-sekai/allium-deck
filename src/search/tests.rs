@@ -1,5 +1,9 @@
 //! search 模块测试。
 
+mod case7_audit;
+mod dominance_contract;
+mod role_constraints;
+
 use super::*;
 use crate::pool::{DiffSkill, EventBonusExact, PoolBuilder, RefSkill, SkillSlot, UnitCountSkill};
 use crate::types::{EventType, LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
@@ -2832,4 +2836,1119 @@ fn mysekai_top_k_is_monotone_across_limits() {
         );
         prev_power = power;
     }
+}
+
+/// Exact auto-leader oracle for Final Chapter tests: enumerate every leader card
+/// and every four-member combination, keeping the best arrangement for each
+/// distinct five-card set. Unlike `brute_force_search`, this explicitly explores
+/// all possible leader placements and is therefore a valid oracle for auto leader.
+fn final_chapter_auto_oracle(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    top_k: usize,
+) -> Vec<DeckResult> {
+    let mut best_by_set: Vec<([u16; DECK_SIZE], DeckResult)> = Vec::new();
+    for leader in pool.indices() {
+        let leader_char = pool.char_id(leader);
+        let mut deck = [leader; DECK_SIZE];
+        fn rec(
+            pool: &CardPool,
+            ctx: &SearchContext,
+            leader: CardIdx,
+            leader_char: u8,
+            start: usize,
+            depth: usize,
+            used_chars: u32,
+            deck: &mut [CardIdx; DECK_SIZE],
+            best_by_set: &mut Vec<([u16; DECK_SIZE], DeckResult)>,
+        ) {
+            if depth == DECK_SIZE {
+                let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) else {
+                    return;
+                };
+                let candidate = DeckResult::new(*deck, score);
+                let mut key = candidate.cards.map(|card| pool.game_id(card));
+                key.sort_unstable();
+                if let Some((_, existing)) = best_by_set.iter_mut().find(|(seen, _)| *seen == key) {
+                    if candidate.score > existing.score
+                        || (candidate.score == existing.score && candidate.cards < existing.cards)
+                    {
+                        *existing = candidate;
+                    }
+                } else {
+                    best_by_set.push((key, candidate));
+                }
+                return;
+            }
+            let need = DECK_SIZE - depth;
+            let mut dense = start;
+            while dense < pool.count() {
+                if pool.count() - dense < need {
+                    break;
+                }
+                let card = CardIdx::new(dense as u16);
+                dense += 1;
+                if card == leader {
+                    continue;
+                }
+                let char_id = pool.char_id(card);
+                if char_id == leader_char || used_chars & (1u32 << char_id) != 0 {
+                    continue;
+                }
+                deck[depth] = card;
+                rec(
+                    pool,
+                    ctx,
+                    leader,
+                    leader_char,
+                    dense,
+                    depth + 1,
+                    used_chars | (1u32 << char_id),
+                    deck,
+                    best_by_set,
+                );
+            }
+        }
+        rec(
+            pool,
+            ctx,
+            leader,
+            leader_char,
+            0,
+            1,
+            1u32 << leader_char,
+            &mut deck,
+            &mut best_by_set,
+        );
+    }
+    let mut results = best_by_set
+        .into_iter()
+        .map(|(_, result)| result)
+        .collect::<Vec<_>>();
+    results.sort_unstable_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.cards.cmp(&right.cards))
+    });
+    results.truncate(top_k);
+    results
+}
+
+#[test]
+fn final_chapter_auto_leader_must_not_truncate_support_safe_variant_set() {
+    // Five characters each expose four mutually non-dominating variants. The
+    // first three have higher leader-key power and are therefore the only ones
+    // retained by the historical 3-per-character truncation. All of those 15
+    // high-key cards are also in every Final Chapter support deck. The fourth
+    // variant of every character is slightly weaker but absent from support.
+    // Selecting the five fourth variants preserves the full support sum, making
+    // that card set globally optimal. Because every card in that set is rank 4
+    // for its own character, no retained leader can generate the set; post-search
+    // leader rotation cannot recover a card set that was never visited.
+    let mut cards = Vec::new();
+    let mut top_three_ids = Vec::new();
+    for character in 1u8..=5 {
+        for variant in 0u8..4 {
+            let game_id = 1100 + character as u16 * 10 + variant as u16;
+            let power = match variant {
+                0 => 1500,
+                1 => 1480,
+                2 => 1460,
+                _ => 1400,
+            };
+            let mut card = skill_card(game_id, character, power, 20);
+            card.attr = 0;
+            // Disjoint unit masks prevent same-attribute leader dominance from
+            // collapsing the four variants before the truncation under test.
+            card.unit_mask = 1u8 << variant;
+            card.base_bonus = 10;
+            cards.push(card);
+            if variant < 3 {
+                top_three_ids.push(game_id);
+            }
+        }
+    }
+    // Add four very high-key decoy leaders from a sixth character. They are all
+    // support-listed, so they are intentionally poor final choices, but they
+    // occupy the global beam's leader prefix and prevent any rank-4 target card
+    // from entering the heuristic seed.
+    for variant in 0u8..4 {
+        let game_id = 1160 + variant as u16;
+        let mut card = skill_card(game_id, 6, 3000 - variant as u32 * 10, 20);
+        card.attr = 0;
+        card.unit_mask = 1u8 << variant;
+        card.base_bonus = 10;
+        cards.push(card);
+        top_three_ids.push(game_id);
+    }
+    let pool = build_pool(&cards);
+    let mut search_ctx = final_chapter_ctx(&pool);
+    search_ctx.is_world_bloom = true;
+    search_ctx.event_type = Some(EventType::WorldBloom);
+    search_ctx.skill_scores[1] = [0.2; 6];
+    search_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
+    let support = SupportDeck {
+        cards: top_three_ids
+            .iter()
+            .copied()
+            .map(|id| (id, 100.0))
+            .collect(),
+        count: top_three_ids.len() as u8,
+    };
+    for character in 1usize..=5 {
+        search_ctx.support_decks_by_character[character] = support.clone();
+    }
+    let params = SearchParams {
+        top_k: 1,
+        timeout_ms: 0,
+    };
+
+    let oracle = final_chapter_auto_oracle(&pool, &search_ctx, 1);
+    assert_eq!(oracle.len(), 1);
+    let mut oracle_ids = oracle[0].cards.map(|card| pool.game_id(card));
+    oracle_ids.sort_unstable();
+    let expected = [1113, 1123, 1133, 1143, 1153];
+    assert_eq!(
+        oracle_ids, expected,
+        "oracle should prefer the five support-safe rank-4 variants"
+    );
+
+    let got = search(&pool, &search_ctx, &params);
+    assert_results_match_bruteforce(&pool, &got, &oracle);
+}
+
+fn assert_property_scores(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    results: &[DeckResult],
+    expected: &[DeckResult],
+    label: &str,
+) {
+    assert_eq!(
+        results.len(),
+        expected.len(),
+        "{label}: result length differs"
+    );
+    for (rank, (actual, oracle)) in results.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            actual.score, oracle.score,
+            "{label}: score differs at rank {rank}"
+        );
+        assert_eq!(
+            evaluate::leaf_evaluate_checked(pool, ctx, &actual.cards),
+            Some(actual.score),
+            "{label}: returned deck at rank {rank} must exactly re-evaluate",
+        );
+    }
+}
+
+fn assert_property_results(
+    pool: &CardPool,
+    results: &[DeckResult],
+    expected: &[DeckResult],
+    label: &str,
+) {
+    assert_eq!(
+        results.len(),
+        expected.len(),
+        "{label}: result length differs"
+    );
+    for (rank, (actual, oracle)) in results.iter().zip(expected.iter()).enumerate() {
+        assert_eq!(
+            actual.score, oracle.score,
+            "{label}: score differs at rank {rank}"
+        );
+        assert_eq!(
+            actual.game_card_set_key(pool),
+            oracle.game_card_set_key(pool),
+            "{label}: card set differs at rank {rank}",
+        );
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ExactLcg(u64);
+
+impl ExactLcg {
+    fn next(&mut self) -> u32 {
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (self.0 >> 32) as u32
+    }
+
+    fn range(&mut self, lo: u32, hi: u32) -> u32 {
+        debug_assert!(lo < hi);
+        lo + self.next() % (hi - lo)
+    }
+}
+
+fn randomized_exact_cards(seed: u64, count: usize, characters: u8) -> Vec<TestCard> {
+    let mut rng = ExactLcg(seed);
+    (0..count)
+        .map(|idx| {
+            let char_id = (idx as u8 % characters) + 1;
+            let power = 700 + rng.range(0, 1900) + idx as u32 * 3;
+            let skill_value = 20 + rng.range(0, 100) as u8;
+            let attr = rng.range(0, 5) as u8;
+            let unit = rng.range(0, 6) as u8;
+            TestCard {
+                char_id,
+                attr,
+                unit_mask: 1u8 << unit,
+                game_id: 20_000 + idx as u16,
+                power,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: skill_value,
+                },
+                base_bonus: rng.range(0, 31) as u8,
+                limited_bonus: rng.range(0, 11) as u8,
+                power_max: power,
+                skill_max: skill_value,
+            }
+        })
+        .collect()
+}
+
+fn support_deck_for_property(pool: &CardPool, offset: usize) -> SupportDeck {
+    let mut cards = pool
+        .indices()
+        .enumerate()
+        .filter(|(idx, _)| (idx + offset).is_multiple_of(3))
+        .map(|(idx, card)| (pool.game_id(card), 13.0 - (idx % 7) as f64))
+        .collect::<Vec<_>>();
+    cards.sort_unstable_by(|left, right| right.1.total_cmp(&left.1));
+    SupportDeck {
+        count: cards.len().min(5) as u8,
+        cards,
+    }
+}
+
+#[test]
+fn exact_power_skill_and_world_bloom_match_bruteforce_randomized() {
+    // This is a deterministic property matrix, not a benchmark.  Every case is
+    // small enough for the independent unpruned combination oracle.
+    for case in 0..64u64 {
+        let cards = randomized_exact_cards(0xA11E_0000 + case, 13, 8);
+        let pool = build_pool(&cards);
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
+
+        // Constrained Power maximize exercises the new exact B&B rather than the
+        // unconstrained 49-scenario DP.
+        let mut power_ctx = ready_ctx(&pool, ScoreTarget::Power);
+        power_ctx.fixed_card_ids = vec![pool.game_id(CardIdx::new(0))];
+        power_ctx.fixed_character_ids = vec![2];
+        let got = search(&pool, &power_ctx, &params);
+        let (expected, _) = brute_force_search(&pool, &power_ctx, &params);
+        assert_property_results(&pool, &got, &expected, &format!("case {case} power-max"));
+
+        let mut minimize_ctx = power_ctx.clone();
+        minimize_ctx.minimize = true;
+        let got = search(&pool, &minimize_ctx, &params);
+        let (expected, _) = brute_force_search(&pool, &minimize_ctx, &params);
+        assert_property_results(&pool, &got, &expected, &format!("case {case} power-min"));
+
+        let mut skill_ctx = ready_ctx(&pool, ScoreTarget::Skill);
+        skill_ctx.fixed_character_ids = vec![1];
+        let got = search(&pool, &skill_ctx, &params);
+        let (expected, _) = brute_force_search(&pool, &skill_ctx, &params);
+        assert_property_results(&pool, &got, &expected, &format!("case {case} skill"));
+
+        // Ordinary World Bloom exercises the dense-suffix attr/character
+        // matching bound plus support exclusion and event score ordering.
+        let mut wl_ctx = ready_ctx(&pool, ScoreTarget::Score);
+        wl_ctx.live_type = LiveType::Multi;
+        wl_ctx.event_type = Some(EventType::WorldBloom);
+        wl_ctx.is_world_bloom = true;
+        wl_ctx.skill_scores[1] = [0.17, 0.13, 0.11, 0.07, 0.05, 0.19];
+        wl_ctx.diff_attr_bonus = [0, 0, 7, 19, 41, 83];
+        wl_ctx.support_deck = support_deck_for_property(&pool, case as usize);
+        let got = search(&pool, &wl_ctx, &params);
+        let (expected, _) = brute_force_search(&pool, &wl_ctx, &params);
+        if got.iter().map(|result| result.score).collect::<Vec<_>>()
+            != expected
+                .iter()
+                .map(|result| result.score)
+                .collect::<Vec<_>>()
+        {
+            let suffix = SuffixBound::build(&pool, &wl_ctx);
+            let direct = dfs_search(&pool, &wl_ctx, &suffix, &params);
+            eprintln!("WL diagnostic case={case}");
+            for (name, results) in [
+                ("search", &got),
+                ("direct-dfs", &direct),
+                ("brute", &expected),
+            ] {
+                eprintln!("  {name}:");
+                for result in results.iter().take(3) {
+                    let ids = result.cards.map(|card| pool.game_id(card));
+                    let rescored = evaluate::leaf_evaluate_checked(&pool, &wl_ctx, &result.cards);
+                    eprintln!(
+                        "    score={} rescored={rescored:?} cards={ids:?}",
+                        result.score
+                    );
+                }
+            }
+        }
+        assert_property_results(&pool, &got, &expected, &format!("case {case} world-bloom"));
+    }
+}
+
+#[test]
+fn exact_final_chapter_auto_matches_exhaustive_leader_oracle_randomized() {
+    for case in 0..48u64 {
+        let cards = randomized_exact_cards(0xF1A1_0000 + case, 12, 6);
+        let pool = build_pool(&cards);
+        let mut final_ctx = final_chapter_ctx(&pool);
+        final_ctx.is_world_bloom = true;
+        final_ctx.event_type = Some(EventType::WorldBloom);
+        final_ctx.skill_scores[1] = [0.19, 0.17, 0.13, 0.11, 0.07, 0.23];
+        final_ctx.diff_attr_bonus = [0, 0, 11, 29, 59, 101];
+        final_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
+        for character in 1usize..=6 {
+            final_ctx.support_decks_by_character[character] =
+                support_deck_for_property(&pool, character + case as usize);
+        }
+        for dense in 0..pool.count() {
+            final_ctx.leader_honor_bonus[dense] = ((dense * 3 + case as usize) % 9) as u16;
+            final_ctx.leader_limit_bonus[dense] = ((dense * 5 + case as usize) % 7) as u16;
+        }
+        let params = SearchParams {
+            top_k: 3,
+            timeout_ms: 0,
+        };
+        let got = search(&pool, &final_ctx, &params);
+        let expected = final_chapter_auto_oracle(&pool, &final_ctx, params.top_k);
+        assert_property_results(&pool, &got, &expected, &format!("case {case} final-auto"));
+    }
+}
+
+fn build_special_exact_pool() -> CardPool {
+    let count = 16u16;
+    let mut builder = PoolBuilder::new(count);
+    builder.add_unit_count_skill(UnitCountSkill {
+        unit: 0,
+        score_up: [10, 20, 30, 40, 50],
+    });
+    builder.add_diff_skill(DiffSkill {
+        base: 12,
+        increment: 6,
+    });
+    builder.add_ref_skill(RefSkill { rate: 50, max: 30 });
+
+    for dense in 0..count {
+        let idx = dense as usize;
+        // Cultivation / before-after variants of one public card keep identity
+        // dimensions identical.  Only numeric state / skill representation may
+        // differ between the two dense variants.
+        let public = idx / 2;
+        let char_id = (public % 8 + 1) as u8;
+        let attr = (public % 5) as u8;
+        let unit = (public % 6) as u8;
+        let base = 850 + public as u32 * 71 + (idx % 2) as u32 * 9;
+        let profile = [
+            base,
+            base + (idx as u32 % 4) * 11,
+            base + (idx as u32 % 3) * 17,
+            base + (idx as u32 % 5) * 13,
+            base + 7,
+            base + 19,
+            base + 23,
+            base + 29,
+        ];
+        let mut values = [0u16; 8];
+        let mut lut = 0u32;
+        for (slot, value) in profile.into_iter().enumerate() {
+            values[slot] = value as u16;
+            lut |= ((value >> 16) & 3) << (slot * 2);
+        }
+        builder.set_power_values(dense, values);
+        builder.set_power_lut(dense, lut);
+
+        let (skill, skill_min, skill_max) = match idx % 4 {
+            0 => (
+                SkillSlot {
+                    skill_type: 0,
+                    value: 25 + (idx % 20) as u8,
+                },
+                25 + (idx % 20) as u8,
+                25 + (idx % 20) as u8,
+            ),
+            1 => (
+                SkillSlot {
+                    skill_type: 1,
+                    value: 1,
+                },
+                10,
+                50,
+            ),
+            2 => (
+                SkillSlot {
+                    skill_type: 2,
+                    value: 1,
+                },
+                12,
+                24,
+            ),
+            _ => (
+                SkillSlot {
+                    skill_type: 3,
+                    value: 1,
+                },
+                15,
+                45,
+            ),
+        };
+        builder.set_skill(dense, skill);
+        builder.set_skill_min(dense, skill_min);
+        builder.set_skill_max(dense, skill_max);
+        builder.set_event_bonus(
+            dense,
+            EventBonusExact::from_whole((idx % 17) as u16, (idx % 7) as u16),
+        );
+        builder.set_char_id(dense, char_id);
+        builder.set_attr(dense, attr);
+        builder.set_unit_mask(dense, 1u8 << unit);
+        // Two cultivation variants share game ids; exact search must not select
+        // both and Top-K must deduplicate by the public card set.
+        builder.set_game_id(dense, 31_000 + (idx / 2) as u16);
+        builder.set_power_max(dense, *profile.iter().max().unwrap());
+        builder.mark_char(char_id, dense);
+        builder.mark_unit(unit, dense);
+        builder.mark_attr(attr, dense);
+    }
+    builder.freeze()
+}
+
+#[test]
+fn exact_power_skill_special_skills_and_variants_match_bruteforce() {
+    let pool = build_special_exact_pool();
+    let params = SearchParams {
+        top_k: 5,
+        timeout_ms: 0,
+    };
+
+    for reference in [
+        SkillReferenceStrategy::Max,
+        SkillReferenceStrategy::Min,
+        SkillReferenceStrategy::Average,
+    ] {
+        let mut skill_ctx = ready_ctx(&pool, ScoreTarget::Skill);
+        skill_ctx.skill_reference_strategy = reference;
+        skill_ctx.fixed_card_ids = vec![pool.game_id(CardIdx::new(0))];
+        skill_ctx.fixed_character_ids = vec![2];
+        let got = search(&pool, &skill_ctx, &params);
+        let (expected, _) = brute_force_search(&pool, &skill_ctx, &params);
+        assert_property_scores(
+            &pool,
+            &skill_ctx,
+            &got,
+            &expected,
+            &format!("special skill {reference:?}"),
+        );
+    }
+
+    let mut power_max = ready_ctx(&pool, ScoreTarget::Power);
+    power_max.fixed_card_ids = vec![pool.game_id(CardIdx::new(1))];
+    power_max.fixed_character_ids = vec![3];
+    let got = search(&pool, &power_max, &params);
+    let (expected, _) = brute_force_search(&pool, &power_max, &params);
+    assert_property_scores(&pool, &power_max, &got, &expected, "special power-max");
+
+    let mut power_min = power_max.clone();
+    power_min.minimize = true;
+    let got = search(&pool, &power_min, &params);
+    let (expected, _) = brute_force_search(&pool, &power_min, &params);
+    assert_property_scores(&pool, &power_min, &got, &expected, "special power-min");
+}
+
+#[test]
+fn bonus_bucket_live_threshold_uses_low_score_key() {
+    // Regression from the all-scene matrix (case 24): the 155% bucket fills
+    // before its best-live-score deck is visited.  The historical pruning code
+    // compared the live-score upper bound with the entire encoded
+    // (bonus_x2 << 32 | live_score) threshold and incorrectly closed the bucket.
+    let cards = randomized_exact_cards(0xE7AC_0000 + 24, 12, 7);
+    let pool = build_pool(&cards);
+    let params = SearchParams {
+        top_k: 1,
+        timeout_ms: 0,
+    };
+    let mut bonus = ready_ctx(&pool, ScoreTarget::Bonus);
+    bonus.event_type = Some(EventType::Marathon);
+
+    let all_params = SearchParams {
+        top_k: 1000,
+        timeout_ms: 0,
+    };
+    let (all_bonus, _) = brute_force_search(&pool, &bonus, &all_params);
+    let target = all_bonus
+        .iter()
+        .map(|result| result.score >> 32)
+        .find(|encoded| encoded % 2 == 0)
+        .map(|encoded| (encoded / 2) as i32)
+        .expect("at least one integer bonus tier");
+
+    let (got, stats) = search_bonus_targets(&pool, &bonus, &params, &[target]);
+    assert!(!stats.deadline_hit);
+    let expected = all_bonus
+        .iter()
+        .filter(|result| (result.score >> 32) == target as u64 * 2)
+        .take(1)
+        .copied()
+        .collect::<Vec<_>>();
+    assert_property_scores(
+        &pool,
+        &bonus,
+        &got,
+        &expected,
+        "bonus live-threshold regression",
+    );
+}
+
+#[test]
+fn final_chapter_all_skill_orders_match_explicit_oracle() {
+    for case in 0..12u64 {
+        let cards = randomized_exact_cards(0xF0AD_1000 + case, 11, 6);
+        let pool = build_pool(&cards);
+        for order in [
+            LiveSkillOrder::Best,
+            LiveSkillOrder::Worst,
+            LiveSkillOrder::Average,
+            LiveSkillOrder::Specific,
+        ] {
+            let mut search_ctx = final_chapter_ctx(&pool);
+            search_ctx.is_world_bloom = true;
+            search_ctx.event_type = Some(EventType::WorldBloom);
+            search_ctx.live_skill_order = order;
+            search_ctx.specific_skill_order =
+                (order == LiveSkillOrder::Specific).then_some([4, 2, 0, 3, 1]);
+            search_ctx.skill_scores[1] = [0.19, 0.17, 0.13, 0.11, 0.07, 0.23];
+            search_ctx.diff_attr_bonus = [0, 0, 11, 29, 59, 101];
+            search_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
+            for character in 1usize..=6 {
+                search_ctx.support_decks_by_character[character] =
+                    support_deck_for_property(&pool, character + case as usize);
+            }
+
+            let params = SearchParams {
+                top_k: 3,
+                timeout_ms: 0,
+            };
+            let got = search(&pool, &search_ctx, &params);
+            let expected = final_chapter_auto_oracle(&pool, &search_ctx, params.top_k);
+            assert_property_scores(
+                &pool,
+                &search_ctx,
+                &got,
+                &expected,
+                &format!("final-auto case {case} order {order:?}"),
+            );
+
+            let mut fixed = search_ctx.clone();
+            fixed.fixed_character_ids = vec![pool.char_id(CardIdx::new(0))];
+            let got = search(&pool, &fixed, &params);
+            let (expected, _) = brute_force_search(&pool, &fixed, &params);
+            assert_property_scores(
+                &pool,
+                &fixed,
+                &got,
+                &expected,
+                &format!("final-fixed case {case} order {order:?}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn exact_top_k_ties_preserve_canonical_card_sets() {
+    let cards = (0..8u16)
+        .map(|idx| {
+            let mut card = skill_card(30_000 + idx, idx as u8 + 1, 1_000, 50);
+            card.attr = (idx % 5) as u8;
+            card.base_bonus = 10;
+            card
+        })
+        .collect::<Vec<_>>();
+    let pool = build_pool(&cards);
+    let params = SearchParams {
+        top_k: 6,
+        timeout_ms: 0,
+    };
+
+    for target in [ScoreTarget::Score, ScoreTarget::Power, ScoreTarget::Skill] {
+        let mut search_ctx = ready_ctx(&pool, target);
+        search_ctx.skill_scores[0] = [0.2; 6];
+        let got = search(&pool, &search_ctx, &params);
+        let (expected, _) = brute_force_search(&pool, &search_ctx, &params);
+        assert_property_results(&pool, &got, &expected, &format!("tie no-event {target:?}"));
+    }
+
+    // Force the Multi event SIMD candidate path.  Equal upper bounds at the
+    // current kth score must remain live because card-set tie ordering still
+    // decides which exact Top-K sets are returned.
+    let mut event_ctx = ready_ctx(&pool, ScoreTarget::Score);
+    event_ctx.live_type = LiveType::Multi;
+    event_ctx.event_type = Some(EventType::Marathon);
+    event_ctx.skill_scores[1] = [0.2; 6];
+    let got = search(&pool, &event_ctx, &params);
+    let (expected, _) = brute_force_search(&pool, &event_ctx, &params);
+    assert_property_results(&pool, &got, &expected, "tie multi-event");
+}
+
+fn longtail_cards(characters: u8, per_character: u8) -> Vec<TestCard> {
+    let mut cards = Vec::new();
+    for char_id in 1..=characters {
+        for variant in 0..per_character {
+            let idx = (char_id as u32 - 1) * per_character as u32 + variant as u32;
+            let mut attr = variant % 2;
+            if variant == 2 && char_id <= 3 {
+                attr = char_id + 1; // scarce attrs 2/3/4 live in distinct groups
+            }
+            let power = 4100u32
+                .saturating_sub(variant as u32 * 360)
+                .saturating_add(char_id as u32 * 7);
+            let skill = 35 + variant * 14;
+            cards.push(TestCard {
+                char_id,
+                attr,
+                unit_mask: 1u8 << ((char_id + variant) % 6),
+                game_id: 40_000 + idx as u16,
+                power,
+                skill: SkillSlot {
+                    skill_type: 0,
+                    value: skill,
+                },
+                base_bonus: 8 + variant * 8,
+                limited_bonus: if variant >= 3 { 5 } else { 0 },
+                power_max: power,
+                skill_max: skill,
+            });
+        }
+    }
+    cards
+}
+
+fn longtail_support(pool: &CardPool, salt: usize) -> SupportDeck {
+    let mut cards = pool
+        .indices()
+        .enumerate()
+        .filter(|(idx, _)| (idx + salt).is_multiple_of(5))
+        .map(|(idx, card)| (pool.game_id(card), 35.0 - (idx % 13) as f64 * 0.7))
+        .collect::<Vec<_>>();
+    cards.sort_unstable_by(|left, right| right.1.total_cmp(&left.1));
+    SupportDeck {
+        count: cards.len().min(10) as u8,
+        cards,
+    }
+}
+
+fn median_f64(values: &mut [f64]) -> f64 {
+    values.sort_by(f64::total_cmp);
+    values[(values.len() - 1) / 2]
+}
+
+#[test]
+#[ignore = "controlled benchmark; run single-threaded on one pinned CPU"]
+fn benchmark_wl_and_final_exact_bounds() {
+    use std::time::Instant;
+
+    let cards = longtail_cards(22, 6);
+    let pool = build_pool(&cards);
+    let search_params = SearchParams {
+        top_k: 8,
+        timeout_ms: 300_000,
+    };
+
+    let mut wl_ctx = ready_ctx(&pool, ScoreTarget::Score);
+    wl_ctx.live_type = LiveType::Multi;
+    wl_ctx.event_type = Some(EventType::WorldBloom);
+    wl_ctx.is_world_bloom = true;
+    wl_ctx.skill_scores[1] = [0.21, 0.17, 0.13, 0.11, 0.07, 0.23];
+    wl_ctx.diff_attr_bonus = [0, 0, 4, 24, 120, 800];
+    wl_ctx.support_deck = longtail_support(&pool, 0);
+
+    let mut final_ctx = final_chapter_ctx(&pool);
+    final_ctx.is_world_bloom = true;
+    final_ctx.event_type = Some(EventType::WorldBloom);
+    final_ctx.skill_scores[1] = [0.21, 0.17, 0.13, 0.11, 0.07, 0.23];
+    final_ctx.diff_attr_bonus = [0, 0, 4, 24, 120, 800];
+    final_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
+    for char_id in 1usize..=22 {
+        final_ctx.support_decks_by_character[char_id] = longtail_support(&pool, char_id);
+    }
+
+    fn bench(
+        pool: &CardPool,
+        ctx: &SearchContext,
+        params: &SearchParams,
+        final_bound: bool,
+        disabled: bool,
+        repeats: usize,
+    ) -> (f64, Vec<DeckResult>, SearchStats) {
+        let mut tuning = tuning::SearchTuning::default();
+        if final_bound {
+            tuning.final_attr_dp = !disabled;
+        } else {
+            tuning.world_bloom_attr_matching = !disabled;
+        }
+        let mut times = Vec::with_capacity(repeats);
+        let mut last = None;
+        for _ in 0..repeats {
+            let started = Instant::now();
+            let result = tuning::with_tuning(tuning, || search_instrumented(pool, ctx, params));
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+            last = Some(result);
+        }
+        let p50 = median_f64(&mut times);
+        let (results, stats) = last.unwrap();
+        (p50, results, stats)
+    }
+
+    let (wl_old_ms, wl_old, wl_old_stats) = bench(&pool, &wl_ctx, &search_params, false, true, 7);
+    let (wl_new_ms, wl_new, wl_new_stats) = bench(&pool, &wl_ctx, &search_params, false, false, 7);
+    assert_property_results(&pool, &wl_new, &wl_old, "WL bound A/B");
+
+    let (final_old_ms, final_old, final_old_stats) =
+        bench(&pool, &final_ctx, &search_params, true, true, 5);
+    let (final_new_ms, final_new, final_new_stats) =
+        bench(&pool, &final_ctx, &search_params, true, false, 5);
+    assert_property_results(&pool, &final_new, &final_old, "Final attr DP A/B");
+
+    eprintln!(
+        "WL_AB old_ms={wl_old_ms:.3} new_ms={wl_new_ms:.3} old={wl_old_stats:?} new={wl_new_stats:?}"
+    );
+    eprintln!(
+        "FINAL_AB old_ms={final_old_ms:.3} new_ms={final_new_ms:.3} old={final_old_stats:?} new={final_new_stats:?}"
+    );
+}
+
+#[test]
+#[ignore = "controlled benchmark; run single-threaded on one pinned CPU"]
+fn benchmark_power_skill_exact_longtail() {
+    use std::time::Instant;
+
+    let cards = longtail_cards(22, 6);
+    let pool = build_pool(&cards);
+    let params = SearchParams {
+        top_k: 8,
+        timeout_ms: 30_000,
+    };
+
+    fn run(
+        pool: &CardPool,
+        ctx: &SearchContext,
+        params: &SearchParams,
+        repeats: usize,
+    ) -> (f64, Vec<DeckResult>, SearchStats) {
+        let mut times = Vec::with_capacity(repeats);
+        let mut last = None;
+        for _ in 0..repeats {
+            let started = Instant::now();
+            let result = search_instrumented(pool, ctx, params);
+            times.push(started.elapsed().as_secs_f64() * 1000.0);
+            last = Some(result);
+        }
+        let p50 = median_f64(&mut times);
+        let (results, stats) = last.unwrap();
+        (p50, results, stats)
+    }
+
+    let mut power_ctx = ready_ctx(&pool, ScoreTarget::Power);
+    power_ctx.fixed_card_ids = vec![pool.game_id(CardIdx::new(0))];
+    power_ctx.fixed_character_ids = vec![2];
+    let (power_ms, _, power_stats) = run(&pool, &power_ctx, &params, 3);
+
+    let mut power_min_ctx = power_ctx.clone();
+    power_min_ctx.minimize = true;
+    let (power_min_ms, _, power_min_stats) = run(&pool, &power_min_ctx, &params, 3);
+
+    let mut skill_ctx = ready_ctx(&pool, ScoreTarget::Skill);
+    skill_ctx.fixed_character_ids = vec![1];
+    let (skill_ms, _, skill_stats) = run(&pool, &skill_ctx, &params, 3);
+
+    eprintln!(
+        "SIMPLE_EXACT power_ms={power_ms:.3} power={power_stats:?} power_min_ms={power_min_ms:.3} power_min={power_min_stats:?} skill_ms={skill_ms:.3} skill={skill_stats:?}"
+    );
+
+    assert!(
+        !power_stats.deadline_hit,
+        "constrained power benchmark timed out"
+    );
+    assert!(
+        !power_min_stats.deadline_hit,
+        "power minimize benchmark timed out"
+    );
+    assert!(!skill_stats.deadline_hit, "skill benchmark timed out");
+}
+
+#[test]
+#[ignore = "controlled exhaustive all-scene property matrix; pin to one CPU"]
+fn long_exact_all_scene_property_matrix() {
+    let mut checks = 0u64;
+
+    fn check(pool: &CardPool, ctx: &SearchContext, params: &SearchParams, label: &str) {
+        let (got, stats) = search_instrumented(pool, ctx, params);
+        assert!(!stats.deadline_hit, "{label}: unexpected timeout");
+        let (expected, _) = brute_force_search(pool, ctx, params);
+        if got.iter().map(|r| r.score).collect::<Vec<_>>()
+            != expected.iter().map(|r| r.score).collect::<Vec<_>>()
+        {
+            eprintln!("{label}: production/oracle mismatch stats={stats:?}");
+            for (name, rows) in [("production", &got), ("brute", &expected)] {
+                eprintln!("  {name}:");
+                for result in rows.iter().take(params.top_k.max(1)) {
+                    let ids = result.cards.map(|card| pool.game_id(card));
+                    let chars = result.cards.map(|card| pool.char_id(card));
+                    let attrs = result.cards.map(|card| pool.attr(card));
+                    eprintln!(
+                        "    score={} ids={ids:?} chars={chars:?} attrs={attrs:?} rescored={:?}",
+                        result.score,
+                        evaluate::leaf_evaluate_checked(pool, ctx, &result.cards),
+                    );
+                }
+            }
+        }
+        assert_property_scores(pool, ctx, &got, &expected, label);
+    }
+
+    for case in 0..256u64 {
+        let cards = randomized_exact_cards(0xE7AC_0000 + case, 12, 7);
+        let pool = build_pool(&cards);
+        let params = SearchParams {
+            top_k: 1 + (case as usize % 4),
+            timeout_ms: 0,
+        };
+
+        let order = match case % 4 {
+            0 => LiveSkillOrder::Best,
+            1 => LiveSkillOrder::Worst,
+            2 => LiveSkillOrder::Average,
+            _ => LiveSkillOrder::Specific,
+        };
+
+        let mut solo = ready_ctx(&pool, ScoreTarget::Score);
+        solo.live_type = LiveType::Solo;
+        solo.live_skill_order = order;
+        solo.specific_skill_order = (order == LiveSkillOrder::Specific).then_some([4, 2, 0, 3, 1]);
+        solo.skill_scores[0] = [0.21, 0.17, 0.13, 0.11, 0.07, 0.23];
+        check(&pool, &solo, &params, &format!("case {case} score-solo"));
+        checks += 1;
+
+        let mut auto = solo.clone();
+        auto.live_type = LiveType::Auto;
+        auto.base_score_auto = 0.83;
+        auto.skill_scores[2] = [0.19, 0.13, 0.11, 0.07, 0.05, 0.17];
+        check(&pool, &auto, &params, &format!("case {case} score-auto"));
+        checks += 1;
+
+        let mut multi = solo.clone();
+        multi.live_type = LiveType::Multi;
+        multi.event_type = Some(EventType::Marathon);
+        multi.skill_scores[1] = [0.23, 0.17, 0.13, 0.11, 0.07, 0.29];
+        multi.multi_teammate_power = Some(182_000 + case as i32 % 9000);
+        multi.multi_teammate_score_up = Some(85 + case as i32 % 25);
+        check(
+            &pool,
+            &multi,
+            &params,
+            &format!("case {case} score-multi-event"),
+        );
+        checks += 1;
+
+        let mut cheerful = multi.clone();
+        cheerful.live_type = LiveType::Cheerful;
+        cheerful.event_type = Some(EventType::CheerfulCarnival);
+        cheerful.life = 500 + (case as i32 % 501);
+        cheerful.other_score = 600_000 + (case as i32 * 7919 % 400_000);
+        check(
+            &pool,
+            &cheerful,
+            &params,
+            &format!("case {case} score-cheerful"),
+        );
+        checks += 1;
+
+        let mut mysekai = ready_ctx(&pool, ScoreTarget::Mysekai);
+        mysekai.live_type = LiveType::Mysekai;
+        check(&pool, &mysekai, &params, &format!("case {case} mysekai"));
+        checks += 1;
+
+        let power = ready_ctx(&pool, ScoreTarget::Power);
+        check(&pool, &power, &params, &format!("case {case} power-dp"));
+        checks += 1;
+
+        let mut power_fixed = power.clone();
+        power_fixed.fixed_card_ids = vec![pool.game_id(CardIdx::new(0))];
+        power_fixed.fixed_character_ids = vec![2];
+        check(
+            &pool,
+            &power_fixed,
+            &params,
+            &format!("case {case} power-fixed"),
+        );
+        checks += 1;
+
+        let mut power_min = power_fixed.clone();
+        power_min.minimize = true;
+        check(
+            &pool,
+            &power_min,
+            &params,
+            &format!("case {case} power-min"),
+        );
+        checks += 1;
+
+        let mut skill = ready_ctx(&pool, ScoreTarget::Skill);
+        skill.fixed_character_ids = vec![1];
+        skill.skill_reference_strategy = match case % 3 {
+            0 => SkillReferenceStrategy::Max,
+            1 => SkillReferenceStrategy::Min,
+            _ => SkillReferenceStrategy::Average,
+        };
+        check(&pool, &skill, &params, &format!("case {case} skill"));
+        checks += 1;
+
+        let mut wl = multi.clone();
+        wl.event_type = Some(EventType::WorldBloom);
+        wl.is_world_bloom = true;
+        wl.diff_attr_bonus = [0, 0, 9, 27, 57, 103];
+        wl.support_deck = support_deck_for_property(&pool, case as usize);
+        check(&pool, &wl, &params, &format!("case {case} world-bloom"));
+        checks += 1;
+
+        let mut final_fixed = final_chapter_ctx(&pool);
+        final_fixed.is_world_bloom = true;
+        final_fixed.event_type = Some(EventType::WorldBloom);
+        final_fixed.skill_scores[1] = [0.19, 0.17, 0.13, 0.11, 0.07, 0.23];
+        final_fixed.diff_attr_bonus = [0, 0, 11, 31, 61, 107];
+        final_fixed.fixed_character_ids = vec![1];
+        final_fixed.support_decks_by_character = vec![SupportDeck::default(); 27];
+        for character in 1usize..=7 {
+            final_fixed.support_decks_by_character[character] =
+                support_deck_for_property(&pool, character + case as usize);
+        }
+        check(
+            &pool,
+            &final_fixed,
+            &params,
+            &format!("case {case} final-fixed"),
+        );
+        checks += 1;
+
+        let mut final_auto = final_fixed.clone();
+        final_auto.fixed_character_ids.clear();
+        let (got, stats) = search_instrumented(&pool, &final_auto, &params);
+        assert!(
+            !stats.deadline_hit,
+            "case {case} final-auto: unexpected timeout"
+        );
+        let expected = final_chapter_auto_oracle(&pool, &final_auto, params.top_k);
+        assert_property_scores(
+            &pool,
+            &final_auto,
+            &got,
+            &expected,
+            &format!("case {case} final-auto"),
+        );
+        checks += 1;
+
+        // Exact bonus buckets: enumerate every public card set, choose up to two
+        // reachable bonus tiers, and compare the dedicated per-tier search.
+        let mut bonus = ready_ctx(&pool, ScoreTarget::Bonus);
+        bonus.event_type = Some(EventType::Marathon);
+        let all_params = SearchParams {
+            top_k: 1000,
+            timeout_ms: 0,
+        };
+        let (all_bonus, _) = brute_force_search(&pool, &bonus, &all_params);
+        let mut targets = Vec::new();
+        for result in &all_bonus {
+            let encoded = result.score >> 32;
+            if encoded % 2 == 0 {
+                let target = (encoded / 2) as i32;
+                if !targets.contains(&target) {
+                    targets.push(target);
+                    if targets.len() == 2 {
+                        break;
+                    }
+                }
+            }
+        }
+        if !targets.is_empty() {
+            let (got, stats) = search_bonus_targets(&pool, &bonus, &params, &targets);
+            assert!(
+                !stats.deadline_hit,
+                "case {case} bonus-tiers: unexpected timeout"
+            );
+            // BonusBucketTracker returns target buckets in descending target
+            // order. targets is sampled from brute-force Bonus results, which
+            // are already ranked by the encoded bonus descending.
+            let expected = targets
+                .iter()
+                .flat_map(|target| {
+                    all_bonus
+                        .iter()
+                        .filter(move |result| (result.score >> 32) == (*target as u64 * 2))
+                        .take(params.top_k)
+                        .copied()
+                })
+                .collect::<Vec<_>>();
+            if got.iter().map(|r| r.score).collect::<Vec<_>>()
+                != expected.iter().map(|r| r.score).collect::<Vec<_>>()
+            {
+                eprintln!("case {case} bonus-tiers mismatch targets={targets:?} stats={stats:?}");
+                for (name, rows) in [("production", &got), ("brute", &expected)] {
+                    eprintln!("  {name}:");
+                    for result in rows.iter().take(8) {
+                        eprintln!(
+                            "    bonus_x2={} live={} ids={:?}",
+                            result.score >> 32,
+                            result.score as u32,
+                            result.cards.map(|card| pool.game_id(card)),
+                        );
+                    }
+                }
+            }
+            assert_property_scores(
+                &pool,
+                &bonus,
+                &got,
+                &expected,
+                &format!("case {case} bonus-tiers"),
+            );
+            checks += 1;
+        }
+
+        // Challenge paths use a one-character pool so the independent generic
+        // brute-force enumerator has the same five-of-one-character feasible set.
+        let challenge_cards = randomized_exact_cards(0xC1A1_0000 + case, 9, 1);
+        let challenge_pool = build_pool(&challenge_cards);
+        for live in [LiveType::Challenge, LiveType::ChallengeAuto] {
+            let mut challenge = ready_ctx(&challenge_pool, ScoreTarget::Score);
+            challenge.enforce_char_uniqueness = false;
+            challenge.live_type = live;
+            challenge.skill_scores[0] = [0.17; 6];
+            challenge.skill_scores[2] = [0.13; 6];
+            check(
+                &challenge_pool,
+                &challenge,
+                &params,
+                &format!("case {case} challenge-{live:?}"),
+            );
+            checks += 1;
+        }
+    }
+
+    eprintln!("ALL_SCENE_EXACT_MATRIX checks={checks} cases=256");
+    assert!(
+        checks >= 3_500,
+        "matrix should exercise thousands of exact comparisons"
+    );
 }

@@ -73,7 +73,7 @@ pub(crate) fn warm_start_seeds(
     if top_k > 1
         && matches!(ctx.target, ScoreTarget::Score)
         && !ctx.has_event()
-        && std::env::var_os("ALLIUM_TOPK_WARM_NEIGHBORS").is_some_and(|v| v != "0")
+        && super::tuning::SearchTuning::load().warm_neighbors
         && let Some(best) = warm_start_best(pool, ctx)
     {
         return one_swap_seed_neighborhood(pool, ctx, best, top_k);
@@ -127,11 +127,10 @@ fn one_swap_seed_neighborhood(
     best: DeckResult,
     top_k: usize,
 ) -> Vec<DeckResult> {
-    let candidate_limit = std::env::var("ALLIUM_TOPK_WARM_CANDIDATES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+    let candidate_limit = super::tuning::SearchTuning::load()
+        .warm_candidate_limit
         .unwrap_or(if top_k <= 8 { 32 } else { 64 })
-        .clamp(8, pool.count());
+        .min(pool.count());
     let base = best.cards;
     let mut seeds = Vec::with_capacity(1 + DECK_SIZE * candidate_limit);
     seeds.push(best);

@@ -28,8 +28,19 @@ pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceRes
     // WL 下支配还需支援维度可承担（issue #23）：支援表内的卡编入队伍会让出支援位，
     // 支援盲的支配会裁掉真实最优卡组里的卡，Top-1 都可能出错。
     // 差额不再一票否决，而是允许用支配者多出的活动加成抵扣（见 support_deficit_affordable）。
-    let support = support_dimension(pool, ctx);
-    let (keep, dominated_by) = compute_keep_mask_with_winners(pool, ctx, support.as_ref());
+    // Position-sensitive objectives do not inherit the exchangeable-slot
+    // dominance proof. Preserve their complete candidate frontier.
+    let position_sensitive = super::problem::DeckProblem::from_context(ctx)
+        .needs_placement_search()
+        || !super::tuning::SearchTuning::load().dominance;
+    let support = (!position_sensitive)
+        .then(|| support_dimension(pool, ctx))
+        .flatten();
+    let (keep, dominated_by) = if position_sensitive {
+        (vec![true; pool.count()], vec![0u16; pool.count()])
+    } else {
+        compute_keep_mask_with_winners(pool, ctx, support.as_ref())
+    };
     let before = pool.count();
     let after = keep.iter().copied().filter(|keep| *keep).count();
     let alternatives = chain_compress_alternatives(&keep, &dominated_by);
@@ -84,41 +95,34 @@ pub struct MemberDominance {
     pub alternatives: Vec<Vec<CardIdx>>,
 }
 
-/// WL 支配裁剪的支援维度。支援表内的卡编入队伍会让出自己的支援位，
-/// 该位由表中下一张未入队的卡顶替，因此损失的是「自身加成 − 顶替者加成」。
+/// Completion-safe support opportunity cost, including reserve entries and all
+/// cultivation variants of each public card identity.
 ///
-/// 逐队长角色取值（终章支援表按队长角色独立；非终章回落到全局支援表，各角色列相同）。
-/// `bonus_x100` 只记录实际占用支援位的前 `count` 张卡，其余为 0（让位不产生损失）；
-/// `replacement_floor_x100` 取第 `count + DECK_SIZE - 1` 位的加成——队伍另外 4 张卡
-/// 也可能同时占用支援位，把顶替者推到更靠后的位置，取这一位才是差额的安全下界。
-///
-/// 第一轮 `eliminate_dominated`（issue #23）与终章 member 轮（issue #7）共用。
+/// Let R be the other four main cards and t the q-th support value after removing
+/// R, A and B. Replacing B by A loses at most
+/// `(a - t)+ - (b - t)+ <= max(0, a - max(b, floor))`, where floor is the global
+/// support value at one-based rank q+5. Removing at most five cards cannot push
+/// the q-th remaining value below that rank. Outward rounding preserves the
+/// inequality: a is rounded up, b and floor down. Taking the worst leader
+/// profile is safe for every legal completion.
 struct SupportDimension {
-    bonus_x100: Vec<[i32; 27]>,
+    upper_x100: Vec<[i32; 27]>,
+    lower_x100: Vec<[i32; 27]>,
     replacement_floor_x100: [i32; 27],
 }
 
 impl SupportDimension {
-    /// `lhs` 顶替 `rhs` 入队时，支援加成最多多损失多少（×100，非负）。
-    ///
-    /// 两张卡都在支援位内时顶替者相同、逐项抵消，差额恰为两者加成之差；
-    /// 只有 `lhs` 在位时，顶替者最差落到 `replacement_floor_x100`。
-    /// 两种情形统一为对 `max(rhs 加成, 顶替下界)` 取差。
     #[inline(always)]
     fn deficit_x100(&self, lhs: CardIdx, rhs: CardIdx) -> i32 {
-        let lhs_bonus = &self.bonus_x100[lhs.raw()];
-        let rhs_bonus = &self.bonus_x100[rhs.raw()];
-        let mut worst = 0i32;
-        let mut char_id = 0usize;
-        while char_id < 27 {
-            let floor = rhs_bonus[char_id].max(self.replacement_floor_x100[char_id]);
-            let deficit = lhs_bonus[char_id] - floor;
-            if deficit > worst {
-                worst = deficit;
-            }
-            char_id += 1;
-        }
-        worst
+        (0..27)
+            .map(|character| {
+                self.upper_x100[lhs.raw()][character]
+                    - self.lower_x100[rhs.raw()][character]
+                        .max(self.replacement_floor_x100[character])
+            })
+            .max()
+            .unwrap_or(0)
+            .max(0)
     }
 }
 
@@ -126,39 +130,44 @@ fn support_dimension(pool: &CardPool, ctx: &SearchContext) -> Option<SupportDime
     if !ctx.is_world_bloom {
         return None;
     }
-    let mut dense_by_game_id = std::collections::HashMap::new();
+    let mut dense_by_game_id = std::collections::HashMap::<u16, Vec<usize>>::new();
     for card in pool.indices() {
-        dense_by_game_id.insert(pool.game_id(card), card.raw());
+        dense_by_game_id
+            .entry(pool.game_id(card))
+            .or_default()
+            .push(card.raw());
     }
-    let mut bonus_x100 = vec![[0i32; 27]; pool.count()];
+    let mut upper_x100 = vec![[0i32; 27]; pool.count()];
+    let mut lower_x100 = vec![[0i32; 27]; pool.count()];
     let mut replacement_floor_x100 = [0i32; 27];
     let mut any = false;
-    let mut char_id = 0u8;
-    while (char_id as usize) < 27 {
-        let support = ctx.support_deck_for_leader(char_id);
+    let profile_count = if ctx.is_final_chapter { 27 } else { 1 };
+    for character in 0u8..profile_count {
+        let support = ctx.support_deck_for_leader(character);
         let count = support.count as usize;
-        if count > 0 {
-            // 顶替下界向下取整、卡自身加成向上取整：差额只会被高估，不会被低估。
-            replacement_floor_x100[char_id as usize] = support
-                .cards
-                .get(count + crate::types::DECK_SIZE - 1)
-                .map(|(_, bonus)| (bonus * 100.0).floor() as i32)
-                .unwrap_or(0);
-            for &(game_id, bonus) in support.cards.iter().take(count) {
-                let value = (bonus * 100.0).ceil() as i32;
-                if value == 0 {
-                    continue;
+        if count == 0 {
+            continue;
+        }
+        replacement_floor_x100[character as usize] = support
+            .cards
+            .get(count + crate::types::DECK_SIZE - 1)
+            .map(|(_, value)| (value * 100.0).floor() as i32)
+            .unwrap_or(0);
+        // A reserve may enter the counted prefix after another main card is
+        // excluded. Recording only the original q entries is not admissible.
+        for &(game_id, value) in &support.cards {
+            if let Some(variants) = dense_by_game_id.get(&game_id) {
+                for &dense in variants {
+                    upper_x100[dense][character as usize] = (value * 100.0).ceil() as i32;
+                    lower_x100[dense][character as usize] = (value * 100.0).floor() as i32;
                 }
-                if let Some(&dense) = dense_by_game_id.get(&game_id) {
-                    bonus_x100[dense][char_id as usize] = value;
-                    any = true;
-                }
+                any = true;
             }
         }
-        char_id += 1;
     }
     any.then_some(SupportDimension {
-        bonus_x100,
+        upper_x100,
+        lower_x100,
         replacement_floor_x100,
     })
 }
@@ -169,55 +178,27 @@ fn support_dimension(pool: &CardPool, ctx: &SearchContext) -> Option<SupportDime
 /// 供 Top-K 搜索后按 member 槽位回换（issue #7）。
 pub fn compute_member_dominance(pool: &CardPool, ctx: &SearchContext) -> MemberDominance {
     let support = support_dimension(pool, ctx);
-    let (keep, dominated_by) = compute_keep_mask_with_winners(
-        pool,
-        &SearchContext {
-            target: crate::types::ScoreTarget::Power,
-            fixed_card_ids: ctx.fixed_card_ids.clone(),
-            fixed_character_ids: Vec::new(),
-            forced_leader_character_id: None,
-            music_rate_pct: 100,
-            boost_rate_pct: 100,
-            base_score: 1.0,
-            base_score_auto: 1.0,
-            fever_score: 0.0,
-            skill_scores: [[0.0; 6]; 3],
-            other_score: 0,
-            life: 1000,
-            diff_attr_bonus: [0; 6],
-            support_deck: super::context::SupportDeck::default(),
-            support_decks_by_character: Vec::new(),
-            is_world_bloom: false,
-            is_final_chapter: false,
-            enforce_char_uniqueness: true,
-            minimize: false,
-            live_type: crate::types::LiveType::Solo,
-            event_type: None,
-            keep_after_training_state: false,
-            skill_reference_strategy: crate::types::SkillReferenceStrategy::Average,
-            best_skill_as_leader: false,
-            live_skill_order: crate::types::LiveSkillOrder::Average,
-            specific_skill_order: None,
-            multi_teammate_score_up: None,
-            multi_teammate_power: None,
-            multi_live_score_up_lower_bound: None,
-            extra_bonus_ub: 0,
-            w_power: 1.0,
-            w_bonus: 1.0,
-            skill_ub_global: 0,
-            card_bonus_count_limit: crate::types::DECK_SIZE,
-            honor_bonus: 0,
-            power_total_cap: None,
-            leader_honor_bonus: vec![0; pool.count()],
-            leader_limit_bonus: vec![0; pool.count()],
-            final_chapter_member_keep: vec![true; pool.count()],
-            skill_is_after_training: vec![false; pool.count()],
-            trained_to_special_image: vec![false; pool.count()],
-        },
-        support.as_ref(),
-    );
+    // Ignore leader-only numeric benefits, not the actual skill/training state.
+    let mut member_context = ctx.clone();
+    member_context.is_final_chapter = false;
+    let (keep, dominated_by) =
+        compute_keep_mask_with_winners(pool, &member_context, support.as_ref());
     let alternatives = chain_compress_alternatives(&keep, &dominated_by);
     MemberDominance { keep, alternatives }
+}
+
+/// The same completion-safe member proof specialized to one leader's support
+/// profile. Unlike the global member pass this need not protect other leaders.
+pub(super) fn compute_member_dominance_for_leader(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    leader_character: u8,
+) -> MemberDominance {
+    let mut member_context = ctx.clone();
+    member_context.support_deck = ctx.support_deck_for_leader(leader_character).clone();
+    member_context.support_decks_by_character.clear();
+    member_context.is_final_chapter = false;
+    compute_member_dominance(pool, &member_context)
 }
 
 /// 返回保留位图与「被谁裁掉」映射：dominated_by[dense] 仅在 keep[dense]=false 时有意义，
@@ -230,6 +211,9 @@ fn compute_keep_mask_with_winners(
 ) -> (Vec<bool>, Vec<u16>) {
     let mut keep = vec![true; pool.count()];
     let mut dominated_by = vec![0u16; pool.count()];
+    if !super::tuning::SearchTuning::load().dominance {
+        return (keep, dominated_by);
+    }
     let mut char_id = 0u8;
     while (char_id as usize) < 27 {
         let cards: Vec<CardIdx> = pool
@@ -305,6 +289,13 @@ fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -
         idx += 1;
     }
 
+    if ctx.keep_after_training_state
+        && (ctx.skill_is_after_training_at(lhs.raw()) != ctx.skill_is_after_training_at(rhs.raw())
+            || ctx.trained_to_special_image_at(lhs.raw())
+                != ctx.trained_to_special_image_at(rhs.raw()))
+    {
+        return false;
+    }
     if !skill_dominates(pool, lhs, rhs) {
         return false;
     }
@@ -326,15 +317,18 @@ fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -
         return false;
     }
 
-    let lhs_mask = pool.unit_mask_raw(lhs);
-    let rhs_mask = pool.unit_mask_raw(rhs);
-    (rhs_mask & lhs_mask) == rhs_mask
+    // Identical membership preserves the completion's power contexts and every
+    // other card's unit-count/different-unit skill state.
+    pool.unit_mask_raw(lhs) == pool.unit_mask_raw(rhs)
 }
 
 fn skill_dominates(pool: &CardPool, lhs: CardIdx, rhs: CardIdx) -> bool {
     let lhs_skill = pool.skill(lhs);
     let rhs_skill = pool.skill(rhs);
-    if lhs_skill.skill_type != rhs_skill.skill_type {
+    if lhs_skill.skill_type != rhs_skill.skill_type
+        || pool.skill_min(lhs) < pool.skill_min(rhs)
+        || pool.skill_max(lhs) < pool.skill_max(rhs)
+    {
         return false;
     }
 

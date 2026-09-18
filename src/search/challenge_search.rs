@@ -215,7 +215,10 @@ pub fn search(
     params: &SearchParams,
 ) -> (Vec<DeckResult>, super::SearchStats) {
     let mut deadline = ChallengeDeadline::from_params(params);
-    search_with_character_filter(pool, ctx, suffix, params, None, &mut deadline)
+    let (results, mut stats) =
+        search_with_character_filter(pool, ctx, suffix, params, None, &mut deadline);
+    stats.deadline_hit |= deadline.hit;
+    (results, stats)
 }
 
 /// 在一个共享 challenge pool 中只搜索指定角色。
@@ -230,7 +233,10 @@ pub fn search_character(
     character_id: u8,
 ) -> (Vec<DeckResult>, super::SearchStats) {
     let mut deadline = ChallengeDeadline::from_params(params);
-    search_with_character_filter(pool, ctx, suffix, params, Some(character_id), &mut deadline)
+    let (results, mut stats) =
+        search_with_character_filter(pool, ctx, suffix, params, Some(character_id), &mut deadline);
+    stats.deadline_hit |= deadline.hit;
+    (results, stats)
 }
 
 /// challenge_all：逐角色搜索后按分数归并出全局 Top-K。
@@ -283,10 +289,13 @@ pub fn search_all_characters(
         }
     });
     merged.truncate(params.top_k);
+    stats.deadline_hit |= deadline.hit;
     (merged, stats)
 }
 
 fn accumulate_stats(total: &mut super::SearchStats, part: &super::SearchStats) {
+    total.visited_nodes += part.visited_nodes;
+    total.deadline_hit |= part.deadline_hit;
     total.leaf_nodes += part.leaf_nodes;
     total.ub_prunes += part.ub_prunes;
     total.leader_prunes += part.leader_prunes;
@@ -321,7 +330,11 @@ fn search_with_character_filter(
         return search_combo_top1(pool, ctx, &candidates, tracker, deadline);
     }
     // Maximization ceilings cannot prune a minimum-power search.
-    let bounds = if minimize {
+    let bounds = if minimize
+        || !super::tuning::SearchTuning::load().bounds
+        || ctx.has_event()
+        || matches!(ctx.target, ScoreTarget::Bonus | ScoreTarget::Mysekai)
+    {
         None
     } else {
         let Some(bounds) = ChallengeBounds::build(pool, &candidates, deadline) else {
@@ -407,8 +420,9 @@ fn search_combo_top1(
                             candidates[e],
                         ];
                         stats.leaf_nodes += 1;
-                        if let Some(score) = leaf_evaluate_challenge(pool, ctx, &deck) {
-                            tracker.insert(DeckResult::new(deck, score));
+                        stats.visited_nodes += 1;
+                        if let Some(candidate) = leaf_evaluate_challenge(pool, ctx, &deck) {
+                            tracker.insert(candidate);
                         }
                     }
                 }
@@ -424,16 +438,21 @@ fn leaf_evaluate_challenge(
     pool: &CardPool,
     ctx: &SearchContext,
     deck: &[CardIdx; DECK_SIZE],
-) -> Option<u64> {
-    if matches!(
+) -> Option<DeckResult> {
+    if super::problem::DeckProblem::from_context(ctx).needs_placement_search() {
+        return super::placement::evaluate_candidate(pool, ctx, deck);
+    }
+    let score = if matches!(
         ctx.effective_live_type(),
         LiveType::Challenge | LiveType::ChallengeAuto
     ) && matches!(ctx.target, ScoreTarget::Score)
+        && !ctx.has_event()
     {
         leaf_evaluate_challenge_score_checked(pool, ctx, deck)
     } else {
         leaf_evaluate_checked(pool, ctx, deck)
-    }
+    }?;
+    Some(DeckResult::new(*deck, score))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -451,13 +470,14 @@ fn challenge_recurse(
     stats: &mut super::SearchStats,
     deadline: &mut ChallengeDeadline,
 ) {
+    stats.visited_nodes += 1;
     if deadline.expired() {
         return;
     }
     if depth == DECK_SIZE {
         stats.leaf_nodes += 1;
-        if let Some(score) = leaf_evaluate_challenge(pool, ctx, deck) {
-            tracker.insert(DeckResult::new(*deck, score));
+        if let Some(candidate) = leaf_evaluate_challenge(pool, ctx, deck) {
+            tracker.insert(candidate);
         }
         return;
     }

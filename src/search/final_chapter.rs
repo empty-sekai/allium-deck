@@ -14,7 +14,6 @@ use super::suffix::SuffixBound;
 use super::types::{DeckResult, SearchParams};
 
 const MEMBER_COUNT: usize = 4;
-const FINAL_CHAPTER_AUTO_LEADERS_PER_CHAR: usize = 3;
 const FINAL_CHAPTER_SEED_GROUP_PREFIX: usize = 6;
 /// 每层最多按上界降序保留的候选卡数。
 const RANKED_CAP: usize = 32;
@@ -80,6 +79,7 @@ struct CharGroup {
     best_skill: u32,
     best_base_bonus: u32,
     best_limited_bonus: u32,
+    attr_mask: u8,
     sort_key: u64,
 }
 
@@ -92,6 +92,9 @@ struct LeaderConst {
     limited_bonus: u32,
     limited_count: u8,
     extra_bonus_ub: u32,
+    support_bonus_ub: u32,
+    leader_attr_set: u8,
+    use_group_attr_dp: bool,
 }
 
 #[derive(Clone)]
@@ -126,6 +129,7 @@ struct CardGroupPlan {
     rem_skill: [u32; MEMBER_COUNT + 1],
     rem_base_bonus: [u32; MEMBER_COUNT + 1],
     rem_limited_values: [[u32; MEMBER_COUNT + 1]; MEMBER_COUNT + 1],
+    group_attr_masks: [u8; MEMBER_COUNT],
 }
 
 #[derive(Clone, Copy, Default)]
@@ -134,6 +138,9 @@ struct GroupCeilingTail {
     top_skill: [u32; MEMBER_COUNT + 1],
     top_base_bonus: [u32; MEMBER_COUNT + 1],
     top_limited_bonus: [u32; MEMBER_COUNT + 1],
+    /// attr_union_states[k]: bitset over 5-bit attr unions reachable by
+    /// selecting exactly k character groups from this suffix.
+    attr_union_states: [u32; MEMBER_COUNT + 1],
 }
 
 impl CardPartial {
@@ -201,12 +208,14 @@ fn build_card_group_plan(groups: &[CharGroup], selected: &[usize; MEMBER_COUNT])
         rem_skill: [0; MEMBER_COUNT + 1],
         rem_base_bonus: [0; MEMBER_COUNT + 1],
         rem_limited_values: [[0; MEMBER_COUNT + 1]; MEMBER_COUNT + 1],
+        group_attr_masks: [0; MEMBER_COUNT],
     };
     let mut depth = MEMBER_COUNT;
     while depth > 0 {
         depth -= 1;
         let next = depth + 1;
         let group = &groups[selected[depth]];
+        plan.group_attr_masks[depth] = group.attr_mask;
         plan.rem_power[depth] = plan.rem_power[next] + group.best_power;
         plan.rem_skill[depth] = plan.rem_skill[next] + group.best_skill;
         plan.rem_base_bonus[depth] = plan.rem_base_bonus[next] + group.best_base_bonus;
@@ -221,18 +230,44 @@ fn build_card_group_plan(groups: &[CharGroup], selected: &[usize; MEMBER_COUNT])
 
 fn build_group_ceiling_suffix(groups: &[CharGroup]) -> Vec<GroupCeilingTail> {
     let mut suffix = vec![GroupCeilingTail::default(); groups.len() + 1];
+    // One way to select zero groups: the empty attribute union.
+    suffix[groups.len()].attr_union_states[0] = 1u32 << 0;
     let mut idx = groups.len();
     while idx > 0 {
         idx -= 1;
         let group = &groups[idx];
-        let mut tail = suffix[idx + 1];
+        let next = suffix[idx + 1];
+        let mut tail = next;
         insert_topk_u32(&mut tail.top_power, group.best_power);
         insert_topk_u32(&mut tail.top_skill, group.best_skill);
         insert_topk_u32(&mut tail.top_base_bonus, group.best_base_bonus);
         insert_topk_u32(&mut tail.top_limited_bonus, group.best_limited_bonus);
+        let mut picked = 1usize;
+        while picked <= MEMBER_COUNT {
+            tail.attr_union_states[picked] |=
+                extend_attr_union_states(next.attr_union_states[picked - 1], group.attr_mask);
+            picked += 1;
+        }
         suffix[idx] = tail;
     }
     suffix
+}
+
+#[inline]
+fn extend_attr_union_states(states: u32, attr_mask: u8) -> u32 {
+    let mut out = 0u32;
+    let mut pending_states = states;
+    while pending_states != 0 {
+        let union = pending_states.trailing_zeros() as u8;
+        pending_states &= pending_states - 1;
+        let mut attrs = attr_mask;
+        while attrs != 0 {
+            let attr = attrs.trailing_zeros() as u8;
+            attrs &= attrs - 1;
+            out |= 1u32 << (union | (1u8 << attr));
+        }
+    }
+    out
 }
 
 pub(crate) fn search_fixed_leader(
@@ -315,25 +350,28 @@ fn search_leaders(
                 .cmp(&final_chapter_card_key(pool, *left))
                 .then_with(|| left.raw().cmp(&right.raw()))
         });
-        let mut leaders = filter_leader_variants(pool, ctx, leaders);
-        if leader_char_filter.is_none() && leaders.len() > FINAL_CHAPTER_AUTO_LEADERS_PER_CHAR {
-            leaders.truncate(FINAL_CHAPTER_AUTO_LEADERS_PER_CHAR);
-        }
-
+        // Exact path: every leader variant must remain reachable.  Heuristic
+        // per-character caps are unsound under Final Chapter support occupancy,
+        // leader-only bonuses and Top-K set identity.  Job/character ceilings
+        // below are the only mechanism allowed to discard a leader.
         for leader in leaders {
             if guard.expired() {
                 break;
             }
             let leader_const = build_leader_const(pool, ctx, leader);
-            seed_leader_groups(pool, ctx, &groups, &leader_const, &mut tracker);
+            let leader_ceiling =
+                character_ceiling(&suffix, ctx, &groups, &group_suffix, 0, &[], &leader_const);
             let threshold = tracker.threshold();
-            if threshold != 0 {
-                let ub =
-                    character_ceiling(&suffix, ctx, &groups, &group_suffix, 0, &[], &leader_const);
-                if ub <= threshold {
-                    stats.leader_prunes += 1;
-                    continue;
-                }
+            if threshold != 0 && leader_ceiling < threshold {
+                stats.leader_prunes += 1;
+                continue;
+            }
+            // Seed only a leader whose admissible ceiling survives the current
+            // incumbent. Seeding is heuristic ordering work, never proof work.
+            seed_leader_groups(pool, ctx, &groups, &leader_const, &mut tracker);
+            if tracker.threshold() != 0 && leader_ceiling < tracker.threshold() {
+                stats.leader_prunes += 1;
+                continue;
             }
             let mut selected = [0usize; MEMBER_COUNT];
             let mut state = CharacterSearchState {
@@ -385,13 +423,10 @@ fn search_auto_leaders_two_phase(
                 .cmp(&final_chapter_card_key(pool, *left))
                 .then_with(|| left.raw().cmp(&right.raw()))
         });
-        let mut leaders = filter_leader_variants(pool, ctx, leaders);
-        if leaders.len() > FINAL_CHAPTER_AUTO_LEADERS_PER_CHAR {
-            leaders.truncate(FINAL_CHAPTER_AUTO_LEADERS_PER_CHAR);
-        }
+        // Exact auto-leader jobs cover every surviving card.  The warm beam may
+        // rank/filter seeds, but the proof-carrying search frontier may not.
         for leader in leaders {
             let leader_const = build_leader_const(pool, ctx, leader);
-            seed_leader_groups(pool, ctx, &groups, &leader_const, &mut tracker);
             let ceiling =
                 character_ceiling(suffix, ctx, &groups, &group_suffix, 0, &[], &leader_const);
             jobs.push(AutoLeaderJob {
@@ -416,11 +451,16 @@ fn search_auto_leaders_two_phase(
         if guard.expired() {
             break;
         }
-        if tracker.threshold() != 0 && job.ceiling <= tracker.threshold() {
+        if tracker.threshold() != 0 && job.ceiling < tracker.threshold() {
             stats.leader_prunes += 1;
             continue;
         }
         let group_set = &group_sets[job.group_set];
+        seed_leader_groups(pool, ctx, &group_set.groups, &job.leader, &mut tracker);
+        if tracker.threshold() != 0 && job.ceiling < tracker.threshold() {
+            stats.leader_prunes += 1;
+            continue;
+        }
         let mut selected = [0usize; MEMBER_COUNT];
         let mut state = CharacterSearchState {
             pool,
@@ -855,13 +895,20 @@ fn build_char_groups(
     member_keep: &[bool],
     top_k: usize,
 ) -> Vec<CharGroup> {
+    let leader_member_keep = (top_k == 1).then(|| {
+        super::dominance::compute_member_dominance_for_leader(pool, ctx, leader_char).keep
+    });
     let mut by_char = vec![Vec::<CardIdx>::new(); 27];
     for card in pool.indices() {
         let char_id = pool.char_id(card);
         if char_id == leader_char {
             continue;
         }
-        if !member_keep.get(card.raw()).copied().unwrap_or(true) {
+        if !member_keep.get(card.raw()).copied().unwrap_or(true)
+            || leader_member_keep
+                .as_ref()
+                .is_some_and(|keep| !keep[card.raw()])
+        {
             continue;
         }
         by_char[char_id as usize].push(card);
@@ -876,14 +923,8 @@ fn build_char_groups(
         let mut best_skill = 0u32;
         let mut best_base_bonus = 0u32;
         let mut best_limited_bonus = 0u32;
-        // 逐队长过滤不记录替代（支援惩罚使其可裁掉全局 member 轮保留的卡），
-        // Top-K 下禁用，否则被裁卡的次优卡组无法回换。
-        let member_cards = if top_k > 1 {
-            cards
-        } else {
-            filter_member_variants_for_leader(pool, ctx, leader_char, cards)
-        };
-        let mut keyed_cards = member_cards
+        let mut attr_mask = 0u8;
+        let mut keyed_cards = cards
             .into_iter()
             .map(|card| (final_chapter_member_key(pool, ctx, leader_char, card), card))
             .collect::<Vec<_>>();
@@ -903,6 +944,7 @@ fn build_char_groups(
             best_skill = best_skill.max(pool.skill_max(*card) as u32);
             best_base_bonus = best_base_bonus.max(eb.base_ceil());
             best_limited_bonus = best_limited_bonus.max(eb.limited_ceil());
+            attr_mask |= 1u8 << pool.attr(*card);
         }
         let sort_key =
             final_chapter_group_key(best_power, best_skill, best_base_bonus, best_limited_bonus);
@@ -913,6 +955,7 @@ fn build_char_groups(
             best_skill,
             best_base_bonus,
             best_limited_bonus,
+            attr_mask,
             sort_key,
         });
     }
@@ -924,154 +967,6 @@ fn build_char_groups(
             .then_with(|| left.char_id.cmp(&right.char_id))
     });
     groups
-}
-
-fn filter_member_variants_for_leader(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    leader_char: u8,
-    cards: Vec<CardIdx>,
-) -> Vec<CardIdx> {
-    let mut keep = vec![true; cards.len()];
-    let support_penalties = cards
-        .iter()
-        .map(|card| support_penalty_x100(ctx, leader_char, pool.game_id(*card)))
-        .collect::<Vec<_>>();
-    let mut left = 0usize;
-    while left < cards.len() {
-        if !keep[left] {
-            left += 1;
-            continue;
-        }
-        let lhs = cards[left];
-        let mut right = 0usize;
-        while right < cards.len() {
-            if left != right && keep[right] {
-                let rhs = cards[right];
-                if !ctx.is_fixed_game_id(pool.game_id(rhs))
-                    && member_dominates_for_leader(
-                        pool,
-                        lhs,
-                        rhs,
-                        support_penalties[left],
-                        support_penalties[right],
-                    )
-                {
-                    keep[right] = false;
-                }
-            }
-            right += 1;
-        }
-        left += 1;
-    }
-    cards
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(card, keep)| keep.then_some(card))
-        .collect()
-}
-
-fn member_dominates_for_leader(
-    pool: &CardPool,
-    lhs: CardIdx,
-    rhs: CardIdx,
-    lhs_support_penalty_x100: i32,
-    rhs_support_penalty_x100: i32,
-) -> bool {
-    debug_assert_eq!(pool.char_id(lhs), pool.char_id(rhs));
-
-    let lhs_values = pool.power_values(lhs);
-    let rhs_values = pool.power_values(rhs);
-    let lhs_lut = pool.power_lut(lhs);
-    let rhs_lut = pool.power_lut(rhs);
-    let mut idx = 0usize;
-    while idx < 8 {
-        if decode_u18(lhs_values, lhs_lut, idx) < decode_u18(rhs_values, rhs_lut, idx) {
-            return false;
-        }
-        idx += 1;
-    }
-
-    if !skill_dominates(pool, lhs, rhs) {
-        return false;
-    }
-
-    let lhs_bonus = pool.event_bonus_exact(lhs);
-    let rhs_bonus = pool.event_bonus_exact(rhs);
-    if lhs_bonus.base_x10() < rhs_bonus.base_x10()
-        || lhs_bonus.limited_x10() < rhs_bonus.limited_x10()
-    {
-        return false;
-    }
-    if pool.attr(lhs) != pool.attr(rhs) {
-        return false;
-    }
-    let lhs_mask = pool.unit_mask_raw(lhs);
-    let rhs_mask = pool.unit_mask_raw(rhs);
-    if (rhs_mask & lhs_mask) != rhs_mask {
-        return false;
-    }
-    lhs_support_penalty_x100 <= rhs_support_penalty_x100
-}
-
-fn skill_dominates(pool: &CardPool, lhs: CardIdx, rhs: CardIdx) -> bool {
-    let lhs_skill = pool.skill(lhs);
-    let rhs_skill = pool.skill(rhs);
-    if lhs_skill.skill_type != rhs_skill.skill_type {
-        return false;
-    }
-
-    match lhs_skill.skill_type {
-        0 => lhs_skill.value >= rhs_skill.value,
-        1 => {
-            let left = pool
-                .special()
-                .unit_count()
-                .get(lhs_skill.value.saturating_sub(1) as usize);
-            let right = pool
-                .special()
-                .unit_count()
-                .get(rhs_skill.value.saturating_sub(1) as usize);
-            let (Some(left), Some(right)) = (left, right) else {
-                return false;
-            };
-            left.unit == right.unit
-                && left
-                    .score_up
-                    .iter()
-                    .zip(right.score_up.iter())
-                    .all(|(l, r)| l >= r)
-        }
-        2 => {
-            let left = pool
-                .special()
-                .diff()
-                .get(lhs_skill.value.saturating_sub(1) as usize);
-            let right = pool
-                .special()
-                .diff()
-                .get(rhs_skill.value.saturating_sub(1) as usize);
-            let (Some(left), Some(right)) = (left, right) else {
-                return false;
-            };
-            left.base >= right.base && left.increment >= right.increment
-        }
-        3 => {
-            let left = pool
-                .special()
-                .ref_skills()
-                .get(lhs_skill.value.saturating_sub(1) as usize);
-            let right = pool
-                .special()
-                .ref_skills()
-                .get(rhs_skill.value.saturating_sub(1) as usize);
-            let (Some(left), Some(right)) = (left, right) else {
-                return false;
-            };
-            left.rate >= right.rate && left.max >= right.max
-        }
-        _ => false,
-    }
 }
 
 fn build_leader_const(pool: &CardPool, ctx: &SearchContext, leader: CardIdx) -> LeaderConst {
@@ -1087,6 +982,9 @@ fn build_leader_const(pool: &CardPool, ctx: &SearchContext, leader: CardIdx) -> 
         limited_bonus: eb.limited_ceil(),
         limited_count,
         extra_bonus_ub: final_chapter_extra_bonus_bound(pool, ctx, leader, &[], MEMBER_COUNT),
+        support_bonus_ub: final_chapter_support_bonus_bound_for_leader(pool, ctx, leader),
+        leader_attr_set: 1u8 << pool.attr(leader),
+        use_group_attr_dp: ctx.is_world_bloom && super::tuning::SearchTuning::load().final_attr_dp,
     }
 }
 
@@ -1132,7 +1030,7 @@ impl CharacterSearchState<'_> {
                 &selected[..depth],
                 &self.leader,
             );
-            if ub <= threshold {
+            if ub < threshold {
                 self.stats.ub_prunes += 1;
                 return;
             }
@@ -1153,7 +1051,7 @@ impl CharacterSearchState<'_> {
                     &selected[..depth],
                     &self.leader,
                 );
-                if ub <= threshold {
+                if ub < threshold {
                     self.stats.ub_prunes += 1;
                     break;
                 }
@@ -1196,7 +1094,7 @@ impl CharacterSearchState<'_> {
                 &partial,
                 self.leader.skill,
             );
-            if ub <= threshold {
+            if ub < threshold {
                 self.stats.ep_continue_prunes += 1;
                 return;
             }
@@ -1219,7 +1117,7 @@ impl CharacterSearchState<'_> {
                     card,
                     self.leader.skill,
                 );
-                if optimistic_ub <= threshold {
+                if optimistic_ub < threshold {
                     continue;
                 }
                 deck[depth + 1] = card;
@@ -1233,7 +1131,7 @@ impl CharacterSearchState<'_> {
                     &next_partial,
                     self.leader.skill,
                 );
-                if ub <= threshold {
+                if ub < threshold {
                     continue;
                 }
                 if ranked_len < ranked.len() {
@@ -1252,7 +1150,7 @@ impl CharacterSearchState<'_> {
             let mut ranked_idx = 0usize;
             while ranked_idx < ranked_len {
                 let (ub, card, next_partial) = ranked[ranked_idx];
-                if ub <= threshold {
+                if ub < threshold {
                     self.stats.ep_continue_prunes += 1;
                     break;
                 }
@@ -1279,7 +1177,7 @@ impl CharacterSearchState<'_> {
                         card,
                         self.leader.skill,
                     );
-                    if optimistic_ub <= threshold {
+                    if optimistic_ub < threshold {
                         self.stats.ep_continue_prunes += 1;
                         continue;
                     }
@@ -1295,7 +1193,7 @@ impl CharacterSearchState<'_> {
                         &next_partial,
                         self.leader.skill,
                     );
-                    if ub <= threshold {
+                    if ub < threshold {
                         self.stats.ep_continue_prunes += 1;
                         continue;
                     }
@@ -1388,12 +1286,63 @@ fn character_ceiling(
         &tail.top_limited_bonus,
         limited_limit.min(MEMBER_COUNT),
     );
+    let extra_bonus_ub = if leader.use_group_attr_dp {
+        final_chapter_character_attr_bonus_bound(
+            ctx,
+            groups,
+            tail,
+            selected,
+            remaining,
+            leader.leader_attr_set,
+        ) + leader.support_bonus_ub
+    } else {
+        leader.extra_bonus_ub
+    };
     suffix.ceiling(
         power_sum,
-        bonus_sum + limited_sum + leader.extra_bonus_ub,
+        bonus_sum + limited_sum + extra_bonus_ub,
         skill_sum,
         leader.skill,
     )
+}
+
+/// Exact isolated-attribute relaxation at character-combination depth.
+/// `selected` groups are mandatory; `tail.attr_union_states[remaining]` already
+/// represents every union obtainable by choosing exactly `remaining` groups
+/// from the suffix.  OR-combining the two state sets therefore covers every
+/// feasible completion's attribute set.  Power/skill/support stay independently
+/// relaxed, so composing their maxima remains an admissible score ceiling.
+#[inline]
+fn final_chapter_character_attr_bonus_bound(
+    ctx: &SearchContext,
+    groups: &[CharGroup],
+    tail: &GroupCeilingTail,
+    selected: &[usize],
+    remaining: usize,
+    leader_attr_set: u8,
+) -> u32 {
+    let mut selected_states = 1u32 << leader_attr_set;
+    for &group_idx in selected {
+        selected_states = extend_attr_union_states(selected_states, groups[group_idx].attr_mask);
+    }
+    let future_states = tail.attr_union_states[remaining];
+    if future_states == 0 {
+        return 0;
+    }
+    let mut best = 0u32;
+    let mut left = selected_states;
+    while left != 0 {
+        let selected_union = left.trailing_zeros() as u8;
+        left &= left - 1;
+        let mut right = future_states;
+        while right != 0 {
+            let future_union = right.trailing_zeros() as u8;
+            right &= right - 1;
+            let union = selected_union | future_union;
+            best = best.max(ctx.diff_attr_bonus[union.count_ones() as usize] as u32);
+        }
+    }
+    best
 }
 
 fn selected_card_ceiling_from_partial(
@@ -1412,8 +1361,11 @@ fn selected_card_ceiling_from_partial(
         &plan.rem_limited_values[chosen],
         ctx.card_bonus_count_limit.min(MEMBER_COUNT + 1),
     );
-    let extra_bonus_ub =
-        final_chapter_extra_bonus_bound_from_partial(ctx, partial, MEMBER_COUNT - chosen);
+    let extra_bonus_ub = final_chapter_extra_bonus_bound_from_partial(
+        ctx,
+        partial,
+        &plan.group_attr_masks[chosen..],
+    );
     suffix.ceiling(
         power_sum,
         bonus_sum + limited_sum + extra_bonus_ub,
@@ -1449,7 +1401,7 @@ fn selected_card_ceiling_with_candidate_support_ub(
         ctx,
         partial,
         card,
-        MEMBER_COUNT - chosen,
+        &plan.group_attr_masks[chosen..],
     );
     suffix.ceiling(
         power_sum,
@@ -1464,23 +1416,15 @@ fn final_chapter_extra_bonus_bound_after_candidate_support_ub(
     ctx: &SearchContext,
     partial: &CardPartial,
     card: CardIdx,
-    rest: usize,
+    future_group_attr_masks: &[u8],
 ) -> u32 {
     if !ctx.is_world_bloom {
         return ctx.extra_bonus_ub;
     }
 
     let attr_set = partial.attr_set | (1u8 << pool.attr(card));
-    let current_attrs = attr_set.count_ones() as usize;
-    let max_attrs = (current_attrs + rest).min(DECK_SIZE);
-    let mut diff_ub = 0u32;
-    let mut count = current_attrs;
-    while count <= max_attrs {
-        diff_ub = diff_ub.max(ctx.diff_attr_bonus[count] as u32);
-        count += 1;
-    }
-
-    diff_ub + partial.support_bonus_ceil
+    final_chapter_diff_attr_bound(ctx, attr_set, future_group_attr_masks)
+        + partial.support_bonus_ceil
 }
 
 #[inline(always)]
@@ -1506,6 +1450,31 @@ fn merged_limited_sum(
         picked += 1;
     }
     sum
+}
+
+fn final_chapter_support_bonus_bound_for_leader(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    leader: CardIdx,
+) -> u32 {
+    if !ctx.is_world_bloom {
+        return 0;
+    }
+    let leader_id = pool.game_id(leader);
+    let support = ctx.support_deck_for_leader(pool.char_id(leader));
+    let mut support_sum = 0.0_f64;
+    let mut picked = 0usize;
+    for &(game_id, bonus) in &support.cards {
+        if picked >= support.count as usize {
+            break;
+        }
+        if game_id == leader_id {
+            continue;
+        }
+        support_sum += bonus;
+        picked += 1;
+    }
+    support_sum.ceil() as u32
 }
 
 fn final_chapter_extra_bonus_bound(
@@ -1559,22 +1528,52 @@ fn final_chapter_extra_bonus_bound(
 fn final_chapter_extra_bonus_bound_from_partial(
     ctx: &SearchContext,
     partial: &CardPartial,
-    rest: usize,
+    future_group_attr_masks: &[u8],
 ) -> u32 {
     if !ctx.is_world_bloom {
         return ctx.extra_bonus_ub;
     }
 
-    let current_attrs = partial.attr_set.count_ones() as usize;
-    let max_attrs = (current_attrs + rest).min(DECK_SIZE);
-    let mut diff_ub = 0u32;
-    let mut count = current_attrs;
-    while count <= max_attrs {
-        diff_ub = diff_ub.max(ctx.diff_attr_bonus[count] as u32);
-        count += 1;
-    }
+    final_chapter_diff_attr_bound(ctx, partial.attr_set, future_group_attr_masks)
+        + partial.support_bonus_ceil
+}
 
-    diff_ub + partial.support_bonus_ceil
+/// Exact attribute-state DP over the already chosen character groups.  Each
+/// remaining group must contribute one card whose attr is in its group mask;
+/// tracking all 5-bit attr sets therefore gives an admissible (indeed exact for
+/// the isolated attribute dimension) upper bound for the WL diversity bonus.
+#[inline]
+fn final_chapter_diff_attr_bound(
+    ctx: &SearchContext,
+    initial_attr_set: u8,
+    future_group_attr_masks: &[u8],
+) -> u32 {
+    let mut states = 1u32 << initial_attr_set;
+    for &group_mask in future_group_attr_masks {
+        let mut next = 0u32;
+        let mut state_bits = states;
+        while state_bits != 0 {
+            let set = state_bits.trailing_zeros() as u8;
+            state_bits &= state_bits - 1;
+            let mut attrs = group_mask;
+            while attrs != 0 {
+                let attr = attrs.trailing_zeros() as u8;
+                attrs &= attrs - 1;
+                next |= 1u32 << (set | (1u8 << attr));
+            }
+        }
+        if next != 0 {
+            states = next;
+        }
+    }
+    let mut best = 0u32;
+    let mut state_bits = states;
+    while state_bits != 0 {
+        let set = state_bits.trailing_zeros() as u8;
+        state_bits &= state_bits - 1;
+        best = best.max(ctx.diff_attr_bonus[set.count_ones() as usize] as u32);
+    }
+    best
 }
 
 fn initial_final_chapter_support_state(
@@ -2011,6 +2010,7 @@ fn resolve_ref_skill(pool: &CardPool, skill: crate::pool::SkillSlot) -> (u8, u8)
 
 struct TopKTracker {
     top_k: usize,
+    bounds_enabled: bool,
     game_ids: Vec<u16>,
     results: Vec<DeckResult>,
 }
@@ -2019,13 +2019,14 @@ impl TopKTracker {
     fn new(top_k: usize, pool: &CardPool) -> Self {
         Self {
             top_k,
+            bounds_enabled: super::tuning::SearchTuning::load().bounds,
             game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
             results: Vec::with_capacity(top_k),
         }
     }
 
     fn threshold(&self) -> u64 {
-        if self.results.len() < self.top_k {
+        if !self.bounds_enabled || self.results.len() < self.top_k {
             0
         } else {
             self.results.last().map(|result| result.score).unwrap_or(0)
