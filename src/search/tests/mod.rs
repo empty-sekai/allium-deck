@@ -15,6 +15,7 @@ mod property_matrix;
 
 mod case7_audit;
 mod dominance_contract;
+mod fractional_bonus;
 mod role_constraints;
 
 use super::*;

@@ -33,6 +33,46 @@ impl<'a> ExactOracle<'a> {
         Self { pool, context }
     }
 
+    /// Enumerates legal ordered decks independently for each exact bonus tier.
+    /// Filtering global Bonus winners is not equivalent: a public card set can
+    /// have a different cultivation variant or slot assignment in each tier.
+    /// As in `search`, timeouts are ignored so no partial result becomes a proof.
+    pub fn search_bonus_targets(
+        &self,
+        params: &SearchParams,
+        targets: &[i32],
+    ) -> (Vec<DeckResult>, BruteForceStats) {
+        if params.top_k == 0
+            || self.pool.count() < DECK_SIZE
+            || self.context.target != ScoreTarget::Bonus
+        {
+            return (Vec::new(), BruteForceStats::default());
+        }
+        let mut targets = targets
+            .iter()
+            .copied()
+            .filter(|target| *target >= 0)
+            .collect::<Vec<_>>();
+        targets.sort_unstable_by(|a, b| b.cmp(a));
+        targets.dedup();
+        let mut results = Vec::new();
+        let mut stats = BruteForceStats::default();
+        for target in targets {
+            let mut tracker = BruteForceTopK::new(params.top_k, false, self.pool);
+            tracker.bonus_target = Some(target);
+            enumerate(
+                self.pool,
+                self.context,
+                0,
+                &mut [CardIdx::new(0); DECK_SIZE],
+                &mut tracker,
+                &mut stats,
+            );
+            results.extend(tracker.into_vec());
+        }
+        (results, stats)
+    }
+
     /// Enumerates every legal ordered deck, returning the exact distinct Top-K.
     /// `timeout_ms` is deliberately ignored: an oracle never returns a partial proof.
     pub fn search(&self, params: &SearchParams) -> (Vec<DeckResult>, BruteForceStats) {
@@ -75,7 +115,10 @@ fn enumerate(
 ) {
     if depth == DECK_SIZE {
         stats.candidates += 1;
-        if let Some(score) = leaf_evaluate_checked(pool, ctx, deck) {
+        if tracker.bonus_target.is_none_or(|target| {
+            super::evaluate::resolve_total_bonus(pool, ctx, deck) == f64::from(target)
+        }) && let Some(score) = leaf_evaluate_checked(pool, ctx, deck)
+        {
             stats.evaluated += 1;
             tracker.insert(DeckResult::new(*deck, score));
         } else {
@@ -130,6 +173,7 @@ fn enumerate(
 }
 
 struct BruteForceTopK {
+    bonus_target: Option<i32>,
     top_k: usize,
     minimize: bool,
     game_ids: Vec<u16>,
@@ -139,6 +183,7 @@ struct BruteForceTopK {
 impl BruteForceTopK {
     fn new(top_k: usize, minimize: bool, pool: &CardPool) -> Self {
         Self {
+            bonus_target: None,
             top_k,
             minimize,
             game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),

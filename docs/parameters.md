@@ -26,7 +26,7 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | `customBonusAttr` / `custom_bonus_attr` | string | absent | Mixed-event attribute. |
 | `customBonusCharacterSupportUnits` / `custom_bonus_character_support_units` | object | `{}` | Support-unit constraints for Virtual Singer entries in the custom character set, keyed by character id (`{"21": "street"}`). |
 | `boost` | int | absent | Energy flame count (0–10), not a multiplier; affects event point display math. Values outside 0–10 are rejected. |
-| `targetBonusList` / `target_bonus_list` | int[] | `[]` | For `target=bonus`: exact event-bonus tiers to hit, one Top-K per tier. Max 32 tiers, each 0–10000. An empty result for a tier means the tier is unreachable with the given box. Tiered bonus search builds its own candidate pool from the whole box — cards above the highest requested tier are dropped, hard constraints (fixed/excluded cards, unit/attribute filters) still apply, and every remaining card stays searchable so low-granularity tiers stay reachable. |
+| `targetBonusList` / `target_bonus_list` | int[] | `[]` | For `target=bonus`: exact event-bonus tiers to hit, one Top-K per tier. Max 32 tiers, each 0–10000. An empty result for a tier means the tier is unreachable with the given box. Tiered bonus search builds its own candidate pool from the whole box — only cards whose unavoidable base contribution (or full card bonus when the event counts every limited bonus) exceeds the highest requested tier are dropped, hard constraints (fixed/excluded cards, unit/attribute filters) still apply, and every remaining card stays searchable so low-granularity tiers stay reachable. |
 
 ## World Bloom
 
@@ -101,17 +101,21 @@ Per-rarity defaults (`rarity1Config` … `rarity4Config`, `rarityBirthdayConfig`
 
 | Mode | Path | Guarantee |
 | --- | --- | --- |
-| `score` (with or without event, incl. World Bloom chapters, `mysekai`) | dominance pruning + branch-and-bound DFS, Top-K alternatives expansion | Exact, including Top-K |
-| `score` World Bloom final chapter, fixed leader character or fixed leader card | grouped character search / DFS + member alternatives, leader rotations | Exact, including Top-K |
-| `score` World Bloom final chapter, auto leader | leader-key truncation (3 per character) + beam seeding + grouped search | Heuristic: strong in practice, no exactness proof |
-| `challenge` / `challenge_auto` | full enumeration with admissible bound pruning (no card elimination) | Exact, including Top-K |
+| `score` (with or without event, incl. World Bloom chapters, `mysekai`) | dominance pruning + admissible B&B, Top-K alternatives expansion; WL uses an attribute/character matching relaxation | Exact, including Top-K |
+| `score` World Bloom final chapter, fixed leader character or fixed leader card | grouped character/card B&B + exact attribute-union DP bound + member alternatives / leader rotations | Exact, including Top-K |
+| `score` World Bloom final chapter, auto leader | every leader variant becomes a proof-carrying job; beam/one-swap are seed-only; grouped admissible B&B + alternatives / rotations | Exact, including Top-K |
+| `challenge` / `challenge_auto` | full feasible-set search with admissible bound pruning, merged per character for challenge-all | Exact, including Top-K |
 | `power` (no fixed cards/characters, not `minimize`) | 49-scenario additive DP | Exact, including Top-K |
-| `power` (with fixed cards/characters, or `minimize`) | quality-prefix truncation (28 cards, ≤6 per character) | Heuristic |
-| `skill` | quality-prefix truncation (20 cards, ≤3 per character) | Heuristic |
-| `bonus` (`targetBonusList`) | dedicated candidate pool + DFS per bonus tier | Exact per tier |
+| `power` (with fixed cards/characters, or `minimize`) | full-candidate B&B with an admissible power upper bound / minimization lower bound | Exact, including Top-K |
+| `skill` | full-candidate B&B with a per-card skill-max relaxation | Exact, including Top-K |
+| `bonus` (`targetBonusList`) | dedicated exact-reachability DFS per bonus tier | Exact per tier, including Top-K |
 
-Dominance pruning compares power, skill, event bonus, attribute, unit mask — and, in World Bloom, the per-leader support-deck penalty (a support-listed card placed in the deck forfeits its support bonus). Timeouts turn any exact path into best-effort.
+Exact tiers compare the evaluated bonus itself, not the rounded half-percent ranking key. A 4.8%, 4.9%, 5.1% or 5.2% deck does not hit a request for 5%. Main-card components are summed in integer tenths before display conversion. Limited-count events enumerate tier-observable assignments; cultivation variants and assignments compete independently within each requested tier. The independent `ExactOracle::search_bonus_targets` enumerates these feasible sets directly rather than filtering the overall Bonus winners.
+
+The full proof obligations and counterexample regressions are recorded in [exactness-proof.md](exactness-proof.md). Dominance pruning compares power, skill, event bonus, attribute, unit mask — and, in World Bloom, the support-deck displacement caused by using a support-listed card in the main deck. Heuristics are permitted only for incumbent seeding or visit order; they never remove candidates from a proof-carrying frontier.
+
+Exactness is conditional on a successful, non-timed-out search. A timeout turns the solver into best-effort and sets `SearchStats::deadline_hit`. If hard filtering still leaves more cards than the fixed metadata mask can represent (currently 512), pool construction returns `TooManyCards` rather than silently producing an approximate deck.
 
 Result ordering: decks are ranked by the search objective descending. The Mysekai objective quantizes deck power into 45k buckets, so ties are common; tied decks rank by total power descending, then leader card id ascending, consistently for every `limit`. Challenge live decks are always five cards of one character, for every target including `power`/`skill`.
 
-No-event `score` exactness cost: without an event, the search keeps every candidate (no bonus-blind pool trimming), so on stress boxes with 1300 maxed cards the branch-and-bound enumerates ~1.65M leaves. The scenario-aware root bound was re-measured with overflow-free arithmetic at 8727 ppm (0.87%) above the optimum; the slack lives on the skill side — the bound sums per-card skill maxima, while a deck's actually resolved skill values (unit-count / diff / reference skills resolve below their maxima in deck context) are what the score uses, and a coherent bound would have to perform that deck-context resolution, which IS the leaf evaluation. Empirically 99.4% of enumerated leaves score more than 0.4% below the optimum, so no cheap admissible bound cuts them; the remaining cost is structural to exact Top-1 on the untrimmed pool (heuristic implementations may return faster but non-exact results for this scenario). Typical boxes search in milliseconds; the 215-event sweep runs measurably faster than the pre-fix engine.
+No-event `score` exactness cost: without an event, the builder keeps every hard-filtered candidate that fits the exact metadata capacity; it does not use a bonus-blind quality trim. Search combines the scenario-aware suffix bound with the role-aware correlated power/skill bound. The latter is an admissible relaxation of the coupled score formula and is guarded by exhaustive prefix-vs-completion property tests. Special-skill resolution (unit-count / different-unit / reference skills) is still performed only at exact leaves; bounds use per-card maxima, so unresolved coupling can make the relaxation loose but cannot make it underestimate a completion.

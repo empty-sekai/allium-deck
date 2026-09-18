@@ -364,9 +364,7 @@ impl SearchState<'_> {
         }
         if depth == DECK_SIZE {
             self.stats.leaf_nodes += 1;
-            if let Some(result) = evaluate_candidate(self.pool, self.ctx, deck) {
-                self.tracker.insert(result);
-            }
+            self.tracker.consider(self.pool, self.ctx, deck);
             return;
         }
 
@@ -379,16 +377,26 @@ impl SearchState<'_> {
         }
 
         if self.bounds_enabled && self.tracker.is_bonus() {
-            let upper = self.suffix.upper_bound_with_depth(depth, &used, &partial);
-            // partial.bonus 是逐卡 ceil 百分比；每张卡至多高估 0.5%，
-            // 因此 2*ceil-depth 是精确 x2 bonus 的安全下界。
-            let lower_bonus_x2 = partial.bonus.saturating_mul(2).saturating_sub(depth as u32);
-            // World Bloom 的加成合计走 limited-count 分支，与逐卡求和模型不一致，
-            // 该场景保持旧行为（不做可达性剪枝）。
-            let reach = if self.ctx.is_world_bloom {
-                None
+            // The character-aware suffix assumes uniqueness. Challenge tiers
+            // instead keep only the independent additive reachability proof.
+            let upper = if self.ctx.enforce_char_uniqueness {
+                self.suffix.upper_bound_with_depth(depth, &used, &partial)
             } else {
+                u64::MAX
+            };
+            // An outward-rounded upper component is never a valid lower
+            // bound. In the additive model, exact tenths accumulate monotonically
+            // and floor(x10 / 5) is a conservative encoded lower bound. With a
+            // limited-count/support model even raw card sums are not additive,
+            // so neither that lower bound nor additive reachability is used.
+            let additive_bonus = !self.ctx.is_world_bloom
+                && !self.ctx.is_final_chapter
+                && self.ctx.card_bonus_count_limit >= DECK_SIZE;
+            let lower_bonus_x2 = if additive_bonus { bonus_x10 / 5 } else { 0 };
+            let reach = if additive_bonus {
                 self.bonus_reach
+            } else {
+                None
             };
             if self
                 .tracker
@@ -495,6 +503,9 @@ impl SearchState<'_> {
             if !self.slot_matches(depth, card)
                 || fixed_leader == Some(card)
                 || (self.ctx.enforce_char_uniqueness && used.contains(character))
+                || (!self.ctx.enforce_char_uniqueness
+                    && depth > 0
+                    && character != self.pool.char_id(deck[0]))
                 || deck[..depth]
                     .iter()
                     .any(|&other| self.pool.game_id(other) == self.pool.game_id(card))
@@ -1153,9 +1164,7 @@ impl SearchState<'_> {
 
         if slots == 1 {
             self.stats.leaf_nodes += 1;
-            if let Some(result) = evaluate_candidate(self.pool, self.ctx, deck) {
-                self.tracker.insert(result);
-            }
+            self.tracker.consider(self.pool, self.ctx, deck);
             return;
         }
 
@@ -1205,7 +1214,14 @@ impl SearchState<'_> {
             if !self.slot_matches(depth, card) {
                 continue;
             }
-            if self.ctx.enforce_char_uniqueness && used.contains(char_id) {
+            if (self.ctx.enforce_char_uniqueness && used.contains(char_id))
+                || (!self.ctx.enforce_char_uniqueness
+                    && depth > 0
+                    && char_id != self.pool.char_id(deck[0]))
+                || deck[..depth]
+                    .iter()
+                    .any(|&other| self.pool.game_id(other) == self.pool.game_id(card))
+            {
                 continue;
             }
             unsafe {
@@ -1314,6 +1330,27 @@ impl SearchTracker {
         }
     }
 
+    fn consider(&mut self, pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; DECK_SIZE]) {
+        match self {
+            Self::TopK(tracker) => {
+                if let Some(candidate) = evaluate_candidate(pool, ctx, deck) {
+                    tracker.insert(candidate);
+                }
+            }
+            Self::Bonus(tracker) => {
+                super::placement::visit_bonus_candidates(pool, ctx, deck, |candidate| {
+                    // The encoded objective quantizes bonus to half-percent units;
+                    // that key is not the membership predicate of an exact tier.
+                    let total = super::evaluate::resolve_total_bonus(pool, ctx, &candidate.cards);
+                    let target = (candidate.score >> 32) as u32;
+                    if total == f64::from(target) / 2.0 {
+                        tracker.insert(candidate);
+                    }
+                })
+            }
+        }
+    }
+
     #[inline(always)]
     fn insert(&mut self, candidate: DeckResult) {
         match self {
@@ -1394,19 +1431,12 @@ impl BonusBucketTracker {
                     satisfiable = true;
                     continue;
                 };
-                // round(x10 / 5) == x2 holds exactly for
-                // x10 in [5*x2 - 2, 5*x2 + 2].
-                let center = target.saturating_mul(5);
-                let lo = center.saturating_sub(2);
-                let hi = center.saturating_add(2);
-                // reach covers only the remaining cards' sum, so the already
-                // picked bonus is subtracted from the target window.
-                if reach.any_in_range(
-                    start,
-                    remaining,
-                    lo.saturating_sub(bonus_x10),
-                    hi.saturating_sub(bonus_x10),
-                ) {
+                // Exact tier membership uses tenths directly, not the rounded
+                // half-percent ranking key. Subtraction must not turn an
+                // already-overshot target into a spurious zero requirement.
+                if let Some(needed) = target.saturating_mul(5).checked_sub(bonus_x10)
+                    && reach.any_in_range(start, remaining, needed, needed)
+                {
                     satisfiable = true;
                 }
                 continue;
@@ -1439,38 +1469,18 @@ fn partial_bonus_add(
     ctx: &SearchContext,
     card: CardIdx,
     is_leader: bool,
-    limited_count: u8,
+    _limited_count: u8,
 ) -> (u32, u8) {
-    let eb = pool.event_bonus(card);
-    if !ctx.is_final_chapter && ctx.card_bonus_count_limit >= DECK_SIZE {
-        // 无张数上限（默认）：热路径直出整卡加成。
-        return (eb.total_ceil(), 0);
-    }
-    let exact = pool.event_bonus_exact(card);
-    if !ctx.is_final_chapter {
-        // 有张数上限的非终章活动：与终章同一套 base/limited 拆分计账，
-        // 超出上限的 limited 张不计数（对照参照实现 deck-calculator 的
-        // 任意活动通用扣除逻辑）。
-        let mut bonus = exact.base_ceil();
-        let mut limited_inc = 0u8;
-        if (limited_count as usize) < ctx.card_bonus_count_limit && exact.limited_x10() > 0 {
-            bonus += exact.limited_ceil();
-            limited_inc = 1;
-        }
-        return (bonus, limited_inc);
-    }
-    let exact = pool.event_bonus_exact(card);
-    let mut bonus = exact.base_ceil();
-    let mut limited_inc = 0u8;
-    if (limited_count as usize) < ctx.card_bonus_count_limit && exact.limited_x10() > 0 {
-        bonus += exact.limited_ceil();
-        limited_inc = 1;
-    }
-    if is_leader {
+    // Free roles may be permuted at a leaf. Counting only the first limited
+    // cards of the traversal prefix can underestimate a different legal order.
+    // Counting every selected limited amount is an order-independent upper
+    // relaxation; the exact evaluator alone applies the event's cap.
+    let mut bonus = pool.event_bonus(card).total_ceil();
+    if ctx.is_final_chapter && is_leader {
         bonus += ctx.leader_honor_bonus_at(card.raw());
         bonus += ctx.leader_limit_bonus_at(card.raw());
     }
-    (bonus, limited_inc)
+    (bonus, 0)
 }
 
 pub(super) struct TopKTracker {

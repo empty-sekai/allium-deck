@@ -572,7 +572,7 @@ pub(crate) fn resolve_total_bonus(
                     + pool.event_bonus(*deck.get_unchecked(3)).total_x10() as u32
                     + pool.event_bonus(*deck.get_unchecked(4)).total_x10() as u32
             };
-            return total_x10 as f64 * 0.1;
+            return total_x10 as f64 / 10.0;
         }
         // 有张数上限：按 base/limited 拆分计账，超额 limited 张不计入。
         let mut total_x10 = 0u32;
@@ -586,13 +586,12 @@ pub(crate) fn resolve_total_bonus(
                 limited_count += 1;
             }
         }
-        return total_x10 as f64 * 0.1;
+        return total_x10 as f64 / 10.0;
     }
 
     let mut attr_set = 0u8;
     let mut game_ids = [0u16; DECK_SIZE];
-    let mut total = 0.0_f64;
-    let mut total_x10 = 0u32;
+    let mut total_x10 = 0u64;
     let mut limited_count = 0usize;
     let mut pos = 0usize;
     while pos < DECK_SIZE {
@@ -604,27 +603,23 @@ pub(crate) fn resolve_total_bonus(
 
         if ctx.is_final_chapter {
             let bonus = pool.event_bonus_exact(card);
-            total += bonus.base_rate();
-            if bonus.limited_x10() == 0 {
-                total += bonus.limited_rate();
-            } else if limited_count < ctx.card_bonus_count_limit {
-                total += bonus.limited_rate();
+            total_x10 += u64::from(bonus.base_x10());
+            if bonus.limited_x10() > 0 && limited_count < ctx.card_bonus_count_limit {
+                total_x10 += u64::from(bonus.limited_x10());
                 limited_count += 1;
             }
         } else {
-            total_x10 += pool.event_bonus(card).total_x10() as u32;
+            total_x10 += u64::from(pool.event_bonus(card).total_x10());
         }
 
         if ctx.is_final_chapter && pos == 0 {
-            total += ctx.leader_honor_bonus_at(card.raw()) as f64;
-            total += ctx.leader_limit_bonus_at(card.raw()) as f64;
+            total_x10 += u64::from(ctx.leader_honor_bonus_at(card.raw())) * 10;
+            total_x10 += u64::from(ctx.leader_limit_bonus_at(card.raw())) * 10;
         }
         pos += 1;
     }
 
-    if !ctx.is_final_chapter {
-        total = total_x10 as f64 * 0.1;
-    }
+    let mut total = total_x10 as f64 / 10.0;
 
     if ctx.is_world_bloom {
         total += ctx.diff_attr_bonus[attr_set.count_ones() as usize] as f64;

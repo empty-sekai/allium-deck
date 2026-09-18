@@ -2845,3 +2845,54 @@ fn handler_final_chapter_maxed_box_reports_capacity_without_pruning() {
         Err(BuildError::TooManyCards(_))
     ));
 }
+
+#[test]
+fn exact_tier_pool_keeps_omittable_limited_bonus() {
+    let fixture = pool_constraint_fixture(&[
+        (1, 4, 100),
+        (2, 4, 100),
+        (3, 4, 100),
+        (4, 4, 100),
+        (5, 4, 100),
+    ]);
+    let event_cards = (1..=5)
+        .map(|card_id| types::EventCard {
+            event_id: 42,
+            card_id,
+            bonus_rate_x10: 500,
+            leader_bonus_rate_x10: 0,
+        })
+        .collect::<Vec<_>>();
+    let limits = [types::EventCardBonusLimit {
+        event_id: 42,
+        member_count_limit: 0,
+    }];
+    let game = GameData {
+        event_cards: &event_cards,
+        event_card_bonus_limits: &limits,
+        ..bonus_tier_game(&fixture)
+    };
+    let user = pool_constraint_user(&fixture);
+    let params = BuildParams {
+        target: ScoreTarget::Bonus,
+        live_type: LiveType::Multi,
+        event_id: Some(42),
+        event_type: Some("marathon".to_string()),
+        target_bonus_list: vec![0],
+        ..BuildParams::default()
+    };
+    let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+    assert_eq!(pool.count(), 5);
+    assert!(
+        pool.indices()
+            .all(|card| pool.event_bonus_exact(card).limited_x10() == 500)
+    );
+    let decks = pool_constraint_search(&pool, &ctx, &params);
+    assert_eq!(decks.len(), 1);
+    assert_eq!(
+        crate::search::summarize_deck(&pool, &ctx, &decks[0].cards)
+            .unwrap()
+            .event_bonus_total,
+        Some(0.0)
+    );
+}

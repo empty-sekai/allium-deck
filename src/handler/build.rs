@@ -368,7 +368,19 @@ impl<'a> PreparedPoolBuild<'a> {
                 .unwrap_or(0)
                 .max(0) as u32
                 * 10;
-            seeds.retain(|card| card.event_bonus.total_x10() <= max_target_x10);
+            // Limited bonuses can be omitted by the event's counting cap. Only
+            // an unavoidable contribution is a valid per-card lower bound.
+            let limited_is_unconditional = event_ctx
+                .as_ref()
+                .is_none_or(|event| event.card_bonus_count_limit >= crate::types::DECK_SIZE);
+            seeds.retain(|card| {
+                let lower = if limited_is_unconditional {
+                    card.event_bonus.total_x10()
+                } else {
+                    card.event_bonus.base_x10()
+                };
+                lower <= max_target_x10
+            });
         }
 
         let mut cards = Vec::with_capacity(seeds.len());

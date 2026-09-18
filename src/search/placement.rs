@@ -17,6 +17,18 @@ pub(super) fn evaluate_candidate(
     deck: &[CardIdx; DECK_SIZE],
 ) -> Option<DeckResult> {
     let problem = DeckProblem::from_context(ctx);
+    if bonus_order_observable(pool, ctx, deck) {
+        let mut work = *deck;
+        let mut best = None;
+        permute(
+            pool,
+            ctx,
+            &mut work,
+            problem.fixed_prefix.max(usize::from(ctx.is_final_chapter)),
+            &mut best,
+        );
+        return best;
+    }
     if !problem.needs_placement_search() {
         return leaf_evaluate_checked(pool, ctx, deck).map(|score| DeckResult::new(*deck, score));
     }
@@ -69,5 +81,78 @@ fn promote(
         .is_none_or(|old| score > old.score || (score == old.score && *deck < old.cards))
     {
         *best = Some(DeckResult::new(*deck, score));
+    }
+}
+
+/// Whether first-N limited-bonus counting distinguishes free card orders.
+/// Equal positive limited amounts are exchangeable; zero amounts do not consume
+/// the cap. This test also accepts a whole pool for conservative dispatch.
+pub(super) fn bonus_order_observable(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    cards: &[CardIdx],
+) -> bool {
+    if ctx.card_bonus_count_limit == 0
+        || ctx.card_bonus_count_limit >= DECK_SIZE
+        || (ctx.is_world_bloom && !ctx.is_final_chapter)
+        || !matches!(
+            ctx.target,
+            crate::types::ScoreTarget::Score
+                | crate::types::ScoreTarget::Bonus
+                | crate::types::ScoreTarget::Mysekai
+        )
+    {
+        return false;
+    }
+    let mut first = None;
+    let mut different = false;
+    let mut positive = 0;
+    for &card in cards {
+        let amount = pool.event_bonus_exact(card).limited_x10();
+        if amount != 0 {
+            positive += 1;
+            different |= first.is_some_and(|value| value != amount);
+            first.get_or_insert(amount);
+        }
+    }
+    different && positive > ctx.card_bonus_count_limit
+}
+
+/// Offer every tier-observable assignment before deduplicating within a tier.
+/// Maximizing Bonus for the set first would discard its lower, reachable tiers.
+pub(super) fn visit_bonus_candidates(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; DECK_SIZE],
+    mut visit: impl FnMut(DeckResult),
+) {
+    if bonus_order_observable(pool, ctx, deck) {
+        let fixed = DeckProblem::from_context(ctx)
+            .fixed_prefix
+            .max(usize::from(ctx.is_final_chapter));
+        let mut work = *deck;
+        visit_bonus_permutations(pool, ctx, &mut work, fixed, &mut visit);
+    } else if let Some(candidate) = evaluate_candidate(pool, ctx, deck) {
+        visit(candidate);
+    }
+}
+
+fn visit_bonus_permutations(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &mut [CardIdx; DECK_SIZE],
+    slot: usize,
+    visit: &mut impl FnMut(DeckResult),
+) {
+    if slot == DECK_SIZE {
+        if let Some(score) = leaf_evaluate_checked(pool, ctx, deck) {
+            visit(DeckResult::new(*deck, score));
+        }
+        return;
+    }
+    for other in slot..DECK_SIZE {
+        deck.swap(slot, other);
+        visit_bonus_permutations(pool, ctx, deck, slot + 1, visit);
+        deck.swap(slot, other);
     }
 }
