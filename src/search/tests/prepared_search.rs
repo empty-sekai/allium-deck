@@ -69,3 +69,37 @@ fn prepared_multi_event_search_matches_standard_pipeline() {
 
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn prepared_plan_rejects_a_changed_query_or_pool_instance() {
+    let cards = five_unique_cards();
+    let pool = build_pool(&cards);
+    let ctx = ready_ctx(&pool, ScoreTarget::Score);
+    let prepared = PreparedSearch::build(&pool, &ctx, 8).unwrap();
+    let params = SearchParams {
+        top_k: 1,
+        timeout_ms: 0,
+    };
+    let mut changed = ctx.clone();
+    changed.base_score *= 2.0;
+    assert!(
+        prepared
+            .search_instrumented(&pool, &changed, &params)
+            .is_none(),
+        "query-dependent bounds cannot serve a changed query"
+    );
+    let mut other_cards = cards;
+    other_cards[0].power *= 2;
+    other_cards[0].power_max *= 2;
+    let other_pool = build_pool(&other_cards);
+    assert!(
+        prepared
+            .search_instrumented(&other_pool, &ctx, &params)
+            .is_none(),
+        "cached indices cannot refer to a different pool"
+    );
+    // Moving the original immutable pool does not invalidate its plan.
+    let moved = Box::new(pool);
+    let (actual, _) = prepared.search_instrumented(&moved, &ctx, &params).unwrap();
+    assert_eq!(actual, search(&moved, &ctx, &params));
+}

@@ -6,6 +6,7 @@ use super::{
 };
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, ScoreTarget};
+use std::sync::Arc;
 
 /// Reusable immutable search data for one `CardPool` / `SearchContext` pair.
 ///
@@ -13,6 +14,8 @@ use crate::types::{DECK_SIZE, ScoreTarget};
 /// seeding once. Callers that already cache the pool can keep this beside it and
 /// execute repeated exact searches without rebuilding those structures.
 pub struct PreparedSearch {
+    source_pool: Arc<()>,
+    source_ctx: SearchContext,
     pool: CardPool,
     ctx: SearchContext,
     original_indices: Vec<CardIdx>,
@@ -41,6 +44,8 @@ impl PreparedSearch {
         let suffix = SuffixBound::build_prepared(&dominance.pool, &dominance.ctx);
         let warm_seeds = warm_start::warm_start_seeds(&dominance.pool, &dominance.ctx, max_top_k);
         Some(Self {
+            source_pool: Arc::clone(pool.instance_token()),
+            source_ctx: ctx.clone(),
             pool: dominance.pool,
             ctx: dominance.ctx,
             original_indices: dominance.original_indices,
@@ -51,14 +56,23 @@ impl PreparedSearch {
         })
     }
 
-    /// Executes an exact search when `params.top_k` is covered by this plan.
+    /// Executes an exact search for the same immutable pool instance and context.
+    ///
+    /// Returns `None` for a different pool, a changed context, or an unsupported
+    /// `top_k`, so callers can rebuild the plan or use ordinary exact search.
+    /// Moving the original pool is safe; reconstructing an equivalent pool is a
+    /// different instance. No address or hash collision can validate stale data.
     pub fn search_instrumented(
         &self,
         original_pool: &CardPool,
         original_ctx: &SearchContext,
         params: &SearchParams,
     ) -> Option<(Vec<DeckResult>, SearchStats)> {
-        if params.top_k == 0 || params.top_k > self.max_top_k {
+        if params.top_k == 0
+            || params.top_k > self.max_top_k
+            || !Arc::ptr_eq(&self.source_pool, original_pool.instance_token())
+            || self.source_ctx != *original_ctx
+        {
             return None;
         }
         let seeds = self.warm_seeds.iter().copied().take(params.top_k).collect();
