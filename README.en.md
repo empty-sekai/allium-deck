@@ -4,7 +4,7 @@ English | [简体中文](./README.md)
 
 A Rust implementation of a Project Sekai deck recommendation engine, focused on **exact DFS / branch-and-bound (B&B) search**.
 
-Given a player's card collection, event bonuses, and an objective (power / skill / event points / MySekai, etc.), it searches a huge combinatorial space for the optimal 5-card deck. The core data structures are organized as SoA (structure of arrays) plus bit manipulation, combined with character-aware suffix upper bounds and dominance pruning. Conventional 260-card Top-1 / Top-8 hot paths are now sub-millisecond; heavier Top-K and adversarial cases are shown in the measurements below.
+Given a player's card collection, event bonuses, and an objective (power / skill / event points / MySekai, etc.), it searches a huge combinatorial space for the optimal 5-card deck. The core data structures are organized as SoA (structure of arrays) plus bit manipulation, combined with character-aware suffix upper bounds and dominance pruning. Runtime depends on the pool, rules and Top-K; see the measurement scope below.
 
 ## About the implementation
 
@@ -24,23 +24,17 @@ On top of that, this implementation is not a line-by-line translation: the **low
 
 ## Performance
 
-The table below is measured from the current final code on an **AMD EPYC 9K85**, release build, pinned to CPU 2 with an 80% CPU quota. Every row uses a synthetic 260-card pool. `Pool build` covers construction of `CardPool` and the search context from already-parsed user data; `search` includes dominance, bound construction, warm start, the main solver, and Top-K alternative recovery, while excluding fixture I/O and JSON parsing.
+The reproducible WL / Final matrix contains 24 synthetic pools and 288 configurations: 26/78/132 cards, two input families, four seeds, fixed/automatic leaders and Top-1/8/30/100. It runs on an **i5-12400F, WSL2 Linux container, Rust 1.94.1 release, pinned CPU 2**. Six interleaved A/B rounds provide 30 measured repetitions per configuration and variant. The baseline is `4cf03f9`; the candidate adds Final attribute lookup and per-leader scratch reuse.
 
-| Scenario | Top-K | Pool build | Search p50 | Search p95 |
-| --- | ---: | ---: | ---: | ---: |
-| balanced / Solo / no event | 1 | 0.390 ms | **0.632 ms** | 0.656 ms |
-| balanced / Solo / no event | 8 | 0.359 ms | **0.747 ms** | 0.767 ms |
-| balanced / Multi / no event | 8 | 0.371 ms | **0.365 ms** | 0.401 ms |
-| balanced / Solo / event | 8 | 0.382 ms | **1.468 ms** | 2.057 ms |
-| tradeoff / Solo / no event | 1 | 0.338 ms | **0.994 ms** | 1.012 ms |
-| tradeoff / Solo / no event | 8 | 0.340 ms | **4.378 ms** | 21.329 ms |
-| tradeoff / Solo / no event | 100 | 0.345 ms | **13.467 ms** | 34.460 ms |
+All 17,280 measured searches completed, with identical full rankings, slot orders, scores and search-work counters for every configuration. The typical change below is the median of per-configuration candidate/baseline median-time ratios. Timings cover search, excluding pool construction and input parsing.
 
-`balanced260` represents a conventional developed collection. `tradeoff260` deliberately makes power and skill strongly anti-correlated within a character and is used to expose search-tail behavior. Real latency depends on the account, event rules, objective, and Top-K, so the table reports distributions rather than a single best run.
+| Scene | Configurations | Typical timing change | Slowest candidate configuration median |
+| --- | ---: | ---: | ---: |
+| Ordinary WL | 96 | Essentially unchanged | 71.6 ms |
+| Final fixed leader | 96 | About 40% lower | 71.4 ms |
+| Final automatic leader | 96 | About 28% lower | 591.8 ms |
 
-A separate, heavier release A/B suite shows ordinary stress-search p50 improving over the previous exact baseline by about **20.2% / 14.8% / 16.7% / 17.7%** at Top-1 / 8 / 30 / 100. Final-auto improves by about **20.6% / 17.0% / 15.2% / 7.7%** at the same K values. Every paired run that completed on both sides returned identical results, and the number of 2-second stress timeouts did not increase.
-
-On x86-64, AVX-512F/BW is selected at runtime; unsupported CPUs and other architectures fall back to scalar code.
+These controlled synthetic measurements do not estimate production P99 or imply that latency tails have disappeared. Per-configuration p50/p95/p99/max, equality checks and raw-file hashes are in the [measurement record](docs/benchmarks/wl-final-20260922.json). See the [validation guide](docs/search-validation.md) for input generation and reproduction. Deadline stress measurements are reported separately from complete-result comparisons.
 
 ## Public API
 

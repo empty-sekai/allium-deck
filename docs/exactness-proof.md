@@ -271,11 +271,13 @@ leader/job ceiling.
 A Final Chapter member position is first represented by a character group.
 Each group records the bitmask of attributes available to that character.
 
-For a suffix of character groups, attr_union_states[k] records every 5-bit
-attribute union obtainable by selecting exactly k groups.  The transition is
-the complete OR-product of the previous unions with every attribute available
-from the next group.  Therefore this DP is exact for the isolated
-character-group/attribute dimension.
+For a suffix of character groups, the implementation stores `attr_bonus[k][s]`:
+the maximum `diff_attr_bonus` reachable after selecting exactly `k` groups,
+starting from an already selected 5-bit attribute set `s`.  The transition
+keeps both skipping the current group and OR-ing each attribute available from
+it into the starting set.  This is an equivalent memoized form of the complete
+OR-product and remains exact for the isolated character-group/attribute
+dimension, including nonmonotone bonus tables.
 
 At a character-search prefix, production combines:
 
@@ -283,8 +285,8 @@ At a character-search prefix, production combines:
 - every mandatory selected group,
 - every exact k-group union reachable from the remaining suffix,
 
-and takes the maximum diff_attr_bonus of those states.  Power, skill, limited
-bonus, and support are still independently relaxed.  The combined score
+and looks up the maximum bonus for each selected-prefix union. Power, skill,
+limited bonus, and support are still independently relaxed. The combined score
 ceiling is thus admissible.
 
 At the card-within-group level, the analogous DP over the remaining selected
@@ -546,6 +548,12 @@ derived from the finalized stats rather than duplicated in mutable search
 state.
 
 ## 15. Verification evidence and what each class proves
+
+The runnable matrix and evidence boundaries are documented in
+[search-validation.md](search-validation.md). Final Top-K reconstruction must
+keep a forced leader in the concrete first slot: event bonuses and support
+selection use that slot before display materialization. Reordering a returned
+display cannot repair an incorrectly evaluated leader role.
 
 The mathematical invariants in this document are the correctness argument.
 Tests and benchmarks have different evidentiary roles and must not be conflated:

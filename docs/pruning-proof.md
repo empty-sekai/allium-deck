@@ -654,6 +654,16 @@ The current support sum is therefore an upper bound for every completion.
 
 The same argument proves the leader-only Final root support ceiling.
 
+Generic Final DFS may visit several leader profiles. Its suffix preparation
+forms one support envelope: each public card receives the maximum bonus across
+the feasible leader profiles, and the slot count is their maximum count.
+After any selected-ID exclusion, every counted card in any one profile is
+still bounded by that card's envelope value. The envelope has enough slots to
+include all of them, so its largest remaining values upper-bound that profile's
+sum. This holds for every leader, including profiles that fall back to the
+ordinary support deck. A fixed leader needs only its effective profile. The
+global extra-bonus fallback and exclusion-aware bounds use the same envelope.
+
 Combined World Bloom ceilings may independently maximize power, skill,
 attribute bonus, and support bonus. Incompatibility between these maxima only
 makes the bound larger, never smaller.
@@ -717,20 +727,16 @@ set.
 For each character group, attr_mask records every attribute available from that
 character.
 
-attr_union_states[k] is a bitset of all 5-bit attribute unions obtainable by
-selecting exactly $k$ groups from a suffix. Its transition is the complete
-OR-product of:
+attr_bonus[k][s] stores the maximum `diff_attr_bonus` obtainable by selecting
+exactly $k$ groups from a suffix, starting from attribute union `s`. Its
+transition keeps the skip-current-group value and, for every attribute in the
+current group's mask, takes the value for `s | attribute` in the `k-1` row.
+This is the OR-product DP with the final bonus lookup memoized. Induction on
+suffix length proves that the table is the exact maximum for the isolated
+attribute dimension, including nonmonotone `diff_attr_bonus` tables.
 
-- every union selecting $k$ groups without the current group;
-- every union selecting $k-1$ later groups OR one attribute available from
-  the current group.
-
-Induction on suffix length proves that the DP contains every isolated attribute
-union of exactly $k$ future groups.
-
-Combining the selected-prefix union, leader attribute, and every state in
-attr_union_states[remaining], then taking the largest diff_attr_bonus, is
-therefore an exact maximum for the isolated attribute dimension.
+Combining the selected-prefix union and leader attribute into `s`, then looking
+up `attr_bonus[remaining][s]`, is therefore an exact maximum for that dimension.
 
 ### 18.3 Character-level numeric ceiling
 
@@ -1079,6 +1085,7 @@ independent checks designed to expose a violated premise.
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
 | BonusReach / exact tiers | exact_bonus.rs, fractional_bonus.rs |
 | Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample |
+| WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |
 | Power | exact_power.rs and all-scene oracle matrix |
 | Challenge | exact_challenge.rs and challenge-all timeout regression |
 | SIMD equality | simd::tests::dispatched_mask_keeps_bounds_equal_to_threshold |

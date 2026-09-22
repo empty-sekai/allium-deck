@@ -84,9 +84,9 @@ struct GroupCeilingTail {
     top_skill: [u32; MEMBER_COUNT + 1],
     top_base_bonus: [u32; MEMBER_COUNT + 1],
     top_limited_bonus: [u32; MEMBER_COUNT + 1],
-    /// attr_union_states[k]: bitset over 5-bit attr unions reachable by
-    /// selecting exactly k character groups from this suffix.
-    attr_union_states: [u32; MEMBER_COUNT + 1],
+    /// Best diversity bonus for each starting attribute set after selecting
+    /// exactly k groups from this suffix. Zero also represents infeasibility.
+    attr_bonus: [[u16; 32]; MEMBER_COUNT + 1],
 }
 
 impl CardPartial {
@@ -174,10 +174,13 @@ fn build_card_group_plan(groups: &[CharGroup], selected: &[usize; MEMBER_COUNT])
     plan
 }
 
-fn build_group_ceiling_suffix(groups: &[CharGroup]) -> Vec<GroupCeilingTail> {
+fn build_group_ceiling_suffix(
+    groups: &[CharGroup],
+    diff_attr_bonus: &[u16; 6],
+) -> Vec<GroupCeilingTail> {
     let mut suffix = vec![GroupCeilingTail::default(); groups.len() + 1];
-    // One way to select zero groups: the empty attribute union.
-    suffix[groups.len()].attr_union_states[0] = 1u32 << 0;
+    suffix[groups.len()].attr_bonus[0] =
+        core::array::from_fn(|set| diff_attr_bonus[set.count_ones() as usize]);
     let mut idx = groups.len();
     while idx > 0 {
         idx -= 1;
@@ -190,8 +193,15 @@ fn build_group_ceiling_suffix(groups: &[CharGroup]) -> Vec<GroupCeilingTail> {
         insert_topk_u32(&mut tail.top_limited_bonus, group.best_limited_bonus);
         let mut picked = 1usize;
         while picked <= MEMBER_COUNT {
-            tail.attr_union_states[picked] |=
-                extend_attr_union_states(next.attr_union_states[picked - 1], group.attr_mask);
+            for initial in 0..32 {
+                let mut attrs = group.attr_mask;
+                while attrs != 0 {
+                    let attr = attrs.trailing_zeros();
+                    attrs &= attrs - 1;
+                    tail.attr_bonus[picked][initial] = tail.attr_bonus[picked][initial]
+                        .max(next.attr_bonus[picked - 1][initial | (1 << attr)]);
+                }
+            }
             picked += 1;
         }
         suffix[idx] = tail;
@@ -287,7 +297,7 @@ fn search_leaders(
         if groups.len() < MEMBER_COUNT {
             continue;
         }
-        let group_suffix = build_group_ceiling_suffix(&groups);
+        let group_suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
         let mut leaders = pool
             .indices()
             .filter(|card| pool.char_id(*card) == leader_char)
@@ -329,7 +339,6 @@ fn search_leaders(
                 stats.leader_prunes += 1;
                 continue;
             }
-            let mut selected = [0usize; MEMBER_COUNT];
             let mut state = CharacterSearchState {
                 pool,
                 ctx,
@@ -342,7 +351,7 @@ fn search_leaders(
                 deadline: guard,
                 leader: leader_const,
             };
-            state.recurse_chars(0, 0, &mut selected);
+            state.run();
         }
     }
 
@@ -373,7 +382,7 @@ fn search_auto_leaders_two_phase(
         if groups.len() < MEMBER_COUNT {
             continue;
         }
-        let group_suffix = build_group_ceiling_suffix(&groups);
+        let group_suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
         let group_set = group_sets.len();
         let mut leaders = pool
             .indices()
@@ -434,7 +443,6 @@ fn search_auto_leaders_two_phase(
             stats.leader_prunes += 1;
             continue;
         }
-        let mut selected = [0usize; MEMBER_COUNT];
         let mut state = CharacterSearchState {
             pool,
             ctx,
@@ -447,7 +455,7 @@ fn search_auto_leaders_two_phase(
             deadline: guard,
             leader: job.leader,
         };
-        state.recurse_chars(0, 0, &mut selected);
+        state.run();
     }
 
     stats.deadline_hit = guard.hit;
@@ -1036,7 +1044,24 @@ struct CharacterSearchState<'a> {
 }
 
 impl CharacterSearchState<'_> {
-    fn recurse_chars(&mut self, depth: usize, start: usize, selected: &mut [usize; MEMBER_COUNT]) {
+    fn run(&mut self) {
+        // The initial support state depends only on this leader. Reuse it and
+        // the ranked work buffers across every character-group combination.
+        // Each card recursion reads only the buffer entries it has just filled.
+        let initial_partial = CardPartial::for_leader(self.pool, self.ctx, &self.leader);
+        let mut scratch = [[(0u64, CardIdx::new(0), initial_partial); RANKED_CAP]; MEMBER_COUNT];
+        let mut selected = [0usize; MEMBER_COUNT];
+        self.recurse_chars(0, 0, &mut selected, &initial_partial, &mut scratch);
+    }
+
+    fn recurse_chars(
+        &mut self,
+        depth: usize,
+        start: usize,
+        selected: &mut [usize; MEMBER_COUNT],
+        initial_partial: &CardPartial,
+        scratch: &mut [[RankedSlot; RANKED_CAP]],
+    ) {
         if self.deadline.expired_sampled() {
             return;
         }
@@ -1045,12 +1070,8 @@ impl CharacterSearchState<'_> {
             let mut ordered = *selected;
             order_card_groups(self.groups, &mut ordered);
             let mut deck = [self.leader.leader; DECK_SIZE];
-            let partial = CardPartial::for_leader(self.pool, self.ctx, &self.leader);
             let plan = build_card_group_plan(self.groups, &ordered);
-            // 排序缓冲按层预留一份：放在递归里会让每个节点付一次 ~3KB 栈清零，
-            // 终章单次搜索的节点量在千万级，这项开销会主导整棵树。
-            let mut scratch = [[(0u64, CardIdx::new(0), partial); RANKED_CAP]; MEMBER_COUNT];
-            self.recurse_cards(&ordered, &plan, 0, &mut deck, partial, &mut scratch);
+            self.recurse_cards(&ordered, &plan, 0, &mut deck, *initial_partial, scratch);
             return;
         }
 
@@ -1094,7 +1115,7 @@ impl CharacterSearchState<'_> {
             selected[depth] = idx;
             self.stats.ep_candidates += 1;
             idx += 1;
-            self.recurse_chars(depth + 1, idx, selected);
+            self.recurse_chars(depth + 1, idx, selected, initial_partial, scratch);
             threshold = self.tracker.threshold();
         }
     }
@@ -1324,7 +1345,6 @@ fn character_ceiling(
     );
     let extra_bonus_ub = if leader.use_group_attr_dp {
         final_chapter_character_attr_bonus_bound(
-            ctx,
             groups,
             tail,
             selected,
@@ -1342,15 +1362,11 @@ fn character_ceiling(
     )
 }
 
-/// Exact isolated-attribute relaxation at character-combination depth.
-/// `selected` groups are mandatory; `tail.attr_union_states[remaining]` already
-/// represents every union obtainable by choosing exactly `remaining` groups
-/// from the suffix.  OR-combining the two state sets therefore covers every
-/// feasible completion's attribute set.  Power/skill/support stay independently
-/// relaxed, so composing their maxima remains an admissible score ceiling.
+/// Selected groups are mandatory. The suffix table already maximizes over
+/// every remaining group and attribute choice for each selected union, including
+/// nonmonotone diversity bonuses. Other score dimensions remain independent.
 #[inline]
 fn final_chapter_character_attr_bonus_bound(
-    ctx: &SearchContext,
     groups: &[CharGroup],
     tail: &GroupCeilingTail,
     selected: &[usize],
@@ -1361,22 +1377,12 @@ fn final_chapter_character_attr_bonus_bound(
     for &group_idx in selected {
         selected_states = extend_attr_union_states(selected_states, groups[group_idx].attr_mask);
     }
-    let future_states = tail.attr_union_states[remaining];
-    if future_states == 0 {
-        return 0;
-    }
     let mut best = 0u32;
     let mut left = selected_states;
     while left != 0 {
-        let selected_union = left.trailing_zeros() as u8;
+        let selected_union = left.trailing_zeros() as usize;
         left &= left - 1;
-        let mut right = future_states;
-        while right != 0 {
-            let future_union = right.trailing_zeros() as u8;
-            right &= right - 1;
-            let union = selected_union | future_union;
-            best = best.max(ctx.diff_attr_bonus[union.count_ones() as usize] as u32);
-        }
+        best = best.max(tail.attr_bonus[remaining][selected_union] as u32);
     }
     best
 }
@@ -1779,5 +1785,65 @@ fn seeds_enabled() -> bool {
     #[cfg(not(test))]
     {
         true
+    }
+}
+
+#[cfg(test)]
+mod attribute_bound_tests {
+    use super::*;
+
+    #[test]
+    fn suffix_bonus_table_matches_exhaustive_attribute_choices() {
+        fn enumerate(masks: &[u8], chosen: usize, set: usize, bonuses: &[u16; 6]) -> u16 {
+            if chosen == 0 {
+                return bonuses[set.count_ones() as usize];
+            }
+            if masks.len() < chosen {
+                return 0;
+            }
+            let mut best = enumerate(&masks[1..], chosen, set, bonuses);
+            for attr in 0..5 {
+                if masks[0] & (1 << attr) != 0 {
+                    best = best.max(enumerate(
+                        &masks[1..],
+                        chosen - 1,
+                        set | (1 << attr),
+                        bonuses,
+                    ));
+                }
+            }
+            best
+        }
+
+        for masks in [[1, 2, 4, 8, 16, 31], [3, 3, 5, 9, 17, 0], [31; 6]] {
+            let groups: Vec<_> = masks
+                .iter()
+                .map(|&attr_mask| CharGroup {
+                    char_id: 0,
+                    cards: Vec::new(),
+                    best_power: 0,
+                    best_skill: 0,
+                    best_base_bonus: 0,
+                    best_limited_bonus: 0,
+                    attr_mask,
+                    sort_key: 0,
+                })
+                .collect();
+            // Nonmonotone tables must maximize the bonus itself, not the count.
+            for bonuses in [[0, 0, 10, 20, 30, 50], [99, 70, 200, 3, 150, 0], [0; 6]] {
+                let suffix = build_group_ceiling_suffix(&groups, &bonuses);
+                for start in 0..=masks.len() {
+                    for chosen in 0..=MEMBER_COUNT {
+                        for set in 0..32 {
+                            assert_eq!(
+                                suffix[start].attr_bonus[chosen][set],
+                                enumerate(&masks[start..], chosen, set, &bonuses),
+                                "masks={masks:?} bonuses={bonuses:?} start={start} chosen={chosen} set={set}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }

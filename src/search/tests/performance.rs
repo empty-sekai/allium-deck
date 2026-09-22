@@ -2,6 +2,48 @@
 use super::*;
 
 #[test]
+#[ignore = "controlled benchmark; compare complete results on one pinned CPU"]
+fn benchmark_final_group_plans() {
+    use std::time::Instant;
+
+    let pool = build_pool(&longtail_cards(22, 6));
+    let mut ctx = final_chapter_ctx(&pool);
+    ctx.is_world_bloom = true;
+    ctx.event_type = Some(EventType::WorldBloom);
+    ctx.skill_scores[1] = [0.21, 0.17, 0.13, 0.11, 0.07, 0.23];
+    ctx.diff_attr_bonus = [0, 0, 4, 24, 120, 800];
+    ctx.support_decks_by_character = (0..27)
+        .map(|character| longtail_support(&pool, character))
+        .collect();
+    for fixed in [false, true] {
+        ctx.forced_leader_character_id = fixed.then_some(1);
+        for top_k in [1, 8, 100] {
+            let params = SearchParams {
+                top_k,
+                timeout_ms: 30_000,
+            };
+            let mut times = Vec::new();
+            let mut reference = None;
+            for _ in 0..5 {
+                let start = Instant::now();
+                let result = search(&pool, &ctx, &params);
+                times.push(start.elapsed().as_secs_f64() * 1000.0);
+                assert_eq!(result.completion(), SearchCompletion::Complete);
+                if let Some(previous) = &reference {
+                    assert_eq!(&result.results, previous);
+                }
+                reference = Some(result.results);
+            }
+            let results = reference.unwrap();
+            eprintln!(
+                "FINAL_PLANS fixed={fixed} top_k={top_k} median_ms={:.6} results={results:?}",
+                median_f64(&mut times)
+            );
+        }
+    }
+}
+
+#[test]
 #[ignore = "controlled benchmark; run single-threaded on one pinned CPU"]
 fn benchmark_wl_and_final_exact_bounds() {
     use std::time::Instant;
