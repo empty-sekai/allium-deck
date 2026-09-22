@@ -5,18 +5,24 @@
 //! Optional: ALLIUM_REAL_CORPUS (testdata/real), REGION (cn), REPEATS (3),
 //! TOPKS (1,8,30), ACCOUNT_START (0; distinct-account offset), ACCOUNT_LIMIT (4),
 //! TIMEOUT_MS (2000), MODE (full|oracle),
-//! SUBSET_CARDS (10; oracle only, 5..=12), LIVE_TYPES (multi,solo,auto),
+//! SUBSET_CARDS (10; oracle only, 5..=16), ORACLE_DENSE_LIMIT (12; 5..=16),
+//! LIVE_TYPES (multi,solo,auto), STATE_MODES (current; current,both), CATALOG (0),
+//! REQUIRE_COMPLETE (oracle:1/full:0), LATENCY_LIMIT_MS (absent; e.g. 20),
 //! WL_EVENT_ID, FINALE_EVENT_ID, MUSIC_ID and MUSIC_DIFF (prefix ALLIUM_REAL_).
 //! Output never includes corpus paths, suite names, account IDs or user data.
 //! These are real-account-derived requests, not captured WL requests. Oracle
 //! mode additionally reduces the owned collection, including its support pool.
+//! CATALOG=1 appends a full-catalog-derived profile in full mode; it never replaces
+//! real accounts or reduces catalog ownership. STATE_MODES are request variants.
+//! With REQUIRE_COMPLETE=1, an optional latency limit must be met by every
+//! measured and warmup run. Collection mode records violations but never accepts.
 
 #![allow(dead_code)]
 
 mod testdata_adapter;
 
 use allium_deck::engine::OwnedGameData;
-use allium_deck::handler::{BuildError, BuildParams, UserProfile, build_card_pool};
+use allium_deck::handler::{BuildError, BuildParams, UserCard, UserProfile, build_card_pool};
 use allium_deck::pool::CardPool;
 use allium_deck::search::{DeckResult, ExactOracle, SearchCompletion, SearchParams, search};
 use allium_deck::{LiveSkillOrder, LiveType, ScoreTarget, is_world_bloom_finale_event};
@@ -44,16 +50,34 @@ struct ManifestCase {
 
 struct Account {
     user: UserProfile,
-    manifest_ordinal: usize,
+    manifest_ordinal: Option<usize>,
     source_account: usize,
+    is_catalog: bool,
     original_owned_cards: usize,
     original_unique_characters: usize,
     applicable: bool,
 }
 
+impl Account {
+    fn account_id(&self) -> Option<usize> {
+        (!self.is_catalog).then_some(self.source_account)
+    }
+
+    fn source(&self, oracle: bool) -> &'static str {
+        if self.is_catalog {
+            "full_catalog_derived"
+        } else if oracle {
+            "real_account_derived_card_subset_and_request"
+        } else {
+            "real_account_derived_request"
+        }
+    }
+}
+
 struct Case {
     account: usize,
     mode: &'static str,
+    state_mode: &'static str,
     params: BuildParams,
 }
 
@@ -72,6 +96,27 @@ fn number<T: std::str::FromStr>(name: &str, default: &str) -> Result<T, String> 
     env(name, default)
         .parse()
         .map_err(|_| format!("invalid ALLIUM_REAL_{name}"))
+}
+
+fn flag(name: &str, default: &str) -> Result<bool, String> {
+    match env(name, default).as_str() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(format!("ALLIUM_REAL_{name} must be 0 or 1")),
+    }
+}
+
+fn optional_positive_number(name: &str) -> Result<Option<f64>, String> {
+    std::env::var(format!("ALLIUM_REAL_{name}"))
+        .ok()
+        .map(|value| {
+            value
+                .parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite() && *number > 0.0)
+                .ok_or_else(|| format!("ALLIUM_REAL_{name} must be finite and positive"))
+        })
+        .transpose()
 }
 
 fn optional_id(name: &str) -> Result<Option<i32>, String> {
@@ -96,13 +141,82 @@ fn result_rows(pool: &CardPool, results: &[DeckResult]) -> Vec<Value> {
         .iter()
         .map(|result| {
             json!({
-            "ordered_game_ids": result.cards.map(|card| pool.game_id(card)),
-            "dense_variants": result.cards.map(|card| card.raw()),
-                    // A decimal string preserves every bit through JavaScript readers.
-                    "score": result.score.to_string(),
-                })
+                "ordered_game_ids": result.cards.map(|card| pool.game_id(card)),
+                "dense_variants": result.cards.map(|card| card.raw()),
+                // A decimal string preserves every bit through JavaScript readers.
+                "score": result.score.to_string(),
+            })
         })
         .collect()
+}
+
+/// Full card ownership with card cultivation maxima taken from this snapshot.
+/// Area items, character ranks, honors, gates and canvases are not invented.
+fn catalog_user(game: &OwnedGameData) -> Result<UserProfile, String> {
+    let mut cards = Vec::with_capacity(game.cards.len());
+    let mut identities = BTreeSet::new();
+    for master in &game.cards {
+        if master.id <= 0 || !identities.insert(master.id) {
+            return Err("catalog has invalid or duplicate card identity".to_owned());
+        }
+        let rarity = game
+            .card_rarities
+            .iter()
+            .find(|row| row.card_rarity_type == master.card_rarity_type)
+            .ok_or_else(|| format!("catalog card {} has no rarity metadata", master.id))?;
+        let level = master.max_level.unwrap_or(rarity.max_level);
+        let skill_level = master.max_skill_level.unwrap_or(rarity.max_skill_level);
+        let master_rank = master.max_master_rank.unwrap_or_else(|| {
+            game.master_lessons
+                .iter()
+                .filter(|row| row.card_rarity_type == master.card_rarity_type)
+                .map(|row| row.master_rank)
+                .max()
+                .unwrap_or(0)
+        });
+        if level < 1 || skill_level < 1 || master_rank < 0 {
+            return Err(format!(
+                "catalog card {} has invalid cultivation maxima",
+                master.id
+            ));
+        }
+        let trained = master.special_training_skill_id.is_some()
+            || master.special_training_power1_bonus_fixed > 0
+            || master.special_training_power2_bonus_fixed > 0
+            || master.special_training_power3_bonus_fixed > 0;
+        let episodes_read = game
+            .card_episodes
+            .iter()
+            .filter(|row| row.card_id == master.id)
+            .map(|row| row.episode_no)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        cards.push(UserCard {
+            card_id: master.id,
+            level,
+            skill_level,
+            master_rank,
+            special_training_status: if trained { "done" } else { "not_doing" }.to_owned(),
+            default_image: if trained {
+                "special_training"
+            } else {
+                "original"
+            }
+            .to_owned(),
+            episodes_read,
+            is_virtual: false,
+            has_canvas_bonus_override: None,
+        });
+    }
+    if cards.is_empty() {
+        return Err("catalog has no cards".to_owned());
+    }
+    cards.sort_unstable_by_key(|card| card.card_id);
+    Ok(UserProfile {
+        user_cards: cards,
+        ..UserProfile::default()
+    })
 }
 
 fn reduced_user(
@@ -168,9 +282,19 @@ fn real_world_bloom_matrix() -> Result<(), String> {
     let account_start: usize = number("ACCOUNT_START", "0")?;
     let timeout_ms: u64 = number("TIMEOUT_MS", if mode == "oracle" { "0" } else { "2000" })?;
     let subset_cards: usize = number("SUBSET_CARDS", "10")?;
-    if repeats == 0 || account_limit == 0 || !(5..=12).contains(&subset_cards) {
+    let oracle_dense_limit: usize = number("ORACLE_DENSE_LIMIT", "12")?;
+    let include_catalog = flag("CATALOG", "0")?;
+    let latency_limit_ms = optional_positive_number("LATENCY_LIMIT_MS")?;
+    if include_catalog && mode != "full" {
+        return Err("CATALOG=1 requires MODE=full; catalog inputs are never reduced".to_owned());
+    }
+    if repeats == 0
+        || account_limit == 0
+        || !(5..=16).contains(&subset_cards)
+        || !(5..=16).contains(&oracle_dense_limit)
+    {
         return Err(
-            "REPEATS/ACCOUNT_LIMIT must be positive; SUBSET_CARDS must be 5..=12".to_owned(),
+            "REPEATS/ACCOUNT_LIMIT must be positive; SUBSET_CARDS/ORACLE_DENSE_LIMIT must be 5..=16".to_owned(),
         );
     }
     let mut topks = env("TOPKS", "1,8,30")
@@ -203,7 +327,23 @@ fn real_world_bloom_matrix() -> Result<(), String> {
     {
         return Err("LIVE_TYPES must contain distinct values".to_owned());
     }
-    let require_complete = env("REQUIRE_COMPLETE", if mode == "oracle" { "1" } else { "0" }) == "1";
+    let state_modes = env("STATE_MODES", "current")
+        .split(',')
+        .map(|value| match value.trim() {
+            "current" => Ok(("current", true)),
+            "both" => Ok(("both", false)),
+            _ => Err("STATE_MODES supports current,both".to_owned()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if state_modes.is_empty()
+        || state_modes
+            .iter()
+            .enumerate()
+            .any(|(index, state)| state_modes[..index].contains(state))
+    {
+        return Err("STATE_MODES must contain distinct values".to_owned());
+    }
+    let require_complete = flag("REQUIRE_COMPLETE", if mode == "oracle" { "1" } else { "0" })?;
 
     // Optional loader tables must not silently erase the WL route under test.
     for name in [
@@ -336,19 +476,22 @@ fn real_world_bloom_matrix() -> Result<(), String> {
         if profiles.insert(canonical) {
             accounts.push(Account {
                 source_account: accounts.len() + 1,
+                is_catalog: false,
                 original_owned_cards: user.user_cards.len(),
                 user,
-                manifest_ordinal: ordinal + 1,
+                manifest_ordinal: Some(ordinal + 1),
                 original_unique_characters: 0,
                 applicable: true,
             });
         }
     }
     let distinct_accounts = accounts.len();
-    if distinct_accounts == 0 {
+    if distinct_accounts == 0 && !include_catalog {
         return Err("no distinct accounts for REGION".to_owned());
     }
-    if account_start >= distinct_accounts {
+    if (distinct_accounts > 0 && account_start >= distinct_accounts)
+        || (distinct_accounts == 0 && account_start != 0)
+    {
         return Err("ACCOUNT_START lies outside the distinct account inventory".to_owned());
     }
     let mut accounts: Vec<_> = accounts
@@ -356,6 +499,19 @@ fn real_world_bloom_matrix() -> Result<(), String> {
         .skip(account_start)
         .take(account_limit)
         .collect();
+    let selected_real_accounts = accounts.len();
+    if include_catalog {
+        let user = catalog_user(&game)?;
+        accounts.push(Account {
+            original_owned_cards: user.user_cards.len(),
+            user,
+            manifest_ordinal: None,
+            source_account: 0,
+            is_catalog: true,
+            original_unique_characters: 0,
+            applicable: true,
+        });
+    }
     let master_characters: BTreeMap<_, _> = game
         .cards
         .iter()
@@ -386,9 +542,9 @@ fn real_world_bloom_matrix() -> Result<(), String> {
         if characters.len() < 5 {
             account.applicable = false;
             not_applicable_records.push(json!({
-                "record":"not_applicable", "scope":"account", "account":account.source_account,
+                "record":"not_applicable", "scope":if account.is_catalog {"profile"} else {"account"}, "account":account.account_id(),
                 "manifest_ordinal":account.manifest_ordinal,
-                "source":"real_account_derived_request", "validation_mode":mode,
+                "source":account.source(mode == "oracle"), "validation_mode":mode,
                 "reason":"fewer_than_five_distinct_owned_characters",
                 "owned_cards":account.original_owned_cards, "unique_characters":characters.len(),
                 "feasible_set_empty":true, "search_executed":false,
@@ -424,23 +580,26 @@ fn real_world_bloom_matrix() -> Result<(), String> {
                 ("final_fixed", finale, None, Some(leader)),
                 ("final_auto", finale, None, None),
             ] {
-                cases.push(Case {
-                    account,
-                    mode: label,
-                    params: BuildParams {
-                        region: region.clone(),
-                        event_id: Some(event),
-                        world_bloom_character_id: character,
-                        forced_leader_character_id: forced,
-                        live_type,
-                        target: ScoreTarget::Score,
-                        music_id: Some(music.music_id),
-                        music_diff: Some(music.difficulty.clone()),
-                        live_skill_order: LiveSkillOrder::Average,
-                        keep_after_training_state: true,
-                        ..BuildParams::default()
-                    },
-                });
+                for &(state_mode, keep_after_training_state) in &state_modes {
+                    cases.push(Case {
+                        account,
+                        mode: label,
+                        state_mode,
+                        params: BuildParams {
+                            region: region.clone(),
+                            event_id: Some(event),
+                            world_bloom_character_id: character,
+                            forced_leader_character_id: forced,
+                            live_type,
+                            target: ScoreTarget::Score,
+                            music_id: Some(music.music_id),
+                            music_diff: Some(music.difficulty.clone()),
+                            live_skill_order: LiveSkillOrder::Average,
+                            keep_after_training_state,
+                            ..BuildParams::default()
+                        },
+                    });
+                }
             }
         }
     }
@@ -454,11 +613,11 @@ fn real_world_bloom_matrix() -> Result<(), String> {
     );
     emit(
         &mut out,
-        json!({"record":"inventory", "source":"legacy_real_accounts_derived_requests", "mode":mode, "region":region, "manifest_entries":manifest.cases.len(), "distinct_suites":suites.len(), "distinct_account_profiles":distinct_accounts, "excluded_region_suites":excluded_region, "selected_accounts":accounts.len(), "cases":cases.len(), "repeats":repeats, "topks":topks, "timeout_ms":timeout_ms, "wl_event":chapter.0, "wl_chapter":chapter.1, "wl_character":chapter.2, "finale_event":finale, "unsupported_finale_events_excluded":unsupported_finales, "music_id":music.music_id, "music_diff":music.difficulty, "subset_cards":if mode=="oracle" {Some(subset_cards)} else {None}, "adapter":"testdata_adapter::transform_input; legacy support/deck selections not captured", "support_bonus_source":"production loader: external tables or embedded versioned WL tables", "timing_scope":"build_card_pool + complete search pipeline; input/masterdata loading excluded"}),
+        json!({"record":"inventory", "source":if include_catalog {"real_accounts_and_full_catalog_derived_requests"} else {"legacy_real_accounts_derived_requests"}, "mode":mode, "region":region, "manifest_entries":manifest.cases.len(), "distinct_suites":suites.len(), "distinct_account_profiles":distinct_accounts, "excluded_region_suites":excluded_region, "selected_accounts":selected_real_accounts, "catalog_profiles":usize::from(include_catalog), "selected_profiles":accounts.len(), "catalog_card_ids":if include_catalog {Some(game.cards.len())} else {None}, "catalog_cultivation":"card level/skill/master/episode maxima from loaded masterdata; no area/rank/honor/gate/canvas additions", "state_modes":state_modes.iter().map(|state| state.0).collect::<Vec<_>>(), "state_modes_do_not_multiply_account_count":true, "cases":cases.len(), "repeats":repeats, "topks":topks, "timeout_ms":timeout_ms, "latency_limit_ms":latency_limit_ms, "require_complete":require_complete, "wl_event":chapter.0, "wl_chapter":chapter.1, "wl_character":chapter.2, "finale_event":finale, "unsupported_finale_events_excluded":unsupported_finales, "music_id":music.music_id, "music_diff":music.difficulty, "subset_cards":if mode=="oracle" {Some(subset_cards)} else {None}, "oracle_dense_limit":if mode=="oracle" {Some(oracle_dense_limit)} else {None}, "adapter":"testdata_adapter::transform_input; legacy support/deck selections not captured", "support_bonus_source":"production loader: external tables or embedded versioned WL tables", "timing_scope":"build_card_pool + complete search pipeline; input/masterdata loading, oracle and output excluded"}),
     )?;
     emit(
         &mut out,
-        json!({"record":"account_coverage", "account_start":account_start, "account_limit":account_limit, "selected_accounts":accounts.len(), "applicable_accounts":accounts.iter().filter(|account| account.applicable).count(), "not_applicable_accounts":not_applicable_records.len(), "selection_excluded_before":account_start, "selection_excluded_after":distinct_accounts.saturating_sub(account_start + accounts.len()), "not_applicable_is_not_solver_success":true}),
+        json!({"record":"account_coverage", "account_start":account_start, "account_limit":account_limit, "selected_accounts":selected_real_accounts, "applicable_accounts":accounts.iter().filter(|account| account.applicable && !account.is_catalog).count(), "not_applicable_accounts":accounts.iter().filter(|account| !account.applicable && !account.is_catalog).count(), "catalog_profiles":usize::from(include_catalog), "selection_excluded_before":account_start, "selection_excluded_after":distinct_accounts.saturating_sub(account_start + selected_real_accounts), "not_applicable_is_not_solver_success":true}),
     )?;
     for record in not_applicable_records {
         emit(&mut out, record)?;
@@ -469,22 +628,32 @@ fn real_world_bloom_matrix() -> Result<(), String> {
     let mut unsupported_cases = BTreeSet::new();
     let mut completed = 0usize;
     let mut timed_out = 0usize;
+    let mut warmup_timed_out = 0usize;
+    let mut measured_over_latency = 0usize;
+    let mut warmup_over_latency = 0usize;
+    let mut latency_failures = BTreeMap::<(usize, usize), (usize, usize, f64)>::new();
     let mut complete_reference = BTreeMap::<(usize, usize), Vec<Value>>::new();
+    let catalog_ids: BTreeSet<_> = game.cards.iter().map(|card| card.id).collect();
     // Round zero is a recorded warmup; later rounds interleave every case/Top-K.
     for round in 0..=repeats {
         for (case_index, case) in cases.iter().enumerate() {
             for &top_k in &topks {
                 let account = &accounts[case.account];
+                let mut build_params = case.params.clone();
+                build_params.limit = top_k;
                 let started = Instant::now();
-                let (pool, ctx) = match build_card_pool(&account.user, &game.as_ref(), &case.params)
-                {
+                let (pool, ctx) = match build_card_pool(
+                    &account.user,
+                    &game.as_ref(),
+                    &build_params,
+                ) {
                     Ok(built) => built,
                     Err(BuildError::TooManyCards(count)) if mode == "full" => {
                         unsupported_accounts.insert(case.account);
                         unsupported_cases.insert(case_index);
                         emit(
                             &mut out,
-                            json!({"record":"unsupported", "account":account.source_account, "manifest_ordinal":account.manifest_ordinal, "case":case_index+1, "source":"real_account_derived_request", "phase":if round==0 {"warmup"} else {"measured"}, "round":round, "event":case.params.event_id, "mode":case.mode, "live_type":case.params.live_type, "top_k":top_k, "owned_cards":account.user.user_cards.len(), "unique_characters":account.original_unique_characters, "pool":count, "complete":false, "completion":"unsupported_capacity", "deadline":false, "stats":null, "results":[], "error":"TooManyCards", "wall_ms":started.elapsed().as_secs_f64()*1000.0}),
+                            json!({"record":"unsupported", "account":account.account_id(), "manifest_ordinal":account.manifest_ordinal, "case":case_index+1, "source":account.source(false), "state_mode":case.state_mode, "keep_after_training_state":case.params.keep_after_training_state, "phase":if round==0 {"warmup"} else {"measured"}, "round":round, "event":case.params.event_id, "mode":case.mode, "live_type":case.params.live_type, "top_k":top_k, "owned_cards":account.user.user_cards.len(), "unique_characters":account.original_unique_characters, "pool":count, "complete":false, "completion":"unsupported_capacity", "deadline":false, "stats":null, "results":[], "error":"TooManyCards", "wall_ms":started.elapsed().as_secs_f64()*1000.0}),
                         )?;
                         continue;
                     }
@@ -492,31 +661,60 @@ fn real_world_bloom_matrix() -> Result<(), String> {
                         return Err(format!("case {} build failed: {error}", case_index + 1));
                     }
                 };
+                let build_ms = started.elapsed().as_secs_f64() * 1000.0;
                 supported_accounts.insert(case.account);
                 supported_cases.insert(case_index);
-                let build_ms = started.elapsed().as_secs_f64() * 1000.0;
                 if !ctx.is_world_bloom || ctx.is_final_chapter != (case.mode != "wl_chapter") {
                     return Err(format!("case {} took the wrong route", case_index + 1));
                 }
-                if mode == "oracle" && pool.count() > 12 {
+                if account.is_catalog {
+                    let built_ids: BTreeSet<_> = pool
+                        .indices()
+                        .map(|card| i32::from(pool.game_id(card)))
+                        .collect();
+                    if built_ids != catalog_ids {
+                        return Err(format!(
+                            "catalog case {} did not retain every masterdata card identity",
+                            case_index + 1
+                        ));
+                    }
+                }
+                if mode == "oracle" && pool.count() > oracle_dense_limit {
                     return Err(format!(
-                        "case {} has unsupported validation pool size {}",
+                        "case {} state {} has dense pool {}; ORACLE_DENSE_LIMIT={oracle_dense_limit}; explicitly lower SUBSET_CARDS or raise the oracle limit up to 16",
                         case_index + 1,
+                        case.state_mode,
                         pool.count()
                     ));
                 }
                 let params = SearchParams { top_k, timeout_ms };
                 let search_started = Instant::now();
                 let outcome = search(&pool, &ctx, &params);
+                let search_ms = search_started.elapsed().as_secs_f64() * 1000.0;
+                // Only the two engine operations are timed. Route/identity checks,
+                // oracle enumeration, result serialization and output are excluded.
+                let wall_ms = build_ms + search_ms;
                 if round > 0 {
                     if outcome.completion() == SearchCompletion::Complete {
                         completed += 1;
                     } else {
                         timed_out += 1;
                     }
+                } else if outcome.completion() != SearchCompletion::Complete {
+                    warmup_timed_out += 1;
                 }
-                let search_ms = search_started.elapsed().as_secs_f64() * 1000.0;
-                let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let latency_met = latency_limit_ms.map(|limit| wall_ms < limit);
+                if latency_met == Some(false) {
+                    let entry = latency_failures.entry((case_index, top_k)).or_default();
+                    if round == 0 {
+                        warmup_over_latency += 1;
+                        entry.0 += 1;
+                    } else {
+                        measured_over_latency += 1;
+                        entry.1 += 1;
+                    }
+                    entry.2 = entry.2.max(wall_ms);
+                }
                 let results = result_rows(&pool, &outcome.results);
                 if outcome.completion() == SearchCompletion::Complete {
                     if let Some(previous) = complete_reference.get(&(case_index, top_k)) {
@@ -545,7 +743,7 @@ fn real_world_bloom_matrix() -> Result<(), String> {
                 }
                 emit(
                     &mut out,
-                    json!({"record":"sample", "account":account.source_account, "manifest_ordinal":account.manifest_ordinal, "case":case_index+1, "source":if mode=="oracle" {"real_account_derived_card_subset_and_request"} else {"real_account_derived_request"}, "phase":if round==0 {"warmup"} else {"measured"}, "round":round, "event":case.params.event_id, "mode":case.mode, "live_type":case.params.live_type, "top_k":top_k, "owned_cards":account.user.user_cards.len(), "original_owned_cards":account.original_owned_cards, "original_unique_characters":account.original_unique_characters, "pool":pool.count(), "complete":outcome.completion()==SearchCompletion::Complete, "completion":outcome.completion(), "deadline":outcome.stats.deadline_hit, "stats":outcome.stats, "route":{"is_world_bloom":ctx.is_world_bloom, "is_final_chapter":ctx.is_final_chapter, "forced_leader":ctx.forced_leader_character_id, "support_count":ctx.support_deck.count, "support_candidates":ctx.support_deck.cards.len(), "leader_support_counts":ctx.support_decks_by_character.iter().map(|deck| deck.count).collect::<Vec<_>>(), "leader_support_candidates":ctx.support_decks_by_character.iter().map(|deck| deck.cards.len()).collect::<Vec<_>>()}, "results":results, "build_ms":build_ms, "search_ms":search_ms, "wall_ms":wall_ms, "oracle":oracle}),
+                    json!({"record":"sample", "account":account.account_id(), "manifest_ordinal":account.manifest_ordinal, "case":case_index+1, "source":account.source(mode == "oracle"), "state_mode":case.state_mode, "keep_after_training_state":case.params.keep_after_training_state, "phase":if round==0 {"warmup"} else {"measured"}, "round":round, "event":case.params.event_id, "mode":case.mode, "live_type":case.params.live_type, "top_k":top_k, "owned_cards":account.user.user_cards.len(), "original_owned_cards":account.original_owned_cards, "original_unique_characters":account.original_unique_characters, "pool":pool.count(), "complete":outcome.completion()==SearchCompletion::Complete, "completion":outcome.completion(), "deadline":outcome.stats.deadline_hit, "stats":outcome.stats, "route":{"is_world_bloom":ctx.is_world_bloom, "is_final_chapter":ctx.is_final_chapter, "forced_leader":ctx.forced_leader_character_id, "support_count":ctx.support_deck.count, "support_candidates":ctx.support_deck.cards.len(), "leader_support_counts":ctx.support_decks_by_character.iter().map(|deck| deck.count).collect::<Vec<_>>(), "leader_support_candidates":ctx.support_decks_by_character.iter().map(|deck| deck.cards.len()).collect::<Vec<_>>()}, "results":results, "build_ms":build_ms, "search_ms":search_ms, "wall_ms":wall_ms, "latency_limit_ms":latency_limit_ms, "latency_met":latency_met, "oracle":oracle}),
                 )?;
                 if !oracle_matches {
                     return Err(format!(
@@ -556,23 +754,54 @@ fn real_world_bloom_matrix() -> Result<(), String> {
             }
         }
     }
+    let latency_failure_rows: Vec<_> = latency_failures
+        .iter()
+        .map(
+            |(&(case_index, top_k), &(warmups, measured, max_wall_ms))| {
+                let case = &cases[case_index];
+                let account = &accounts[case.account];
+                json!({
+                    "case":case_index + 1, "top_k":top_k,
+                    "account":account.account_id(), "source":account.source(mode == "oracle"),
+                    "mode":case.mode, "state_mode":case.state_mode,
+                    "live_type":case.params.live_type,
+                    "warmup_over_limit":warmups, "measured_over_limit":measured,
+                    "max_wall_ms":max_wall_ms,
+                })
+            },
+        )
+        .collect();
+    let all_applicable_complete =
+        timed_out == 0 && warmup_timed_out == 0 && unsupported_cases.is_empty() && completed > 0;
+    let latency_passed = latency_failures.is_empty();
+    let gate_passed = all_applicable_complete && latency_passed;
     emit(
         &mut out,
-        json!({"record":"summary", "selected_accounts":accounts.len(), "account_start":account_start, "not_applicable_accounts":accounts.iter().filter(|account| !account.applicable).count(), "accounts_with_supported_cases":supported_accounts.len(), "accounts_with_unsupported_cases":unsupported_accounts.len(), "supported_cases":supported_cases.len(), "unsupported_capacity_cases":unsupported_cases.len(), "measured_complete":completed, "measured_timed_out":timed_out, "note":"not-applicable accounts and capacity errors are not successful searches; no full-mode card reduction is performed"}),
+        json!({"record":"summary", "selected_accounts":selected_real_accounts, "catalog_profiles":usize::from(include_catalog), "selected_profiles":accounts.len(), "account_start":account_start, "not_applicable_accounts":accounts.iter().filter(|account| !account.applicable && !account.is_catalog).count(), "accounts_with_supported_cases":supported_accounts.iter().filter(|&&index| !accounts[index].is_catalog).count(), "accounts_with_unsupported_cases":unsupported_accounts.iter().filter(|&&index| !accounts[index].is_catalog).count(), "catalog_profiles_with_supported_cases":supported_accounts.iter().filter(|&&index| accounts[index].is_catalog).count(), "catalog_profiles_with_unsupported_cases":unsupported_accounts.iter().filter(|&&index| accounts[index].is_catalog).count(), "supported_cases":supported_cases.len(), "unsupported_capacity_cases":unsupported_cases.len(), "measured_complete":completed, "measured_timed_out":timed_out, "warmup_timed_out":warmup_timed_out, "latency_limit_ms":latency_limit_ms, "measured_over_latency_limit":measured_over_latency, "warmup_over_latency_limit":warmup_over_latency, "over_latency_cases":latency_failure_rows, "note":"state modes are request axes, not extra accounts; catalog is additional derived input; no full-mode card reduction is performed"}),
     )?;
     emit(
         &mut out,
         json!({
             "record": "gate", "require_complete": require_complete,
-        "classification": if mode == "oracle" { "ordered_oracle_equivalence" } else if require_complete { "complete_stability" } else { "deadline_and_capacity_diagnostics" },
+            "classification": if !require_complete { "diagnostic_collection" } else if mode == "oracle" { "ordered_oracle_equivalence" } else { "complete_stability" },
             "complete_result_stability_checked": true,
-            "all_applicable_complete": timed_out == 0 && unsupported_cases.is_empty() && completed > 0,
+            "oracle_equivalence_checked": mode == "oracle",
+            "all_applicable_complete": all_applicable_complete,
+            "latency_limit_ms": latency_limit_ms,
+            "latency_comparison": "wall_ms < latency_limit_ms",
+            "latency_gate_includes_warmup": true,
+            "latency_passed": latency_limit_ms.map(|_| latency_passed),
+            "measured_over_latency_limit": measured_over_latency,
+            "warmup_over_latency_limit": warmup_over_latency,
+            "gate_passed": require_complete.then_some(gate_passed),
+            "accepted": require_complete && gate_passed,
         }),
     )?;
-    if require_complete && (timed_out > 0 || !unsupported_cases.is_empty() || completed == 0) {
-        return Err(
-            "complete validation required but some applicable cases did not complete".to_owned(),
-        );
+    if require_complete && !gate_passed {
+        return Err(format!(
+            "strict validation failed: measured_timed_out={timed_out}, warmup_timed_out={warmup_timed_out}, unsupported_cases={}, completed={completed}, measured_over_latency={measured_over_latency}, warmup_over_latency={warmup_over_latency}",
+            unsupported_cases.len(),
+        ));
     }
     Ok(())
 }

@@ -147,3 +147,80 @@ fn search_suffix_bound_is_sound_and_zero_pool_is_zero() {
         0
     );
 }
+
+#[test]
+fn fractional_average_ceiling_bounds_the_leaf_and_complete_ordered_top_k() {
+    let cards: Vec<_> = (0..7u8)
+        .map(|index| TestCard {
+            char_id: index + 1,
+            attr: index % 5,
+            unit_mask: 1,
+            game_id: 100 + u16::from(index),
+            power: 100_000,
+            skill: SkillSlot {
+                skill_type: 0,
+                value: u8::from(index == 0),
+            },
+            base_bonus: 0,
+            limited_bonus: 0,
+            power_max: 100_000,
+            skill_max: u8::from(index == 0),
+        })
+        .collect();
+    let pool = build_pool(&cards);
+    let deck = core::array::from_fn(|index| CardIdx::new(index as u16));
+    // Both divisions used to drop 0.75 of a one-millionth rate. At the
+    // 336000 power cap this costs 1.008 live points: the old "ceiling" was
+    // 1344000 while the actual leaf was 1344001, with the same EP=167.
+    let rates = [
+        [0.000375, 0.0, 0.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 0.0, 0.0, 0.000075],
+    ];
+    for live_type in [LiveType::Solo, LiveType::Auto] {
+        for final_chapter in [false, true] {
+            for power_cap in [None, Some(336_000)] {
+                for forced_leader in [None, Some(1)] {
+                    for rate in rates {
+                        let mut context = ready_ctx(&pool, ScoreTarget::Score);
+                        context.live_type = live_type;
+                        context.event_type = Some(EventType::WorldBloom);
+                        context.is_world_bloom = true;
+                        context.is_final_chapter = final_chapter;
+                        context.forced_leader_character_id = forced_leader;
+                        context.base_score = 1.0;
+                        context.base_score_auto = 1.0;
+                        context.fever_score = 0.0;
+                        context.live_skill_order = LiveSkillOrder::Average;
+                        context.power_total_cap = power_cap;
+                        context.skill_scores = [[0.0; 6]; 3];
+                        context.skill_scores[if live_type == LiveType::Auto { 2 } else { 0 }] =
+                            rate;
+                        let actual = evaluate::leaf_evaluate_checked(&pool, &context, &deck)
+                            .expect("five distinct characters form a legal leaf");
+                        let suffix = SuffixBound::build(&pool, &context);
+                        let upper = suffix.ceiling(500_000, 0, 1, 1);
+                        assert!(upper >= actual, "ceiling={upper} leaf={actual}");
+                        if power_cap.is_some() {
+                            assert_eq!(actual, (167u64 << 32) | 1_344_001);
+                        }
+                        for top_k in [1, 8, 100] {
+                            let params = SearchParams {
+                                top_k,
+                                timeout_ms: 0,
+                            };
+                            let outcome = search(&pool, &context, &params);
+                            assert_eq!(outcome.completion(), SearchCompletion::Complete);
+                            let (expected, _) = ExactOracle::new(&pool, &context).search(&params);
+                            // DeckResult equality checks complete length, rank,
+                            // exact score, every ordered slot and dense variant.
+                            assert_eq!(
+                                outcome.results, expected,
+                                "live={live_type:?} final={final_chapter} cap={power_cap:?} leader={forced_leader:?} rates={rate:?} K={top_k}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

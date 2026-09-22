@@ -649,3 +649,201 @@ fn validation_oracle_final_fallback_uses_leader_support_for_bounds() {
         }
     }
 }
+
+#[test]
+fn validation_oracle_final_skill_peak_bounds_match_orders_and_leader_modes() {
+    let seed = 0x574C_F1A1_2026_0937;
+    let pool = build_pool(&matrix_cards(seed, "random"));
+    for live_type in [LiveType::Solo, LiveType::Auto] {
+        for order in [
+            LiveSkillOrder::Best,
+            LiveSkillOrder::Worst,
+            LiveSkillOrder::Specific,
+        ] {
+            for constraint in ["forced-leader", "auto"] {
+                let mut ctx =
+                    matrix_context(&pool, seed, "random", "final-solo", order, constraint);
+                ctx.live_type = live_type;
+                let (expected, _) = ExactOracle::new(&pool, &ctx).search(&SearchParams {
+                    top_k: 100,
+                    timeout_ms: 0,
+                });
+                assert!(!expected.is_empty());
+                for top_k in TOP_K {
+                    let params = SearchParams {
+                        top_k,
+                        timeout_ms: 0,
+                    };
+                    let mut unbounded = None;
+                    for bounds in [false, true] {
+                        let configuration = tuning::SearchTuning {
+                            bounds,
+                            ..Default::default()
+                        };
+                        let outcome = tuning::with_tuning(configuration, || {
+                            crate::search::search(&pool, &ctx, &params)
+                        });
+                        assert_eq!(outcome.completion(), SearchCompletion::Complete);
+                        let label = format!(
+                            "seed0937 Final skill peak live={live_type:?} order={order:?} constraint={constraint} top_k={top_k} bounds={bounds}"
+                        );
+                        compare_rows(
+                            &pool,
+                            &ctx,
+                            &outcome.results,
+                            &expected[..top_k.min(expected.len())],
+                            &label,
+                        );
+                        if bounds {
+                            assert_eq!(
+                                outcome.results.as_slice(),
+                                unbounded.as_deref().unwrap(),
+                                "{label}: bounds change canonical Top-K"
+                            );
+                        } else {
+                            unbounded = Some(outcome.results);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn validation_oracle_wl_variant_reconstruction_seed_0947_matches_complete_top_k() {
+    let seed = 0x574C_F1A1_2026_0947;
+    let pool = build_pool(&matrix_cards(seed, "variants"));
+    // Cover generic reconstruction, both Final member passes, and auto-leader
+    // rotation. Bound correctness is checked separately by the larger matrix.
+    for scene in ["wl-solo", "final-solo"] {
+        for constraint in ["forced-leader", "auto"] {
+            let ctx = matrix_context(
+                &pool,
+                seed,
+                "variants",
+                scene,
+                LiveSkillOrder::Worst,
+                constraint,
+            );
+            let (expected, _) = ExactOracle::new(&pool, &ctx).search(&SearchParams {
+                top_k: 100,
+                timeout_ms: 0,
+            });
+            assert!(!expected.is_empty());
+            for top_k in TOP_K {
+                for dominance in [false, true] {
+                    let configuration = tuning::SearchTuning {
+                        dominance,
+                        ..Default::default()
+                    };
+                    let outcome = tuning::with_tuning(configuration, || {
+                        crate::search::search(
+                            &pool,
+                            &ctx,
+                            &SearchParams {
+                                top_k,
+                                timeout_ms: 0,
+                            },
+                        )
+                    });
+                    assert_eq!(outcome.completion(), SearchCompletion::Complete);
+                    compare_rows(
+                        &pool,
+                        &ctx,
+                        &outcome.results,
+                        &expected[..top_k.min(expected.len())],
+                        &format!(
+                            "seed0947 scene={scene} constraint={constraint} K={top_k} dominance={dominance}"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn validation_oracle_singleton_root_still_needs_other_member_variants() {
+    let card = |game_id, char_id, power, skill| TestCard {
+        game_id,
+        char_id,
+        power,
+        skill: SkillSlot {
+            skill_type: 0,
+            value: skill,
+        },
+        attr: 0,
+        unit_mask: 1,
+        base_bonus: 0,
+        limited_bonus: 0,
+        power_max: power,
+        skill_max: skill,
+    };
+    let pool = build_pool(&[
+        card(10, 1, 100, 100), // Singleton root A.
+        card(11, 1, 100, 0),   // Dominated a: replacing A changes the best B state.
+        card(20, 2, 200, 0),   // B1 wins with A.
+        card(20, 2, 100, 30),  // B2 wins with a.
+        card(30, 3, 100, 0),
+        card(40, 4, 100, 0),
+        card(50, 5, 100, 0),
+    ]);
+    let mut ctx = ready_ctx(&pool, ScoreTarget::Score);
+    ctx.best_skill_as_leader = false;
+    ctx.forced_leader_character_id = Some(3);
+    ctx.live_skill_order = LiveSkillOrder::Average;
+    // A single coefficient avoids adding five rounded 0.2 contributions.
+    ctx.skill_scores[0] = [5.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let deck = |a, b| {
+        [
+            CardIdx::new(a),
+            CardIdx::new(b),
+            CardIdx::new(4),
+            CardIdx::new(5),
+            CardIdx::new(6),
+        ]
+    };
+    for (a, b, live) in [(0, 2, 4800u32), (0, 3, 4600), (1, 2, 2400), (1, 3, 2600)] {
+        let score = evaluate::leaf_evaluate_checked(&pool, &ctx, &deck(a, b)).unwrap();
+        assert_eq!(score, (u64::from(live) << 32) | u64::from(live));
+    }
+    let (expected, _) = ExactOracle::new(&pool, &ctx).search(&SearchParams {
+        top_k: 8,
+        timeout_ms: 0,
+    });
+    assert_eq!(expected.len(), 2);
+    assert_eq!(expected[0].score as u32, 4800);
+    assert_eq!(expected[1].score as u32, 2600);
+    assert!(expected[0].cards.contains(&CardIdx::new(2)));
+    assert!(expected[1].cards.contains(&CardIdx::new(3)));
+    for bounds in [false, true] {
+        for dominance in [false, true] {
+            let configuration = tuning::SearchTuning {
+                bounds,
+                dominance,
+                ..Default::default()
+            };
+            let outcome = tuning::with_tuning(configuration, || {
+                crate::search::search(
+                    &pool,
+                    &ctx,
+                    &SearchParams {
+                        top_k: 8,
+                        timeout_ms: 0,
+                    },
+                )
+            });
+            assert_eq!(outcome.completion(), SearchCompletion::Complete);
+            compare_rows(
+                &pool,
+                &ctx,
+                &outcome.results,
+                &expected,
+                &format!(
+                    "singleton root, another member changes variant, bounds={bounds}, dominance={dominance}"
+                ),
+            );
+        }
+    }
+}

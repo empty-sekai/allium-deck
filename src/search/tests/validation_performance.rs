@@ -30,7 +30,7 @@ fn validation_performance_matrix() {
     let mut case = 0;
     for family in ["random", "scarce_attributes"] {
         for &size in &sizes {
-            assert!((5..=512).contains(&size));
+            assert!((5..=crate::pool::MASK_WORDS * 64).contains(&size));
             for &seed in &seeds {
                 let cards = matrix_cards(family, size, seed);
                 let pool = build_pool(&cards);
@@ -127,11 +127,12 @@ fn matrix_cards(family: &str, size: usize, seed: usize) -> Vec<TestCard> {
             } else {
                 (variant % 2) as u8
             };
-            card.power = 6000 - variant as u32 * 180 + u32::from(card.char_id) * 7;
+            let tradeoff = variant % 20;
+            card.power = 6000 - tradeoff as u32 * 180 + u32::from(card.char_id) * 7;
             card.power_max = card.power;
-            card.skill.value = 30 + variant as u8 * 10;
+            card.skill.value = 30 + tradeoff as u8 * 10;
             card.skill_max = card.skill.value;
-            card.base_bonus = 8 + variant as u8 * 5;
+            card.base_bonus = 8 + tradeoff as u8 * 5;
             card.limited_bonus = if variant >= 3 { 5 } else { 0 };
         }
     }

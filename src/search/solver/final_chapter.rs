@@ -690,9 +690,7 @@ fn improve_final_chapter_results(
 ) {
     let mut pass = 0usize;
     while pass < 1 {
-        let seeds = tracker
-            .results()
-            .to_vec();
+        let seeds = tracker.results().to_vec();
         let mut changed = false;
         for seed in seeds {
             if guard.expired() {
@@ -1430,7 +1428,9 @@ fn character_ceiling(
         final_chapter_ceiling_skill(
             ctx,
             leader.skill,
-            prefix.max_skill.max(if remaining == 0 { 0 } else { tail.top_skill[0] }),
+            prefix
+                .max_skill
+                .max(if remaining == 0 { 0 } else { tail.top_skill[0] }),
         ),
     )
 }
@@ -1536,7 +1536,10 @@ fn selected_card_ceiling_with_candidate_support_ub(
         final_chapter_ceiling_skill(
             ctx,
             leader_skill,
-            partial.max_skill.max(pool.skill_max(card) as u32).max(plan.rem_max_skill[chosen]),
+            partial
+                .max_skill
+                .max(pool.skill_max(card) as u32)
+                .max(plan.rem_max_skill[chosen]),
         ),
     )
 }
@@ -1898,7 +1901,13 @@ mod skill_ceiling_tests {
             builder.set_power_values(dense, [power as u16; 8]);
             builder.set_power_lut(dense, power_lut);
             builder.set_power_max(dense, power);
-            builder.set_skill(dense, SkillSlot { skill_type: 0, value: skill });
+            builder.set_skill(
+                dense,
+                SkillSlot {
+                    skill_type: 0,
+                    value: skill,
+                },
+            );
             builder.set_skill_min(dense, skill);
             builder.set_skill_max(dense, skill);
             builder.set_event_bonus(dense, EventBonusExact::from_whole(0, 0));
@@ -1955,15 +1964,30 @@ mod skill_ceiling_tests {
     #[test]
     fn final_skill_ceiling_preserves_real_leader_for_multi_and_average() {
         let (_, mut ctx) = fixture();
-        for live in [LiveType::Multi, LiveType::Cheerful, LiveType::Solo, LiveType::Auto,
-                     LiveType::Challenge, LiveType::ChallengeAuto] {
+        for live in [
+            LiveType::Multi,
+            LiveType::Cheerful,
+            LiveType::Solo,
+            LiveType::Auto,
+            LiveType::Challenge,
+            LiveType::ChallengeAuto,
+        ] {
             ctx.live_type = live;
-            for order in [LiveSkillOrder::Average, LiveSkillOrder::Best,
-                          LiveSkillOrder::Worst, LiveSkillOrder::Specific] {
+            for order in [
+                LiveSkillOrder::Average,
+                LiveSkillOrder::Best,
+                LiveSkillOrder::Worst,
+                LiveSkillOrder::Specific,
+            ] {
                 ctx.live_skill_order = order;
                 let effective = ctx.effective_live_type();
                 let expected = if matches!(effective, LiveType::Solo | LiveType::Auto)
-                    && order != LiveSkillOrder::Average { 100 } else { 0 };
+                    && order != LiveSkillOrder::Average
+                {
+                    100
+                } else {
+                    0
+                };
                 assert_eq!(final_chapter_ceiling_skill(&ctx, 0, 100), expected);
                 assert_eq!(final_chapter_ceiling_skill(&ctx, 120, 100), 120);
             }
@@ -1976,8 +2000,12 @@ mod skill_ceiling_tests {
         let deck = core::array::from_fn(|dense| CardIdx::new(dense as u16));
         for live in [LiveType::Solo, LiveType::Auto] {
             ctx.live_type = live;
-            for order in [LiveSkillOrder::Average, LiveSkillOrder::Best,
-                          LiveSkillOrder::Worst, LiveSkillOrder::Specific] {
+            for order in [
+                LiveSkillOrder::Average,
+                LiveSkillOrder::Best,
+                LiveSkillOrder::Worst,
+                LiveSkillOrder::Specific,
+            ] {
                 ctx.live_skill_order = order;
                 ctx.specific_skill_order =
                     (order == LiveSkillOrder::Specific).then_some([4, 1, 3, 0, 2]);
@@ -1988,7 +2016,10 @@ mod skill_ceiling_tests {
                 if order != LiveSkillOrder::Average {
                     let invalid = suffix.ceiling(336_000, 0, 400, 0);
                     assert_eq!(invalid as u32, 1_344_000);
-                    assert!(invalid < actual, "old argument underestimates the legal leaf");
+                    assert!(
+                        invalid < actual,
+                        "old argument underestimates the legal leaf"
+                    );
                 }
                 let groups = build_char_groups(&pool, &ctx, 0, &[], 100);
                 let selected = [0, 1, 2, 3];
@@ -2000,24 +2031,55 @@ mod skill_ceiling_tests {
                 for chosen in 0..=MEMBER_COUNT {
                     assert_eq!(
                         plan.rem_max_skill[chosen],
-                        groups[chosen..].iter().map(|group| group.best_skill).max().unwrap_or(0),
+                        groups[chosen..]
+                            .iter()
+                            .map(|group| group.best_skill)
+                            .max()
+                            .unwrap_or(0),
                     );
                     let upper = character_ceiling(
-                        &suffix, &ctx, &group_suffix, chosen, chosen, &prefix, &leader,
+                        &suffix,
+                        &ctx,
+                        &group_suffix,
+                        chosen,
+                        chosen,
+                        &prefix,
+                        &leader,
                     );
-                    assert!(upper >= actual, "character stage live={live:?} order={order:?} chosen={chosen}");
+                    assert!(
+                        upper >= actual,
+                        "character stage live={live:?} order={order:?} chosen={chosen}"
+                    );
                     let upper = selected_card_ceiling_from_partial(
-                        &suffix, &ctx, &plan, chosen, &partial, leader.skill,
+                        &suffix,
+                        &ctx,
+                        &plan,
+                        chosen,
+                        &partial,
+                        leader.skill,
                     );
-                    assert!(upper >= actual, "card stage live={live:?} order={order:?} chosen={chosen}");
+                    assert!(
+                        upper >= actual,
+                        "card stage live={live:?} order={order:?} chosen={chosen}"
+                    );
                     if chosen == MEMBER_COUNT {
                         break;
                     }
                     let card = groups[chosen].cards[0];
                     let upper = selected_card_ceiling_with_candidate_support_ub(
-                        &pool, &suffix, &ctx, &plan, chosen + 1, &partial, card, leader.skill,
+                        &pool,
+                        &suffix,
+                        &ctx,
+                        &plan,
+                        chosen + 1,
+                        &partial,
+                        card,
+                        leader.skill,
                     );
-                    assert!(upper >= actual, "candidate stage live={live:?} order={order:?} chosen={chosen}");
+                    assert!(
+                        upper >= actual,
+                        "candidate stage live={live:?} order={order:?} chosen={chosen}"
+                    );
                     prefix = prefix.with_group(&groups[chosen]);
                     partial = partial.with_card(&pool, true, ctx.support_deck_for_leader(0), card);
                     assert_eq!(partial.max_skill, 100);

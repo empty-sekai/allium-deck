@@ -646,7 +646,7 @@ fn randomized_exact_cards(seed: u64, count: usize, characters: u8) -> Vec<TestCa
     let mut rng = ExactLcg(seed);
     (0..count)
         .map(|idx| {
-            let char_id = (idx as u8 % characters) + 1;
+            let char_id = (idx % usize::from(characters)) as u8 + 1;
             let power = 700 + rng.range(0, 1900) + idx as u32 * 3;
             let skill_value = 20 + rng.range(0, 100) as u8;
             let attr = rng.range(0, 5) as u8;
