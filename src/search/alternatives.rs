@@ -9,8 +9,9 @@ use crate::types::DECK_SIZE;
 /// dominance 裁剪对 Top-1 无损（被裁卡换成支配者分数不降），但 Top-K 下被裁卡参与的
 /// 组合本身可能是合法的次优解（issue #2）。设真实 Top-K 中存在含被裁卡的卡组 D，把
 /// 其中每张被裁卡换成其支配根得到 D'，则 score(D') >= score(D) >= 第 K 名阈值，故 D'
-/// 必在裁剪池的精确 Top-K 结果里。因此对每个搜索结果按槽位做替代回换（含多槽组合）、
-/// 重新评估并合并，即可还原全部丢失的次优解。
+/// 的公共卡集合必在裁剪池的精确 Top-K 结果里。同一集合只保留一个最优培养态组合，
+/// 故回换前先枚举这个集合的全部原培养态组合，再各自按槽位做替代回换（含多槽组合）。
+/// 每个完整培养态组合独立求值；不同组合之间不能沿用实际分数作单调剪枝上界。
 ///
 /// 回换方向是支配的逆向，分数单调不升，按当前第 K 名阈值剪枝；`top_k <= 1` 直接跳过，
 /// 主搜索路径零开销。
@@ -47,13 +48,21 @@ pub(super) fn expand_alternatives(
         return results;
     }
     let rotate_leader = ctx.is_final_chapter;
+    let variants = cultivation_variants(pool);
     let has_alternatives = results.iter().any(|result| {
         result.cards.iter().enumerate().any(|(slot, card)| {
-            !alternatives[card.raw()].is_empty()
-                || ((slot > 0 || rotate_leader)
-                    && member_alternatives
-                        .get(card.raw())
-                        .is_some_and(|alts| !alts.is_empty()))
+            let options = variants
+                .as_ref()
+                .map(|variants| variants[card.raw()].as_slice())
+                .filter(|options| !options.is_empty())
+                .unwrap_or(core::slice::from_ref(card));
+            options.iter().any(|variant| {
+                !alternatives[variant.raw()].is_empty()
+                    || ((slot > 0 || rotate_leader)
+                        && member_alternatives
+                            .get(variant.raw())
+                            .is_some_and(|alts| !alts.is_empty()))
+            })
         })
     });
     if !has_alternatives && !rotate_leader {
@@ -68,48 +77,32 @@ pub(super) fn expand_alternatives(
         if budget.expired() {
             break;
         }
-        let mut deck = result.cards;
-        expand_substitutions(
-            pool,
-            ctx,
-            alternatives,
-            member_alternatives,
-            &mut deck,
-            result.score,
-            0,
-            &mut tracker,
-            budget,
-            stats,
-        );
-        if !rotate_leader {
-            continue;
-        }
-        let mut slot = 1usize;
-        while slot < DECK_SIZE {
-            if budget.expired_sampled() {
-                break;
-            }
-            let mut rotated = result.cards;
-            rotated.swap(0, slot);
-            slot += 1;
-            if !deck_matches_fixed_slots(pool, ctx, &rotated) {
-                continue;
-            }
-            stats.leaf_nodes += 1;
-            stats.diagnostics.alternative_leaves += 1;
-            let Some(candidate) = placement::evaluate_candidate(pool, ctx, &rotated) else {
-                continue;
-            };
-            let score = candidate.score;
-            tracker.insert(pool, ctx, candidate);
-            expand_substitutions(
+        if let Some(variants) = &variants
+            && result
+                .cards
+                .iter()
+                .any(|card| !variants[card.raw()].is_empty())
+        {
+            let mut deck = result.cards;
+            expand_cultivation_variants(
                 pool,
                 ctx,
                 alternatives,
                 member_alternatives,
-                &mut rotated,
-                score,
+                variants,
+                &mut deck,
                 0,
+                &mut tracker,
+                budget,
+                stats,
+            );
+        } else {
+            expand_root_placements(
+                pool,
+                ctx,
+                alternatives,
+                member_alternatives,
+                *result,
                 &mut tracker,
                 budget,
                 stats,
@@ -117,6 +110,166 @@ pub(super) fn expand_alternatives(
         }
     }
     tracker.into_vec()
+}
+
+/// Empty entries mean one state. Avoid variant traversal in the common case.
+fn cultivation_variants(pool: &CardPool) -> Option<Vec<Vec<CardIdx>>> {
+    let mut by_game: Vec<_> = pool.indices().collect();
+    by_game.sort_unstable_by_key(|&card| (pool.game_id(card), card.raw()));
+    if !by_game
+        .windows(2)
+        .any(|pair| pool.game_id(pair[0]) == pool.game_id(pair[1]))
+    {
+        return None;
+    }
+    let mut variants = vec![Vec::new(); pool.count()];
+    let mut start = 0;
+    while start < by_game.len() {
+        let mut end = start + 1;
+        while end < by_game.len() && pool.game_id(by_game[end]) == pool.game_id(by_game[start]) {
+            end += 1;
+        }
+        if end - start > 1 {
+            for &card in &by_game[start..end] {
+                variants[card.raw()].extend_from_slice(&by_game[start..end]);
+            }
+        }
+        start = end;
+    }
+    Some(variants)
+}
+
+/// Enumerate before score pruning: another member's best cultivation state can
+/// change after an inverse substitution, even if its own public ID is retained.
+#[allow(clippy::too_many_arguments)]
+fn expand_cultivation_variants(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    alternatives: &[Vec<CardIdx>],
+    member_alternatives: &[Vec<CardIdx>],
+    variants: &[Vec<CardIdx>],
+    deck: &mut [CardIdx; DECK_SIZE],
+    slot: usize,
+    tracker: &mut TopKTracker,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
+) {
+    if budget.expired_sampled() {
+        return;
+    }
+    stats.diagnostics.alternative_states += 1;
+    if slot == DECK_SIZE {
+        stats.leaf_nodes += 1;
+        stats.diagnostics.alternative_leaves += 1;
+        if let Some(candidate) = placement::evaluate_candidate(pool, ctx, deck) {
+            tracker.insert(pool, ctx, candidate);
+            expand_root_placements(
+                pool,
+                ctx,
+                alternatives,
+                member_alternatives,
+                candidate,
+                tracker,
+                budget,
+                stats,
+            );
+        }
+        return;
+    }
+    let original = deck[slot];
+    let options = &variants[original.raw()];
+    if options.is_empty() {
+        expand_cultivation_variants(
+            pool,
+            ctx,
+            alternatives,
+            member_alternatives,
+            variants,
+            deck,
+            slot + 1,
+            tracker,
+            budget,
+            stats,
+        );
+    } else {
+        for &variant in options {
+            if budget.expired_sampled() {
+                break;
+            }
+            deck[slot] = variant;
+            expand_cultivation_variants(
+                pool,
+                ctx,
+                alternatives,
+                member_alternatives,
+                variants,
+                deck,
+                slot + 1,
+                tracker,
+                budget,
+                stats,
+            );
+        }
+        deck[slot] = original;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_root_placements(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    alternatives: &[Vec<CardIdx>],
+    member_alternatives: &[Vec<CardIdx>],
+    result: DeckResult,
+    tracker: &mut TopKTracker,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
+) {
+    let mut deck = result.cards;
+    expand_substitutions(
+        pool,
+        ctx,
+        alternatives,
+        member_alternatives,
+        &mut deck,
+        result.score,
+        0,
+        tracker,
+        budget,
+        stats,
+    );
+    if !ctx.is_final_chapter {
+        return;
+    }
+    for slot in 1..DECK_SIZE {
+        if budget.expired_sampled() {
+            break;
+        }
+        let mut rotated = result.cards;
+        rotated.swap(0, slot);
+        if !deck_matches_fixed_slots(pool, ctx, &rotated) {
+            continue;
+        }
+        stats.leaf_nodes += 1;
+        stats.diagnostics.alternative_leaves += 1;
+        let Some(candidate) = placement::evaluate_candidate(pool, ctx, &rotated) else {
+            continue;
+        };
+        let score = candidate.score;
+        tracker.insert(pool, ctx, candidate);
+        expand_substitutions(
+            pool,
+            ctx,
+            alternatives,
+            member_alternatives,
+            &mut rotated,
+            score,
+            0,
+            tracker,
+            budget,
+            stats,
+        );
+    }
 }
 
 /// 判断卡组每个槽位是否满足固定卡/固定角色约束（队长轮换用）。

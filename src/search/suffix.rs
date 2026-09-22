@@ -9,6 +9,14 @@ use super::evaluate::calc_mysekai_internal;
 const JOINT_SUPPORT_BUCKET: u32 = 1024;
 const LIVE_SCORE_BOUND_SCALE: i64 = 1_000_000;
 
+/// Round outward for a positive denominator without an unstable signed API.
+#[inline(always)]
+fn ceil_div_positive(numerator: i64, denominator: i64) -> i64 {
+    debug_assert!(denominator > 0);
+    let quotient = numerator / denominator;
+    quotient + i64::from(numerator % denominator > 0)
+}
+
 /// 已选角色集合。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UsedSet {
@@ -788,8 +796,8 @@ impl SuffixBound {
                 if matches!(self.live_skill_order, LiveSkillOrder::Average) =>
             {
                 self.base_rate_1m
-                    + skill_total as i64 * self.avg_sum5_1m / 500
-                    + leader_ub as i64 * self.avg_leader_rate_1m / 100
+                    + ceil_div_positive(skill_total as i64 * self.avg_sum5_1m, 500)
+                    + ceil_div_positive(leader_ub as i64 * self.avg_leader_rate_1m, 100)
             }
             _ => {
                 // 每个技能槽的 score_up 不超过全队最大技能 L（含 leader 复发槽），
@@ -2290,5 +2298,33 @@ mod support_envelope_tests {
             SuffixBound::build(&pool, &ctx).extra_bonus_ub,
             ctx.extra_bonus_ub
         );
+    }
+
+    #[test]
+    fn signed_rate_division_rounds_toward_positive_infinity() {
+        for denominator in [1i64, 100, 500] {
+            for numerator in [
+                i64::MIN,
+                -1001,
+                -501,
+                -500,
+                -499,
+                -1,
+                0,
+                1,
+                499,
+                500,
+                501,
+                1001,
+                i64::MAX,
+            ] {
+                let quotient = ceil_div_positive(numerator, denominator);
+                let numerator = i128::from(numerator);
+                let denominator = i128::from(denominator);
+                let quotient = i128::from(quotient);
+                assert!(quotient * denominator >= numerator);
+                assert!((quotient - 1) * denominator < numerator);
+            }
+        }
     }
 }
