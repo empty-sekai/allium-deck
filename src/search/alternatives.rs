@@ -125,23 +125,7 @@ pub(super) fn deck_matches_fixed_slots(
     ctx: &SearchContext,
     deck: &[CardIdx; DECK_SIZE],
 ) -> bool {
-    let mut slot = 0usize;
-    while slot < DECK_SIZE {
-        if ctx
-            .fixed_card_at(slot)
-            .is_some_and(|game_id| pool.game_id(deck[slot]) != game_id)
-        {
-            return false;
-        }
-        if ctx
-            .fixed_character_at(slot)
-            .is_some_and(|character_id| pool.char_id(deck[slot]) != character_id)
-        {
-            return false;
-        }
-        slot += 1;
-    }
-    true
+    ctx.deck_matches_slots(pool, deck)
 }
 
 /// 自 `from_slot` 起逐槽尝试把支配者回换成其支配的卡（多槽组合经递归覆盖）。

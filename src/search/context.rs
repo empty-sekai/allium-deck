@@ -237,6 +237,45 @@ impl SearchContext {
         self.fixed_character_ids.get(index).copied()
     }
 
+    /// Public slot constraints shared by frontiers, seeds and reconstruction.
+    /// Final bonuses use the concrete leader slot; ordinary forced leaders are
+    /// still selected when the evaluator materializes their skill order.
+    #[inline(always)]
+    pub(crate) fn card_matches_slot(
+        &self,
+        pool: &crate::pool::CardPool,
+        slot: usize,
+        card: crate::pool::CardIdx,
+    ) -> bool {
+        self.fixed_card_at(slot)
+            .is_none_or(|id| pool.game_id(card) == id)
+            && self
+                .fixed_character_at(slot)
+                .is_none_or(|id| pool.char_id(card) == id)
+            && (!(self.is_final_chapter && slot == 0)
+                || self
+                    .forced_leader_character_id
+                    .is_none_or(|id| pool.char_id(card) == id))
+    }
+
+    /// Checks only public slot roles, never optimizer member-dominance state.
+    #[inline]
+    pub(crate) fn deck_matches_slots(
+        &self,
+        pool: &crate::pool::CardPool,
+        deck: &[crate::pool::CardIdx; DECK_SIZE],
+    ) -> bool {
+        let constrained_prefix = (self.fixed_card_ids.len() + self.fixed_character_ids.len())
+            .max(usize::from(
+                self.is_final_chapter && self.forced_leader_character_id.is_some(),
+            ))
+            .min(DECK_SIZE);
+        deck[..constrained_prefix]
+            .iter()
+            .enumerate()
+            .all(|(slot, &card)| self.card_matches_slot(pool, slot, card))
+    }
+
     /// 判断指定槽位是否存在固定约束。
     #[inline(always)]
     pub fn is_fixed_slot(&self, slot: usize) -> bool {

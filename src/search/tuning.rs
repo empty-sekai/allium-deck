@@ -69,7 +69,7 @@ impl SearchTuning {
 }
 
 fn enabled(name: &str) -> bool {
-    !std::env::var_os(name).is_some_and(|value| value == "0")
+    std::env::var_os(name).is_none_or(|value| value != "0")
 }
 
 #[cfg(test)]

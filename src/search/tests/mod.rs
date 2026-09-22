@@ -19,6 +19,8 @@ mod case7_audit;
 mod dominance_contract;
 mod fractional_bonus;
 mod role_constraints;
+mod validation_oracle;
+mod validation_performance;
 
 use super::*;
 use crate::pool::{DiffSkill, EventBonusExact, PoolBuilder, RefSkill, SkillSlot, UnitCountSkill};

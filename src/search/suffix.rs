@@ -117,22 +117,69 @@ pub struct SuffixBound {
 
 const _: () = assert!(size_of::<SuffixBound>() <= 736);
 
-fn world_bloom_extra_bonus_fallback(ctx: &SearchContext) -> u32 {
+/// One support relaxation for every possible leader. For every game ID the
+/// envelope keeps the largest profile bonus, and its count is at least every
+/// profile's count. Removing any set of main-deck IDs preserves that pointwise
+/// dominance, so the remaining top-count sum bounds every real support deck.
+/// The envelope is constructed once; DFS never scans per-leader profiles.
+fn support_upper_envelope(pool: &CardPool, ctx: &SearchContext) -> (Vec<(u16, f64)>, usize) {
+    if !ctx.is_final_chapter {
+        return (
+            ctx.support_deck.cards.clone(),
+            ctx.support_deck.count as usize,
+        );
+    }
+    let fixed_leader = ctx.final_chapter_leader_character().or_else(|| {
+        ctx.fixed_card_at(0).and_then(|game_id| {
+            pool.indices()
+                .find(|&card| pool.game_id(card) == game_id)
+                .map(|card| pool.char_id(card))
+        })
+    });
+    if let Some(character) = fixed_leader {
+        let profile = ctx.support_deck_for_leader(character);
+        return (profile.cards.clone(), profile.count as usize);
+    }
+    let mut bonuses = std::collections::BTreeMap::<u16, f64>::new();
+    let mut count = 0usize;
+    let mut include = |profile: &super::context::SupportDeck| {
+        count = count.max(profile.count as usize);
+        for &(game_id, bonus) in &profile.cards {
+            let maximum = bonuses.entry(game_id).or_default();
+            *maximum = maximum.max(bonus);
+        }
+    };
+    let mut seen = UsedSet::new();
+    for card in pool.indices() {
+        let character = pool.char_id(card);
+        if !seen.contains(character) {
+            include(ctx.support_deck_for_leader(character));
+            seen.insert(character);
+        }
+    }
+    let mut cards: Vec<_> = bonuses.into_iter().collect();
+    cards.sort_unstable_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    (cards, count)
+}
+
+fn world_bloom_extra_bonus_fallback(
+    ctx: &SearchContext,
+    support_cards: &[(u16, f64)],
+    support_count: usize,
+) -> u32 {
     if !ctx.is_world_bloom {
         return ctx.extra_bonus_ub;
     }
     let diff = ctx.diff_attr_bonus.iter().copied().max().unwrap_or(0) as u32;
-    let mut bonuses = ctx
-        .support_deck
-        .cards
+    let support = support_cards
         .iter()
+        .take(support_count)
         .map(|(_, bonus)| *bonus)
-        .filter(|bonus| bonus.is_finite() && *bonus > 0.0)
-        .collect::<Vec<_>>();
-    bonuses.sort_unstable_by(|left, right| right.total_cmp(left));
-    let support = bonuses
-        .into_iter()
-        .take(ctx.support_deck.count as usize)
         .sum::<f64>()
         .ceil()
         .clamp(0.0, u32::MAX as f64) as u32;
@@ -192,6 +239,8 @@ impl SuffixBound {
         }];
         let avg_sum5 = active_skill_rates[..DECK_SIZE].iter().sum::<f64>();
         let avg_leader_rate = active_skill_rates[DECK_SIZE];
+        let (support_cards, support_count) = support_upper_envelope(pool, ctx);
+        let extra_bonus_ub = world_bloom_extra_bonus_fallback(ctx, &support_cards, support_count);
 
         Self {
             target: ctx.target,
@@ -227,10 +276,10 @@ impl SuffixBound {
             attr_matching: super::tuning::SearchTuning::load().world_bloom_attr_matching,
             is_final_chapter: ctx.is_final_chapter,
             limited_bonus_cap: ctx.card_bonus_count_limit,
-            extra_bonus_ub: world_bloom_extra_bonus_fallback(ctx),
+            extra_bonus_ub,
             diff_attr_bonus: ctx.diff_attr_bonus,
-            support_cards: ctx.support_deck.cards.clone(),
-            support_count: ctx.support_deck.count as usize,
+            support_cards,
+            support_count,
             honor_bonus: ctx.honor_bonus,
             power_total_cap: ctx.power_total_cap,
             power_order,
@@ -1373,7 +1422,7 @@ impl SuffixBound {
                 break;
             }
             let (game_id, bonus) = unsafe { *self.support_cards.get_unchecked(idx) };
-            if selected[0] == game_id
+            if (selected_len > 0 && selected[0] == game_id)
                 || (selected_len > 1 && selected[1] == game_id)
                 || (selected_len > 2 && selected[2] == game_id)
                 || (selected_len > 3 && selected[3] == game_id)
@@ -1405,7 +1454,7 @@ impl SuffixBound {
             }
             let (game_id, bonus) = unsafe { *self.support_cards.get_unchecked(idx) };
             if game_id == candidate_game_id
-                || selected[0] == game_id
+                || (selected_len > 0 && selected[0] == game_id)
                 || (selected_len > 1 && selected[1] == game_id)
                 || (selected_len > 2 && selected[2] == game_id)
                 || (selected_len > 3 && selected[3] == game_id)
@@ -2052,5 +2101,194 @@ fn insert_topk_u16(values: &mut [u16; DECK_SIZE], value: u16) {
             break;
         }
         slot += 1;
+    }
+}
+
+#[cfg(test)]
+mod support_envelope_tests {
+    use super::*;
+    use crate::pool::PoolBuilder;
+    use crate::search::SupportDeck;
+    use crate::types::{EventType, SkillReferenceStrategy};
+
+    fn fixture() -> (CardPool, SearchContext) {
+        let mut builder = PoolBuilder::new(3);
+        for dense in 0..3u16 {
+            builder.set_game_id(dense, 101 + dense);
+            builder.set_char_id(dense, dense as u8 + 1);
+            builder.set_attr(dense, dense as u8);
+        }
+        let pool = builder.freeze();
+        let mut profiles = vec![SupportDeck::default(); 27];
+        profiles[1] = SupportDeck {
+            cards: vec![(1, 15.25), (2, 12.5), (3, 9.75), (7, 1.0)],
+            count: 2,
+        };
+        profiles[2] = SupportDeck {
+            cards: vec![(2, 18.5), (5, 7.25), (6, 6.0), (1, 3.0)],
+            count: 3,
+        };
+        // Character 3 has no active profile and therefore uses the fallback.
+        // Character 26 is not a possible leader in this pool.
+        profiles[26] = SupportDeck {
+            cards: vec![(99, 10_000.0)],
+            count: 5,
+        };
+        let ctx = SearchContext {
+            target: ScoreTarget::Score,
+            fixed_card_ids: Vec::new(),
+            fixed_character_ids: Vec::new(),
+            forced_leader_character_id: None,
+            music_rate_pct: 100,
+            boost_rate_pct: 100,
+            base_score: 1.0,
+            base_score_auto: 1.0,
+            fever_score: 0.0,
+            skill_scores: [[0.0; 6]; 3],
+            other_score: 0,
+            life: 1000,
+            diff_attr_bonus: [0; 6],
+            support_deck: SupportDeck {
+                cards: vec![(7, 11.0), (4, 4.0), (6, 2.0)],
+                count: 2,
+            },
+            support_decks_by_character: profiles,
+            is_world_bloom: true,
+            is_final_chapter: true,
+            enforce_char_uniqueness: true,
+            minimize: false,
+            live_type: LiveType::Multi,
+            event_type: Some(EventType::WorldBloom),
+            keep_after_training_state: true,
+            skill_reference_strategy: SkillReferenceStrategy::Average,
+            best_skill_as_leader: false,
+            live_skill_order: LiveSkillOrder::Average,
+            specific_skill_order: None,
+            multi_teammate_score_up: None,
+            multi_teammate_power: None,
+            multi_live_score_up_lower_bound: None,
+            extra_bonus_ub: 0,
+            w_power: 2.0,
+            w_bonus: 1.0,
+            skill_ub_global: 0,
+            card_bonus_count_limit: 4,
+            honor_bonus: 0,
+            power_total_cap: None,
+            leader_honor_bonus_x10: vec![0; 3],
+            leader_limit_bonus_x10: vec![0; 3],
+            final_chapter_member_keep: vec![true; 3],
+            skill_is_after_training: vec![false; 3],
+            trained_to_special_image: vec![false; 3],
+        };
+        (pool, ctx)
+    }
+
+    fn profile_sum(profile: &SupportDeck, excluded: &[u16]) -> f64 {
+        profile
+            .cards
+            .iter()
+            .filter(|(id, _)| !excluded.contains(id))
+            .take(profile.count as usize)
+            .map(|(_, bonus)| bonus)
+            .sum()
+    }
+
+    #[test]
+    fn final_support_envelope_dominates_every_profile_after_every_exclusion() {
+        let (pool, ctx) = fixture();
+        let suffix = SuffixBound::build(&pool, &ctx);
+        assert_eq!(suffix.support_count, 3);
+        assert!(!suffix.support_cards.iter().any(|(id, _)| *id == 99));
+        // Every selected subset of the support-ID universe, including empty
+        // prefixes with a nonzero unused array slot, and every next candidate.
+        for mask in 0..128u32 {
+            let excluded: Vec<u16> = (1..=7u16)
+                .filter(|id| mask & (1 << (id - 1)) != 0)
+                .collect();
+            if excluded.len() > DECK_SIZE {
+                continue;
+            }
+            let mut selected = [7; DECK_SIZE];
+            selected[..excluded.len()].copy_from_slice(&excluded);
+            for leader in 1..=3 {
+                let profile = ctx.support_deck_for_leader(leader);
+                let expected = profile_sum(profile, &excluded);
+                assert!(suffix.support_sum_excluding(&selected, excluded.len()) >= expected);
+                assert!(
+                    f64::from(suffix.world_bloom_extra_bonus_bound_from_parts(
+                        0,
+                        &selected,
+                        excluded.len(),
+                        0,
+                        0,
+                        0,
+                    )) >= expected
+                );
+                if excluded.len() == DECK_SIZE {
+                    continue;
+                }
+                for candidate in 1..=7 {
+                    let mut with_candidate = excluded.clone();
+                    with_candidate.push(candidate);
+                    let expected = profile_sum(profile, &with_candidate);
+                    assert!(
+                        suffix.support_sum_excluding_candidate(
+                            &selected,
+                            excluded.len(),
+                            candidate,
+                        ) >= expected
+                    );
+                    assert!(
+                        f64::from(suffix.world_bloom_extra_bonus_bound_for_candidate_parts(
+                            0,
+                            &selected,
+                            excluded.len(),
+                            candidate,
+                            0,
+                            0,
+                            0,
+                        )) >= expected
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_leader_and_ordinary_support_keep_the_effective_single_profile() {
+        let (pool, base) = fixture();
+        for leader in 1..=3u8 {
+            for constraint in 0..3 {
+                let mut ctx = base.clone();
+                match constraint {
+                    0 => ctx.forced_leader_character_id = Some(leader),
+                    1 => ctx.fixed_character_ids = vec![leader],
+                    _ => ctx.fixed_card_ids = vec![100 + u16::from(leader)],
+                }
+                let suffix = SuffixBound::build(&pool, &ctx);
+                let actual = ctx.support_deck_for_leader(leader);
+                assert_eq!(suffix.support_cards, actual.cards);
+                assert_eq!(suffix.support_count, actual.count as usize);
+            }
+        }
+        let mut ordinary = base;
+        ordinary.is_final_chapter = false;
+        let suffix = SuffixBound::build(&pool, &ordinary);
+        assert_eq!(suffix.support_cards, ordinary.support_deck.cards);
+        assert_eq!(suffix.support_count, ordinary.support_deck.count as usize);
+    }
+
+    #[test]
+    fn world_bloom_fallback_uses_the_envelope_and_preserves_explicit_hint() {
+        let (pool, mut ctx) = fixture();
+        ctx.diff_attr_bonus = [0, 0, 2, 4, 8, 10];
+        let suffix = SuffixBound::build(&pool, &ctx);
+        let support = suffix.support_sum_excluding(&[7; DECK_SIZE], 0).ceil() as u32;
+        assert_eq!(suffix.extra_bonus_ub, support + 10);
+        ctx.extra_bonus_ub = suffix.extra_bonus_ub + 100;
+        assert_eq!(
+            SuffixBound::build(&pool, &ctx).extra_bonus_ub,
+            ctx.extra_bonus_ub
+        );
     }
 }

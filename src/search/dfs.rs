@@ -340,25 +340,30 @@ fn canonicalize_seed_result(
     let source = seed.cards;
     let mut used_source = [false; DECK_SIZE];
     let mut deck = [source[0]; DECK_SIZE];
-    let fixed_slots = (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len()).min(DECK_SIZE);
+    let fixed_slots = (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len())
+        .max(usize::from(ctx.is_final_chapter))
+        .min(DECK_SIZE);
 
     // Fixed slots are scanned from dense index zero by the exact DFS.  For a
     // given card set choose the lexicographically first legal assignment.
     let mut depth = 0usize;
+    if ctx.is_final_chapter {
+        // A Final seed represents this concrete leader and its support profile.
+        // Free-card sorting must not silently replace that role with dense zero.
+        if !ctx.card_matches_slot(pool, 0, source[0]) {
+            return None;
+        }
+        used_source[0] = true;
+        deck[0] = source[0];
+        depth = 1;
+    }
     while depth < fixed_slots {
         let mut chosen: Option<(usize, CardIdx)> = None;
         let mut source_pos = 0usize;
         while source_pos < DECK_SIZE {
             if !used_source[source_pos] {
                 let card = source[source_pos];
-                let game_ok = ctx
-                    .fixed_card_at(depth)
-                    .is_none_or(|game_id| pool.game_id(card) == game_id);
-                let char_ok = ctx
-                    .fixed_character_at(depth)
-                    .is_none_or(|char_id| pool.char_id(card) == char_id);
-                if game_ok
-                    && char_ok
+                if ctx.card_matches_slot(pool, depth, card)
                     && chosen.is_none_or(|(_, current)| card.raw() < current.raw())
                 {
                     chosen = Some((source_pos, card));
@@ -1363,17 +1368,7 @@ impl SearchState<'_> {
         {
             return false;
         }
-        if let Some(game_id) = self.ctx.fixed_card_at(depth)
-            && self.pool.game_id(card) != game_id
-        {
-            return false;
-        }
-        if let Some(character_id) = self.ctx.fixed_character_at(depth)
-            && self.pool.char_id(card) != character_id
-        {
-            return false;
-        }
-        true
+        self.ctx.card_matches_slot(self.pool, depth, card)
     }
 }
 

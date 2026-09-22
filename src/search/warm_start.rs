@@ -185,7 +185,7 @@ fn one_swap_seed_neighborhood(
                 break;
             }
             stats.diagnostics.seed_states += 1;
-            if candidate == original || !slot_matches(pool, ctx, slot, candidate) {
+            if candidate == original || !ctx.card_matches_slot(pool, slot, candidate) {
                 continue;
             }
             if ctx.enforce_char_uniqueness {
@@ -312,7 +312,7 @@ fn warm_start_final_chapter_recurse(
     while idx < members.len() {
         let card = members[idx];
         idx += 1;
-        if card == leader {
+        if card == leader || !ctx.card_matches_slot(pool, depth, card) {
             continue;
         }
         let char_id = pool.char_id(card);
@@ -408,7 +408,7 @@ fn warm_start_prefix_recurse(
         if ctx.enforce_char_uniqueness && used_chars & (1u32 << char_id) != 0 {
             continue;
         }
-        if !slot_matches(pool, ctx, depth, card) {
+        if !ctx.card_matches_slot(pool, depth, card) {
             continue;
         }
         deck[depth] = card;
@@ -433,7 +433,7 @@ fn top_final_chapter_leaders(
 ) -> [Option<CardIdx>; FINAL_CHAPTER_WARM_START_LEADERS] {
     let mut leaders = [None; FINAL_CHAPTER_WARM_START_LEADERS];
     for candidate in sorted_final_chapter_leaders(pool, ctx) {
-        if !slot_matches(pool, ctx, 0, candidate) {
+        if !ctx.card_matches_slot(pool, 0, candidate) {
             continue;
         }
         let Some(slot) = leaders.iter().position(|leader| leader.is_none()) else {
@@ -448,7 +448,10 @@ fn top_final_chapter_leaders(
 }
 
 pub(crate) fn sorted_final_chapter_leaders(pool: &CardPool, ctx: &SearchContext) -> Vec<CardIdx> {
-    let mut leaders = pool.indices().collect::<Vec<_>>();
+    let mut leaders = pool
+        .indices()
+        .filter(|&card| ctx.card_matches_slot(pool, 0, card))
+        .collect::<Vec<_>>();
     leaders.sort_unstable_by(|left, right| {
         leader_key(pool, ctx, *right)
             .cmp(&leader_key(pool, ctx, *left))
@@ -480,6 +483,9 @@ fn greedy_select(
     let mut used_chars = 0u32;
     let mut filled = 0usize;
     if let Some(leader) = fixed_leader {
+        if !ctx.card_matches_slot(pool, 0, leader) {
+            return None;
+        }
         deck[0] = leader;
         used_chars |= 1u32 << pool.char_id(leader);
         filled = 1;
@@ -499,7 +505,7 @@ fn greedy_select(
             if fixed_leader.is_some_and(|leader| leader == card) {
                 continue;
             }
-            if !slot_matches(pool, ctx, filled, card) {
+            if !ctx.card_matches_slot(pool, filled, card) {
                 continue;
             }
             let score = strategy_score(pool, ctx, strategy, card);
@@ -584,7 +590,7 @@ fn one_swap_improve_collect(
                 if candidate == original || fixed_leader.is_some_and(|leader| leader == candidate) {
                     continue;
                 }
-                if !slot_matches(pool, ctx, slot, candidate) {
+                if !ctx.card_matches_slot(pool, slot, candidate) {
                     continue;
                 }
 
@@ -705,21 +711,6 @@ fn promote_best(best: &mut Option<DeckResult>, candidate: DeckResult) {
     }
 }
 
-#[inline(always)]
-fn slot_matches(pool: &CardPool, ctx: &SearchContext, slot: usize, card: CardIdx) -> bool {
-    if let Some(game_id) = ctx.fixed_card_at(slot)
-        && pool.game_id(card) != game_id
-    {
-        return false;
-    }
-    if let Some(character_id) = ctx.fixed_character_at(slot)
-        && pool.char_id(card) != character_id
-    {
-        return false;
-    }
-    true
-}
-
 // Standalone preparation remains explicitly unlimited. Operation entry points
 // pass their existing budget into the corresponding `_with_budget` helpers.
 pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<DeckResult> {
@@ -751,5 +742,8 @@ fn seed_evaluate(
     }
     stats.leaf_nodes += 1;
     stats.diagnostics.seed_leaves += 1;
+    if !ctx.deck_matches_slots(pool, deck) {
+        return None;
+    }
     leaf_evaluate_checked(pool, ctx, deck)
 }

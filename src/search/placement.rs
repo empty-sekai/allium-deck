@@ -16,6 +16,9 @@ pub(super) fn evaluate_candidate(
     ctx: &SearchContext,
     deck: &[CardIdx; DECK_SIZE],
 ) -> Option<DeckResult> {
+    if !ctx.deck_matches_slots(pool, deck) {
+        return None;
+    }
     let problem = DeckProblem::from_context(ctx);
     if bonus_order_observable(pool, ctx, deck) {
         let mut work = *deck;
@@ -131,6 +134,9 @@ pub(super) fn visit_bonus_candidates(
     deck: &[CardIdx; DECK_SIZE],
     mut visit: impl FnMut(DeckResult),
 ) {
+    if !ctx.deck_matches_slots(pool, deck) {
+        return;
+    }
     if bonus_order_observable(pool, ctx, deck) {
         let fixed = DeckProblem::from_context(ctx)
             .fixed_prefix
