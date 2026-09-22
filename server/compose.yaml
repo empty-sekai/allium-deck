@@ -5,7 +5,7 @@
 # This repository carries no game data. Point ./data at a directory holding
 # `masterdata/*.json` and `music_metas.json`, or generate a synthetic set first:
 #
-#   cargo run --release --manifest-path server/Cargo.toml --bin export_synth_masterdata -- server/data
+#   cargo run --manifest-path server/Cargo.toml --release --bin export-synth-masterdata -- server/data
 #
 # The allocator and base image are build arguments; see docker/README.en.md for what the
 # combinations measure out at.

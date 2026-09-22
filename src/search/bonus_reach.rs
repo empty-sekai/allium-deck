@@ -11,9 +11,8 @@
 use super::DECK_SIZE;
 use crate::pool::{CardIdx, CardPool};
 
-/// Word length of one bitset (one bit per achievable `total_x10` sum).
+/// Relaxed subset-sum table, with one bit per achievable `total_x10` sum.
 pub struct BonusReach {
-    words: usize,
     /// `levels[pos][r]`: bitset of achievable sums (x10 units) picking `r`
     /// cards from `cards[pos..]`; `pos` in `0..=n`.
     levels: Vec<[Vec<u64>; DECK_SIZE + 1]>,
@@ -65,22 +64,18 @@ impl BonusReach {
                 }
             }
         }
-        Self {
-            words,
-            levels,
-            max_sum,
-        }
+        Self { levels, max_sum }
     }
 
     /// Whether picking `r` cards from `cards[pos..]` can reach a total bonus
     /// sum inside the inclusive `[lo, hi]` range (x10 units).
     pub fn any_in_range(&self, pos: usize, r: usize, lo: u32, hi: u32) -> bool {
-        if r > DECK_SIZE || pos >= self.levels.len() {
+        if r > DECK_SIZE || pos >= self.levels.len() || lo > hi || lo > self.max_sum {
             return false;
         }
         let reach = &self.levels[pos][r];
         let hi = (hi as usize).min(self.max_sum as usize);
-        let lo = (lo as usize).min(hi);
+        let lo = lo as usize;
         let (word_lo, bit_lo) = (lo / 64, lo % 64);
         let (word_hi, bit_hi) = (hi / 64, hi % 64);
         for (word, &bits) in reach.iter().enumerate().take(word_hi + 1).skip(word_lo) {
@@ -95,7 +90,6 @@ impl BonusReach {
                 return true;
             }
         }
-        let _ = self.words;
         false
     }
 }

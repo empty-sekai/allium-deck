@@ -1,173 +1,192 @@
-use crate::pool::{CardIdx, CardPool};
-use crate::types::{DECK_SIZE, ScoreTarget};
-
+//! Independent exhaustive oracle. No production bounds, dominance, candidate
+//! trimming, placement optimizer, or search traversal are used here.
 use super::context::SearchContext;
 use super::evaluate::leaf_evaluate_checked;
 use super::types::{DeckResult, SearchParams};
+use crate::pool::{CardIdx, CardPool};
+use crate::types::{DECK_SIZE, ScoreTarget};
 
-/// 穷举搜索的计数统计。
+/// Counts from exhaustive ordered-deck enumeration.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BruteForceStats {
-    /// 枚举到的五张组合数。
+    /// Complete legal slot assignments offered to the objective evaluator.
     pub candidates: u64,
-    /// 通过约束检查并实际求值的组合数。
+    /// Assignments accepted by the objective and skill constraints.
     pub evaluated: u64,
-    /// 因违反约束而跳过的组合数。
+    /// Assignments rejected by leaf-level constraints.
     pub invalid: u64,
 }
 
-/// 不做任何剪枝地枚举全部组合，作为剪枝搜索的对照实现。
+/// Small-instance reference solver over the full ordered feasible set.
 ///
-/// 复杂度随卡池大小组合增长，只适合小池。
+/// Public card identities are distinct within a deck; cultivation variants and
+/// alternative role assignments compete for one result per public card set.
+/// This is intentionally factorial and is not a production search fallback.
+pub struct ExactOracle<'a> {
+    pool: &'a CardPool,
+    context: &'a SearchContext,
+}
+
+impl<'a> ExactOracle<'a> {
+    /// Binds an immutable pool and its semantic context.
+    pub fn new(pool: &'a CardPool, context: &'a SearchContext) -> Self {
+        Self { pool, context }
+    }
+
+    /// Enumerates legal ordered decks independently for each exact bonus tier.
+    /// Filtering global Bonus winners is not equivalent: a public card set can
+    /// have a different cultivation variant or slot assignment in each tier.
+    /// As in `search`, timeouts are ignored so no partial result becomes a proof.
+    pub fn search_bonus_targets(
+        &self,
+        params: &SearchParams,
+        targets: &[i32],
+    ) -> (Vec<DeckResult>, BruteForceStats) {
+        if params.top_k == 0
+            || self.pool.count() < DECK_SIZE
+            || self.context.target != ScoreTarget::Bonus
+        {
+            return (Vec::new(), BruteForceStats::default());
+        }
+        let mut targets = targets
+            .iter()
+            .copied()
+            .filter(|target| *target >= 0)
+            .collect::<Vec<_>>();
+        targets.sort_unstable_by(|a, b| b.cmp(a));
+        targets.dedup();
+        let mut results = Vec::new();
+        let mut stats = BruteForceStats::default();
+        for target in targets {
+            let mut tracker = BruteForceTopK::new(params.top_k, self.pool, self.context);
+            tracker.bonus_target = Some(target);
+            enumerate(
+                self.pool,
+                self.context,
+                0,
+                &mut [CardIdx::new(0); DECK_SIZE],
+                &mut tracker,
+                &mut stats,
+            );
+            results.extend(tracker.into_vec());
+        }
+        (results, stats)
+    }
+
+    /// Enumerates every legal ordered deck, returning the exact distinct Top-K.
+    /// `timeout_ms` is deliberately ignored: an oracle never returns a partial proof.
+    pub fn search(&self, params: &SearchParams) -> (Vec<DeckResult>, BruteForceStats) {
+        let pool = self.pool;
+        let ctx = self.context;
+        if params.top_k == 0 || pool.count() < DECK_SIZE {
+            return (Vec::new(), BruteForceStats::default());
+        }
+        let mut tracker = BruteForceTopK::new(params.top_k, pool, ctx);
+        let mut stats = BruteForceStats::default();
+        enumerate(
+            pool,
+            ctx,
+            0,
+            &mut [CardIdx::new(0); DECK_SIZE],
+            &mut tracker,
+            &mut stats,
+        );
+        (tracker.into_vec(), stats)
+    }
+}
+
+/// Compatibility entry point for the independent full-feasible-set oracle.
 pub fn brute_force_search(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
 ) -> (Vec<DeckResult>, BruteForceStats) {
-    if params.top_k == 0 || pool.count() < DECK_SIZE {
-        return (Vec::new(), BruteForceStats::default());
-    }
-
-    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
-    let mut tracker = BruteForceTopK::new(params.top_k, minimize, pool);
-    let mut deck = [CardIdx::new(0); DECK_SIZE];
-    let mut stats = BruteForceStats::default();
-    recurse(pool, ctx, 0, 0, &mut deck, &mut tracker, &mut stats);
-    (tracker.into_vec(), stats)
+    ExactOracle::new(pool, ctx).search(params)
 }
 
-fn recurse(
+fn enumerate(
     pool: &CardPool,
     ctx: &SearchContext,
     depth: usize,
-    min_free_idx: usize,
     deck: &mut [CardIdx; DECK_SIZE],
     tracker: &mut BruteForceTopK,
     stats: &mut BruteForceStats,
 ) {
     if depth == DECK_SIZE {
         stats.candidates += 1;
-        let Some(score) = leaf_evaluate_checked(pool, ctx, deck) else {
+        if tracker.bonus_target.is_none_or(|target| {
+            super::evaluate::resolve_total_bonus(pool, ctx, deck) == f64::from(target)
+        }) && let Some(score) = leaf_evaluate_checked(pool, ctx, deck)
+        {
+            stats.evaluated += 1;
+            tracker.insert(DeckResult::new(*deck, score));
+        } else {
             stats.invalid += 1;
-            return;
-        };
-        stats.evaluated += 1;
-        tracker.insert(DeckResult::new(*deck, score));
+        }
         return;
     }
-
-    let remaining = DECK_SIZE - depth;
-    let is_fixed = ctx.is_fixed_slot(depth);
-    let mut dense = if is_fixed { 0 } else { min_free_idx };
-    while dense < pool.count() {
-        if !is_fixed && pool.count() - dense < remaining {
-            break;
-        }
-        let card = CardIdx::new(dense as u16);
-        dense += 1;
-        // 已选卡直接扫 deck 前缀（<= 4 项），不受池大小限制（issue #24 的 u64 位图溢出）。
-        if selected_card_idx(deck, depth, card) {
+    // Every slot starts from zero. In particular, no ascending dense-index
+    // constraint may silently remove an observable leader or skill-order role.
+    for card in pool.indices() {
+        let game = pool.game_id(card);
+        let character = pool.char_id(card);
+        if deck[..depth]
+            .iter()
+            .any(|&other| pool.game_id(other) == game)
+        {
             continue;
         }
-
-        if !slot_matches(pool, ctx, depth, card) {
+        if ctx.fixed_card_at(depth).is_some_and(|id| id != game)
+            || ctx
+                .fixed_character_at(depth)
+                .is_some_and(|id| id != character)
+        {
             continue;
         }
-        if selected_game_id(pool, deck, depth, card) {
-            continue;
-        }
-        if ctx.enforce_char_uniqueness && selected_character(pool, deck, depth, card) {
-            let fixed_character_slot = ctx.fixed_character_at(depth) == Some(pool.char_id(card));
-            let simple_target = matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill);
-            if !(simple_target && fixed_character_slot) {
+        if ctx.enforce_char_uniqueness {
+            let duplicate = deck[..depth]
+                .iter()
+                .any(|&other| pool.char_id(other) == character);
+            let explicitly_repeated_numeric_slot =
+                matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill)
+                    && ctx.fixed_character_at(depth) == Some(character);
+            if duplicate && !explicitly_repeated_numeric_slot {
                 continue;
             }
-        }
-        if ctx.is_final_chapter && depth > 0 && !ctx.final_chapter_member_keep_at(card.raw()) {
+        } else if depth > 0 && character != pool.char_id(deck[0]) {
             continue;
         }
-
+        if depth == 0
+            && ctx.is_final_chapter
+            && ctx
+                .forced_leader_character_id
+                .is_some_and(|id| id != character)
+        {
+            continue;
+        }
+        // final_chapter_member_keep is optimizer state, not a public constraint.
+        // Deliberately do not read it here.
         deck[depth] = card;
-        let next_min_free = if is_fixed { min_free_idx } else { dense };
-        recurse(pool, ctx, depth + 1, next_min_free, deck, tracker, stats);
+        enumerate(pool, ctx, depth + 1, deck, tracker, stats);
     }
 }
 
-#[inline(always)]
-fn selected_card_idx(deck: &[CardIdx; DECK_SIZE], depth: usize, card: CardIdx) -> bool {
-    let mut idx = 0usize;
-    while idx < depth {
-        if deck[idx] == card {
-            return true;
-        }
-        idx += 1;
-    }
-    false
-}
-
-#[inline(always)]
-fn slot_matches(pool: &CardPool, ctx: &SearchContext, depth: usize, card: CardIdx) -> bool {
-    if let Some(game_id) = ctx.fixed_card_at(depth)
-        && pool.game_id(card) != game_id
-    {
-        return false;
-    }
-    if let Some(character_id) = ctx.fixed_character_at(depth)
-        && pool.char_id(card) != character_id
-    {
-        return false;
-    }
-    true
-}
-
-#[inline(always)]
-fn selected_game_id(
-    pool: &CardPool,
-    deck: &[CardIdx; DECK_SIZE],
-    depth: usize,
-    card: CardIdx,
-) -> bool {
-    let game_id = pool.game_id(card);
-    let mut idx = 0usize;
-    while idx < depth {
-        if pool.game_id(deck[idx]) == game_id {
-            return true;
-        }
-        idx += 1;
-    }
-    false
-}
-
-#[inline(always)]
-fn selected_character(
-    pool: &CardPool,
-    deck: &[CardIdx; DECK_SIZE],
-    depth: usize,
-    card: CardIdx,
-) -> bool {
-    let char_id = pool.char_id(card);
-    let mut idx = 0usize;
-    while idx < depth {
-        if pool.char_id(deck[idx]) == char_id {
-            return true;
-        }
-        idx += 1;
-    }
-    false
-}
-
-struct BruteForceTopK {
+struct BruteForceTopK<'a> {
+    bonus_target: Option<i32>,
     top_k: usize,
-    minimize: bool,
+    pool: &'a CardPool,
+    ctx: &'a SearchContext,
     game_ids: Vec<u16>,
     results: Vec<DeckResult>,
 }
 
-impl BruteForceTopK {
-    fn new(top_k: usize, minimize: bool, pool: &CardPool) -> Self {
+impl<'a> BruteForceTopK<'a> {
+    fn new(top_k: usize, pool: &'a CardPool, ctx: &'a SearchContext) -> Self {
         Self {
+            bonus_target: None,
             top_k,
-            minimize,
+            pool,
+            ctx,
             game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
             results: Vec::with_capacity(top_k),
         }
@@ -196,12 +215,37 @@ impl BruteForceTopK {
     }
 
     fn is_better(&self, candidate: &DeckResult, incumbent: &DeckResult) -> bool {
-        let cmp = deck_result_cmp(candidate, incumbent);
-        if self.minimize {
-            cmp.is_gt()
+        let objective = if self.ctx.minimize && self.ctx.target == ScoreTarget::Power {
+            candidate.score.cmp(&incumbent.score)
         } else {
-            cmp.is_lt()
-        }
+            incumbent.score.cmp(&candidate.score)
+        };
+        let order = objective
+            .then_with(|| {
+                if self.ctx.target == ScoreTarget::Mysekai {
+                    let power = |result: &DeckResult| {
+                        self.ctx.clamp_power_total(
+                            super::evaluate::resolve_power_for_cards(self.pool, &result.cards)
+                                + self.ctx.honor_bonus,
+                        )
+                    };
+                    power(incumbent).cmp(&power(candidate))
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+            .then_with(|| {
+                self.game_card_set_key(candidate)
+                    .cmp(&self.game_card_set_key(incumbent))
+            })
+            .then_with(|| {
+                candidate
+                    .cards
+                    .map(|card| self.pool.game_id(card))
+                    .cmp(&incumbent.cards.map(|card| self.pool.game_id(card)))
+            })
+            .then_with(|| candidate.cards.cmp(&incumbent.cards));
+        order.is_lt()
     }
 
     fn into_vec(self) -> Vec<DeckResult> {
@@ -217,12 +261,4 @@ impl BruteForceTopK {
         cards.sort_unstable();
         cards
     }
-}
-
-#[inline(always)]
-fn deck_result_cmp(left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
-    right
-        .score
-        .cmp(&left.score)
-        .then_with(|| left.cards.cmp(&right.cards))
 }

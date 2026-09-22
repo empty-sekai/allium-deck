@@ -17,8 +17,8 @@ use allium_deck::handler::{
 };
 use allium_deck::pool::{CardIdx, CardPool};
 use allium_deck::search::{
-    DeckResult, DeckResultSummary, PreparedSearch, SearchContext, SearchParams, SearchStats,
-    SuffixBound, challenge_search, search_instrumented, search_targets, summarize_deck,
+    DeckResult, DeckResultSummary, PreparedSearch, SearchCompletion, SearchContext, SearchParams,
+    SearchStats, challenge_search, compare_deck_results, search_targets, summarize_deck,
 };
 use allium_deck::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 use serde::Serialize;
@@ -202,21 +202,17 @@ fn run() -> Result<(), String> {
     let search_start = Instant::now();
     let mut search_output = None;
     for _ in 0..search_repeats {
-        search_output = Some(if tiered {
-            (
-                search_targets(&pool, &ctx, &search_params, &params.target_bonus_list),
-                SearchStats::default(),
-            )
-        } else {
-            match prepared_search.as_ref() {
-                Some(prepared) => prepared
-                    .search_instrumented(&pool, &ctx, &search_params)
-                    .expect("prepared search covers requested top_k"),
-                None => search_instrumented(&pool, &ctx, &search_params),
-            }
+        search_output = Some(match prepared_search.as_ref() {
+            Some(prepared) => prepared
+                .search(&pool, &ctx, &search_params)
+                .expect("prepared search covers requested top_k"),
+            None => search_targets(&pool, &ctx, &search_params, &params.target_bonus_list),
         });
     }
-    let (results, stats) = search_output.expect("search_repeats is non-zero");
+    let outcome = search_output.expect("search_repeats is non-zero");
+    let completion = outcome.completion();
+    let results = outcome.results;
+    let stats = outcome.stats;
     let search_ms = ms(search_start) / search_repeats as f64;
     eprintln!(
         "[search] {search_ms:.1}ms  leaf={} ub_prunes={} ep_explored={} mono_break={}",
@@ -244,6 +240,8 @@ fn run() -> Result<(), String> {
         .collect::<Vec<_>>();
 
     let response = CliResponse {
+        completion,
+        timed_out: completion == SearchCompletion::TimedOut,
         effective_params: params,
         search_params: SearchParamsOut {
             top_k: search_params.top_k,
@@ -305,28 +303,34 @@ fn run_challenge_all(
     let build_start = Instant::now();
     let (pool, ctx) = build_card_pool(user, game, &params).map_err(|e| e.to_string())?;
     let shared_build_pool_ms = ms(build_start);
-    let suffix = SuffixBound::build(&pool, &ctx);
     eprintln!(
         "[challenge_all:pool] build={shared_build_pool_ms:.1}ms pool={} effective_live={:?}",
         pool.count(),
         ctx.effective_live_type()
     );
 
-    let character_ids = GAME_CHARACTER_ID_RANGE.collect::<Vec<_>>();
-    let mut characters = character_ids
+    let character_ids = GAME_CHARACTER_ID_RANGE
+        .map(|id| id as u8)
+        .collect::<Vec<_>>();
+    let search_started = Instant::now();
+    let batch =
+        challenge_search::search_characters_outcome(&pool, &ctx, &search_params, &character_ids);
+    let search_wall_ms = ms(search_started);
+    let completion = batch.completion();
+    let batch_stats = batch.stats;
+    let mut entries = batch.results;
+    entries.sort_by(|left, right| {
+        match (left.outcome.results.first(), right.outcome.results.first()) {
+            (Some(a), Some(b)) => compare_deck_results(&pool, &ctx, a, b),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => left.character_id.cmp(&right.character_id),
+        }
+    });
+    let mut characters = entries
         .iter()
-        .map(|character_id| {
-            run_challenge_character_from_shared_pool(
-                *character_id,
-                user,
-                game,
-                &params,
-                &search_params,
-                &user_cards,
-                &pool,
-                &ctx,
-                &suffix,
-            )
+        .map(|entry| {
+            render_challenge_character(entry, user, game, &params, &user_cards, &pool, &ctx)
         })
         .collect::<Vec<_>>();
 
@@ -369,7 +373,6 @@ fn run_challenge_all(
         .map(|diagnostics| diagnostics.search.mono_break_prunes)
         .sum::<u64>();
 
-    characters.sort_by(compare_challenge_character);
     let mut next_rank = 1usize;
     for character in &mut characters {
         if let Some(deck) = &mut character.deck {
@@ -389,6 +392,8 @@ fn run_challenge_all(
     );
 
     let response = ChallengeAllCliResponse {
+        completion,
+        timed_out: completion == SearchCompletion::TimedOut,
         mode: "challenge_all",
         effective_params: params,
         search_params: ChallengeAllSearchParamsOut {
@@ -396,6 +401,7 @@ fn run_challenge_all(
             timeout_ms: search_params.timeout_ms,
         },
         diagnostics: ChallengeAllDiagnostics {
+            search: batch_stats,
             character_count: characters.len(),
             ranked_characters: next_rank.saturating_sub(1),
             searched_characters,
@@ -407,6 +413,7 @@ fn run_challenge_all(
             total_mono_break_prunes,
         },
         timing: ChallengeAllTiming {
+            search_wall_ms,
             load_ms,
             compute_wall_ms,
             total_build_pool_ms,
@@ -423,45 +430,45 @@ fn run_challenge_all(
     Ok(())
 }
 
-fn run_challenge_character_from_shared_pool(
-    character_id: i32,
+fn render_challenge_character(
+    entry: &challenge_search::CharacterSearchOutcome,
     user: &UserProfile,
     game: &GameData<'_>,
     params: &BuildParams,
-    search_params: &SearchParams,
     user_cards: &HashMap<i32, &UserCard>,
     pool: &CardPool,
     ctx: &SearchContext,
-    suffix: &SuffixBound,
 ) -> ChallengeCharacterOut {
+    let character_id = i32::from(entry.character_id);
     let mut character_params = params.clone();
     character_params.challenge_live_character_id = Some(character_id);
-
-    let search_start = Instant::now();
-    let (results, stats) =
-        challenge_search::search_character(pool, ctx, suffix, search_params, character_id as u8);
-    let search_ms = ms(search_start);
+    let completion = entry.outcome.completion();
+    let search_ms = entry.search_time.as_secs_f64() * 1000.0;
     let candidate_count = pool
         .indices()
-        .filter(|card| pool.char_id(*card) == character_id as u8)
+        .filter(|&card| pool.char_id(card) == entry.character_id)
         .count();
-    let deck = results
+    let deck = entry
+        .outcome
+        .results
         .first()
         .map(|result| DeckOut::build(1, pool, ctx, game, user, user_cards, result));
     let error = if deck.is_some() {
         None
+    } else if completion == SearchCompletion::TimedOut {
+        Some("搜索预算已耗尽，尚未找到合法结果".to_string())
     } else {
-        Some("没有搜索结果（候选池不足 5 或被参数过滤为空）".to_string())
+        Some("没有合法搜索结果（候选不足或约束不可满足）".to_string())
     };
-
     ChallengeCharacterOut {
+        completion,
         rank: None,
         character_id,
         effective_params: character_params,
         diagnostics: Some(diagnostics_from_with_pool_size(
             candidate_count,
             ctx,
-            &stats,
+            &entry.outcome.stats,
         )),
         timing: CharacterTiming {
             build_pool_ms: 0.0,
@@ -487,34 +494,6 @@ fn diagnostics_from_with_pool_size(
         effective_live_type: format!("{:?}", ctx.effective_live_type()),
         support_deck: SupportDeckDiagnostics::from_ctx(ctx),
         search: SearchDiagnostics::from_stats(stats),
-    }
-}
-
-fn compare_challenge_character(
-    left: &ChallengeCharacterOut,
-    right: &ChallengeCharacterOut,
-) -> Ordering {
-    match (left.deck.as_ref(), right.deck.as_ref()) {
-        (Some(left_deck), Some(right_deck)) => right_deck
-            .target_value
-            .cmp(&left_deck.target_value)
-            .then_with(|| {
-                right_deck
-                    .total_power
-                    .unwrap_or_default()
-                    .cmp(&left_deck.total_power.unwrap_or_default())
-            })
-            .then_with(|| {
-                right_deck
-                    .multi_live_score_up
-                    .unwrap_or_default()
-                    .partial_cmp(&left_deck.multi_live_score_up.unwrap_or_default())
-                    .unwrap_or(Ordering::Equal)
-            })
-            .then_with(|| left.character_id.cmp(&right.character_id)),
-        (Some(_), None) => Ordering::Less,
-        (None, Some(_)) => Ordering::Greater,
-        (None, None) => left.character_id.cmp(&right.character_id),
     }
 }
 
@@ -1186,6 +1165,8 @@ fn ms(start: Instant) -> f64 {
 
 #[derive(Serialize)]
 struct CliResponse {
+    completion: SearchCompletion,
+    timed_out: bool,
     effective_params: BuildParams,
     search_params: SearchParamsOut,
     diagnostics: Diagnostics,
@@ -1195,6 +1176,8 @@ struct CliResponse {
 
 #[derive(Serialize)]
 struct ChallengeAllCliResponse {
+    completion: SearchCompletion,
+    timed_out: bool,
     mode: &'static str,
     effective_params: BuildParams,
     search_params: ChallengeAllSearchParamsOut,
@@ -1226,6 +1209,7 @@ struct Timing {
 
 #[derive(Serialize)]
 struct ChallengeAllTiming {
+    search_wall_ms: f64,
     load_ms: f64,
     compute_wall_ms: f64,
     total_build_pool_ms: f64,
@@ -1250,6 +1234,7 @@ struct Diagnostics {
 
 #[derive(Serialize)]
 struct ChallengeAllDiagnostics {
+    search: SearchStats,
     character_count: usize,
     ranked_characters: usize,
     searched_characters: usize,
@@ -1263,6 +1248,7 @@ struct ChallengeAllDiagnostics {
 
 #[derive(Serialize)]
 struct ChallengeCharacterOut {
+    completion: SearchCompletion,
     rank: Option<usize>,
     character_id: i32,
     effective_params: BuildParams,
@@ -1314,6 +1300,12 @@ struct SupportCardOut {
 
 #[derive(Serialize)]
 struct SearchDiagnostics {
+    visited_nodes: u64,
+    bound_prunes: u64,
+    feasibility_prunes: u64,
+    dominance_prunes: u64,
+    deadline_hit: bool,
+    phases: allium_deck::search::SearchDiagnostics,
     leaf_nodes: u64,
     ub_prunes: u64,
     leader_prunes: u64,
@@ -1327,6 +1319,12 @@ struct SearchDiagnostics {
 impl SearchDiagnostics {
     fn from_stats(stats: &SearchStats) -> Self {
         Self {
+            visited_nodes: stats.visited_nodes,
+            bound_prunes: stats.bound_prunes,
+            feasibility_prunes: stats.feasibility_prunes,
+            dominance_prunes: stats.dominance_prunes,
+            deadline_hit: stats.deadline_hit,
+            phases: stats.diagnostics.clone(),
             leaf_nodes: stats.leaf_nodes,
             ub_prunes: stats.ub_prunes,
             leader_prunes: stats.leader_prunes,

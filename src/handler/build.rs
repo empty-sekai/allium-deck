@@ -6,7 +6,7 @@
 //! - `build_card_pool*` 公开入口与 `cultivated_user_cards` 展示态卡况。
 
 use std::borrow::Cow;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use crate::pool::EventBonusExact;
 use crate::search::SearchContext;
@@ -14,19 +14,11 @@ use crate::types::DefaultImage;
 
 use super::card_config::apply_card_config;
 use super::event_bonus::{EventContext, build_card_event_bonus, build_event_context};
-use super::filter::{
-    CHALLENGE_ALL_PER_CHAR_KEEP, EP_PREFILTER_MIN_POOL, FINAL_CHAPTER_PER_CHAR_KEEP,
-    GENERAL_PER_CHAR_KEEP, GENERAL_TRIM_THRESHOLD, PER_CHAR_KEEP, WORLD_BLOOM_PER_CHAR_KEEP,
-    ep_prefilter_has_deck, ep_prefilter_keep, ep_prefilter_keep_with_params,
-    general_per_character_trim, keep_card, per_character_trim, prepared_ep_prefilter_keep,
-    prepared_ep_prefilter_keep_with_params, prepared_keep_card, prepared_post_event_unit_filter,
-    target_per_character_trim,
-};
+use super::filter::{keep_card, prepared_keep_card, prepared_post_event_unit_filter};
 use super::gather::{CardIntermediate, FullPrecisionCard, GatheredContext, sort_and_gather};
 use super::index;
 use super::music::{self, build_music_params};
 use super::power::{PowerInput, PowerResult, PreparedPowerContext, build_power_batch_from_fn};
-use super::prune;
 use super::skill::{SkillResult, SkillState, build_skill, is_bfes_skill_pair};
 use super::types::{self, default_image_kind, is_after_training};
 use super::validate::validate_build_params;
@@ -120,8 +112,8 @@ pub(super) struct PreparedCardSeed<'a> {
     pub(super) event_bonus: EventBonusExact,
     pub(super) has_char_bonus: bool,
     pub(super) has_attr_bonus: bool,
-    pub(super) leader_honor_bonus: u16,
-    pub(super) leader_limit_bonus: u16,
+    pub(super) leader_honor_bonus_x10: u16,
+    pub(super) leader_limit_bonus_x10: u16,
 }
 
 pub(super) struct PreparedCardBuild<'a> {
@@ -134,8 +126,8 @@ pub(super) struct PreparedCardBuild<'a> {
     event_bonus: EventBonusExact,
     has_char_bonus: bool,
     has_attr_bonus: bool,
-    leader_honor_bonus: u16,
-    leader_limit_bonus: u16,
+    leader_honor_bonus_x10: u16,
+    leader_limit_bonus_x10: u16,
     skill_options: [Option<(SkillState, SkillResult)>; 2],
     skill_state_controls_image: bool,
 }
@@ -147,7 +139,6 @@ pub struct PreparedPoolBuild<'a> {
     music: Option<music::MusicParams>,
     powers: Vec<PowerResult>,
     cards: Vec<PreparedCardBuild<'a>>,
-    ep_prefilter_applied: bool,
     honor_bonus: u32,
 }
 
@@ -242,16 +233,22 @@ impl<'a> PreparedPoolBuild<'a> {
                         && ch < 27
                         && owned_honors.contains(&entry.honor_id)
                     {
-                        result[ch] = result[ch].wrapping_add(entry.bonus_rate.max(0) as u16);
+                        let total_x10 = u64::from(result[ch]) + entry.bonus_rate.max(0) as u64 * 10;
+                        super::capacity::ensure(
+                            "leader honor bonus (tenths)",
+                            total_x10,
+                            u64::from(u16::MAX),
+                        )?;
+                        result[ch] = total_x10 as u16;
                     }
                 }
             }
             result
         };
 
-        let mut prepare_card = |mut user_card: Cow<'a, types::UserCard>| {
+        let mut prepare_card = |mut user_card: Cow<'a, types::UserCard>| -> Result<(), BuildError> {
             let Some(card_data) = indexes.card_data(user_card.card_id) else {
-                return;
+                return Ok(());
             };
             let master = &card_data.master;
             if !configs_are_noop
@@ -263,13 +260,13 @@ impl<'a> PreparedPoolBuild<'a> {
                     game.card_episodes,
                 )
             {
-                return;
+                return Ok(());
             }
             if card_data.unit_mask == 0 {
-                return;
+                return Ok(());
             }
             let Some(attr) = card_data.attr else {
-                return;
+                return Ok(());
             };
             let default_image_kind = default_image_kind(&user_card.default_image);
             let after_training = is_after_training(&user_card.special_training_status);
@@ -294,8 +291,9 @@ impl<'a> PreparedPoolBuild<'a> {
                         ctx,
                     )
                 })
+                .transpose()?
                 .unwrap_or((EventBonusExact::default(), false, false));
-            let leader_honor_bonus = if event_ctx.is_some() {
+            let leader_honor_bonus_x10 = if event_ctx.is_some() {
                 usize::try_from(master.character_id)
                     .ok()
                     .filter(|ch| *ch < 27)
@@ -304,10 +302,20 @@ impl<'a> PreparedPoolBuild<'a> {
             } else {
                 0
             };
-            let leader_limit_bonus = if event_ctx.is_some() {
-                // leader 向量按整型百分比消费；x10 → 百分比在此收口。
+            let leader_limit_bonus_x10 = if event_ctx.is_some() {
+                // Keep the source's tenths through evaluation. A fractional
+                // nonzero entry must not become the legacy zero/default case.
                 let from_table = limited_entry
-                    .map(|(_, leader)| (leader.max(0) / 10) as u16)
+                    .map(|(_, leader)| -> Result<u16, BuildError> {
+                        let exact_x10 = leader.max(0) as u64;
+                        super::capacity::ensure(
+                            "leader limited bonus (tenths)",
+                            exact_x10,
+                            u64::from(u16::MAX),
+                        )?;
+                        Ok(exact_x10 as u16)
+                    })
+                    .transpose()?
                     .unwrap_or(0);
                 if from_table == 0
                     && limited_entry.is_some()
@@ -316,8 +324,8 @@ impl<'a> PreparedPoolBuild<'a> {
                     )
                 {
                     // legacy 终章：当期卡行缺 leaderBonusRate 时队长兜底 20%
-                    // （与参照实现一致；本地合成行恰好全部缺该字段）。
-                    20
+                    // The compact context stores this exact 20% as 200 tenths.
+                    200
                 } else {
                     from_table
                 }
@@ -335,23 +343,21 @@ impl<'a> PreparedPoolBuild<'a> {
                 event_bonus,
                 has_char_bonus,
                 has_attr_bonus,
-                leader_honor_bonus,
-                leader_limit_bonus,
+                leader_honor_bonus_x10,
+                leader_limit_bonus_x10,
             });
+            Ok(())
         };
         if let Some(normalized_cards) = normalized_cards {
             for user_card in normalized_cards {
-                prepare_card(Cow::Owned(user_card));
+                prepare_card(Cow::Owned(user_card))?;
             }
         } else {
             for user_card in &user.user_cards {
-                prepare_card(Cow::Borrowed(user_card));
+                prepare_card(Cow::Borrowed(user_card))?;
             }
         }
 
-        let is_final_chapter = event_ctx
-            .as_ref()
-            .is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id));
         let event_scoped = event_ctx.as_ref().is_some_and(|ctx| {
             ctx.support_deck_count == 0 && !crate::types::is_world_bloom_finale_event(ctx.event_id)
         });
@@ -362,14 +368,10 @@ impl<'a> PreparedPoolBuild<'a> {
         // 总和必超档，不可能命中任何目标档位）。
         let bonus_tiered = matches!(params.target, crate::types::ScoreTarget::Bonus)
             && !params.target_bonus_list.is_empty();
-        let can_prefilter_before_power = event_scoped
-            && !bonus_tiered
-            && !matches!(
-                params.target,
-                crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
-            );
-        let mut ep_prefilter_applied = false;
-        if can_prefilter_before_power || (event_scoped && bonus_tiered) {
+        // Exact-by-default candidate membership: do not apply rarity/EP/role
+        // heuristics here.  Tiered bonus search may still apply hard user filters
+        // and the mathematically exact nonnegative over-target cutoff.
+        if event_scoped && bonus_tiered {
             seeds.retain(|card| {
                 prepared_keep_card(card, params)
                     && prepared_post_event_unit_filter(card, params, event_ctx.as_ref())
@@ -384,38 +386,19 @@ impl<'a> PreparedPoolBuild<'a> {
                 .unwrap_or(0)
                 .max(0) as u32
                 * 10;
-            seeds.retain(|card| card.event_bonus.total_x10() <= max_target_x10);
-        }
-        if can_prefilter_before_power
-            && seeds.len() > EP_PREFILTER_MIN_POOL
-            && seeds
-                .iter()
-                .any(|card| prepared_ep_prefilter_keep(card, false, is_final_chapter))
-        {
-            // 预过滤必须保留组满一副卡组所需的角色覆盖；挑战 live 则要求
-            // 同角色的五张不同游戏卡。不满足就回退不裁。
-            let keep: Vec<bool> = seeds
-                .iter()
-                .map(|card| {
-                    prepared_ep_prefilter_keep_with_params(card, params, false, is_final_chapter)
-                })
-                .collect();
-            if ep_prefilter_has_deck(
-                seeds
-                    .iter()
-                    .zip(&keep)
-                    .filter(|(_, keep)| **keep)
-                    .map(|(card, _)| (card.master.id, card.master.character_id)),
-                params,
-            ) {
-                let mut index = 0usize;
-                seeds.retain(|_| {
-                    let flag = keep[index];
-                    index += 1;
-                    flag
-                });
-                ep_prefilter_applied = true;
-            }
+            // Limited bonuses can be omitted by the event's counting cap. Only
+            // an unavoidable contribution is a valid per-card lower bound.
+            let limited_is_unconditional = event_ctx
+                .as_ref()
+                .is_none_or(|event| event.card_bonus_count_limit >= crate::types::DECK_SIZE);
+            seeds.retain(|card| {
+                let lower = if limited_is_unconditional {
+                    card.event_bonus.total_x10()
+                } else {
+                    card.event_bonus.base_x10()
+                };
+                lower <= max_target_x10
+            });
         }
 
         let mut cards = Vec::with_capacity(seeds.len());
@@ -443,7 +426,7 @@ impl<'a> PreparedPoolBuild<'a> {
                         character_rank,
                         event_ctx.as_ref().and_then(|ctx| ctx.skill_score_up_limit),
                         skill_state,
-                    ),
+                    )?,
                 ));
             }
             let skill_state_controls_image =
@@ -458,8 +441,8 @@ impl<'a> PreparedPoolBuild<'a> {
                 event_bonus: seed.event_bonus,
                 has_char_bonus: seed.has_char_bonus,
                 has_attr_bonus: seed.has_attr_bonus,
-                leader_honor_bonus: seed.leader_honor_bonus,
-                leader_limit_bonus: seed.leader_limit_bonus,
+                leader_honor_bonus_x10: seed.leader_honor_bonus_x10,
+                leader_limit_bonus_x10: seed.leader_limit_bonus_x10,
                 skill_options,
                 skill_state_controls_image,
             });
@@ -489,7 +472,6 @@ impl<'a> PreparedPoolBuild<'a> {
             music,
             powers,
             cards,
-            ep_prefilter_applied,
             honor_bonus: compute_honor_bonus(user, indexes),
         })
     }
@@ -502,41 +484,6 @@ pub(super) fn normalize_boost_rate_pct(boost: Option<i32>) -> u32 {
         Some(value) if value <= 10 => (2500 + (value - 5) * 200) as u32,
         _ => 100,
     }
-}
-
-/// 普通活动精确档位的类内去重：同 (角色, 加成总和) 的非固定卡只保留
-/// 综合力×技能最强的一张。固定卡的全部状态保留，不得被同类卡替换。
-/// World Bloom 的异色加成与支援排除依赖具体卡组，不适用此去重。
-fn bonus_class_dedup(cards: &mut Vec<CardIntermediate>, params: &types::BuildParams) {
-    let power_rank = |card: &CardIntermediate| -> u64 {
-        card.power.power_max.max(0) as u64 * (256 + card.skill.skill_max as u64)
-    };
-    let mut best: HashMap<(u8, u32), usize> = HashMap::new();
-    for (index, card) in cards.iter().enumerate() {
-        let key = (
-            card.character_id,
-            card.event_bonus.base_x10() + card.event_bonus.limited_x10(),
-        );
-        match best.get(&key) {
-            Some(&current) if power_rank(&cards[current]) >= power_rank(card) => {}
-            _ => {
-                best.insert(key, index);
-            }
-        }
-    }
-    let mut keep: Vec<bool> = cards
-        .iter()
-        .map(|card| params.fixed_cards.contains(&card.game_card_id))
-        .collect();
-    for index in best.values() {
-        keep[*index] = true;
-    }
-    let mut index = 0usize;
-    cards.retain(|_| {
-        let result = keep[index];
-        index += 1;
-        result
-    });
 }
 
 pub(super) fn validate_fixed_constraints(
@@ -796,8 +743,8 @@ pub(super) fn build_search_context(
                 None
             }
         }),
-        leader_honor_bonus: gathered.leader_honor_bonus,
-        leader_limit_bonus: gathered.leader_limit_bonus,
+        leader_honor_bonus_x10: gathered.leader_honor_bonus_x10,
+        leader_limit_bonus_x10: gathered.leader_limit_bonus_x10,
         final_chapter_member_keep: vec![true; card_count],
         skill_is_after_training: gathered.skill_is_after_training,
         trained_to_special_image: gathered.trained_to_special_image,
@@ -857,8 +804,8 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         let event_bonus = prepared_card.event_bonus;
         let has_char_bonus = prepared_card.has_char_bonus;
         let has_attr_bonus = prepared_card.has_attr_bonus;
-        let leader_honor_bonus = prepared_card.leader_honor_bonus;
-        let leader_limit_bonus = prepared_card.leader_limit_bonus;
+        let leader_honor_bonus_x10 = prepared_card.leader_honor_bonus_x10;
+        let leader_limit_bonus_x10 = prepared_card.leader_limit_bonus_x10;
         let skill_options = prepared_card.skill_options.clone();
         let skill_state_controls_image = prepared_card.skill_state_controls_image;
 
@@ -890,8 +837,8 @@ pub(super) fn build_card_pool_fully_prepared_internal(
                 event_bonus,
                 has_char_bonus,
                 has_attr_bonus,
-                leader_honor_bonus,
-                leader_limit_bonus,
+                leader_honor_bonus_x10,
+                leader_limit_bonus_x10,
                 ep_sort_key,
             };
 
@@ -923,124 +870,24 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         cards.retain(|card| card.unit_mask_raw & wanted != 0 || card.unit_mask_raw == piapro);
     }
 
-    let is_world_bloom =
-        event_ctx.is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom));
-    let is_final_chapter =
-        event_ctx.is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id));
-    // 与 PreparedPoolBuild::new 的 bonus_tiered 判定一致：精确档位组卡不做
-    // 任何按加成盲裁的收缩，容量压力由等加成支配裁剪处理（见 dominance_trim）。
-    let bonus_tiered = matches!(params.target, crate::types::ScoreTarget::Bonus)
-        && !params.target_bonus_list.is_empty();
-    if build.ep_prefilter_applied {
-        per_character_trim(&mut cards, params, PER_CHAR_KEEP);
-    } else if event_ctx.is_some()
-        && !bonus_tiered
-        && !matches!(
-            params.target,
-            crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
-        )
-        && cards.len() > EP_PREFILTER_MIN_POOL
-        && cards
-            .iter()
-            .any(|card| ep_prefilter_keep(card, is_world_bloom, is_final_chapter))
-    {
-        // 同 prepared 阶段：裁后不足一副卡组则回退不裁。
-        let filtered: Vec<_> = cards
-            .iter()
-            .filter(|card| {
-                ep_prefilter_keep_with_params(card, params, is_world_bloom, is_final_chapter)
-            })
-            .cloned()
-            .collect();
-        if ep_prefilter_has_deck(
-            filtered
-                .iter()
-                .map(|card| (card.game_card_id, card.character_id as i32)),
-            params,
-        ) {
-            cards = filtered;
-        }
-        // WL turn-3 的 336k cap 与异色加成让高练度低加成卡同样可能进最优解，
-        // 单角色名额比常规活动宽，保留哪几张由 Pareto 前沿决定。
-        let keep = if is_final_chapter {
-            FINAL_CHAPTER_PER_CHAR_KEEP
-        } else if is_world_bloom {
-            WORLD_BLOOM_PER_CHAR_KEEP
-        } else {
-            PER_CHAR_KEEP
-        };
-        per_character_trim(&mut cards, params, keep);
-    }
+    // Exact-by-default candidate policy: after hard user filters and the exact
+    // nonnegative bonus-tier cutoff, do not apply rarity/EP/per-character quotas.
+    // Those historical reductions were useful capacity heuristics but cannot
+    // preserve every Top-K card set.  Search-layer dominance records alternatives;
+    // build-layer deletion cannot, so capacity overflow is reported explicitly.
 
-    let is_challenge_live = matches!(
-        params.live_type,
-        crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
-    );
-    let is_challenge_all = is_challenge_live && params.challenge_live_character_id.is_none();
-
-    // 最弱综合力目标不能经过按综合力×技能降序的挑战卡池裁剪。
-    if is_challenge_live
-        && !(params.minimize && matches!(params.target, crate::types::ScoreTarget::Power))
-        && cards.len() > CHALLENGE_ALL_PER_CHAR_KEEP
-    {
-        general_per_character_trim(&mut cards, params, CHALLENGE_ALL_PER_CHAR_KEEP);
-    } else if event_ctx.is_some()
-        && !bonus_tiered
-        && !matches!(
-            params.target,
-            crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
-        )
-        && !is_challenge_all
-        // WL 的加成含 diff_attr_bonus（按卡组不同属性数给 0/10/20/35/50）、支援挤占、
-        // limited 计数上限与队长专属加成，都不是单卡可分解的量。这一档裁剪只按
-        // 综合力×技能排序、完全不看加成也不看属性，用它收 WL 会同时裁掉高加成卡
-        // 和某角色仅有的某个属性，属性齐全度一旦掉档就是几十个点的损失。
-        && !is_world_bloom
-        && !is_final_chapter
-        && cards.len() > GENERAL_TRIM_THRESHOLD
-    {
-        general_per_character_trim(&mut cards, params, GENERAL_PER_CHAR_KEEP);
-    }
-
-    if matches!(
-        params.target,
-        crate::types::ScoreTarget::Power | crate::types::ScoreTarget::Skill
-    ) && cards.len() > crate::pool::MASK_WORDS * 64
-    {
-        target_per_character_trim(&mut cards, params);
-    }
-
-    // 普通活动档位按角色与加成去重；WL 的异色/支援加成不能按单卡等价，
-    // 保留候选并沿用下方的容量校验。
-    if bonus_tiered && !is_world_bloom {
-        bonus_class_dedup(&mut cards, params);
-    }
+    // Bonus tiers also retain every candidate: equal (character, bonus) cards
+    // are distinct legal Top-K sets, so representative-only dedup is not exact.
 
     if cards.is_empty() {
         return Err(BuildError::EmptyPool);
     }
-    // 候选仍超 mask 容量时，只丢弃能被同角色同属性的另一张卡支配的卡。
-    // 不做近似裁剪：丢不够仍然报 TooManyCards，由调用方收窄条件。
-    //
-    // 只在这一条路径上启用，**不要改成对 WL 默认打开**：搜索期的
-    // `eliminate_dominated` 做同样的压缩，但会记录 alternatives 并在搜索后
-    // 把次优解换回来（见 `search::expand_alternatives`）。建池期淘汰的卡
-    // 根本没有进过池子、拿不到 CardIdx，救不回来——Top-1 仍精确，Top-K 会
-    // 少解。装得下时提前做只有损失：搜索期本就会压到同样的规模。
+    // The fixed-width metadata mask (currently 512 bits) is a capacity contract. If hard filtering does
+    // not fit, return an explicit capacity error instead of silently deleting
+    // candidates.  An error is compatible with exactness; an approximate deck
+    // is not.  A future wide-mask fallback can extend capacity without changing
+    // this contract.
     let capacity = crate::pool::MASK_WORDS * 64;
-    if cards.len() > capacity {
-        // 支援维度只在这条冷路径上构建；主路径的支援卡组仍由
-        // build_search_context 负责，此处不改变它。
-        let support = event_ctx
-            .filter(|ctx| ctx.support_deck_count > 0)
-            .and_then(|ctx| {
-                let by_character =
-                    build_final_chapter_support_decks_fast(&support_seeds, game, Some(ctx));
-                let fallback = build_support_deck_fast(&support_seeds, game, Some(ctx), None);
-                prune::SupportBonusTable::build(&by_character, &fallback)
-            });
-        prune::dominance_trim(&mut cards, params, support.as_ref(), capacity);
-    }
     let (fixed_card_ids, fixed_character_ids) = validate_fixed_constraints(params, &cards)?;
     if cards.len() > capacity {
         return Err(BuildError::TooManyCards(cards.len()));
@@ -1062,7 +909,7 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         &fixed_card_ids,
         &fixed_character_ids,
         include_details,
-    );
+    )?;
     let mut search_ctx = build_search_context(
         gathered,
         &support_seeds,

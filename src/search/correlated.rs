@@ -1,4 +1,4 @@
-//! Role-aware correlated power/skill bound for exact no-event score search.
+//! Exact role-aware power/skill upper envelope with an incumbent-derived slope.
 //!
 //! Let P be power, S skill sum, L leader skill, and rate <= C+B*S+D*L.
 //! For any positive slope lambda, maximize the LINEAR expression
@@ -11,8 +11,8 @@
 //!   A=lambda*C+T, H=B*R; UB=ceil(A²/(lambda*H*Q))
 //! unless its vertex lies beyond P=T/H, where UB=ceil(4*C*T/(H*Q)).
 //! Everything after coefficient preparation uses upward integer arithmetic.
-//! Unsupported contexts retain the standard admissible bounds. Root gain below 3%
-//! disables allocation/per-node work. The environment knobs are diagnostic opt-outs.
+//! No Mask512 changes. Unsupported contexts retain existing bounds. Root gain
+//! <3% disables allocation/per-node work. Disable explicitly with env value 0.
 use super::{PartialDeck, SearchContext, UsedSet};
 use crate::{
     pool::{CardIdx, CardPool},
@@ -121,13 +121,15 @@ impl CorrelatedBound {
         top_k: usize,
         kth_threshold: u64,
     ) -> Option<Self> {
-        if std::env::var_os("ALLIUM_CORRELATED_BOUND").is_some_and(|v| v == "0")
+        let tuning = super::tuning::SearchTuning::load();
+        if !tuning.bounds
+            || !tuning.correlated_bound
             || ctx.target != ScoreTarget::Score
             || ctx.has_event()
             || ctx.is_final_chapter
             || !ctx.enforce_char_uniqueness
             || ctx.honor_bonus != 0
-            || ctx.leader_honor_bonus.iter().any(|&x| x != 0)
+            || ctx.leader_honor_bonus_x10.iter().any(|&x| x != 0)
             || ctx.live_skill_order != LiveSkillOrder::Average
         {
             return None;
@@ -209,14 +211,10 @@ impl CorrelatedBound {
         if choices[0].0 as u128 * 100 >= independent * 97 {
             return None;
         }
-        let plane_setting =
-            std::env::var("ALLIUM_CORRELATED_PLANES").unwrap_or_else(|_| "auto".into());
-        let auto_planes = plane_setting.eq_ignore_ascii_case("auto");
-        let plane_count = if auto_planes {
-            if top_k > 1 { 2 } else { 1 }
-        } else {
-            plane_setting.parse::<usize>().unwrap_or(1).clamp(1, 4)
-        };
+        let auto_planes = tuning.correlated_planes.is_none();
+        let plane_count = tuning
+            .correlated_planes
+            .unwrap_or(if top_k > 1 { 2 } else { 1 });
         let n = pool.count();
         let mut planes = Vec::new();
         // Multiple individually-admissible planes stay admissible under min().
@@ -316,10 +314,10 @@ impl CorrelatedBound {
             // Keep the second admissible plane only when a cheap depth-1 probe predicts
             // material search-tree reduction.  A direct crossing of the current kth
             // incumbent is decisive; otherwise require at least 6% relative tightening.
-            // This selector changes only the cost of evaluating a second admissible plane;
-            // exactness is unchanged whether the second plane is retained or dropped.
+            // The 6% selector separated all >=20% node-reduction cases in the AS
+            // synthetic selector sweep (70 fixtures) without false positives.
             let keep_second = direct_prunes > 0 || max_gain_ppm >= 60_000;
-            if std::env::var_os("ALLIUM_CORRELATED_TRACE").is_some() {
+            if tuning.correlated_trace {
                 eprintln!(
                     "correlated-auto top_k={top_k} kth={kth_threshold} improved={improved} material={material} gain_1pct={gain_1pct} max_delta={max_delta} max_gain_ppm={max_gain_ppm} direct_prunes={direct_prunes} gap_quarter={gap_quarter} gap_half={gap_half} gap_saved={gap_saved} gap_sum={gap_sum} keep_second={keep_second}"
                 );

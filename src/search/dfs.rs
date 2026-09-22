@@ -1,22 +1,28 @@
-use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
+use super::budget::SearchBudget;
 
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, LiveType, ScoreTarget};
 
 use super::bonus_reach::BonusReach;
 use super::context::SearchContext;
-use super::evaluate::leaf_evaluate_checked;
+use super::placement::evaluate_candidate;
 use super::suffix::{PartialDeck, SuffixBound, UsedSet};
+use super::tracker::TopKTracker;
 use super::types::{DeckResult, SearchParams};
 use super::warm_start::sorted_final_chapter_leaders;
 
 const EP_DENSE_BREAK_STRIDE: usize = 4;
 const EP_SHADOW_BLOCK_WIDTH: usize = 16;
 const EP_SHADOW_MIN_DEPTH: usize = 3;
+
+/// In Score/no-event search every legal result is encoded as `(live, live)`,
+/// so the full 64-bit objective has exactly the same total order as `live`.
+#[inline(always)]
+fn score_noevent_threshold_numerator(threshold: u64) -> i64 {
+    let live = threshold as u32;
+    debug_assert_eq!(threshold >> 32, live as u64);
+    SuffixBound::score_noevent_threshold_numerator(live)
+}
 
 #[derive(Clone, Copy)]
 struct EpShadowBlock {
@@ -32,14 +38,42 @@ impl EpShadowBlock {
     }
 }
 
-/// DFS 搜索统计。
-#[derive(Clone, Debug, Default)]
+/// Work split by phase; these diagnostics are not solver-independent node units.
+#[derive(Clone, Debug, Default, serde::Serialize)]
+pub struct SearchDiagnostics {
+    /// Seed frontier checkpoints, never proof-carrying states.
+    pub seed_states: u64,
+    /// Complete candidate sets evaluated by incumbent generation.
+    pub seed_leaves: u64,
+    /// Complete candidate sets evaluated by the exact frontier.
+    pub proof_leaves: u64,
+    /// Reconstruction frontier checkpoints.
+    pub alternative_states: u64,
+    /// Complete candidate sets evaluated during dominance reconstruction.
+    pub alternative_leaves: u64,
+    /// Fully processed additive power scenarios.
+    pub power_scenarios_completed: u64,
+    /// Auto/fixed leader jobs inspected by the proof search.
+    pub leader_jobs: u64,
+}
+
+/// Search work and actual solver termination, not elapsed-time estimates.
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct SearchStats {
-    /// Visited recursion checkpoints.
+    /// Proof-frontier checkpoints (DFS prefixes, grouped states or DP transitions).
+    /// Excludes seed and reconstruction work; granularity depends on the solver.
     pub visited_nodes: u64,
-    /// Whether the search hit its deadline.
+    /// True only when a phase stopped work because its shared deadline expired.
     pub deadline_hit: bool,
-    /// Branches pruned by the correlated power/skill bound.
+    /// Bound rejection decisions, not the number of descendant decks eliminated.
+    pub bound_prunes: u64,
+    /// Candidate/prefix rejection decisions caused by hard feasibility constraints.
+    pub feasibility_prunes: u64,
+    /// Candidates removed by certified dominance (including member-only removal).
+    pub dominance_prunes: u64,
+    /// Phase-specific work; seed evaluations never count as proof leaves.
+    pub diagnostics: SearchDiagnostics,
+    /// Compatibility counter: joint power/skill bound rejections.
     pub correlated_prunes: u64,
     /// 求值过的完整队伍数。
     pub leaf_nodes: u64,
@@ -59,14 +93,64 @@ pub struct SearchStats {
     pub mono_break_prunes: u64,
 }
 
+impl SearchStats {
+    /// The single completion source of truth.
+    pub fn completion(&self) -> super::SearchCompletion {
+        if self.deadline_hit {
+            super::SearchCompletion::TimedOut
+        } else {
+            super::SearchCompletion::Complete
+        }
+    }
+
+    pub(crate) fn finalize(&mut self) {
+        self.bound_prunes = self.ub_prunes
+            + self.leader_prunes
+            + self.correlated_prunes
+            + self.ep_break_prunes
+            + self.ep_continue_prunes
+            + self.mono_break_prunes;
+        self.diagnostics.proof_leaves = self
+            .leaf_nodes
+            .saturating_sub(self.diagnostics.seed_leaves)
+            .saturating_sub(self.diagnostics.alternative_leaves);
+    }
+
+    /// Merge disjoint pieces of one operation, preserving any incomplete phase.
+    pub fn accumulate(&mut self, part: &Self) {
+        self.deadline_hit |= part.deadline_hit;
+        self.visited_nodes += part.visited_nodes;
+        self.leaf_nodes += part.leaf_nodes;
+        self.bound_prunes += part.bound_prunes;
+        self.feasibility_prunes += part.feasibility_prunes;
+        self.dominance_prunes += part.dominance_prunes;
+        self.ub_prunes += part.ub_prunes;
+        self.leader_prunes += part.leader_prunes;
+        self.correlated_prunes += part.correlated_prunes;
+        self.ep_candidates += part.ep_candidates;
+        self.ep_break_prunes += part.ep_break_prunes;
+        self.ep_continue_prunes += part.ep_continue_prunes;
+        self.ep_explored += part.ep_explored;
+        self.mono_break_prunes += part.mono_break_prunes;
+        self.diagnostics.seed_states += part.diagnostics.seed_states;
+        self.diagnostics.seed_leaves += part.diagnostics.seed_leaves;
+        self.diagnostics.proof_leaves += part.diagnostics.proof_leaves;
+        self.diagnostics.alternative_states += part.diagnostics.alternative_states;
+        self.diagnostics.alternative_leaves += part.diagnostics.alternative_leaves;
+        self.diagnostics.power_scenarios_completed += part.diagnostics.power_scenarios_completed;
+        self.diagnostics.leader_jobs += part.diagnostics.leader_jobs;
+    }
+}
+
 /// 执行精确 DFS/B&B 搜索。
 pub fn dfs_search(
     pool: &CardPool,
     ctx: &SearchContext,
     suffix: &SuffixBound,
     params: &SearchParams,
-) -> Vec<DeckResult> {
-    dfs_search_seeded(pool, ctx, suffix, params, None)
+) -> super::SearchOutcome<Vec<DeckResult>> {
+    let (results, stats) = dfs_search_instrumented(pool, ctx, suffix, params, None);
+    super::SearchOutcome::new(results, stats)
 }
 
 /// 单次 DFS 为每个精确活动加成档位保留独立 Top-K。
@@ -89,18 +173,6 @@ pub fn dfs_search_bonus_targets(
     )
 }
 
-pub(crate) fn dfs_search_seeded(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    suffix: &SuffixBound,
-    params: &SearchParams,
-    seed: Option<DeckResult>,
-) -> Vec<DeckResult> {
-    let seeds = seed.into_iter().collect::<Vec<_>>();
-    let (results, _) = dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None, None);
-    results
-}
-
 /// 与 [`dfs_search`] 相同，额外返回剪枝统计。
 pub fn dfs_search_instrumented(
     pool: &CardPool,
@@ -113,16 +185,6 @@ pub fn dfs_search_instrumented(
     dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None, None)
 }
 
-pub(crate) fn dfs_search_instrumented_with_seeds(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    suffix: &SuffixBound,
-    params: &SearchParams,
-    seeds: Vec<DeckResult>,
-) -> (Vec<DeckResult>, SearchStats) {
-    dfs_search_seeded_inner(pool, ctx, suffix, params, seeds, None, None)
-}
-
 fn dfs_search_seeded_inner(
     pool: &CardPool,
     ctx: &SearchContext,
@@ -132,23 +194,53 @@ fn dfs_search_seeded_inner(
     bonus_targets: Option<&[i32]>,
     bonus_reach: Option<&BonusReach>,
 ) -> (Vec<DeckResult>, SearchStats) {
+    let mut budget = SearchBudget::from_params(params);
+    dfs_search_with_budget(
+        pool,
+        ctx,
+        suffix,
+        params,
+        seeds,
+        bonus_targets,
+        bonus_reach,
+        &mut budget,
+    )
+}
+
+pub(crate) fn dfs_search_with_budget(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+    params: &SearchParams,
+    seeds: Vec<DeckResult>,
+    bonus_targets: Option<&[i32]>,
+    bonus_reach: Option<&BonusReach>,
+    budget: &mut SearchBudget,
+) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
     }
 
-    let deadline = if params.timeout_ms == 0 {
-        None
-    } else {
-        Some(Instant::now() + Duration::from_millis(params.timeout_ms))
-    };
+    // Seeds and combination leaves solve the same exact placement problem.
+    // Align fixed slots first, then optimize every observable free role. A seed
+    // must never be downgraded merely to match a combination-only oracle.
+    let mut seed_stats = SearchStats::default();
+    let mut canonical_seeds = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        if budget.expired_sampled() {
+            break;
+        }
+        seed_stats.leaf_nodes += 1;
+        seed_stats.diagnostics.seed_leaves += 1;
+        if let Some(seed) = canonicalize_seed_result(pool, ctx, seed) {
+            canonical_seeds.push(seed);
+        }
+    }
+    let seeds = canonical_seeds;
 
     let mut tracker = match bonus_targets {
-        Some(targets) => SearchTracker::Bonus(BonusBucketTracker::new(params.top_k, pool, targets)),
-        None => SearchTracker::TopK(TopKTracker::new(
-            params.top_k,
-            pool,
-            matches!(ctx.target, ScoreTarget::Mysekai),
-        )),
+        Some(targets) => SearchTracker::Bonus(BonusBucketTracker::new(params.top_k, targets)),
+        None => SearchTracker::TopK(TopKTracker::new(params.top_k)),
     };
     let correlated_hint = seeds.iter().max_by_key(|r| r.score).map(|r| {
         (
@@ -157,7 +249,12 @@ fn dfs_search_seeded_inner(
         )
     });
     for seed_result in seeds {
-        tracker.insert(seed_result);
+        tracker.insert(pool, ctx, seed_result);
+    }
+    if budget.expired() {
+        seed_stats.deadline_hit = true;
+        seed_stats.finalize();
+        return (tracker.into_vec(), seed_stats);
     }
     let correlated_kth = tracker.threshold() >> 32;
 
@@ -172,14 +269,15 @@ fn dfs_search_seeded_inner(
         pool,
         ctx,
         suffix,
-        deadline,
+        budget,
         tracker: &mut tracker,
         bonus_reach,
         node_count: 0,
-        deadline_hit: false,
-        stats: SearchStats::default(),
+        stats: seed_stats,
         avx512_candidate_mask: crate::simd::avx512_available(),
+        bounds_enabled: super::tuning::SearchTuning::load().bounds,
     };
+    state.budget.expired();
     let mut deck = [CardIdx::new(0); DECK_SIZE];
 
     if ctx.is_final_chapter {
@@ -202,13 +300,13 @@ fn dfs_search_seeded_inner(
                 max_skill: pool.skill_max(leader),
                 limited_count: leader_limited_inc,
             };
-            let threshold = state.tracker.threshold();
+            let threshold = state.threshold();
             if threshold != 0 {
                 let leader_global = state.suffix.upper_bound_with_depth(1, &used, &partial);
                 let leader_dense = state
                     .suffix
                     .dense_suffix_ceiling(0, &partial, DECK_SIZE - 1);
-                if leader_global.min(leader_dense) <= threshold {
+                if leader_global.min(leader_dense) < threshold {
                     state.stats.leader_prunes += 1;
                     continue;
                 }
@@ -229,8 +327,94 @@ fn dfs_search_seeded_inner(
 
     let mut stats = state.stats.clone();
     stats.visited_nodes = state.node_count;
-    stats.deadline_hit = state.deadline_hit;
+    stats.deadline_hit = state.budget.hit;
+    stats.finalize();
     (tracker.into_vec(), stats)
+}
+
+fn canonicalize_seed_result(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    seed: DeckResult,
+) -> Option<DeckResult> {
+    let source = seed.cards;
+    let mut used_source = [false; DECK_SIZE];
+    let mut deck = [source[0]; DECK_SIZE];
+    let fixed_slots = (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len())
+        .max(usize::from(ctx.is_final_chapter))
+        .min(DECK_SIZE);
+
+    // Fixed slots are scanned from dense index zero by the exact DFS.  For a
+    // given card set choose the lexicographically first legal assignment.
+    let mut depth = 0usize;
+    if ctx.is_final_chapter {
+        // A Final seed represents this concrete leader and its support profile.
+        // Free-card sorting must not silently replace that role with dense zero.
+        if !ctx.card_matches_slot(pool, 0, source[0]) {
+            return None;
+        }
+        used_source[0] = true;
+        deck[0] = source[0];
+        depth = 1;
+    }
+    while depth < fixed_slots {
+        let mut chosen: Option<(usize, CardIdx)> = None;
+        let mut source_pos = 0usize;
+        while source_pos < DECK_SIZE {
+            if !used_source[source_pos] {
+                let card = source[source_pos];
+                if ctx.card_matches_slot(pool, depth, card)
+                    && chosen.is_none_or(|(_, current)| card.raw() < current.raw())
+                {
+                    chosen = Some((source_pos, card));
+                }
+            }
+            source_pos += 1;
+        }
+        let (source_pos, card) = chosen?;
+        used_source[source_pos] = true;
+        deck[depth] = card;
+        depth += 1;
+    }
+
+    let mut free = Vec::with_capacity(DECK_SIZE - fixed_slots);
+    let mut source_pos = 0usize;
+    while source_pos < DECK_SIZE {
+        if !used_source[source_pos] {
+            free.push(source[source_pos]);
+        }
+        source_pos += 1;
+    }
+    free.sort_unstable_by_key(|card| card.raw());
+    for (slot, card) in (fixed_slots..DECK_SIZE).zip(free) {
+        deck[slot] = card;
+    }
+
+    // Mirror the exact frontier's public-card and character feasibility checks.
+    let mut used_chars = 0u32;
+    let mut slot = 0usize;
+    while slot < DECK_SIZE {
+        let card = deck[slot];
+        let game_id = pool.game_id(card);
+        let mut prev = 0usize;
+        while prev < slot {
+            if pool.game_id(deck[prev]) == game_id {
+                return None;
+            }
+            prev += 1;
+        }
+        let char_id = pool.char_id(card);
+        if ctx.enforce_char_uniqueness
+            && used_chars & (1u32 << char_id) != 0
+            && ctx.fixed_character_at(slot) != Some(char_id)
+        {
+            return None;
+        }
+        used_chars |= 1u32 << char_id;
+        slot += 1;
+    }
+
+    evaluate_candidate(pool, ctx, &deck)
 }
 
 struct SearchState<'a> {
@@ -238,17 +422,26 @@ struct SearchState<'a> {
     pool: &'a CardPool,
     ctx: &'a SearchContext,
     suffix: &'a SuffixBound,
-    deadline: Option<Instant>,
+    budget: &'a mut SearchBudget,
     tracker: &'a mut SearchTracker,
     /// Bonus-target reachability bitsets; `None` on every non-bucket path.
     bonus_reach: Option<&'a BonusReach>,
     node_count: u64,
-    deadline_hit: bool,
     stats: SearchStats,
     avx512_candidate_mask: bool,
+    bounds_enabled: bool,
 }
 
 impl SearchState<'_> {
+    #[inline(always)]
+    fn threshold(&self) -> u64 {
+        if self.bounds_enabled {
+            self.tracker.threshold()
+        } else {
+            0
+        }
+    }
+
     #[inline(always)]
     fn recurse(
         &mut self,
@@ -265,23 +458,39 @@ impl SearchState<'_> {
         }
         if depth == DECK_SIZE {
             self.stats.leaf_nodes += 1;
-            if let Some(score) = leaf_evaluate_checked(self.pool, self.ctx, deck) {
-                self.tracker.insert(DeckResult::new(*deck, score));
-            }
+            self.tracker.consider(self.pool, self.ctx, deck);
             return;
         }
 
-        if self.tracker.is_bonus() {
-            let upper = self.suffix.upper_bound_with_depth(depth, &used, &partial);
-            // partial.bonus 是逐卡 ceil 百分比；每张卡至多高估 0.5%，
-            // 因此 2*ceil-depth 是精确 x2 bonus 的安全下界。
-            let lower_bonus_x2 = partial.bonus.saturating_mul(2).saturating_sub(depth as u32);
-            // World Bloom 的加成合计走 limited-count 分支，与逐卡求和模型不一致，
-            // 该场景保持旧行为（不做可达性剪枝）。
-            let reach = if self.ctx.is_world_bloom {
-                None
+        // Fixed slots are roles, not points on the ascending free-card frontier.
+        // After filling any fixed prefix slot, the free frontier must restart
+        // from zero; otherwise a high-index fixed card hides earlier legal cards.
+        if self.ctx.is_fixed_slot(depth) {
+            self.recurse_fixed_slot(depth, deck, used, partial, fixed_leader, bonus_x10);
+            return;
+        }
+
+        if self.bounds_enabled && self.tracker.is_bonus() {
+            // The character-aware suffix assumes uniqueness. Challenge tiers
+            // instead keep only the independent additive reachability proof.
+            let upper = if self.ctx.enforce_char_uniqueness {
+                self.suffix.upper_bound_with_depth(depth, &used, &partial)
             } else {
+                u64::MAX
+            };
+            // An outward-rounded upper component is never a valid lower
+            // bound. In the additive model, exact tenths accumulate monotonically
+            // and floor(x10 / 5) is a conservative encoded lower bound. With a
+            // limited-count/support model even raw card sums are not additive,
+            // so neither that lower bound nor additive reachability is used.
+            let additive_bonus = !self.ctx.is_world_bloom
+                && !self.ctx.is_final_chapter
+                && self.ctx.card_bonus_count_limit >= DECK_SIZE;
+            let lower_bonus_x2 = if additive_bonus { bonus_x10 / 5 } else { 0 };
+            let reach = if additive_bonus {
                 self.bonus_reach
+            } else {
+                None
             };
             if self
                 .tracker
@@ -292,27 +501,27 @@ impl SearchState<'_> {
             }
         }
 
-        let threshold = self.tracker.threshold();
+        let threshold = self.threshold();
         if threshold != 0 {
-            let upper_bound =
-                if matches!(self.ctx.target, ScoreTarget::Score) && self.ctx.has_event() {
-                    let global = self.suffix.upper_bound_with_depth(depth, &used, &partial);
-                    let dense =
-                        self.suffix
-                            .dense_suffix_ceiling(start, &partial, DECK_SIZE - depth);
-                    global.min(dense)
-                } else if matches!(self.ctx.target, ScoreTarget::Score) {
-                    self.suffix.upper_bound_score_noevent(
-                        self.pool,
-                        &deck[..depth],
-                        &used,
-                        &partial,
-                        DECK_SIZE - depth,
-                    )
-                } else {
-                    self.suffix.upper_bound_with_depth(depth, &used, &partial)
-                };
-            if upper_bound <= threshold {
+            let prunable = if matches!(self.ctx.target, ScoreTarget::Score) && self.ctx.has_event()
+            {
+                let global = self.suffix.upper_bound_with_depth(depth, &used, &partial);
+                let dense = self
+                    .suffix
+                    .dense_suffix_ceiling(start, &partial, DECK_SIZE - depth);
+                global.min(dense) < threshold
+            } else if matches!(self.ctx.target, ScoreTarget::Score) {
+                self.suffix.upper_bound_score_noevent_numerator(
+                    self.pool,
+                    &deck[..depth],
+                    &used,
+                    &partial,
+                    DECK_SIZE - depth,
+                ) < score_noevent_threshold_numerator(threshold)
+            } else {
+                self.suffix.upper_bound_with_depth(depth, &used, &partial) < threshold
+            };
+            if prunable {
                 self.stats.ub_prunes += 1;
                 return;
             }
@@ -323,7 +532,7 @@ impl SearchState<'_> {
             && self
                 .correlated
                 .as_ref()
-                .is_some_and(|bound| bound.upper_bound(start, slots, &used, &partial) <= threshold)
+                .is_some_and(|bound| bound.upper_bound(start, slots, &used, &partial) < threshold)
         {
             self.stats.correlated_prunes += 1;
             return;
@@ -373,6 +582,57 @@ impl SearchState<'_> {
         }
     }
 
+    fn recurse_fixed_slot(
+        &mut self,
+        depth: usize,
+        deck: &mut [CardIdx; DECK_SIZE],
+        used: UsedSet,
+        partial: PartialDeck,
+        fixed_leader: Option<CardIdx>,
+        bonus_x10: u32,
+    ) {
+        for dense in 0..self.pool.count() {
+            let card = CardIdx::new(dense as u16);
+            let character = self.pool.char_id(card);
+            if !self.slot_matches(depth, card)
+                || fixed_leader == Some(card)
+                || (self.ctx.enforce_char_uniqueness && used.contains(character))
+                || (!self.ctx.enforce_char_uniqueness
+                    && depth > 0
+                    && character != self.pool.char_id(deck[0]))
+                || deck[..depth]
+                    .iter()
+                    .any(|&other| self.pool.game_id(other) == self.pool.game_id(card))
+            {
+                continue;
+            }
+            deck[depth] = card;
+            let mut next_used = used;
+            next_used.insert(character);
+            let (bonus, limited) =
+                partial_bonus_add(self.pool, self.ctx, card, depth == 0, partial.limited_count);
+            let next = PartialDeck {
+                power: partial.power + self.pool.power_max(card),
+                skill: partial.skill + self.pool.skill_max(card) as u32,
+                bonus: partial.bonus + bonus,
+                max_skill: partial.max_skill.max(self.pool.skill_max(card)),
+                limited_count: partial.limited_count + limited,
+            };
+            self.recurse(
+                depth + 1,
+                0,
+                deck,
+                next_used,
+                next,
+                fixed_leader,
+                bonus_x10 + self.pool.event_bonus(card).total_x10() as u32,
+            );
+            if self.budget.hit {
+                return;
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[inline(always)]
     fn recurse_monotonic(
@@ -414,7 +674,7 @@ impl SearchState<'_> {
                 let ceil = self
                     .suffix
                     .ceiling(tight_power, bonus_total, tight_skill, tight_leader);
-                if ceil <= threshold {
+                if ceil < threshold {
                     self.stats.mono_break_prunes += 1;
                     break;
                 }
@@ -459,14 +719,19 @@ impl SearchState<'_> {
         slots: usize,
         threshold: u64,
     ) {
+        let threshold_numerator = if threshold == 0 {
+            0
+        } else {
+            score_noevent_threshold_numerator(threshold)
+        };
         let pre = self.suffix.precompute_layer_score_noevent(&used, slots);
         let mut dense = start;
         while dense < self.pool.count() {
             if threshold != 0 {
-                let ceil = self
+                let live_ceil = self
                     .suffix
-                    .score_noevent_dense_ceiling(dense, &partial, slots);
-                if ceil <= threshold {
+                    .score_noevent_dense_live_numerator_ceiling(dense, &partial, slots);
+                if live_ceil < threshold_numerator {
                     self.stats.mono_break_prunes += 1;
                     break;
                 }
@@ -499,10 +764,12 @@ impl SearchState<'_> {
                 let tight_leader = (partial.max_skill as u32)
                     .max(self.pool.skill_max(card) as u32)
                     .max(remaining_best_skill as u32);
-                let ub = self
-                    .suffix
-                    .ceiling(tight_power, 0, tight_skill, tight_leader);
-                if ub <= threshold {
+                let live_numerator = self.suffix.score_noevent_live_numerator_ceiling(
+                    tight_power,
+                    tight_skill,
+                    tight_leader,
+                );
+                if live_numerator < threshold_numerator {
                     self.stats.ep_continue_prunes += 1;
                     continue;
                 }
@@ -580,6 +847,8 @@ impl SearchState<'_> {
                         selected,
                         *selected_len,
                         slots,
+                        start,
+                        used.bits(),
                     )
                 });
 
@@ -620,7 +889,7 @@ impl SearchState<'_> {
                 } else {
                     self.suffix.dense_suffix_ceiling(dense, &partial, slots)
                 };
-                if ceil <= threshold {
+                if ceil < threshold {
                     self.stats.mono_break_prunes += 1;
                     break;
                 }
@@ -640,7 +909,22 @@ impl SearchState<'_> {
                             )
                         };
                     } else {
-                        mask_block = u16::MAX;
+                        // AVX-512 loads require a full 16-card block.  The old
+                        // tail fallback used u16::MAX and then skipped the scalar
+                        // uniqueness check entirely, allowing duplicate-character
+                        // decks from the final partial block.  Build the exact
+                        // legal mask lane-by-lane for the tail instead.
+                        let block_len = (self.pool.count() - block_start).min(16);
+                        let mut tail_mask = 0u16;
+                        let mut lane = 0usize;
+                        while lane < block_len {
+                            let tail_card = CardIdx::new((block_start + lane) as u16);
+                            if !used.contains(self.pool.char_id(tail_card)) {
+                                tail_mask |= 1u16 << lane;
+                            }
+                            lane += 1;
+                        }
+                        mask_block = tail_mask;
                     }
                 }
                 if mask_block & (1u16 << (candidate_dense - block_start)) == 0 {
@@ -683,7 +967,7 @@ impl SearchState<'_> {
                     card_skill_u32,
                     slots,
                 );
-                if dense_upper <= threshold || slots < 3 {
+                if dense_upper < threshold || slots < 3 {
                     dense_upper
                 } else {
                     dense_upper.min(self.suffix.dense_candidate_joint_ceiling_multi_score_event(
@@ -707,7 +991,7 @@ impl SearchState<'_> {
                     slots,
                 )
             };
-            if dense_ub_global <= threshold {
+            if dense_ub_global < threshold {
                 self.stats.ep_continue_prunes += 1;
                 continue;
             }
@@ -733,7 +1017,7 @@ impl SearchState<'_> {
                 let global_ub =
                     self.suffix
                         .ceiling(tight_power, bonus_total_global, tight_skill, tight_leader);
-                if global_ub <= threshold {
+                if global_ub < threshold {
                     self.stats.ep_continue_prunes += 1;
                     continue;
                 }
@@ -749,6 +1033,8 @@ impl SearchState<'_> {
                             selected_len,
                             card_game_id,
                             slots.saturating_sub(1),
+                            dense,
+                            used.bits() | (1u32 << char_id),
                         );
                     let bonus_total = partial.bonus + card_bonus + pre.suffix_bonus
                         - pre.bonus_delta(char_id)
@@ -767,7 +1053,7 @@ impl SearchState<'_> {
                             slots,
                             extra_bonus_ub,
                         ));
-                    if refined <= threshold {
+                    if refined < threshold {
                         self.stats.ep_continue_prunes += 1;
                         continue;
                     }
@@ -800,7 +1086,7 @@ impl SearchState<'_> {
                 0,
             );
 
-            let new_threshold = self.tracker.threshold();
+            let new_threshold = self.threshold();
             if new_threshold > threshold {
                 threshold = new_threshold;
             }
@@ -856,7 +1142,7 @@ impl SearchState<'_> {
                         &partial,
                         slots,
                     );
-                    if ceil <= threshold {
+                    if ceil < threshold {
                         self.stats.mono_break_prunes += 1;
                         legal_mask &= (1u16 << lane).wrapping_sub(1);
                         break;
@@ -912,7 +1198,7 @@ impl SearchState<'_> {
                     first_lane,
                     slots,
                 );
-                threshold = threshold.max(self.tracker.threshold());
+                threshold = threshold.max(self.threshold());
 
                 let refreshed = unsafe {
                     crate::simd::upper_bound_mask_16_avx512_unchecked(
@@ -936,7 +1222,7 @@ impl SearchState<'_> {
                         next_lane,
                         slots,
                     );
-                    let new_threshold = self.tracker.threshold();
+                    let new_threshold = self.threshold();
                     if new_threshold > threshold {
                         threshold = new_threshold;
                         let refreshed = unsafe {
@@ -979,9 +1265,7 @@ impl SearchState<'_> {
 
         if slots == 1 {
             self.stats.leaf_nodes += 1;
-            if let Some(score) = leaf_evaluate_checked(self.pool, self.ctx, deck) {
-                self.tracker.insert(DeckResult::new(*deck, score));
-            }
+            self.tracker.consider(self.pool, self.ctx, deck);
             return;
         }
 
@@ -1031,7 +1315,14 @@ impl SearchState<'_> {
             if !self.slot_matches(depth, card) {
                 continue;
             }
-            if self.ctx.enforce_char_uniqueness && used.contains(char_id) {
+            if (self.ctx.enforce_char_uniqueness && used.contains(char_id))
+                || (!self.ctx.enforce_char_uniqueness
+                    && depth > 0
+                    && char_id != self.pool.char_id(deck[0]))
+                || deck[..depth]
+                    .iter()
+                    .any(|&other| self.pool.game_id(other) == self.pool.game_id(card))
+            {
                 continue;
             }
             unsafe {
@@ -1062,23 +1353,11 @@ impl SearchState<'_> {
 
     #[inline(always)]
     fn timed_out(&mut self) -> bool {
-        // 粘性中止：一旦过线，后续所有调用都立刻返回 true，整棵搜索树逐层退出；
-        // 否则 1024 抽检里未命中的调用会继续推进搜索，timeout_ms 形同虚设。
-        if self.deadline_hit {
+        if self.budget.hit {
             return true;
         }
-        let Some(deadline) = self.deadline else {
-            return false;
-        };
         self.node_count = self.node_count.wrapping_add(1);
-        if self.node_count & 1023 != 0 {
-            return false;
-        }
-        if Instant::now() >= deadline {
-            self.deadline_hit = true;
-            return true;
-        }
-        false
+        self.budget.expired_sampled()
     }
 
     #[inline(always)]
@@ -1089,17 +1368,7 @@ impl SearchState<'_> {
         {
             return false;
         }
-        if let Some(game_id) = self.ctx.fixed_card_at(depth)
-            && self.pool.game_id(card) != game_id
-        {
-            return false;
-        }
-        if let Some(character_id) = self.ctx.fixed_character_at(depth)
-            && self.pool.char_id(card) != character_id
-        {
-            return false;
-        }
-        true
+        self.ctx.card_matches_slot(self.pool, depth, card)
     }
 }
 
@@ -1140,11 +1409,32 @@ impl SearchTracker {
         }
     }
 
-    #[inline(always)]
-    fn insert(&mut self, candidate: DeckResult) {
+    fn consider(&mut self, pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; DECK_SIZE]) {
         match self {
-            Self::TopK(tracker) => tracker.insert(candidate),
-            Self::Bonus(tracker) => tracker.insert(candidate),
+            Self::TopK(tracker) => {
+                if let Some(candidate) = evaluate_candidate(pool, ctx, deck) {
+                    tracker.insert(pool, ctx, candidate);
+                }
+            }
+            Self::Bonus(tracker) => {
+                super::placement::visit_bonus_candidates(pool, ctx, deck, |candidate| {
+                    // The encoded objective quantizes bonus to half-percent units;
+                    // that key is not the membership predicate of an exact tier.
+                    let total = super::evaluate::resolve_total_bonus(pool, ctx, &candidate.cards);
+                    let target = (candidate.score >> 32) as u32;
+                    if total == f64::from(target) / 2.0 {
+                        tracker.insert(pool, ctx, candidate);
+                    }
+                })
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn insert(&mut self, pool: &CardPool, ctx: &SearchContext, candidate: DeckResult) {
+        match self {
+            Self::TopK(tracker) => tracker.insert(pool, ctx, candidate),
+            Self::Bonus(tracker) => tracker.insert(pool, ctx, candidate),
         }
     }
 
@@ -1161,7 +1451,7 @@ struct BonusBucketTracker {
 }
 
 impl BonusBucketTracker {
-    fn new(top_k: usize, pool: &CardPool, targets: &[i32]) -> Self {
+    fn new(top_k: usize, targets: &[i32]) -> Self {
         let mut target_x2 = targets
             .iter()
             .copied()
@@ -1173,19 +1463,19 @@ impl BonusBucketTracker {
         Self {
             buckets: target_x2
                 .into_iter()
-                .map(|target| (target, TopKTracker::new(top_k, pool, false)))
+                .map(|target| (target, TopKTracker::new(top_k)))
                 .collect(),
         }
     }
 
     #[inline(always)]
-    fn insert(&mut self, candidate: DeckResult) {
+    fn insert(&mut self, pool: &CardPool, ctx: &SearchContext, candidate: DeckResult) {
         let target = (candidate.score >> 32) as u32;
         if let Ok(index) = self
             .buckets
             .binary_search_by_key(&target, |(target, _)| *target)
         {
-            self.buckets[index].1.insert(candidate);
+            self.buckets[index].1.insert(pool, ctx, candidate);
         }
     }
 
@@ -1220,24 +1510,23 @@ impl BonusBucketTracker {
                     satisfiable = true;
                     continue;
                 };
-                // round(x10 / 5) == x2 holds exactly for
-                // x10 in [5*x2 - 2, 5*x2 + 2].
-                let center = target.saturating_mul(5);
-                let lo = center.saturating_sub(2);
-                let hi = center.saturating_add(2);
-                // reach covers only the remaining cards' sum, so the already
-                // picked bonus is subtracted from the target window.
-                if reach.any_in_range(
-                    start,
-                    remaining,
-                    lo.saturating_sub(bonus_x10),
-                    hi.saturating_sub(bonus_x10),
-                ) {
+                // Exact tier membership uses tenths directly, not the rounded
+                // half-percent ranking key. Subtraction must not turn an
+                // already-overshot target into a spurious zero requirement.
+                if let Some(needed) = target.saturating_mul(5).checked_sub(bonus_x10)
+                    && reach.any_in_range(start, remaining, needed, needed)
+                {
                     satisfiable = true;
                 }
                 continue;
             }
-            if live_upper >= threshold {
+            // Bucket thresholds carry the bucket id in the high 32 bits and
+            // live_score in the low 32 bits.  Comparing a live-score ceiling
+            // against the full encoded threshold makes every populated bucket
+            // look unreachable and can discard a later, better deck in the same
+            // exact bonus tier.
+            let live_threshold = threshold as u32 as u64;
+            if live_upper >= live_threshold {
                 satisfiable = true;
             }
         }
@@ -1259,47 +1548,17 @@ fn partial_bonus_add(
     ctx: &SearchContext,
     card: CardIdx,
     is_leader: bool,
-    limited_count: u8,
+    _limited_count: u8,
 ) -> (u32, u8) {
-    let eb = pool.event_bonus(card);
-    if !ctx.is_final_chapter && ctx.card_bonus_count_limit >= DECK_SIZE {
-        // 无张数上限（默认）：热路径直出整卡加成。
-        return (eb.total_ceil(), 0);
+    // Free roles may be permuted at a leaf. Counting only the first limited
+    // cards of the traversal prefix can underestimate a different legal order.
+    // Counting every selected limited amount is an order-independent upper
+    // relaxation; the exact evaluator alone applies the event's cap.
+    let mut bonus = pool.event_bonus(card).total_ceil();
+    if ctx.is_final_chapter && is_leader {
+        bonus += ctx.leader_bonus_upper_at(card.raw());
     }
-    let exact = pool.event_bonus_exact(card);
-    if !ctx.is_final_chapter {
-        // 有张数上限的非终章活动：与终章同一套 base/limited 拆分计账，
-        // 超出上限的 limited 张不计数（对照参照实现 deck-calculator 的
-        // 任意活动通用扣除逻辑）。
-        let mut bonus = exact.base_ceil();
-        let mut limited_inc = 0u8;
-        if (limited_count as usize) < ctx.card_bonus_count_limit && exact.limited_x10() > 0 {
-            bonus += exact.limited_ceil();
-            limited_inc = 1;
-        }
-        return (bonus, limited_inc);
-    }
-    let exact = pool.event_bonus_exact(card);
-    let mut bonus = exact.base_ceil();
-    let mut limited_inc = 0u8;
-    if (limited_count as usize) < ctx.card_bonus_count_limit && exact.limited_x10() > 0 {
-        bonus += exact.limited_ceil();
-        limited_inc = 1;
-    }
-    if is_leader {
-        bonus += ctx.leader_honor_bonus_at(card.raw());
-        bonus += ctx.leader_limit_bonus_at(card.raw());
-    }
-    (bonus, limited_inc)
-}
-
-pub(super) struct TopKTracker {
-    top_k: usize,
-    game_ids: Vec<u16>,
-    powers: Vec<u32>,
-    power_tiebreak: bool,
-    results: Vec<DeckResult>,
-    keys: Vec<[u16; DECK_SIZE]>,
+    (bonus, 0)
 }
 
 #[inline(always)]
@@ -1320,95 +1579,6 @@ fn highest_upper_bound_lane(upper_bounds: &[u64; EP_SHADOW_BLOCK_WIDTH], mask: u
     best_lane
 }
 
-impl TopKTracker {
-    pub(super) fn new(top_k: usize, pool: &CardPool, power_tiebreak: bool) -> Self {
-        Self {
-            top_k,
-            game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
-            powers: pool.indices().map(|card| pool.power_max(card)).collect(),
-            power_tiebreak,
-            results: Vec::with_capacity(top_k),
-            keys: Vec::with_capacity(top_k),
-        }
-    }
-
-    pub(super) fn threshold(&self) -> u64 {
-        if self.results.len() < self.top_k {
-            0
-        } else {
-            self.results.last().map(|result| result.score).unwrap_or(0)
-        }
-    }
-
-    /// mysekai 的量化分值会产生大量并列（power 按 45k 一档进桶），并列内若按
-    /// 卡序或插入序取舍，limit=1 与 limit>1 会给出互斥的结果集。这里以
-    /// 总战力降序、队长 cardId 升序作为并列时的规范次序（与参考实现的
-    /// compareDeck 一致），使任意 top_k 的结果集单调一致。
-    #[inline(always)]
-    fn cmp_candidate(&self, left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
-        let ordering = right.score.cmp(&left.score);
-        if self.power_tiebreak && ordering == std::cmp::Ordering::Equal {
-            return self
-                .power_sum(right)
-                .cmp(&self.power_sum(left))
-                .then_with(|| {
-                    self.game_ids[left.cards[0].raw()].cmp(&self.game_ids[right.cards[0].raw()])
-                });
-        }
-        ordering.then_with(|| left.cards.cmp(&right.cards))
-    }
-
-    #[inline]
-    fn power_sum(&self, result: &DeckResult) -> u32 {
-        result
-            .cards
-            .iter()
-            .map(|card| self.powers[card.raw()])
-            .sum()
-    }
-
-    pub(super) fn insert(&mut self, candidate: DeckResult) {
-        if self.results.len() >= self.top_k
-            && let Some(last) = self.results.last()
-            && !self.cmp_candidate(&candidate, last).is_lt()
-        {
-            return;
-        }
-        let candidate_key = self.game_card_set_key(&candidate);
-        if let Some(existing_pos) = self.keys.iter().position(|key| *key == candidate_key) {
-            if !self
-                .cmp_candidate(&candidate, &self.results[existing_pos])
-                .is_lt()
-            {
-                return;
-            }
-            self.results.remove(existing_pos);
-            self.keys.remove(existing_pos);
-        }
-        let pos = self
-            .results
-            .iter()
-            .position(|existing| self.cmp_candidate(&candidate, existing).is_lt())
-            .unwrap_or(self.results.len());
-        self.results.insert(pos, candidate);
-        self.keys.insert(pos, candidate_key);
-        if self.results.len() > self.top_k {
-            self.results.pop();
-            self.keys.pop();
-        }
-    }
-
-    pub(super) fn into_vec(self) -> Vec<DeckResult> {
-        self.results
-    }
-
-    pub(super) fn game_card_set_key(&self, result: &DeckResult) -> [u16; 5] {
-        let mut cards = result.cards.map(|card| self.game_ids[card.raw()]);
-        cards.sort_unstable();
-        cards
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn dfs_search_power_len_for_test(
     pool: &CardPool,
@@ -1417,7 +1587,7 @@ pub(crate) fn dfs_search_power_len_for_test(
     top_k: usize,
     ctx: &SearchContext,
 ) -> Vec<DeckResult> {
-    let mut tracker = TopKTracker::new(top_k, pool, false);
+    let mut tracker = TopKTracker::new(top_k);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     recurse_power_len_for_test(
         pool,
@@ -1448,7 +1618,7 @@ fn recurse_power_len_for_test(
     ctx: &SearchContext,
 ) {
     if depth == target_len {
-        tracker.insert(DeckResult::new(*deck, partial.power as u64));
+        tracker.insert(pool, ctx, DeckResult::new(*deck, partial.power as u64));
         return;
     }
 
@@ -1456,7 +1626,7 @@ fn recurse_power_len_for_test(
     if threshold != 0 {
         let upper_bound =
             suffix.upper_bound_for_slots(target_len.saturating_sub(depth), &used, &partial);
-        if upper_bound <= threshold {
+        if upper_bound < threshold {
             return;
         }
     }

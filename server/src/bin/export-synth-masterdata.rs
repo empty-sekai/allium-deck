@@ -1,13 +1,13 @@
 //! Writes a synthetic masterdata set to disk, ready to load.
 //!
 //! This repository carries no game data, which makes it awkward to try the engine or
-//! the HTTP service without first assembling a masterdata directory. The benchmark's
+//! the HTTP service without first assembling a masterdata directory. The server fixture's
 //! deterministic generator already produces tables with the real schema and a
 //! realistic shape — 26 characters, 1300 cards, a fully levelled account — so this
-//! tool writes that set out in the layout the loaders expect.
+//! example writes that set out in the layout the loaders expect.
 //!
 //! ```text
-//! cargo run --release --manifest-path server/Cargo.toml --bin export_synth_masterdata -- ./synth
+//! cargo run --manifest-path server/Cargo.toml --release --bin export-synth-masterdata -- ./synth
 //!
 //! ./synth/masterdata/*.json   # the tables
 //! ./synth/music_metas.json
@@ -17,7 +17,7 @@
 //! The numbers are synthetic, so timings taken against them are for comparing runs
 //! with each other, not for predicting behaviour on real data.
 
-#[path = "../synth_masterdata.rs"]
+#[path = "../../fixtures/synthetic.rs"]
 mod synth_masterdata;
 
 use std::path::{Path, PathBuf};
