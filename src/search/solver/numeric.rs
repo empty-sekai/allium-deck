@@ -47,8 +47,15 @@ struct SimpleRelaxedPartial {
 struct SimpleExactState<'a> {
     pool: &'a CardPool,
     ctx: &'a SearchContext,
+    /// Every card, best-first by [`Self::card_value`].
     cards: Vec<CardIdx>,
     card_power_min: Vec<u32>,
+    minimize: bool,
+    /// Slots `0..fixed_prefix` are fixed roles; the rest are free.
+    fixed_prefix: usize,
+    /// For each position, the smallest distinct game ids of `cards[pos..]`
+    /// in ascending order, padded with `u16::MAX`.
+    suffix_small_ids: Vec<[u16; SMALL_IDS]>,
     global_power_max: u32,
     global_power_min: u32,
     global_skill_max: u32,
@@ -105,6 +112,9 @@ fn search_simple_target_exact(
         ctx,
         cards,
         card_power_min,
+        minimize,
+        fixed_prefix: (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len()).min(DECK_SIZE),
+        suffix_small_ids: Vec::new(),
         global_power_max,
         global_power_min,
         global_skill_max,
@@ -113,6 +123,7 @@ fn search_simple_target_exact(
         stats: SearchStats::default(),
         budget,
     };
+    state.suffix_small_ids = suffix_small_ids(pool, &state.cards);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     let mut selected_game_ids = [u16::MAX; DECK_SIZE];
     state.recurse(
@@ -129,6 +140,123 @@ fn search_simple_target_exact(
 }
 
 impl SimpleExactState<'_> {
+    /// The per-card objective bound the cards are ordered by: resolved power
+    /// maximum or minimum, or the skill maximum.
+    #[inline(always)]
+    fn card_value(&self, card: CardIdx) -> u32 {
+        match self.ctx.target {
+            ScoreTarget::Power if self.minimize => self.card_power_min[card.raw()],
+            ScoreTarget::Power => self.pool.power_max(card),
+            _ => u32::from(self.pool.skill_max(card)),
+        }
+    }
+
+    /// Relaxed value of `slots` free picks taken from `cards[pos..]`, as
+    /// `(sum, first)`. Cards are ordered best-first by [`Self::card_value`], so
+    /// the first card of a character is that character's best remaining value.
+    /// With unique characters a completion uses `slots` distinct unused
+    /// characters, so its sum is bounded by the first `slots` distinct values;
+    /// `first` bounds (for minimization: underestimates) every single pick.
+    /// `None` means fewer than `slots` characters remain.
+    fn frontier(&self, pos: usize, used_chars: u32, slots: usize) -> Option<(u32, u32)> {
+        let first = self.card_value(*self.cards.get(pos)?);
+        if !self.ctx.enforce_char_uniqueness {
+            return (self.cards.len() - pos >= slots)
+                .then(|| (first.saturating_mul(slots as u32), first));
+        }
+        let mut seen = used_chars;
+        let mut sum = 0u32;
+        let mut taken = 0usize;
+        for &card in &self.cards[pos..] {
+            if taken == slots {
+                break;
+            }
+            let bit = 1u32 << self.pool.char_id(card);
+            if seen & bit != 0 {
+                continue;
+            }
+            seen |= bit;
+            sum = sum.saturating_add(self.card_value(card));
+            taken += 1;
+        }
+        (taken == slots).then_some((sum, first))
+    }
+
+    /// Objective bound (lower bound for Power minimization) of every deck
+    /// that adds `slots` more cards worth at most `sum` in total, none worth
+    /// more than `best`, to `partial`.
+    #[inline(always)]
+    fn relaxed_objective(&self, partial: SimpleRelaxedPartial, sum: u32, best: u32) -> u64 {
+        match self.ctx.target {
+            ScoreTarget::Power if self.minimize => {
+                let lower = partial
+                    .power_min_sum
+                    .saturating_add(sum)
+                    .saturating_add(self.ctx.honor_bonus);
+                self.ctx.clamp_power_total(lower) as u64
+            }
+            ScoreTarget::Power => {
+                let upper = partial
+                    .power_max_sum
+                    .saturating_add(sum)
+                    .saturating_add(self.ctx.honor_bonus);
+                self.ctx.clamp_power_total(upper) as u64
+            }
+            _ => {
+                let total = partial.skill_max_sum.saturating_add(sum);
+                let leader = partial.leader_skill_max.max(best);
+                (2u64 * total as u64).saturating_add(8u64 * leader as u64)
+            }
+        }
+    }
+
+    /// Whether a relaxed objective cannot reach the current K-th result.
+    #[inline(always)]
+    fn beyond_cutoff(&self, relaxed: u64, cutoff: u64) -> bool {
+        if self.minimize {
+            relaxed > cutoff
+        } else {
+            relaxed < cutoff
+        }
+    }
+
+    /// Whether a node whose remaining slots are all free and draw from
+    /// `cards[pos..]` can be discarded: no completion exists, its frontier
+    /// bound misses the cutoff, or it can at best tie the cutoff while every
+    /// completion's public set is larger than the K-th result's.
+    #[inline(always)]
+    fn frontier_can_prune(
+        &self,
+        depth: usize,
+        pos: usize,
+        used_chars: u32,
+        selected_game_ids: &[u16],
+        partial: SimpleRelaxedPartial,
+    ) -> bool {
+        if !self.bounds_enabled || depth < self.fixed_prefix || depth == DECK_SIZE {
+            return false;
+        }
+        if !matches!(self.ctx.target, ScoreTarget::Power | ScoreTarget::Skill) {
+            return false;
+        }
+        let slots = DECK_SIZE - depth;
+        let Some((sum, best)) = self.frontier(pos, used_chars, slots) else {
+            return true;
+        };
+        let Some(cutoff) = self.tracker.cutoff() else {
+            return false;
+        };
+        let relaxed = self.relaxed_objective(partial, sum, best);
+        if self.beyond_cutoff(relaxed, cutoff) {
+            return true;
+        }
+        relaxed == cutoff
+            && self.tracker.cutoff_public_set().is_some_and(|kth| {
+                smallest_public_set(selected_game_ids, &self.suffix_small_ids[pos], slots)
+                    .is_none_or(|smallest| smallest > kth)
+            })
+    }
+
     #[inline(always)]
     fn bound_can_prune(&self, depth: usize, partial: SimpleRelaxedPartial) -> bool {
         if !self.bounds_enabled {
@@ -204,10 +332,24 @@ impl SimpleExactState<'_> {
             }
             return;
         }
-        if self.bound_can_prune(depth, partial) {
+        if self.bound_can_prune(depth, partial)
+            || self.frontier_can_prune(
+                depth,
+                min_free_pos,
+                used_chars,
+                &selected_game_ids[..depth],
+                partial,
+            )
+        {
             self.stats.ub_prunes += 1;
             return;
         }
+        // A free pick at `pos` is followed only by picks at later positions,
+        // none better than it; that child bound never improves as `pos`
+        // advances, so the first child beyond the cutoff ends the loop.
+        let monotone_break = self.bounds_enabled
+            && !is_free_slot_blocked(self.fixed_prefix, depth)
+            && matches!(self.ctx.target, ScoreTarget::Power | ScoreTarget::Skill);
 
         let is_fixed = self.ctx.is_fixed_slot(depth);
         let mut pos = if is_fixed { 0 } else { min_free_pos };
@@ -221,6 +363,34 @@ impl SimpleExactState<'_> {
             let card = self.cards[pos];
             pos += 1;
             let game_id = self.pool.game_id(card);
+            if monotone_break && let Some(cutoff) = self.tracker.cutoff() {
+                let value = self.card_value(card);
+                let slots = DECK_SIZE - depth;
+                let relaxed =
+                    self.relaxed_objective(partial, value.saturating_mul(slots as u32), value);
+                if self.beyond_cutoff(relaxed, cutoff) {
+                    self.stats.mono_break_prunes += 1;
+                    break;
+                }
+                // A child that can at best tie the cutoff must also beat the
+                // K-th public set; the rest of its picks come after `pos`.
+                if relaxed == cutoff
+                    && let Some(kth) = self.tracker.cutoff_public_set()
+                {
+                    let mut with_card = *selected_game_ids;
+                    with_card[depth] = game_id;
+                    if smallest_public_set(
+                        &with_card[..=depth],
+                        &self.suffix_small_ids[pos],
+                        slots - 1,
+                    )
+                    .is_none_or(|smallest| smallest > kth)
+                    {
+                        self.stats.ub_prunes += 1;
+                        continue;
+                    }
+                }
+            }
             if selected_game_ids[..depth].contains(&game_id) {
                 self.stats.feasibility_prunes += 1;
                 continue;
@@ -275,4 +445,61 @@ impl SimpleExactState<'_> {
             );
         }
     }
+}
+
+/// Whether slot `depth` is still one of the fixed roles, whose candidates are
+/// scanned from the start of the card order rather than from the frontier.
+#[inline(always)]
+fn is_free_slot_blocked(fixed_prefix: usize, depth: usize) -> bool {
+    depth < fixed_prefix
+}
+
+/// Distinct ids kept per suffix: enough for four free slots after skipping
+/// up to five ids already in the deck.
+const SMALL_IDS: usize = 2 * DECK_SIZE;
+
+fn suffix_small_ids(pool: &CardPool, cards: &[CardIdx]) -> Vec<[u16; SMALL_IDS]> {
+    let mut table = vec![[u16::MAX; SMALL_IDS]; cards.len() + 1];
+    for pos in (0..cards.len()).rev() {
+        let mut ids = table[pos + 1];
+        let id = pool.game_id(cards[pos]);
+        if !ids.contains(&id) && id < ids[SMALL_IDS - 1] {
+            ids[SMALL_IDS - 1] = id;
+            ids.sort_unstable();
+        }
+        table[pos] = ids;
+    }
+    table
+}
+
+/// Lexicographically smallest sorted public set of any deck made of the
+/// `selected` ids and `slots` more distinct ids taken from `small_ids` (the
+/// smallest distinct ids available). Taking the smallest unused ids minimizes
+/// every rank of the sorted set at once; ignoring which of them can be combined
+/// only makes the result smaller. `None` when too few ids remain.
+fn smallest_public_set(
+    selected: &[u16],
+    small_ids: &[u16; SMALL_IDS],
+    slots: usize,
+) -> Option<[u16; DECK_SIZE]> {
+    let mut set = [u16::MAX; DECK_SIZE];
+    set[..selected.len()].copy_from_slice(selected);
+    let mut len = selected.len();
+    for &id in small_ids {
+        if len == selected.len() + slots {
+            break;
+        }
+        if id == u16::MAX {
+            return None;
+        }
+        if !selected.contains(&id) {
+            set[len] = id;
+            len += 1;
+        }
+    }
+    if len < selected.len() + slots {
+        return None;
+    }
+    set.sort_unstable();
+    Some(set)
 }

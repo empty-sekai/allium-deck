@@ -101,6 +101,17 @@ impl TopKTracker {
         self.cutoff().unwrap_or(0)
     }
 
+    /// Sorted public set of the K-th retained result once K are held. For a
+    /// target without a resolved-power tie-break (anything but MySekai), a
+    /// completion whose objective equals the cutoff enters the Top-K only if
+    /// its public set is no larger than this one.
+    pub(super) fn cutoff_public_set(&self) -> Option<[u16; DECK_SIZE]> {
+        if !self.bounds_enabled || self.results.len() < self.top_k {
+            return None;
+        }
+        self.keys.last().map(|key| key.public_set)
+    }
+
     /// Inputs must already satisfy the exact leaf and placement contracts.
     /// Keys are computed once, not re-evaluated for every retained incumbent.
     pub(super) fn insert(&mut self, pool: &CardPool, ctx: &SearchContext, candidate: DeckResult) {
