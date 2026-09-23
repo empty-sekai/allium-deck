@@ -325,9 +325,12 @@ async fn large_pool_http_result_matches_complete_engine_result() {
 #[tokio::test(flavor = "multi_thread")]
 async fn challenge_all_reports_solver_timeout_not_elapsed_time_guessing() {
     let (router, state) = app(config());
-    let params = r#"{"target":"score","limit":1,"timeoutMs":1}"#;
+    // A complete Top-100 for every character of the large account takes far
+    // longer than the one-millisecond budget.
+    let params = r#"{"target":"score","limit":100,"timeoutMs":1}"#;
+    let body = format!("{{\"user\":{},\"params\":{params}}}", oversized_user_json());
 
-    let (status, body) = post(&router, "/v1/recommend/challenge-all", request_body(params)).await;
+    let (status, body) = post(&router, "/v1/recommend/challenge-all", body).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["completion"], "timed_out", "{body}");
     assert_eq!(body["timedOut"], true, "{body}");
