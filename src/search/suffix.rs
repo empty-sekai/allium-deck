@@ -111,24 +111,39 @@ fn support_upper_envelope(pool: &CardPool, ctx: &SearchContext) -> (Vec<(u16, f6
         let profile = ctx.support_deck_for_leader(character);
         return (profile.cards.clone(), profile.count as usize);
     }
-    let mut bonuses = std::collections::BTreeMap::<u16, f64>::new();
-    let mut count = 0usize;
-    let mut include = |profile: &super::context::SupportDeck| {
-        count = count.max(profile.count as usize);
-        for &(game_id, bonus) in &profile.cards {
-            let maximum = bonuses.entry(game_id).or_default();
-            *maximum = maximum.max(bonus);
-        }
-    };
     let mut seen = UsedSet::new();
+    let mut profiles = Vec::new();
     for card in pool.indices() {
         let character = pool.char_id(card);
         if !seen.contains(character) {
-            include(ctx.support_deck_for_leader(character));
+            profiles.push(ctx.support_deck_for_leader(character));
             seen.insert(character);
         }
     }
-    let mut cards: Vec<_> = bonuses.into_iter().collect();
+    let count = profiles
+        .iter()
+        .map(|profile| profile.count as usize)
+        .max()
+        .unwrap_or(0);
+    let span = profiles
+        .iter()
+        .flat_map(|profile| &profile.cards)
+        .map(|&(game_id, _)| usize::from(game_id) + 1)
+        .max()
+        .unwrap_or(0);
+    // Largest bonus of each game ID over the profiles, indexed by game ID.
+    let mut bonuses = vec![None::<f64>; span];
+    for profile in &profiles {
+        for &(game_id, bonus) in &profile.cards {
+            let maximum = &mut bonuses[usize::from(game_id)];
+            *maximum = Some(maximum.unwrap_or(0.0).max(bonus));
+        }
+    }
+    let mut cards: Vec<_> = bonuses
+        .into_iter()
+        .enumerate()
+        .filter_map(|(game_id, bonus)| bonus.map(|bonus| (game_id as u16, bonus)))
+        .collect();
     cards.sort_unstable_by(|left, right| {
         right
             .1

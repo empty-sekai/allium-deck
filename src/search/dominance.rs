@@ -156,7 +156,8 @@ fn support_dimension(
         .map(|card| usize::from(pool.game_id(card)) + 1)
         .max()
         .unwrap_or(0);
-    let mut value_by_game_id = vec![None::<f64>; span];
+    // One-based position in the current profile's card list, zero if absent.
+    let mut entry_by_game_id = vec![0u32; span];
     let width = profiles.len();
     let mut upper_x100 = vec![0i32; pool.count() * width];
     let mut lower_x100 = vec![0i32; pool.count() * width];
@@ -174,21 +175,23 @@ fn support_dimension(
             .unwrap_or(0);
         // A reserve may enter the counted prefix after another main card is
         // excluded. Recording only the original q entries is not admissible.
-        for &(game_id, value) in &support.cards {
-            if let Some(slot) = value_by_game_id.get_mut(usize::from(game_id)) {
-                *slot = Some(value);
+        for (entry, &(game_id, _)) in support.cards.iter().enumerate() {
+            if let Some(slot) = entry_by_game_id.get_mut(usize::from(game_id)) {
+                *slot = entry as u32 + 1;
             }
         }
         for card in pool.indices() {
-            if let Some(value) = value_by_game_id[usize::from(pool.game_id(card))] {
+            let entry = entry_by_game_id[usize::from(pool.game_id(card))];
+            if entry != 0 {
+                let value = support.cards[entry as usize - 1].1;
                 upper_x100[card.raw() * width + profile] = (value * 100.0).ceil() as i32;
                 lower_x100[card.raw() * width + profile] = (value * 100.0).floor() as i32;
                 any = true;
             }
         }
         for &(game_id, _) in &support.cards {
-            if let Some(slot) = value_by_game_id.get_mut(usize::from(game_id)) {
-                *slot = None;
+            if let Some(slot) = entry_by_game_id.get_mut(usize::from(game_id)) {
+                *slot = 0;
             }
         }
     }

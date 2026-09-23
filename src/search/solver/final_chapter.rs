@@ -237,10 +237,15 @@ impl CardPartial {
     }
 }
 
+/// Diversity bonus of every five-bit attribute union.
+fn diversity_bonus(diff_attr_bonus: &[u16; 6]) -> [u16; 32] {
+    core::array::from_fn(|set: usize| diff_attr_bonus[set.count_ones() as usize])
+}
+
 fn build_card_group_plan(
     groups: &[CharGroup],
     selected: &[usize; MEMBER_COUNT],
-    diff_attr_bonus: &[u16; 6],
+    diversity: &[u16; 32],
     uniform_limited_cap: Option<u32>,
 ) -> CardGroupPlan {
     let mut plan = CardGroupPlan {
@@ -253,22 +258,14 @@ fn build_card_group_plan(
         uniform_limited_cap,
         attr_bonus: [[0; 32]; MEMBER_COUNT + 1],
     };
-    plan.attr_bonus[MEMBER_COUNT] =
-        core::array::from_fn(|set: usize| diff_attr_bonus[set.count_ones() as usize]);
+    plan.attr_bonus[MEMBER_COUNT] = *diversity;
     let mut depth = MEMBER_COUNT;
     while depth > 0 {
         depth -= 1;
         let next = depth + 1;
         let group = &groups[selected[depth]];
-        for initial in 0..32 {
-            let mut attrs = group.attr_mask;
-            while attrs != 0 {
-                let attr = attrs.trailing_zeros();
-                attrs &= attrs - 1;
-                plan.attr_bonus[depth][initial] = plan.attr_bonus[depth][initial]
-                    .max(plan.attr_bonus[next][initial | (1 << attr)]);
-            }
-        }
+        let (head, tail) = plan.attr_bonus.split_at_mut(next);
+        attr_step(&tail[0], group.attr_mask, &mut head[depth]);
         plan.rem_power[depth] = plan.rem_power[next] + group.best_power;
         plan.rem_skill[depth] = plan.rem_skill[next] + group.best_skill;
         plan.rem_max_skill[depth] = plan.rem_max_skill[next].max(group.best_skill);
@@ -283,13 +280,27 @@ fn build_card_group_plan(
     plan
 }
 
+/// Raises `best[set]` to the best bonus reachable when one card of a group
+/// with `attr_mask` joins the attribute union `set`, given the best bonus
+/// `next` of every union after that card.
+#[inline(always)]
+fn attr_step(next: &[u16; 32], attr_mask: u8, best: &mut [u16; 32]) {
+    let mut attrs = attr_mask;
+    while attrs != 0 {
+        let bit = 1usize << attrs.trailing_zeros();
+        attrs &= attrs - 1;
+        for (set, value) in best.iter_mut().enumerate() {
+            *value = (*value).max(next[(set | bit) & 31]);
+        }
+    }
+}
+
 fn build_group_ceiling_suffix(
     groups: &[CharGroup],
     diff_attr_bonus: &[u16; 6],
 ) -> Vec<GroupCeilingTail> {
     let mut suffix = vec![GroupCeilingTail::default(); groups.len() + 1];
-    suffix[groups.len()].attr_bonus[0] =
-        core::array::from_fn(|set| diff_attr_bonus[set.count_ones() as usize]);
+    suffix[groups.len()].attr_bonus[0] = diversity_bonus(diff_attr_bonus);
     let mut idx = groups.len();
     while idx > 0 {
         idx -= 1;
@@ -300,18 +311,12 @@ fn build_group_ceiling_suffix(
         insert_topk_u32(&mut tail.top_skill, group.best_skill);
         insert_topk_u32(&mut tail.top_base_bonus, group.best_base_bonus);
         insert_topk_u32(&mut tail.top_limited_bonus, group.best_limited_bonus);
-        let mut picked = 1usize;
-        while picked <= MEMBER_COUNT {
-            for initial in 0..32 {
-                let mut attrs = group.attr_mask;
-                while attrs != 0 {
-                    let attr = attrs.trailing_zeros();
-                    attrs &= attrs - 1;
-                    tail.attr_bonus[picked][initial] = tail.attr_bonus[picked][initial]
-                        .max(next.attr_bonus[picked - 1][initial | (1 << attr)]);
-                }
-            }
-            picked += 1;
+        for picked in 1..=MEMBER_COUNT {
+            attr_step(
+                &next.attr_bonus[picked - 1],
+                group.attr_mask,
+                &mut tail.attr_bonus[picked],
+            );
         }
         suffix[idx] = tail;
     }
@@ -466,6 +471,7 @@ fn search_leaders(
                 group_suffix: &group_suffix,
                 support: ctx.support_deck_for_leader(leader_char),
                 uniform_limited_cap: uniform_limited_cap(pool, ctx.card_bonus_count_limit),
+                diversity: diversity_bonus(&ctx.diff_attr_bonus),
                 tracker: &mut tracker,
                 stats: &mut stats,
                 deadline: guard,
@@ -576,6 +582,7 @@ fn search_auto_leaders_two_phase(
             group_suffix: &group_set.suffix,
             support: ctx.support_deck_for_leader(pool.char_id(job.leader.leader)),
             uniform_limited_cap: uniform_limited_cap(pool, ctx.card_bonus_count_limit),
+            diversity: diversity_bonus(&ctx.diff_attr_bonus),
             tracker: &mut tracker,
             stats: &mut stats,
             deadline: guard,
@@ -761,6 +768,7 @@ struct CharacterSearchState<'a> {
     group_suffix: &'a [GroupCeilingTail],
     support: &'a SupportDeck,
     uniform_limited_cap: Option<u32>,
+    diversity: [u16; 32],
     tracker: &'a mut TopKTracker,
     stats: &'a mut SearchStats,
     deadline: &'a mut DeadlineGuard,
@@ -805,7 +813,7 @@ impl CharacterSearchState<'_> {
             let plan = build_card_group_plan(
                 self.groups,
                 &ordered,
-                &self.ctx.diff_attr_bonus,
+                &self.diversity,
                 self.uniform_limited_cap,
             );
             self.recurse_cards(&ordered, &plan, 0, &mut deck, *initial_partial, scratch);
@@ -1464,7 +1472,7 @@ mod limited_sum_tests {
                     let plan = build_card_group_plan(
                         &groups,
                         &[0, 1, 2, 3],
-                        &ctx.diff_attr_bonus,
+                        &diversity_bonus(&ctx.diff_attr_bonus),
                         uniform_limited_cap(&pool, cap),
                     );
                     assert!(plan.uniform_limited_cap.is_some());
@@ -1642,7 +1650,7 @@ mod skill_ceiling_tests {
                 let plan = build_card_group_plan(
                     &groups,
                     &selected,
-                    &ctx.diff_attr_bonus,
+                    &diversity_bonus(&ctx.diff_attr_bonus),
                     uniform_limited_cap(&pool, ctx.card_bonus_count_limit),
                 );
                 let leader = build_leader_const(&pool, &ctx, deck[0]);
@@ -1833,7 +1841,8 @@ mod attribute_bound_tests {
             for bonuses in [[0, 0, 10, 20, 30, 50], [99, 70, 200, 3, 150, 0]] {
                 let (_, mut ctx) = super::skill_ceiling_tests::fixture();
                 ctx.diff_attr_bonus = bonuses;
-                let plan = build_card_group_plan(&groups, &[0, 1, 2, 3], &bonuses, None);
+                let plan =
+                    build_card_group_plan(&groups, &[0, 1, 2, 3], &diversity_bonus(&bonuses), None);
                 for chosen in 0..=MEMBER_COUNT {
                     for set in 0..32 {
                         assert_eq!(
