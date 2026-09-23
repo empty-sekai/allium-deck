@@ -84,10 +84,8 @@ pub fn load_masterdata(masterdata_json: &str, music_metas_json: &str) -> Result<
         })
         .collect::<BTreeMap<_, _>>();
     let auxiliary = AuxiliaryData::from_strings(&map).map_err(to_js)?;
-    let sources = allium_deck::engine::MasterdataSources::from_strings(
-        map.into_iter(),
-        music_metas_json.to_string(),
-    );
+    let sources =
+        allium_deck::engine::MasterdataSources::from_strings(map, music_metas_json.to_string());
     let owned = allium_deck::engine::OwnedGameData::from_sources(&sources)
         .map_err(|err| JsValue::from_str(&err))?;
     MASTER_DATA.with(|slot| {
@@ -216,21 +214,17 @@ fn recommend_with_user(
         .iter()
         .map(|card| (card.id, card))
         .collect::<HashMap<_, _>>();
+    let renderer = Renderer {
+        pool: &pool,
+        game,
+        master_cards: &master_cards,
+        original_user: user,
+        user_cards: &user_cards,
+    };
     let decks: Vec<DeckOut> = results
         .iter()
         .enumerate()
-        .map(|(index, result)| {
-            DeckOut::build(
-                index + 1,
-                &pool,
-                &ctx,
-                game,
-                &master_cards,
-                user,
-                &user_cards,
-                result,
-            )
-        })
+        .map(|(index, result)| renderer.deck(index + 1, &ctx, result))
         .collect();
 
     serde_json::to_string(&DeckResponse {
@@ -316,29 +310,25 @@ struct CardOut {
     episode2_read: bool,
 }
 
-impl DeckOut {
-    fn build(
-        rank: usize,
-        pool: &CardPool,
-        ctx: &SearchContext,
-        game: &GameData<'_>,
-        master_cards: &HashMap<i32, &MasterCard>,
-        original_user: &UserProfile,
-        user_cards: &HashMap<i32, &UserCard>,
-        result: &DeckResult,
-    ) -> Self {
+/// Inputs shared by every rendered deck and card of one response.
+struct Renderer<'a> {
+    pool: &'a CardPool,
+    game: &'a GameData<'a>,
+    master_cards: &'a HashMap<i32, &'a MasterCard>,
+    original_user: &'a UserProfile,
+    user_cards: &'a HashMap<i32, &'a UserCard>,
+}
+
+impl Renderer<'_> {
+    fn deck(&self, rank: usize, ctx: &SearchContext, result: &DeckResult) -> DeckOut {
+        let pool = self.pool;
         // summarize_deck 给出展示指标 + 站位顺序（ordered_cards）。失败时回退裸结果顺序。
         match summarize_deck(pool, ctx, &result.cards) {
             Some(summary) => {
                 let per_card = (0..5)
                     .map(|card_pos| {
                         let card_idx = summary.ordered_cards[card_pos];
-                        CardOut::build(
-                            pool,
-                            game,
-                            master_cards,
-                            original_user,
-                            user_cards,
+                        self.card(
                             card_idx,
                             summary.card_power_total[card_pos],
                             summary.card_skill_score_up[card_pos],
@@ -347,7 +337,7 @@ impl DeckOut {
                         )
                     })
                     .collect();
-                Self {
+                DeckOut {
                     rank,
                     cards: per_card,
                     total_power: summary.total_power,
@@ -365,12 +355,7 @@ impl DeckOut {
                     .cards
                     .iter()
                     .map(|&card_idx| {
-                        CardOut::build(
-                            pool,
-                            game,
-                            master_cards,
-                            original_user,
-                            user_cards,
+                        self.card(
                             card_idx,
                             pool.power_max(card_idx).min(i32::MAX as u32) as i32,
                             f64::from(pool.skill_max(card_idx)),
@@ -378,7 +363,7 @@ impl DeckOut {
                         )
                     })
                     .collect();
-                Self {
+                DeckOut {
                     rank,
                     cards,
                     total_power: result
@@ -401,32 +386,27 @@ impl DeckOut {
             }
         }
     }
-}
 
-impl CardOut {
-    fn build(
-        pool: &CardPool,
-        game: &GameData<'_>,
-        master_cards: &HashMap<i32, &MasterCard>,
-        original_user: &UserProfile,
-        user_cards: &HashMap<i32, &UserCard>,
+    fn card(
+        &self,
         card_idx: allium_deck::pool::CardIdx,
         power_total: i32,
         skill_score_up: f64,
         event_bonus: Option<f64>,
-    ) -> Self {
+    ) -> CardOut {
+        let pool = self.pool;
         let card_id = pool.game_id(card_idx) as i32;
-        let user_card = user_cards.get(&card_id).copied();
+        let user_card = self.user_cards.get(&card_id).copied();
         let trained = user_card.is_some_and(default_image_is_trained);
-        let meta = card_meta(master_cards, card_id, trained);
+        let meta = card_meta(self.master_cards, card_id, trained);
         let has_canvas_bonus = user_card
             .and_then(|card| card.has_canvas_bonus_override)
             .unwrap_or_else(|| {
-                original_user
+                self.original_user
                     .user_mysekai_canvas_bonus_cards
                     .contains(&card_id)
             });
-        Self {
+        CardOut {
             card_id,
             asset_key: meta.asset_key,
             rarity: meta.rarity.clone(),
@@ -445,10 +425,8 @@ impl CardOut {
             master_rank: user_card.map(|card| card.master_rank).unwrap_or(0),
             trained,
             has_canvas_bonus,
-            canvas_power: canvas_power(game, &meta.rarity, has_canvas_bonus),
-            episode1_read: user_card
-                .map(|card| card.episodes_read.len() >= 1)
-                .unwrap_or(false),
+            canvas_power: canvas_power(self.game, &meta.rarity, has_canvas_bonus),
+            episode1_read: user_card.is_some_and(|card| !card.episodes_read.is_empty()),
             episode2_read: user_card
                 .map(|card| card.episodes_read.len() >= 2)
                 .unwrap_or(false),

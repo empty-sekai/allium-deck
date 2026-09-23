@@ -55,7 +55,7 @@ pub fn recommend_music_api(options_json: &str) -> Result<String, wasm_bindgen::J
 
     // 烤森 multi → cheerful 的转换已内置于核心 recommend_music。
     let live_type = require_live_type(&opts)?;
-    let event_type = event_type_from_options(&opts, &game.events)?;
+    let event_type = event_type_from_options(&opts, game.events)?;
 
     let specific_skill_order = field(&opts, "specific_skill_order", "specificSkillOrder")
         .and_then(|value| value.as_array())
