@@ -82,20 +82,20 @@ pub(crate) fn leaf_evaluate_checked(
     if !ctx.deck_matches_forced_leader(pool, deck) {
         return None;
     }
-    let power_total = ctx.clamp_power_total(resolve_power_target(pool, deck) + ctx.honor_bonus);
+    let power_total = || ctx.clamp_power_total(resolve_power_target(pool, deck) + ctx.honor_bonus);
     match ctx.target {
         ScoreTarget::Power => {
             if !meets_skill_lower_bound(pool, ctx, deck) {
                 return None;
             }
-            Some(power_total as u64)
+            Some(power_total() as u64)
         }
         ScoreTarget::Mysekai => {
             let total_bonus = resolve_total_bonus(pool, ctx, deck);
             if !meets_skill_lower_bound(pool, ctx, deck) {
                 return None;
             }
-            Some(calc_mysekai_internal(power_total, total_bonus) as u64)
+            Some(calc_mysekai_internal(power_total(), total_bonus) as u64)
         }
         ScoreTarget::Skill => {
             let permutation = evaluate_permutation(pool, ctx, deck);
@@ -108,7 +108,7 @@ pub(crate) fn leaf_evaluate_checked(
             if !permutation_satisfies_lower_bound(ctx, &permutation) {
                 return None;
             }
-            let live_score = calc_live_score(power_total, &permutation, ctx);
+            let live_score = calc_live_score(power_total(), &permutation, ctx);
             Some(encode_bonus_target(total_bonus, live_score))
         }
         ScoreTarget::Score => {
@@ -122,7 +122,7 @@ pub(crate) fn leaf_evaluate_checked(
             if !permutation_satisfies_lower_bound(ctx, &permutation) {
                 return None;
             }
-            let live_score = calc_live_score(power_total, &permutation, ctx);
+            let live_score = calc_live_score(power_total(), &permutation, ctx);
             let event_point = if ctx.has_event() {
                 calc_event_point(live_score, total_bonus, ctx)
             } else {
@@ -834,7 +834,8 @@ fn skill_score_index(live_type: LiveType) -> usize {
 
 #[inline(always)]
 fn encode_skill_target(score_up: f64) -> u64 {
-    (score_up * SKILL_SCALE + 1e-6).floor() as u64
+    // Truncation is the floor for the non-negative value.
+    (score_up * SKILL_SCALE + 1e-6) as u64
 }
 
 #[inline(always)]

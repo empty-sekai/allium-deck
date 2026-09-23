@@ -33,8 +33,12 @@ pub(super) fn evaluate_candidate(
         return best;
     }
     if !problem.needs_placement_search() {
-        let work = exchangeable_order(pool, ctx, deck);
-        return leaf_evaluate_checked(pool, ctx, &work).map(|score| DeckResult::new(work, score));
+        // Exchangeable slots do not change the score; only the reported order
+        // is canonicalized.
+        let score = leaf_evaluate_checked(pool, ctx, deck)?;
+        let mut work = *deck;
+        sort_exchangeable(pool, &mut work, exchangeable_prefix(problem, ctx));
+        return Some(DeckResult::new(work, score));
     }
     let mut work = *deck;
     let mut best = None;
@@ -174,14 +178,33 @@ pub(super) fn exchangeable_order(
     ctx: &SearchContext,
     deck: &[CardIdx; DECK_SIZE],
 ) -> [CardIdx; DECK_SIZE] {
-    let fixed = DeckProblem::from_context(ctx)
-        .fixed_prefix
-        .max(usize::from(ctx.is_final_chapter));
     let mut work = *deck;
-    sort_exchangeable(pool, &mut work, fixed);
+    sort_exchangeable(
+        pool,
+        &mut work,
+        exchangeable_prefix(DeckProblem::from_context(ctx), ctx),
+    );
     work
 }
 
+/// Slots before this index hold fixed roles: fixed cards or characters, and
+/// the Final Chapter leader.
+fn exchangeable_prefix(problem: DeckProblem, ctx: &SearchContext) -> usize {
+    problem.fixed_prefix.max(usize::from(ctx.is_final_chapter))
+}
+
+/// Orders the free slots by (public card ID, dense index).
 fn sort_exchangeable(pool: &CardPool, deck: &mut [CardIdx; DECK_SIZE], fixed: usize) {
-    deck[fixed..].sort_unstable_by_key(|&card| (pool.game_id(card), card.raw()));
+    let key = |card: CardIdx| (u32::from(pool.game_id(card)) << 16) | card.raw() as u32;
+    let mut keys = deck.map(key);
+    let mut index = fixed + 1;
+    while index < DECK_SIZE {
+        let mut cursor = index;
+        while cursor > fixed && keys[cursor - 1] > keys[cursor] {
+            keys.swap(cursor - 1, cursor);
+            deck.swap(cursor - 1, cursor);
+            cursor -= 1;
+        }
+        index += 1;
+    }
 }
