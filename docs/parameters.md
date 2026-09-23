@@ -57,7 +57,7 @@ Final chapter leader honor: a deck equips one main honor, so the leader-only hon
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `musicId` / `music_id` | int | absent | Song for score math. Without it, the no-music fallback table is used. |
+| `musicId` / `music_id` | int | absent | Song for score math. Without it, the no-music fallback table is used. `10000` (`engine::OMAKASE_MUSIC_ID`) selects the omakase song, whose metas average every master, expert and hard row. |
 | `musicDiff` / `music_diff` | string | absent | Difficulty; `expert` when omitted. |
 
 ## Skill handling

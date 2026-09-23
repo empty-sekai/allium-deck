@@ -1971,7 +1971,9 @@ struct RawMusicMetaRow {
     tap_count: i32,
 }
 
-const OMAKASE_MUSIC_ID: i32 = 10000;
+/// Music ID of the synthesized "omakase" song. Loading music metas adds one
+/// row per difficulty for it, averaging every master, expert and hard row.
+pub const OMAKASE_MUSIC_ID: i32 = 10000;
 const OMAKASE_SOURCE_DIFFS: &[&str] = &["master", "expert", "hard"];
 const OMAKASE_OUTPUT_DIFFS: &[&str] = &["easy", "normal", "hard", "expert", "master", "append"];
 
