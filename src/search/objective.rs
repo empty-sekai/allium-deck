@@ -206,6 +206,10 @@ impl ObjectiveBound {
         skill_total: u32,
         leader_ub: u32,
     ) -> i64 {
+        // The evaluator gives a MySekai live no live score.
+        if matches!(self.effective_live_type, LiveType::Mysekai) {
+            return 0;
+        }
         let rate_1m = match self.effective_live_type {
             LiveType::Multi | LiveType::Cheerful => {
                 let max_slot_5x =
@@ -232,9 +236,6 @@ impl ObjectiveBound {
             DECK_SIZE as i64 * power_total as i64
         };
         let active_1m = self.active_1m_coeff * power_sum;
-        // The leaf evaluator has no separate MySekai live formula: a MySekai
-        // live type scores with the solo constants, and Bonus / Score keys keep
-        // that live score. The ceiling therefore uses the same formula.
         rate_1m * power_total as i64 * 4 + active_1m
     }
 

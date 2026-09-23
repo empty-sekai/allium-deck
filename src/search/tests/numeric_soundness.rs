@@ -1067,14 +1067,9 @@ fn search_matches_oracle_under_decimal_constants() {
             context.live_type = LiveType::Solo;
         }
         // Pool construction maps a MySekai live Score request to the MySekai
-        // target. The ordered-slot placement model covers single-player lives.
-        if context.live_type == LiveType::Mysekai {
-            if context.target == ScoreTarget::Score {
-                context.target = ScoreTarget::Mysekai;
-            }
-            if context.live_skill_order == LiveSkillOrder::Specific {
-                context.live_skill_order = LiveSkillOrder::Best;
-            }
+        // target.
+        if context.live_type == LiveType::Mysekai && context.target == ScoreTarget::Score {
+            context.target = ScoreTarget::Mysekai;
         }
         if context.is_final_chapter {
             context.forced_leader_character_id = rng.chance(1, 2).then_some(1);
@@ -1103,11 +1098,11 @@ fn search_matches_oracle_under_decimal_constants() {
     assert_eq!(compared, 480);
 }
 
-/// A MySekai live has no live-score formula of its own; the leaf evaluator
-/// scores it with the solo constants. The Bonus key keeps that live score as
-/// its tie-break, so its ceiling must too.
+/// A MySekai live has no live score. Bonus keys then carry the bonus alone,
+/// so equal-bonus decks tie whatever their power or skill order, the
+/// canonical order decides between them, and the ceiling dominates the key.
 #[test]
-fn mysekai_live_bonus_ceiling_keeps_the_live_tiebreak() {
+fn mysekai_live_bonus_keys_carry_no_live_score() {
     let cards: Vec<_> = (0..6)
         .map(|index| NumCard {
             char_id: index as u8 + 1,
@@ -1117,43 +1112,65 @@ fn mysekai_live_bonus_ceiling_keeps_the_live_tiebreak() {
             powers: [100_000 + index as u32 * 1_000; 4],
             skill: SkillSlot {
                 skill_type: 0,
-                value: 100,
+                value: 60 + 20 * index as u8,
             },
-            skill_min: 100,
-            skill_max: 100,
+            skill_min: 60 + 20 * index as u8,
+            skill_max: 60 + 20 * index as u8,
             base_x10: 100,
             limited_x10: 0,
         })
         .collect();
     let pool = numeric_pool(&cards);
-    let mut context = ready_ctx(&pool, ScoreTarget::Bonus);
-    context.live_type = LiveType::Mysekai;
-    context.event_type = Some(EventType::Marathon);
-    context.base_score = 1.1;
-    context.skill_scores[0] = [0.1; 6];
-    // Every deck has the same bonus total, so the Top-K order is decided by
-    // the live-score tie-break alone.
-    for top_k in [1, 2, 6] {
-        let params = SearchParams {
-            top_k,
-            timeout_ms: 0,
-        };
-        let outcome = search(&pool, &context, &params);
-        assert_eq!(outcome.completion(), SearchCompletion::Complete);
-        let (expected, _) = ExactOracle::new(&pool, &context).search(&params);
-        assert_eq!(outcome.results, expected, "K={top_k}");
+    for order in [LiveSkillOrder::Best, LiveSkillOrder::Specific] {
+        let mut context = ready_ctx(&pool, ScoreTarget::Bonus);
+        context.live_type = LiveType::Mysekai;
+        context.event_type = Some(EventType::Marathon);
+        context.base_score = 1.1;
+        context.skill_scores[0] = [0.12, 0.02, 0.04, 0.06, 0.09, 0.03];
+        context.live_skill_order = order;
+        context.specific_skill_order = Some([4, 2, 0, 3, 1]);
+        for top_k in [1, 2, 6] {
+            let params = SearchParams {
+                top_k,
+                timeout_ms: 0,
+            };
+            let outcome = search(&pool, &context, &params);
+            assert_eq!(outcome.completion(), SearchCompletion::Complete);
+            let (expected, _) = ExactOracle::new(&pool, &context).search(&params);
+            assert_eq!(outcome.results, expected, "{order:?} K={top_k}");
+        }
+        let deck = collect_first_five(&pool);
+        let leaf = leaf_evaluate_checked(&pool, &context, &deck).expect("legal deck");
+        assert_eq!(leaf & LOW, 0, "{order:?}: no live score in the key");
+        let reversed = [deck[4], deck[3], deck[2], deck[1], deck[0]];
+        assert_eq!(
+            leaf_evaluate_checked(&pool, &context, &reversed),
+            Some(leaf)
+        );
+        let features = features(&pool, &context, &deck);
+        let upper = ObjectiveBound::from_context(&context).ceiling(
+            features.power,
+            features.bonus,
+            features.skill,
+            features.leader,
+        );
+        assert_dominates("mysekai bonus", upper, leaf, ScoreTarget::Bonus);
+        let top = search(
+            &pool,
+            &context,
+            &SearchParams {
+                top_k: 1,
+                timeout_ms: 0,
+            },
+        );
+        let mut public = top.results[0].cards.map(|card| pool.game_id(card));
+        public.sort_unstable();
+        assert_eq!(
+            public,
+            [800, 801, 802, 803, 804],
+            "{order:?}: canonical tie-break"
+        );
     }
-    let deck = collect_first_five(&pool);
-    let leaf = leaf_evaluate_checked(&pool, &context, &deck).expect("legal deck");
-    assert!(leaf & LOW > 0, "the leaf key carries a live score");
-    let features = features(&pool, &context, &deck);
-    let upper = ObjectiveBound::from_context(&context).ceiling(
-        features.power,
-        features.bonus,
-        features.skill,
-        features.leader,
-    );
-    assert_dominates("mysekai bonus", upper, leaf, ScoreTarget::Bonus);
 }
 
 /// For the profile below, a deck holding the second 2.2 and the first 0.2

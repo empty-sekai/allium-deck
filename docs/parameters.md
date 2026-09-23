@@ -7,7 +7,7 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `region` | string | `"cn"` | Region tag carried through to the caller; does not change engine math. |
-| `target` | string | `"score"` | `score`, `power`, `skill`, `bonus`, `mysekai`. Event point optimization is `score` plus an event context. `score` is normalized to `mysekai` when `liveType` is `mysekai`, because the live-score formula has no MySekai arm. |
+| `target` | string | `"score"` | `score`, `power`, `skill`, `bonus`, `mysekai`. Event point optimization is `score` plus an event context. `score` is normalized to `mysekai` when `liveType` is `mysekai`, because a MySekai live has no live score; `bonus` and `power` results under that live type report live score 0 and break ties by the canonical order below. |
 | `liveType` / `live_type` | string | `"solo"` | `solo`, `auto`, `multi`, `cheerful`, `challenge`, `challenge_auto`, `mysekai`. |
 | `limit` | int | 10 | Number of decks returned (Top-K). Distinct card sets. Max 100. |
 | `member` | int | absent | Compatibility field; only 5 (or absent) is supported. |

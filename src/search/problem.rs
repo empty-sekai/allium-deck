@@ -40,6 +40,8 @@ impl DeckProblem {
             SolverFamily::UniqueCombinations
         };
         let fixed_prefix = (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len()).min(5);
+        // Only a single-player live scores its skill slots one by one; a
+        // MySekai live has no live score at all.
         let single_player = !matches!(
             ctx.effective_live_type(),
             LiveType::Multi | LiveType::Cheerful | LiveType::Mysekai

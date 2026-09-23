@@ -1405,10 +1405,8 @@ required by this argument.
 Everything else in the search is integer arithmetic on exact discrete state.
 Floating-point values enter a ceiling only through the aggregate objective
 coefficients (N1–N4, N6), the correlated coefficients (N7), support sums
-(N5) and the MySekai value (N5). A MySekai live type has no live-score
-formula of its own: the evaluator scores it with the solo constants and the
-Bonus and Score keys keep that live score, so the aggregate ceiling uses the
-same formula.
+(N5) and the MySekai value (N5). A MySekai live has no live score: the
+evaluator and every live-score ceiling use 0 for it.
 
 Verification: src/search/tests/numeric_soundness.rs enumerates every deck of
 generated pools under decimal constants and asserts packed and component-wise

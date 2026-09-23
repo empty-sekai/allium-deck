@@ -53,11 +53,7 @@ pub fn summarize_deck(
     if !permutation_satisfies_lower_bound(ctx, &permutation) {
         return None;
     }
-    let live_score = if ctx.is_mysekai() {
-        0
-    } else {
-        calc_live_score(total_power, &permutation, ctx)
-    };
+    let live_score = calc_live_score(total_power, &permutation, ctx);
     let event_point = if !ctx.is_mysekai() && ctx.has_event() {
         Some(calc_event_point(live_score, total_bonus, ctx))
     } else {
@@ -383,6 +379,10 @@ fn calc_live_score(
     permutation: &EvaluatedPermutation,
     ctx: &SearchContext,
 ) -> i32 {
+    // MySekai has no live: its objective depends on power and bonus only.
+    if ctx.is_mysekai() {
+        return 0;
+    }
     let mut slots = sorted_live_skills(permutation, ctx);
     let skill_score_index = skill_score_index(ctx.effective_live_type());
     let mut skill_rates = unsafe { *ctx.skill_scores.get_unchecked(skill_score_index) };
@@ -692,11 +692,6 @@ fn sorted_live_skills(
             .skills
             .get_unchecked(*permutation.order.get_unchecked(0))
     };
-    if matches!(ctx.live_skill_order, LiveSkillOrder::Specific)
-        && ctx.specific_skill_order.is_none()
-    {
-        return buffer;
-    }
     buffer
 }
 
