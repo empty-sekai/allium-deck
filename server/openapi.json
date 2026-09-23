@@ -395,7 +395,11 @@
           "liveScore": { "type": ["integer", "null"] },
           "eventPoint": { "type": ["integer", "null"] },
           "multiLiveScoreUp": { "type": ["number", "null"] },
-          "eventBonusTotal": { "type": ["number", "null"] }
+          "eventBonusTotal": { "type": ["number", "null"] },
+          "mainHonorId": {
+            "type": "integer",
+            "description": "World Bloom final chapter only: the owned honor assumed as the deck's main honor, chosen for the leader character (largest leader bonus, then smallest ID). Its bonus is included in eventBonusTotal. Omitted otherwise."
+          }
         },
         "required": ["rank", "targetValue", "cards"]
       },

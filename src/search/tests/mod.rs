@@ -140,6 +140,7 @@ fn ctx(target: ScoreTarget) -> SearchContext {
         honor_bonus: 0,
         power_total_cap: None,
         leader_honor_bonus_x10: Vec::new(),
+        leader_honors: Vec::new(),
         leader_limit_bonus_x10: Vec::new(),
         final_chapter_member_keep: Vec::new(),
         skill_is_after_training: Vec::new(),

@@ -334,6 +334,9 @@ fn build_summary(
         event_point,
         multi_live_score_up: permutation.multi_live_score_up,
         event_bonus_total: (ctx.has_event() || total_bonus > 0.0).then_some(total_bonus),
+        main_honor_id: ctx
+            .leader_honor_for_character(pool.char_id(ordered_cards[0]))
+            .map(|honor| honor.honor_id),
     }
 }
 
@@ -1306,6 +1309,7 @@ mod tests {
             honor_bonus: 0,
             power_total_cap: None,
             leader_honor_bonus_x10: Vec::new(),
+            leader_honors: Vec::new(),
             leader_limit_bonus_x10: Vec::new(),
             final_chapter_member_keep: Vec::new(),
             skill_is_after_training: Vec::new(),

@@ -1,6 +1,7 @@
 //! handler 管线测试。
 mod capacity;
 mod fractional_leader;
+mod leader_honor;
 
 use crate::pool::EventBonusExact;
 use crate::types::{DefaultImage, FINAL_CHAPTER_EVENT_ID};

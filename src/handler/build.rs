@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 use crate::pool::EventBonusExact;
 use crate::search::SearchContext;
+use crate::search::context::LeaderHonor;
 use crate::types::DefaultImage;
 
 use super::card_config::apply_card_config;
@@ -140,6 +141,7 @@ pub struct PreparedPoolBuild<'a> {
     powers: Vec<PowerResult>,
     cards: Vec<PreparedCardBuild<'a>>,
     honor_bonus: u32,
+    leader_honors: Vec<Option<LeaderHonor>>,
 }
 
 impl<'a> PreparedPoolBuild<'a> {
@@ -217,34 +219,7 @@ impl<'a> PreparedPoolBuild<'a> {
                 map
             })
             .unwrap_or_default();
-        let leader_honor_by_char: [u16; 27] = {
-            let mut result = [0u16; 27];
-            if let Some(ctx) = event_ctx.as_ref()
-                && crate::types::is_world_bloom_finale_event(ctx.event_id)
-                && !ctx.honor_bonuses.is_empty()
-            {
-                let owned_honors: std::collections::HashSet<i32> = user
-                    .user_honors
-                    .iter()
-                    .map(|honor| honor.honor_id)
-                    .collect();
-                for entry in &ctx.honor_bonuses {
-                    if let Ok(ch) = usize::try_from(entry.leader_game_character_id)
-                        && ch < 27
-                        && owned_honors.contains(&entry.honor_id)
-                    {
-                        let total_x10 = u64::from(result[ch]) + entry.bonus_rate.max(0) as u64 * 10;
-                        super::capacity::ensure(
-                            "leader honor bonus (tenths)",
-                            total_x10,
-                            u64::from(u16::MAX),
-                        )?;
-                        result[ch] = total_x10 as u16;
-                    }
-                }
-            }
-            result
-        };
+        let leader_honors = select_leader_honors(event_ctx.as_ref(), user)?;
 
         let mut prepare_card = |mut user_card: Cow<'a, types::UserCard>| -> Result<(), BuildError> {
             let Some(card_data) = indexes.card_data(user_card.card_id) else {
@@ -293,15 +268,10 @@ impl<'a> PreparedPoolBuild<'a> {
                 })
                 .transpose()?
                 .unwrap_or((EventBonusExact::default(), false, false));
-            let leader_honor_bonus_x10 = if event_ctx.is_some() {
-                usize::try_from(master.character_id)
-                    .ok()
-                    .filter(|ch| *ch < 27)
-                    .map(|ch| leader_honor_by_char[ch])
-                    .unwrap_or(0)
-            } else {
-                0
-            };
+            let leader_honor_bonus_x10 = usize::try_from(master.character_id)
+                .ok()
+                .and_then(|ch| leader_honors.get(ch).copied().flatten())
+                .map_or(0, |honor| honor.bonus_x10);
             let leader_limit_bonus_x10 = if event_ctx.is_some() {
                 // Keep the source's tenths through evaluation. A fractional
                 // nonzero entry must not become the legacy zero/default case.
@@ -473,8 +443,63 @@ impl<'a> PreparedPoolBuild<'a> {
             powers,
             cards,
             honor_bonus: compute_honor_bonus(user, indexes),
+            leader_honors,
         })
     }
+}
+
+/// Character-id slots of the leader honor table (ids `0..=26`).
+const LEADER_HONOR_SLOTS: usize = 27;
+
+/// 终章每个队长角色假设佩戴的主称号，按角色 ID 索引；非终章返回空表。
+///
+/// 每副卡组只佩戴一枚主称号，它只贡献一行按（活动, 称号, 队长角色）匹配的
+/// 活动称号加成，多枚已持有称号不叠加。每个队长角色取已持有称号中加成最高
+/// 的一行，同加成取称号 ID 最小者。加成超出紧凑宽度时返回显式错误。
+pub(super) fn select_leader_honors(
+    event_ctx: Option<&EventContext>,
+    user: &types::UserProfile,
+) -> Result<Vec<Option<LeaderHonor>>, BuildError> {
+    let Some(ctx) = event_ctx.filter(|ctx| {
+        crate::types::is_world_bloom_finale_event(ctx.event_id) && !ctx.honor_bonuses.is_empty()
+    }) else {
+        return Ok(Vec::new());
+    };
+    let owned_honors: std::collections::HashSet<i32> = user
+        .user_honors
+        .iter()
+        .map(|honor| honor.honor_id)
+        .collect();
+    let mut chosen = vec![None; LEADER_HONOR_SLOTS];
+    for entry in &ctx.honor_bonuses {
+        let Some(slot) = usize::try_from(entry.leader_game_character_id)
+            .ok()
+            .and_then(|ch| chosen.get_mut(ch))
+        else {
+            continue;
+        };
+        if !owned_honors.contains(&entry.honor_id) {
+            continue;
+        }
+        let bonus_x10 = entry.bonus_rate.max(0) as u64 * 10;
+        super::capacity::ensure(
+            "leader honor bonus (tenths)",
+            bonus_x10,
+            u64::from(u16::MAX),
+        )?;
+        let candidate = LeaderHonor {
+            honor_id: entry.honor_id,
+            bonus_x10: bonus_x10 as u16,
+        };
+        let replaces = slot.is_none_or(|current: LeaderHonor| {
+            (candidate.bonus_x10, std::cmp::Reverse(candidate.honor_id))
+                > (current.bonus_x10, std::cmp::Reverse(current.honor_id))
+        });
+        if replaces {
+            *slot = Some(candidate);
+        }
+    }
+    Ok(chosen)
 }
 
 pub(super) fn normalize_boost_rate_pct(boost: Option<i32>) -> u32 {
@@ -744,6 +769,7 @@ pub(super) fn build_search_context(
             }
         }),
         leader_honor_bonus_x10: gathered.leader_honor_bonus_x10,
+        leader_honors: Vec::new(),
         leader_limit_bonus_x10: gathered.leader_limit_bonus_x10,
         final_chapter_member_keep: vec![true; card_count],
         skill_is_after_training: gathered.skill_is_after_training,
@@ -912,6 +938,8 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         fixed_character_ids,
     );
     search_ctx.honor_bonus = build.honor_bonus;
+    // The per-card leader honor column above was expanded from this table.
+    search_ctx.leader_honors = build.leader_honors.clone();
     Ok((pool, search_ctx, full))
 }
 

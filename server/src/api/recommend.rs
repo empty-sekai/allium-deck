@@ -57,6 +57,9 @@ pub struct DeckOut {
     pub event_point: Option<i32>,
     pub multi_live_score_up: Option<f64>,
     pub event_bonus_total: Option<f64>,
+    /// Final Chapter only: the owned honor assumed as the deck's main honor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main_honor_id: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -388,6 +391,7 @@ fn deck_out(rank: usize, pool: &CardPool, ctx: &SearchContext, result: &DeckResu
         event_point: summary.and_then(|summary| summary.event_point),
         multi_live_score_up: summary.map(|summary| summary.multi_live_score_up),
         event_bonus_total: summary.and_then(|summary| summary.event_bonus_total),
+        main_honor_id: summary.and_then(|summary| summary.main_honor_id),
     }
 }
 
@@ -486,5 +490,34 @@ impl HasTiming for ChallengeAllResponse {
     }
     fn timed_out(&self) -> bool {
         self.timed_out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeckOut;
+
+    fn deck(main_honor_id: Option<i32>) -> DeckOut {
+        DeckOut {
+            rank: 1,
+            target_value: 0,
+            cards: Vec::new(),
+            total_power: None,
+            live_score: None,
+            event_point: None,
+            multi_live_score_up: None,
+            event_bonus_total: None,
+            main_honor_id,
+        }
+    }
+
+    #[test]
+    fn main_honor_id_is_serialized_only_when_present() {
+        let without = serde_json::to_value(deck(None)).expect("deck serializes");
+        assert!(without.get("mainHonorId").is_none());
+        assert!(without.get("eventBonusTotal").is_some());
+
+        let with = serde_json::to_value(deck(Some(7))).expect("deck serializes");
+        assert_eq!(with["mainHonorId"], 7);
     }
 }

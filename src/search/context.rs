@@ -14,6 +14,18 @@ pub struct SupportDeck {
     pub count: u8,
 }
 
+/// 终章某个队长角色假设佩戴的主称号。
+///
+/// 每副卡组只佩戴一枚主称号，因此每个队长角色只计入一行活动称号加成；
+/// 称号 ID 与它的加成放在同一个值里，二者不会各自漂移。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LeaderHonor {
+    /// 假设佩戴为主称号的已持有称号 ID。
+    pub honor_id: i32,
+    /// 该称号给这个队长角色的活动加成（百分比 × 10）。
+    pub bonus_x10: u16,
+}
+
 /// 单次搜索期间不变的常量上下文。
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchContext {
@@ -91,7 +103,12 @@ pub struct SearchContext {
     /// 综合力上限；超过后按上限计算。
     pub power_total_cap: Option<u32>,
     /// 每张卡作为队长时的称号加成（百分比 × 10），按稠密卡索引。
+    /// 建池时由 [`SearchContext::leader_honors`] 按卡的角色展开。
     pub leader_honor_bonus_x10: Vec<u16>,
+    /// 终章各队长角色假设佩戴的主称号，按角色 ID 索引；非终章为空。
+    ///
+    /// 按角色而非按卡存储，[`SearchContext::remap`] 压缩卡索引时保持不变。
+    pub leader_honors: Vec<Option<LeaderHonor>>,
     /// 每张卡作为队长时的当期限定加成（百分比 × 10），按稠密卡索引。
     pub leader_limit_bonus_x10: Vec<u16>,
     /// 终章 member 支配裁剪后仍保留的卡，按稠密卡索引。
@@ -302,6 +319,18 @@ impl SearchContext {
             .get(dense_idx)
             .copied()
             .unwrap_or(0) as u32
+    }
+
+    /// 返回终章中该角色当队长时假设佩戴的主称号；非终章或无可用称号时为 `None`。
+    #[inline]
+    pub fn leader_honor_for_character(&self, character_id: u8) -> Option<LeaderHonor> {
+        if !self.is_final_chapter {
+            return None;
+        }
+        self.leader_honors
+            .get(usize::from(character_id))
+            .copied()
+            .flatten()
     }
 
     /// 读取指定卡位的终章当期队长加成（百分比 × 10）。

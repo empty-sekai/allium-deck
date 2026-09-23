@@ -1650,6 +1650,7 @@ mod skill_ceiling_tests {
             honor_bonus: 0,
             power_total_cap: Some(336_000),
             leader_honor_bonus_x10: vec![0; 5],
+            leader_honors: Vec::new(),
             leader_limit_bonus_x10: vec![0; 5],
             final_chapter_member_keep: vec![true; 5],
             skill_is_after_training: vec![false; 5],

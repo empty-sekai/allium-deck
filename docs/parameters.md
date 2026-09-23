@@ -39,6 +39,8 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | `supportMasterMax` / `support_master_max` | bool | false | Value support-deck cards at max master rank. |
 | `supportSkillMax` / `support_skill_max` | bool | false | Value support-deck cards at max skill level. |
 
+Final chapter leader honor: a deck equips one main honor, so the leader-only honor bonus is a single event-honor row matched by event, honor and leader character; owned honors do not stack. For each leader character the builder assumes the owned honor with the largest leader bonus, breaking ties by the smallest honor ID. Results report it as `main_honor_id` (`mainHonorId` in the HTTP service); the key is omitted outside the final chapter or when the leader character has no matching owned honor. The honor power bonus added to total power is computed separately and still covers every owned honor.
+
 ## Deck constraints
 
 | Key | Type | Default | Notes |

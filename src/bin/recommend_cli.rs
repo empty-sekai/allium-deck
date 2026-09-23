@@ -1347,6 +1347,8 @@ struct DeckOut {
     event_point: Option<i32>,
     multi_live_score_up: Option<f64>,
     event_bonus_total: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    main_honor_id: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -1412,6 +1414,7 @@ impl DeckOut {
             event_point: summary.and_then(|value| value.event_point),
             multi_live_score_up: summary.map(|value| value.multi_live_score_up),
             event_bonus_total: summary.and_then(|value| value.event_bonus_total),
+            main_honor_id: summary.and_then(|value| value.main_honor_id),
         }
     }
 }

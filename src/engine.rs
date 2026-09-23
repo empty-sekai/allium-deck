@@ -46,7 +46,8 @@ pub enum EngineError {
 ///
 /// 返回 `{"decks": [{"cards": [id; 5], "score": u64}]}`：`cards` 是游戏卡 ID，
 /// 按站位顺序、队长在前；`score` 的语义见 [`Recommendation::score`]。
-/// 卡组条数由参数里的 `limit` 决定。
+/// 终章卡组另带 `main_honor_id`（见 [`Recommendation::main_honor_id`]），
+/// 其余情况省略该键。卡组条数由参数里的 `limit` 决定。
 pub fn recommend_json(
     masterdata_json: &str,
     music_metas_json: &str,
@@ -110,11 +111,12 @@ pub fn recommend(
                 // 搜索结果里的是候选池稠密索引，出了这个池就没有意义，必须在
                 // 池还活着时换成游戏卡 ID。站位顺序同样由 summarize_deck 决定；
                 // 没有满足约束的排列时退回搜索给出的原始顺序。
-                let ordered = crate::search::summarize_deck(&pool, &ctx, &result.cards)
-                    .map_or(result.cards, |summary| summary.ordered_cards);
+                let summary = crate::search::summarize_deck(&pool, &ctx, &result.cards);
+                let ordered = summary.map_or(result.cards, |summary| summary.ordered_cards);
                 Recommendation {
                     cards: ordered.map(|card| pool.game_id(card)),
                     score: result.score,
+                    main_honor_id: summary.and_then(|summary| summary.main_honor_id),
                 }
             })
             .collect()
@@ -134,6 +136,11 @@ pub struct Recommendation {
     /// 可对外汇报的指标。面板明细请走 `handler::build_card_pool` +
     /// `search::summarize_deck`。
     pub score: u64,
+    /// 终章假设佩戴的主称号 ID：队长角色对应的已持有称号中队长加成最高者，
+    /// 同加成取 ID 最小者；卡组评分已按它计入队长称号加成。非终章或队长角色
+    /// 没有可用称号时为 `None`，JSON 中省略该键。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_honor_id: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
