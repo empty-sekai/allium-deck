@@ -415,3 +415,27 @@ fn fully_fixed_lineup_keeps_summary_slots_and_metrics() {
         assert_eq!(summary.card_power_total, [500, 400, 300, 200, 100]);
     }
 }
+
+#[test]
+fn fully_fixed_lineup_moves_forced_leader_to_front_in_order() {
+    let cards = five_unique_cards();
+    let pool = build_pool(&cards);
+    let mut context = ready_ctx(&pool, ScoreTarget::Power);
+    context.best_skill_as_leader = false;
+    context.fixed_card_ids = vec![104, 103, 102, 101, 100];
+    context.forced_leader_character_id = Some(pool.char_id(CardIdx::new(1)));
+    let result = search_exact(
+        &pool,
+        &context,
+        &SearchParams {
+            top_k: 1,
+            timeout_ms: 0,
+        },
+    );
+    assert_eq!(result.len(), 1);
+    let summary = summarize_deck(&pool, &context, &result[0].cards).unwrap();
+    assert_eq!(
+        summary.ordered_cards.map(|c| pool.game_id(c)),
+        [101, 104, 103, 102, 100]
+    );
+}

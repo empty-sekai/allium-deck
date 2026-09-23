@@ -605,7 +605,8 @@ fn evaluate_permutation(
     } else {
         // 指定队长：该角色的卡固定占 order[0]（队长位），其余按卡 ID 排序。
         if let Some(leader_slot) = ctx.forced_leader_slot(pool, deck) {
-            order.swap(0, leader_slot);
+            // The leader moves to the front; the other members keep their order.
+            order[..=leader_slot].rotate_right(1);
         }
         // A fully fixed lineup defines every skill slot, not just its leader.
         // Keep those positions when automatic leader selection is disabled.
