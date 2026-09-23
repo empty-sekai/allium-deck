@@ -1031,9 +1031,11 @@ of power, skill, base bonus, and limited bonus over distinct characters: each
 character contributes its best value over its groups in the suffix, since a
 deck takes at most one of them.
 
-For limited bonus, only the largest values up to the remaining
-card_bonus_count_limit are admitted. Any legal completion can contribute no
-more than this top-cap sum.
+For limited bonus, the selected values are merged with the first `remaining`
+suffix values, and only the largest values up to the remaining
+card_bonus_count_limit are admitted. The $j$-th largest value of a legal
+completion is at most the $j$-th suffix value, so it can contribute no more
+than this top-cap sum.
 
 These maxima may come from mutually incompatible card choices inside a group.
 That is a relaxation, so their combination can only overestimate.
@@ -1053,9 +1055,12 @@ only stay equal or shrink.
 Thus character_ceiling is non-increasing with the start index. Once it is below
 the threshold, the rest of the group loop can safely break. Groups of a
 character already taken are skipped without a ceiling. Within one loop the
-prefix is fixed, so the ceiling is a function of the suffix table alone; each
-table carries a version that changes exactly when its contents change, and an
-unchanged version reuses the previous ceiling.
+prefix is fixed, so the ceiling is a function of the suffix entries it reads:
+the first `remaining` values of each top list and the attribute row for
+`remaining`. Each table carries, for every count of open slots, a version that
+changes exactly when those entries change; they only grow with the suffix, so
+a version never returns to an earlier table, and an unchanged version reuses
+the previous ceiling.
 
 ### 18.5 Card-level plan
 

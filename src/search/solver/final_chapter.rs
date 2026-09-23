@@ -194,10 +194,12 @@ struct CardGroupPlan {
     attr_bonus: [[u16; 32]; MEMBER_COUNT + 1],
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default)]
 struct GroupCeilingTail {
-    /// Equal for two suffixes exactly when every other field is equal.
-    version: u32,
+    /// `versions[open]` is equal for two suffixes exactly when the fields a
+    /// ceiling with `open` member slots left reads are equal; see
+    /// [`Self::read_by`].
+    versions: [u32; MEMBER_COUNT + 1],
     top_power: [u32; MEMBER_COUNT + 1],
     top_skill: [u32; MEMBER_COUNT + 1],
     top_base_bonus: [u32; MEMBER_COUNT + 1],
@@ -205,6 +207,21 @@ struct GroupCeilingTail {
     /// Best diversity bonus for each starting attribute set after selecting
     /// exactly k groups from this suffix. Zero also represents infeasibility.
     attr_bonus: [[u16; 32]; MEMBER_COUNT + 1],
+}
+
+impl GroupCeilingTail {
+    /// The fields [`character_ceiling`] reads with `open` member slots left.
+    fn read_by(&self, open: usize) -> ([&[u32]; 4], &[u16; 32]) {
+        (
+            [
+                &self.top_power[..open],
+                &self.top_skill[..open],
+                &self.top_base_bonus[..open],
+                &self.top_limited_bonus[..open],
+            ],
+            &self.attr_bonus[open],
+        )
+    }
 }
 
 impl CardGroupPlan {
@@ -404,7 +421,7 @@ fn build_group_ceiling_suffix(
         }
         let next = suffix[idx + 1];
         let mut tail = GroupCeilingTail {
-            version: next.version,
+            versions: next.versions,
             top_power: tops[0].values(),
             top_skill: tops[1].values(),
             top_base_bonus: tops[2].values(),
@@ -418,8 +435,12 @@ fn build_group_ceiling_suffix(
                 &mut tail.attr_bonus[picked],
             );
         }
-        if tail != next {
-            tail.version += 1;
+        // Every field only grows as the suffix does, so a version never
+        // returns to an earlier table.
+        for open in 1..=MEMBER_COUNT {
+            if tail.read_by(open) != next.read_by(open) {
+                tail.versions[open] += 1;
+            }
         }
         suffix[idx] = tail;
     }
@@ -1020,7 +1041,7 @@ impl CharacterSearchState<'_> {
             }
             // The first ceiling read is that of this node itself.
             if threshold != 0 {
-                let version = self.group_suffix[idx].version;
+                let version = self.group_suffix[idx].versions[MEMBER_COUNT - depth];
                 let ub = match last_ceiling {
                     Some((seen, ub)) if seen == version => ub,
                     _ => {
@@ -1311,9 +1332,10 @@ fn character_ceiling(
     let limited_limit = ctx
         .card_bonus_count_limit
         .saturating_sub(leader.limited_count as usize);
+    // The open slots add at most `remaining` limited values.
     let limited_sum = merged_limited_sum(
         &prefix.limited_values,
-        &tail.top_limited_bonus,
+        &tail.top_limited_bonus[..remaining],
         limited_limit.min(MEMBER_COUNT),
     );
     let extra_bonus_ub = if leader.use_group_attr_dp {
@@ -1440,11 +1462,7 @@ fn selected_card_ceiling_with_candidate_support_ub(
 }
 
 #[inline(always)]
-fn merged_limited_sum(
-    left: &[u32; MEMBER_COUNT + 1],
-    right: &[u32; MEMBER_COUNT + 1],
-    cap: usize,
-) -> u32 {
+fn merged_limited_sum(left: &[u32], right: &[u32], cap: usize) -> u32 {
     let mut sum = 0u32;
     let mut li = 0usize;
     let mut ri = 0usize;
