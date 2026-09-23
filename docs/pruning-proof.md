@@ -1159,6 +1159,148 @@ The Top-1 leader-specific variant computes the same member relation against the
 actual leader's support profile; this is a tightening of the support dimension,
 not a change in the substitution theorem.
 
+### 18.8 Log-linear event-point bound
+
+Implementation: src/search/log_linear.rs, used by solver/final_chapter.rs.
+
+Sections 18.3 and 18.5 relax power, skill and bonus independently, so a
+subtree whose largest power, skill and bonus come from different cards or
+groups receives the ceiling of a deck that does not exist. For the Score
+target of an event on a Solo, Auto or Multi live, a second bound couples the
+three. For a deck let $P$ be the sum of its card power maxima, $S$ the sum of
+its card skill maxima (the leader included), $L$ the leader's skill and $B$
+the bonus input of the card-level ceiling of Section 18.5, with the limited
+bonuses summed without the count cap, which can only raise it. Let $E$ be the
+event point of `ObjectiveBound::ceiling` at these features, which bounds the
+event point of the deck by Section 18.5 and Section 29.
+
+**Lemma LL1 (product form).** Let $h$ be the honor bonus, $m$ and $\beta$ the
+music and boost rates in percent, $\kappa=m\beta/10^6$, and
+$(c,D)=(100,20000)$ for Solo and Auto, $(110+o,17000)$ for Multi, where $o=13$
+when the opponent score is zero and $\min(\lfloor\text{other}/340000\rfloor,13)$
+otherwise. Then
+
+$$
+E\le\kappa\,\bigl(c'+u\bigr)(100+B),\qquad u=\frac{(P+h)\,q(S,L)}{D},
+$$
+
+where $q(S,L)=(4\bar r(S,L)+a)/10^6$, $a$ is the active-score coefficient per
+unit power (five times $0.075\cdot10^6$ without a teammate power, once with
+one), $c'=c+4\cdot0.075\,t/D$ for teammate power $t$ ($c'=c$ otherwise), and
+$\bar r$ bounds the fixed-point live rate of Section 12:
+
+- Multi: $\max(4L+S,T)\rho\le(4L+S)\rho+\max(0,T-4L_{\min})\rho$ over leaders
+  with skill at least $L_{\min}$, where $T$ is five times the teammate
+  score-up and $\rho$ the rate per skill;
+- Solo and Auto under the Average order: each outward-rounded division adds
+  less than one, so $\bar r=r_0+2+S A_5/500+L A_L/100$;
+- Solo and Auto otherwise: the rate is non-decreasing in its peak slot, and
+  the peak is at most the largest card skill $M$, so
+  $\bar r=r_0+MR_1+\sum_{j=2}^{6}R_j\,\mathrm{clamp}(S-(j-2)M,0,M)$, which is
+  concave and non-decreasing in $S$ because $R_2\ge\dots\ge R_6\ge0$.
+
+*Proof.* The live numerator is $4rP'+a'$ with $P'\le P+h$ after the optional
+power cap, and the live score is its floor over $10^6$. The event base score
+is at most $c$ plus the live score over $D$, since the floors only lower it
+and the opponent term is at most $o$. The event point takes floors of
+non-negative products, each at most the product itself. $\square$
+
+**Lemma LL2 (threshold interval).** Let every deck in question satisfy
+$P\le\hat P$, $S\le\hat S$, $L_{\min}\le L\le\hat L$ and $B\le\hat B$. Every
+such deck with $E\ge\tau_0$ has $u\in[u_{\mathrm{lo}},u_{\mathrm{hi}}]$ with
+$u_{\mathrm{hi}}=(\hat P+h)q(\hat S,\hat L)/D$ and
+$u_{\mathrm{lo}}=\tau_0/(\kappa(100+\hat B))-c'$.
+
+*Proof.* $q$ is non-decreasing in both arguments, and by Lemma LL1 a deck with
+$u<u_{\mathrm{lo}}$ has $E<\kappa(c'+u_{\mathrm{lo}})(100+\hat B)=\tau_0$.
+$\square$
+
+**Lemma LL3 (affine bound).** Suppose $0<u_{\mathrm{lo}}<u_{\mathrm{hi}}$. Let
+$\ell(S,L)=\ell_0+\ell_SS+\ell_LL$ be affine with $\ell\ge q$ for $S\ge0$ and
+$L\in[L_{\min},\hat L]$, and let $P_0,B_0>0$ and $Q_0=\ell(S_0,\hat L)>0$ for
+some $S_0$. Every deck of Lemma LL2 with $E\ge\tau_0$ satisfies
+
+$$
+\ln E\le K+\frac{\sigma}{P_0}P+\frac{\sigma\ell_S}{Q_0}S+\frac{\sigma\ell_L}{Q_0}L+\frac{B}{100+B_0},
+$$
+
+$$
+K=\ln\kappa+\varphi(t_{\mathrm{lo}})-\sigma t_{\mathrm{lo}}
++\sigma\Bigl(\ln P_0-1+\frac{h}{P_0}+\ln Q_0-1+\frac{\ell_0}{Q_0}-\ln D\Bigr)
++\ln(100+B_0)-1+\frac{100}{100+B_0},
+$$
+
+where $\varphi(t)=\ln(c'+e^t)$, $t_{\mathrm{lo}}=\ln u_{\mathrm{lo}}$,
+$t_{\mathrm{hi}}=\ln u_{\mathrm{hi}}$ and
+$\sigma=(\varphi(t_{\mathrm{hi}})-\varphi(t_{\mathrm{lo}}))/(t_{\mathrm{hi}}-t_{\mathrm{lo}})$.
+
+*Proof.* By Lemma LL1, $\ln E\le\ln\kappa+\varphi(\ln u)+\ln(100+B)$. The
+function $\varphi$ is convex, since its derivative $e^t/(c'+e^t)$ increases,
+so on $[t_{\mathrm{lo}},t_{\mathrm{hi}}]$, which contains $\ln u$ by Lemma
+LL2, it lies below its chord: $\varphi(t)\le\varphi(t_{\mathrm{lo}})+\sigma(t-t_{\mathrm{lo}})$
+with $\sigma\in(0,1)$. The logarithm is concave, so $\ln x\le\ln x_0-1+x/x_0$
+for every $x_0>0$; applied to $P+h$, to $q\le\ell$ and to $100+B$ it gives
+$\ln u\le\ln P_0-1+(P+h)/P_0+\ln Q_0-1+\ell(S,L)/Q_0-\ln D$ and the bonus
+term. Since $\sigma>0$ the first bound may replace $\ln u$ in the chord.
+$\square$
+
+For the affine rates $\ell=\bar r$ scaled as $q$. For the concave rate, $\ell$
+is the tangent at $S_0$ whose slope is the right slope of the piecewise-linear
+fill at $S_0$; that slope is a supergradient of a concave function, so the
+tangent lies above $\bar r$ for every $S\ge0$. The lemma holds for every
+choice of $P_0$, $S_0$ and $B_0$; the search takes the point
+$\lambda(\hat P+h,\hat S,\hat B)$ where the ray from the origin to the box
+maximum meets the surface $\kappa(c'+u)(100+B)=\tau_0$, found by bisection.
+That choice affects only how tight the bound is; the search skips the test
+when $\lambda<2^{-10}$ (see Numerics).
+
+**Theorem LL (pruning).** Each group of a leader character gets the weight
+$w_g=\max_{\text{card}}(a_Pp+a_Ss+a_B(b_{\mathrm{base}}+b_{\mathrm{lim}}))$ over its scanned cards, the
+coefficients of Lemma LL3. The box of a group set takes the largest leader
+power, skill and bonus of the character, the four largest group maxima of
+distinct characters from Section 18.3, the largest leader-only, attribute and
+support bonus, and the smallest leader skill. A character-level node sums
+the leader's terms, the weights of the selected groups, the $r$ largest group
+weights of distinct characters from the suffix start, and $a_B$ times the
+attribute and support bound of Section 18.3. A card-level node sums the
+terms of the chosen cards, the weights of the remaining planned groups and
+$a_B$ times the plan's diversity bonus and the current support ceiling. If
+the sum is below $\ln\tau-10^{-9}$, where $\tau\ge\tau_0$ is the event point
+of the current threshold, no deck of the subtree has $E\ge\tau$, so every
+leaf of the subtree is below the threshold and the subtree is pruned by
+Theorem 1.
+
+*Proof.* The coefficients are non-negative, so each card's terms are at most
+its group's weight, the attribute and support terms are at most their
+bounds (Sections 16, 18.2 and 18.5), and a deck takes at most one group of
+each character, whose best weights of distinct characters the suffix list
+ranks. The sum therefore bounds the right-hand side of Lemma LL3 for every
+deck of the subtree, and decks with $E\ge\tau$ also have $E\ge\tau_0$. A leaf
+whose event point is below that of the threshold is below the threshold.
+$\square$
+
+The group loop breaks on this test for the same reason as in Section 18.4:
+the suffix lists and attribute rows only shrink as the start index grows. The
+scan of a group stops when the rest maxima of Section 18.5 fail it, since the
+weight is non-decreasing in every term. A bound built for $\tau_0$ holds at
+every higher threshold, so the search rebuilds the weights only when the
+event-point threshold has risen by $1/128$ since the last build, which
+narrows the chord and moves the tangent point; every sum is recomputed from
+the current weights, never mixed across builds. When $u_{\mathrm{lo}}\le0$ or
+$u_{\mathrm{lo}}\ge u_{\mathrm{hi}}$ no log-linear test is made.
+
+*Numerics.* The parameters $P_0$, $Q_0$, $B_0$ and $\sigma$ are `f64`
+numbers, and Lemma LL3 holds for their exact values, except that $\sigma$,
+$\varphi(t_{\mathrm{lo}})$ and the logarithms in $K$ carry an error of a few
+units in the last place. The search uses a bound only when $\lambda\ge2^{-10}$,
+so each weighted term $a_PP$, $a_SS$, $a_LL$ and $a_BB$ is at most $2^{10}$
+($P_0$, $Q_0$ and $100+B_0$ are at least $\lambda$ times the box values),
+and only when $|K|<2^8$. A sum of fewer than twenty such terms in
+`f64` therefore has an absolute error below $10^{-11}$, which together with
+the parameter errors stays far below the margin of $10^{-9}$.
+`log_linear::tests` checks the bound against `ObjectiveBound::ceiling` at
+random feature points for every supported live type and skill order.
+
 ## 19. Constrained Power bounds
 
 Implementation: src/search/solver/numeric.rs.
@@ -1627,6 +1769,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Final card-group bound | solver/final_chapter.rs | independent per-group maxima + limited top-cap + support UB |
 | Final group rest maxima | solver/final_chapter.rs | same attribute, rest maxima and a non-decreasing candidate ceiling bound the rest of a group |
 | Final ranked-buffer break | solver/final_chapter.rs | candidates sorted by admissible UB; overflow candidates still visited |
+| Final log-linear bound | search/log_linear.rs, solver/final_chapter.rs | Section 18.8: product form, chord and tangents of the logarithm, per-group weights |
 | Numeric Power max/min | solver/numeric.rs | global max UB / global min LB |
 | Numeric Skill | solver/numeric.rs | Section 20: composition-aware per-card ceilings, per-character frontier, candidate break, public-set equality rule |
 | Power scenarios | solver/power.rs | Section 21: unit-set scenarios, Lemma 3 scenario ceiling, Lemma 4 completion, Theorem 4 |
@@ -1659,6 +1802,7 @@ independent checks designed to expose a violated premise.
 | SIMD equality | simd::tests::dispatched_mask_keeps_bounds_equal_to_threshold |
 | Historical incomplete oracle | case7_audit.rs |
 | Numeric admissibility | numeric_soundness.rs, handler/capacity.rs unit tests |
+| Log-linear event-point bound | search/log_linear.rs unit tests against `ObjectiveBound::ceiling` for every supported live type and skill order |
 | Skill ceilings | skill_composition.rs — every bound on the search path of every deck dominates its key and member values; Top-K against the exhaustive oracle with unit-count, different-unit, reference and two-unit cards, and an equal-objective variant at the public-set equality rule |
 
 The permanent case7 fixture is important evidence for the methodology:

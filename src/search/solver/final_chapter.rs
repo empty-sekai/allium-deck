@@ -5,6 +5,7 @@ use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType};
 
 use crate::search::context::{SearchContext, SupportDeck};
 use crate::search::dfs::SearchStats;
+use crate::search::log_linear::{FeatureBox, LogLinearBound};
 use crate::search::suffix::SuffixBound;
 use crate::search::types::{DeckResult, SearchParams};
 use crate::search::{placement, tracker::TopKTracker};
@@ -52,6 +53,12 @@ impl MemberTerms {
             limited_bonus: eb.limited_ceil(),
             attr: pool.attr(card),
         }
+    }
+
+    /// Log-linear weight of these terms; the limited bonus is not capped.
+    #[inline(always)]
+    fn weight(&self, bound: &LogLinearBound) -> f64 {
+        bound.weigh(self.power, self.skill, self.base_bonus + self.limited_bonus)
     }
 
     #[inline(always)]
@@ -153,9 +160,168 @@ struct AutoLeaderJob {
     ceiling: u64,
 }
 
-struct AutoLeaderGroupSet {
+/// The member groups of one leader character, their ceiling tables and
+/// their log-linear weights.
+struct GroupSet {
     groups: Vec<CharGroup>,
     suffix: Vec<GroupCeilingTail>,
+    weights: GroupWeightCache,
+}
+
+impl GroupSet {
+    fn build(
+        pool: &CardPool,
+        ctx: &SearchContext,
+        buckets: &AttributeBuckets,
+        leader_char: u8,
+        member_keep: &[bool],
+        top_k: usize,
+        leaders: Option<LeaderRange>,
+    ) -> Self {
+        let groups = build_char_groups(pool, ctx, buckets, leader_char, member_keep, top_k);
+        let suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
+        let feature_box = leaders
+            .filter(|_| groups.len() >= MEMBER_COUNT)
+            .map(|leaders| leaders.feature_box(&suffix[0]));
+        Self {
+            groups,
+            suffix,
+            weights: GroupWeightCache {
+                feature_box,
+                attempted: 0,
+                weights: None,
+            },
+        }
+    }
+}
+
+/// Maxima over the leaders of one character, for a [`FeatureBox`].
+#[derive(Clone, Copy)]
+struct LeaderRange {
+    power: u32,
+    skill_min: u32,
+    skill_max: u32,
+    /// Base and limited bonus.
+    bonus: u32,
+    /// Attribute and support bonus, as [`extra_bonus_ceiling`] reads it.
+    extra: u32,
+}
+
+impl LeaderRange {
+    fn of<'a>(
+        ctx: &SearchContext,
+        leaders: impl IntoIterator<Item = &'a LeaderConst>,
+    ) -> Option<Self> {
+        let diversity = ctx.diff_attr_bonus.iter().copied().max().unwrap_or(0);
+        leaders
+            .into_iter()
+            .map(|leader| Self {
+                power: leader.power,
+                skill_min: leader.skill,
+                skill_max: leader.skill,
+                bonus: leader.base_bonus_const + leader.limited_bonus,
+                extra: if leader.use_group_attr_dp {
+                    u32::from(diversity) + leader.support_bonus_ub
+                } else {
+                    leader.extra_bonus_ub
+                },
+            })
+            .reduce(|left, right| Self {
+                power: left.power.max(right.power),
+                skill_min: left.skill_min.min(right.skill_min),
+                skill_max: left.skill_max.max(right.skill_max),
+                bonus: left.bonus.max(right.bonus),
+                extra: left.extra.max(right.extra),
+            })
+    }
+
+    /// Features of every deck of these leaders and the groups behind `tail`.
+    fn feature_box(&self, tail: &GroupCeilingTail) -> FeatureBox {
+        let sum = |values: &[u32; MEMBER_COUNT + 1]| values[..MEMBER_COUNT].iter().sum::<u32>();
+        FeatureBox {
+            power: self.power + sum(&tail.top_power),
+            skill: self.skill_max + sum(&tail.top_skill),
+            card_skill: self.skill_max.max(tail.top_skill[0]),
+            leader_skill_min: self.skill_min,
+            leader_skill_max: self.skill_max,
+            bonus: self.bonus
+                + self.extra
+                + sum(&tail.top_base_bonus)
+                + sum(&tail.top_limited_bonus),
+        }
+    }
+}
+
+/// Log-linear weights of a group set (pruning-proof Section 18.8), rebuilt
+/// as the event-point threshold rises.
+struct GroupWeightCache {
+    /// `None` when the group set has too few groups for a deck.
+    feature_box: Option<FeatureBox>,
+    /// Event-point threshold of the last build attempt.
+    attempted: u64,
+    weights: Option<GroupWeights>,
+}
+
+impl GroupWeightCache {
+    /// Rebuilds the weights once the event-point threshold has risen by
+    /// 1/128 since the last attempt; returns whether it tried. A higher
+    /// threshold narrows the chord and moves the tangent point closer to the
+    /// decks that can still reach it.
+    fn refresh(&mut self, suffix: &SuffixBound, groups: &[CharGroup], threshold_ep: u64) -> bool {
+        let Some(feature_box) = self.feature_box else {
+            return false;
+        };
+        if threshold_ep == 0 || threshold_ep <= self.attempted + self.attempted / 128 {
+            return false;
+        }
+        self.attempted = threshold_ep;
+        self.weights = LogLinearBound::new(suffix.objective(), &feature_box, threshold_ep)
+            .map(|bound| GroupWeights::build(bound, groups));
+        true
+    }
+}
+
+/// Group weights under one [`LogLinearBound`].
+struct GroupWeights {
+    bound: LogLinearBound,
+    /// The largest card weight of each group.
+    group: Vec<f64>,
+    /// From each suffix start, the largest group weights of distinct
+    /// characters, best first.
+    tail: Vec<[f64; MEMBER_COUNT]>,
+}
+
+impl GroupWeights {
+    fn build(bound: LogLinearBound, groups: &[CharGroup]) -> Self {
+        let group: Vec<f64> = groups
+            .iter()
+            .map(|group| {
+                group
+                    .scan
+                    .iter()
+                    .map(|entry| entry.terms.weight(&bound))
+                    .fold(0.0, f64::max)
+            })
+            .collect();
+        let mut tail = vec![[0.0; MEMBER_COUNT]; groups.len() + 1];
+        let mut top = CharacterTop::default();
+        for idx in (0..groups.len()).rev() {
+            top.raise(groups[idx].char_id, group[idx]);
+            tail[idx].copy_from_slice(&top.values()[..MEMBER_COUNT]);
+        }
+        Self { bound, group, tail }
+    }
+
+    /// The leader's own terms.
+    fn leader(&self, leader: &LeaderConst) -> f64 {
+        self.bound.constant
+            + self.bound.leader_skill * f64::from(leader.skill)
+            + self.bound.weigh(
+                leader.power,
+                leader.skill,
+                leader.base_bonus_const + leader.limited_bonus,
+            )
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -388,7 +554,7 @@ fn build_group_ceiling_suffix(
     suffix[groups.len()].attr_bonus[0] = diversity_bonus(diff_attr_bonus);
     // A deck takes at most one group of each character, so the top lists
     // rank each character's best value over its groups in the suffix.
-    let mut tops = [CharacterTop::default(); 4];
+    let mut tops = [CharacterTop::<u32>::default(); 4];
     let mut idx = groups.len();
     while idx > 0 {
         idx -= 1;
@@ -434,13 +600,13 @@ fn build_group_ceiling_suffix(
 /// character at most once. Maxima only grow, so a character that falls off
 /// the list re-enters with its current maximum.
 #[derive(Clone, Copy, Default)]
-struct CharacterTop {
-    entries: [(u32, u8); MEMBER_COUNT + 1],
+struct CharacterTop<T = u32> {
+    entries: [(T, u8); MEMBER_COUNT + 1],
     len: usize,
 }
 
-impl CharacterTop {
-    fn raise(&mut self, char_id: u8, value: u32) {
+impl<T: Copy + Default + PartialOrd> CharacterTop<T> {
+    fn raise(&mut self, char_id: u8, value: T) {
         let mut at = match self.entries[..self.len]
             .iter()
             .position(|&(_, owner)| owner == char_id)
@@ -461,14 +627,14 @@ impl CharacterTop {
         }
     }
 
-    fn values(&self) -> [u32; MEMBER_COUNT + 1] {
+    fn values(&self) -> [T; MEMBER_COUNT + 1] {
         self.values_without(u8::MAX)
     }
 
     /// The values of every character but `skip`, best first. The first
     /// `MEMBER_COUNT` are the exact largest maxima of the other characters.
-    fn values_without(&self, skip: u8) -> [u32; MEMBER_COUNT + 1] {
-        let mut values = [0; MEMBER_COUNT + 1];
+    fn values_without(&self, skip: u8) -> [T; MEMBER_COUNT + 1] {
+        let mut values = [T::default(); MEMBER_COUNT + 1];
         let kept = self.entries[..self.len]
             .iter()
             .filter(|&&(_, owner)| owner != skip);
@@ -483,7 +649,7 @@ impl CharacterTop {
 /// top lists skip the leader's character; the attribute rows keep the groups
 /// of every character, which can only raise them.
 struct LeaderCeilingTails {
-    tops: [CharacterTop; 4],
+    tops: [CharacterTop<u32>; 4],
     attr_bonus: [[u16; 32]; MEMBER_COUNT + 1],
 }
 
@@ -494,7 +660,7 @@ impl LeaderCeilingTails {
         member_keep: &[bool],
         diff_attr_bonus: &[u16; 6],
     ) -> Self {
-        let mut tops = [CharacterTop::default(); 4];
+        let mut tops = [CharacterTop::<u32>::default(); 4];
         let mut attr_bonus = [[0u16; 32]; MEMBER_COUNT + 1];
         attr_bonus[0] = diversity_bonus(diff_attr_bonus);
         for &((char_id, attr), ref cards) in buckets {
@@ -588,33 +754,42 @@ fn search_leaders(
             stats,
         );
     };
-    let buckets = attribute_buckets(pool);
-    let groups = build_char_groups(pool, ctx, &buckets, leader_char, &member_keep, params.top_k);
-    if groups.len() >= MEMBER_COUNT {
-        let group_suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
-        let mut leaders = pool
-            .indices()
-            .filter(|card| pool.char_id(*card) == leader_char)
-            .collect::<Vec<_>>();
-        leaders.sort_unstable_by(|left, right| {
-            final_chapter_card_key(pool, *right)
-                .cmp(&final_chapter_card_key(pool, *left))
-                .then_with(|| left.raw().cmp(&right.raw()))
-        });
+    let mut leaders = pool
+        .indices()
+        .filter(|card| pool.char_id(*card) == leader_char)
+        .collect::<Vec<_>>();
+    leaders.sort_unstable_by(|left, right| {
+        final_chapter_card_key(pool, *right)
+            .cmp(&final_chapter_card_key(pool, *left))
+            .then_with(|| left.raw().cmp(&right.raw()))
+    });
+    let leaders: Vec<LeaderConst> = leaders
+        .into_iter()
+        .map(|leader| build_leader_const(pool, ctx, leader))
+        .collect();
+    let mut group_set = GroupSet::build(
+        pool,
+        ctx,
+        &attribute_buckets(pool),
+        leader_char,
+        &member_keep,
+        params.top_k,
+        LeaderRange::of(ctx, &leaders),
+    );
+    if group_set.groups.len() >= MEMBER_COUNT {
         // Exact path: every leader variant must remain reachable.  Heuristic
         // per-character caps are unsound under Final Chapter support occupancy,
         // leader-only bonuses and Top-K set identity.  Job/character ceilings
         // below are the only mechanism allowed to discard a leader.
-        for leader in leaders {
+        for leader_const in leaders {
             if guard.expired() {
                 break;
             }
             stats.diagnostics.leader_jobs += 1;
-            let leader_const = build_leader_const(pool, ctx, leader);
             let leader_ceiling = character_ceiling(
                 &suffix,
                 ctx,
-                &group_suffix,
+                &group_set.suffix,
                 0,
                 0,
                 &CharacterPrefix::for_leader(&leader_const),
@@ -630,7 +805,7 @@ fn search_leaders(
             seed_leader_groups(
                 pool,
                 ctx,
-                &groups,
+                &group_set.groups,
                 &leader_const,
                 &mut tracker,
                 &mut stats,
@@ -640,21 +815,17 @@ fn search_leaders(
                 stats.leader_prunes += 1;
                 continue;
             }
-            let mut state = CharacterSearchState {
+            CharacterSearchState::new(
                 pool,
                 ctx,
-                suffix: &suffix,
-                groups: &groups,
-                group_suffix: &group_suffix,
-                support: ctx.support_deck_for_leader(leader_char),
-                uniform_limited_cap: uniform_limited_cap(pool, ctx.card_bonus_count_limit),
-                diversity: diversity_bonus(&ctx.diff_attr_bonus),
-                tracker: &mut tracker,
-                stats: &mut stats,
-                deadline: guard,
-                leader: leader_const,
-            };
-            state.run();
+                &suffix,
+                &mut group_set,
+                leader_const,
+                &mut tracker,
+                &mut stats,
+                guard,
+            )
+            .run();
         }
     }
 
@@ -677,6 +848,7 @@ fn search_auto_leaders_two_phase(
     let buckets = attribute_buckets(pool);
     let leader_tails = LeaderCeilingTails::build(pool, &buckets, member_keep, &ctx.diff_attr_bonus);
     let mut jobs = Vec::new();
+    let mut ranges: [Option<LeaderRange>; 27] = [None; 27];
     for leader_char in 0..=26 {
         if guard.expired() {
             break;
@@ -691,14 +863,18 @@ fn search_auto_leaders_two_phase(
                 .cmp(&final_chapter_card_key(pool, *left))
                 .then_with(|| left.raw().cmp(&right.raw()))
         });
+        let leaders: Vec<LeaderConst> = leaders
+            .into_iter()
+            .map(|leader| build_leader_const(pool, ctx, leader))
+            .collect();
+        ranges[usize::from(leader_char)] = LeaderRange::of(ctx, &leaders);
         // Exact auto-leader jobs cover every surviving card; only an
         // admissible job ceiling below the threshold may discard one.
-        for leader in leaders {
+        for leader_const in leaders {
             if guard.expired() {
                 break;
             }
             stats.diagnostics.leader_jobs += 1;
-            let leader_const = build_leader_const(pool, ctx, leader);
             let ceiling = character_ceiling(
                 suffix,
                 ctx,
@@ -722,7 +898,7 @@ fn search_auto_leaders_two_phase(
             .then_with(|| left.leader.leader.raw().cmp(&right.leader.leader.raw()))
     });
     // A leader character's group set is built when its first job runs.
-    let mut group_sets: [Option<AutoLeaderGroupSet>; 27] = Default::default();
+    let mut group_sets: [Option<GroupSet>; 27] = Default::default();
     for job in jobs {
         if guard.expired() {
             break;
@@ -733,10 +909,15 @@ fn search_auto_leaders_two_phase(
         }
         let leader_char = pool.char_id(job.leader.leader);
         let group_set = group_sets[usize::from(leader_char)].get_or_insert_with(|| {
-            let groups =
-                build_char_groups(pool, ctx, &buckets, leader_char, member_keep, params.top_k);
-            let suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
-            AutoLeaderGroupSet { groups, suffix }
+            GroupSet::build(
+                pool,
+                ctx,
+                &buckets,
+                leader_char,
+                member_keep,
+                params.top_k,
+                ranges[usize::from(leader_char)],
+            )
         });
         if group_set.groups.len() < MEMBER_COUNT {
             continue;
@@ -769,21 +950,17 @@ fn search_auto_leaders_two_phase(
             stats.leader_prunes += 1;
             continue;
         }
-        let mut state = CharacterSearchState {
+        CharacterSearchState::new(
             pool,
             ctx,
             suffix,
-            groups: &group_set.groups,
-            group_suffix: &group_set.suffix,
-            support: ctx.support_deck_for_leader(leader_char),
-            uniform_limited_cap: uniform_limited_cap(pool, ctx.card_bonus_count_limit),
-            diversity: diversity_bonus(&ctx.diff_attr_bonus),
-            tracker: &mut tracker,
-            stats: &mut stats,
-            deadline: guard,
-            leader: job.leader,
-        };
-        state.run();
+            group_set,
+            job.leader,
+            &mut tracker,
+            &mut stats,
+            guard,
+        )
+        .run();
     }
 
     stats.deadline_hit = guard.hit;
@@ -978,6 +1155,9 @@ struct CharacterSearchState<'a> {
     suffix: &'a SuffixBound,
     groups: &'a [CharGroup],
     group_suffix: &'a [GroupCeilingTail],
+    weights: &'a mut GroupWeightCache,
+    /// The leader's log-linear terms under the current weights.
+    leader_weight: f64,
     support: &'a SupportDeck,
     uniform_limited_cap: Option<u32>,
     diversity: [u16; 32],
@@ -985,6 +1165,42 @@ struct CharacterSearchState<'a> {
     stats: &'a mut SearchStats,
     deadline: &'a mut DeadlineGuard,
     leader: LeaderConst,
+}
+
+impl<'a> CharacterSearchState<'a> {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        pool: &'a CardPool,
+        ctx: &'a SearchContext,
+        suffix: &'a SuffixBound,
+        group_set: &'a mut GroupSet,
+        leader: LeaderConst,
+        tracker: &'a mut TopKTracker,
+        stats: &'a mut SearchStats,
+        deadline: &'a mut DeadlineGuard,
+    ) -> Self {
+        let leader_weight = group_set
+            .weights
+            .weights
+            .as_ref()
+            .map_or(0.0, |weights| weights.leader(&leader));
+        Self {
+            pool,
+            ctx,
+            suffix,
+            groups: &group_set.groups,
+            group_suffix: &group_set.suffix,
+            weights: &mut group_set.weights,
+            leader_weight,
+            support: ctx.support_deck_for_leader(pool.char_id(leader.leader)),
+            uniform_limited_cap: uniform_limited_cap(pool, ctx.card_bonus_count_limit),
+            diversity: diversity_bonus(&ctx.diff_attr_bonus),
+            tracker,
+            stats,
+            deadline,
+            leader,
+        }
+    }
 }
 
 impl CharacterSearchState<'_> {
@@ -1039,6 +1255,13 @@ impl CharacterSearchState<'_> {
                 self.stats.ub_prunes += 1;
                 return;
             }
+            if threshold != 0 {
+                self.refresh_weights(threshold);
+                if self.groups_excluded(self.groups.len(), &selected[..], &prefix, threshold) {
+                    self.stats.correlated_prunes += 1;
+                    return;
+                }
+            }
             let mut ordered = *selected;
             order_card_groups(self.groups, &mut ordered);
             let mut deck = [self.leader.leader; DECK_SIZE];
@@ -1089,6 +1312,11 @@ impl CharacterSearchState<'_> {
                 };
                 if ub < threshold {
                     self.stats.ub_prunes += 1;
+                    break;
+                }
+                self.refresh_weights(threshold);
+                if self.groups_excluded(idx, &selected[..depth], &prefix, threshold) {
+                    self.stats.correlated_prunes += 1;
                     break;
                 }
             }
@@ -1144,6 +1372,11 @@ impl CharacterSearchState<'_> {
                 self.stats.ep_continue_prunes += 1;
                 return;
             }
+            self.refresh_weights(threshold);
+            if self.cards_excluded(selected, plan, depth, &partial, None, threshold) {
+                self.stats.correlated_prunes += 1;
+                return;
+            }
         }
 
         let group = &self.groups[selected[depth]];
@@ -1158,7 +1391,7 @@ impl CharacterSearchState<'_> {
             let mut tail_start = head;
             for entry in &group.scan[..head] {
                 let Some(optimistic_ub) =
-                    self.candidate_ceiling(plan, depth, &partial, entry, threshold)
+                    self.candidate_ceiling(selected, plan, depth, &partial, entry, threshold)
                 else {
                     self.stats.ep_continue_prunes += 1;
                     tail_start = group.scan.len();
@@ -1207,7 +1440,8 @@ impl CharacterSearchState<'_> {
                 threshold = self.tracker.threshold();
                 let mut optimistic_ub = 0;
                 if threshold != 0 {
-                    let Some(ub) = self.candidate_ceiling(plan, depth, &partial, entry, threshold)
+                    let Some(ub) =
+                        self.candidate_ceiling(selected, plan, depth, &partial, entry, threshold)
                     else {
                         self.stats.ep_continue_prunes += 1;
                         break;
@@ -1252,13 +1486,15 @@ impl CharacterSearchState<'_> {
 }
 
 impl CharacterSearchState<'_> {
-    /// Candidate ceiling of `entry`, or `None` when the ceiling over the rest
-    /// of its group is already below `threshold`: every later card of the
-    /// group has the same attribute and no larger term, and the ceiling is
-    /// non-decreasing in every term.
+    /// Candidate ceiling of `entry`, or `None` when a bound over the rest of
+    /// its group is already below `threshold`: every later card of the group
+    /// has the same attribute and no larger term, and both the ceiling and
+    /// the log-linear weight are non-decreasing in every term. A candidate
+    /// the weight rules out has ceiling zero.
     #[inline(always)]
     fn candidate_ceiling(
         &self,
+        selected: &[usize; MEMBER_COUNT],
         plan: &CardGroupPlan,
         depth: usize,
         partial: &CardPartial,
@@ -1276,15 +1512,100 @@ impl CharacterSearchState<'_> {
                 self.leader.skill,
             )
         };
+        let excluded = |terms: &MemberTerms| {
+            self.cards_excluded(selected, plan, depth, partial, Some(terms), threshold)
+        };
         let rest_ub = ceiling(&entry.rest);
-        if rest_ub < threshold {
+        if rest_ub < threshold || excluded(&entry.rest) {
             return None;
         }
-        Some(if entry.rest == entry.terms {
-            rest_ub
+        if entry.rest == entry.terms {
+            return Some(rest_ub);
+        }
+        Some(if excluded(&entry.terms) {
+            0
         } else {
             ceiling(&entry.terms)
         })
+    }
+
+    /// Rebuilds the group weights for a risen threshold and the leader's
+    /// terms under them.
+    #[inline(always)]
+    fn refresh_weights(&mut self, threshold: u64) {
+        if self
+            .weights
+            .refresh(self.suffix, self.groups, threshold >> 32)
+        {
+            self.leader_weight = self
+                .weights
+                .weights
+                .as_ref()
+                .map_or(0.0, |weights| weights.leader(&self.leader));
+        }
+    }
+
+    /// Whether the log-linear bound rules out every completion of the
+    /// `selected` groups with groups from `start` on.
+    #[inline(always)]
+    fn groups_excluded(
+        &self,
+        start: usize,
+        selected: &[usize],
+        prefix: &CharacterPrefix,
+        threshold: u64,
+    ) -> bool {
+        let Some(weights) = self.weights.weights.as_ref() else {
+            return false;
+        };
+        let remaining = MEMBER_COUNT - selected.len();
+        let extra = extra_bonus_ceiling(&self.group_suffix[start], remaining, prefix, &self.leader);
+        let value = self.leader_weight
+            + weights.bound.bonus * f64::from(extra)
+            + selected
+                .iter()
+                .map(|&group| weights.group[group])
+                .sum::<f64>()
+            + weights.tail[start][..remaining].iter().sum::<f64>();
+        weights.bound.excludes(value, threshold >> 32)
+    }
+
+    /// Whether the log-linear bound rules out every completion of the card
+    /// prefix `partial` at `depth`, with `candidate` in the next slot when
+    /// given.
+    #[inline(always)]
+    fn cards_excluded(
+        &self,
+        selected: &[usize; MEMBER_COUNT],
+        plan: &CardGroupPlan,
+        depth: usize,
+        partial: &CardPartial,
+        candidate: Option<&MemberTerms>,
+        threshold: u64,
+    ) -> bool {
+        let Some(weights) = self.weights.weights.as_ref() else {
+            return false;
+        };
+        let bound = &weights.bound;
+        let extra = if self.ctx.is_world_bloom {
+            plan.diversity_bonus + partial.support_bonus_ceil
+        } else {
+            self.ctx.extra_bonus_ub
+        };
+        let open = depth + usize::from(candidate.is_some());
+        let value = bound.constant
+            + bound.leader_skill * f64::from(self.leader.skill)
+            + bound.weigh(
+                partial.power,
+                partial.skill,
+                partial.base_bonus + partial.limited_sum + extra,
+            )
+            + candidate.map_or(0.0, |terms| terms.weight(bound))
+            + selected[open..]
+                .iter()
+                .map(|&group| weights.group[group])
+                .sum::<f64>();
+        bound.excludes(value, threshold >> 32)
     }
 
     /// Ceiling of `next`, the child of `partial` that adds one card, given the
@@ -1367,15 +1688,9 @@ fn character_ceiling(
         &tail.top_limited_bonus[..remaining],
         limited_limit.min(MEMBER_COUNT),
     );
-    let extra_bonus_ub = if leader.use_group_attr_dp {
-        u32::from(tail.attr_bonus[remaining][usize::from(prefix.attr_set)])
-            + leader.support_bonus_ub
-    } else {
-        leader.extra_bonus_ub
-    };
     suffix.objective().ceiling(
         power_sum,
-        bonus_sum + limited_sum + extra_bonus_ub,
+        bonus_sum + limited_sum + extra_bonus_ceiling(tail, remaining, prefix, leader),
         skill_sum,
         final_chapter_ceiling_skill(
             ctx,
@@ -1385,6 +1700,23 @@ fn character_ceiling(
                 .max(if remaining == 0 { 0 } else { tail.top_skill[0] }),
         ),
     )
+}
+
+/// Attribute and support bonus of every completion of `prefix` that takes
+/// `remaining` more groups from the suffix behind `tail`.
+#[inline(always)]
+fn extra_bonus_ceiling(
+    tail: &GroupCeilingTail,
+    remaining: usize,
+    prefix: &CharacterPrefix,
+    leader: &LeaderConst,
+) -> u32 {
+    if leader.use_group_attr_dp {
+        u32::from(tail.attr_bonus[remaining][usize::from(prefix.attr_set)])
+            + leader.support_bonus_ub
+    } else {
+        leader.extra_bonus_ub
+    }
 }
 
 /// The generic live bound uses its fourth input as the whole-deck skill peak

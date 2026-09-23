@@ -329,6 +329,14 @@ support ceilings may tighten this value, but the looser pre-candidate ceiling
 remains the fallback. Thus both character-job pruning and card-within-group
 pruning use upper bounds on the same exact leaf objective.
 
+For the Score target of an event, a second test couples power, skill and
+bonus: the logarithm of the event-point ceiling of every deck that can reach
+the threshold is at most an affine function of its aggregate features
+(pruning-proof Section 18.8). Each group is weighted by its best card under
+that function, and a node is pruned when the sum of the weights it can still
+reach is below the logarithm of the threshold's event point. Like the other
+tests it only discards subtrees without a deck at or above the threshold.
+
 ### 5.3 Support-deck upper bound
 
 Support decks are ordered from highest to lowest bonus.

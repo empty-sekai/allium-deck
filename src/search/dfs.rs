@@ -77,7 +77,7 @@ pub struct SearchStats {
     pub dominance_prunes: u64,
     /// Phase-specific work; seed evaluations never count as proof leaves.
     pub diagnostics: SearchDiagnostics,
-    /// Compatibility counter: joint power/skill bound rejections.
+    /// Rejections by a bound that couples several deck features.
     pub correlated_prunes: u64,
     /// 求值过的完整队伍数。
     pub leaf_nodes: u64,
