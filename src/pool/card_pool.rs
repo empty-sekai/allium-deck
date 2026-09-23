@@ -230,6 +230,22 @@ impl CardPool {
         }
     }
 
+    /// Skill value another member's reference skill reads from this card.
+    ///
+    /// This is the static maximum of the card's skill at its skill level,
+    /// independent of the deck and of the card's own conditions: each
+    /// conditional part is taken at its largest row. It is not clamped by an
+    /// event skill cap.
+    #[inline(always)]
+    pub fn skill_reference(&self, idx: CardIdx) -> u16 {
+        debug_assert!(idx.raw() < self.count());
+        unsafe {
+            *self
+                .column::<u16>(self.layout.off_skill_reference)
+                .get_unchecked(idx.raw())
+        }
+    }
+
     /// 安全读取角色掩码。
     ///
     /// Available only when the full pool fits the 512-bit mask. For larger
@@ -367,6 +383,7 @@ impl CardPool {
             builder.set_power_max(next_idx, power_bound(src));
             builder.set_skill_min(next_idx, self.skill_min(src));
             builder.set_skill_max(next_idx, self.skill_max(src));
+            builder.set_skill_reference(next_idx, self.skill_reference(src));
 
             builder.mark_char(self.char_id(src), next_idx);
             let unit_mask = self.unit_mask_raw(src);

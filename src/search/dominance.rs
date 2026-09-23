@@ -335,9 +335,12 @@ fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -
 fn skill_dominates(pool: &CardPool, lhs: CardIdx, rhs: CardIdx) -> bool {
     let lhs_skill = pool.skill(lhs);
     let rhs_skill = pool.skill(rhs);
+    // Other members' reference skills read the static `skill_reference`, not
+    // the resolved value, so the replacement must not lower it either.
     if lhs_skill.skill_type != rhs_skill.skill_type
         || pool.skill_min(lhs) < pool.skill_min(rhs)
         || pool.skill_max(lhs) < pool.skill_max(rhs)
+        || pool.skill_reference(lhs) < pool.skill_reference(rhs)
     {
         return false;
     }

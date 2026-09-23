@@ -209,13 +209,21 @@ pub struct UnitCountSkill {
 const _: () = assert!(size_of::<UnitCountSkill>() == 6);
 
 /// 异团技能侧表项。
+///
+/// The skill counts the distinct units of the other members that differ from
+/// the card's own unit, up to [`DiffSkill::MAX_COUNTED_UNITS`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct DiffSkill {
-    /// Score-up percentage before any per-unit increment.
+    /// Score-up percentage when no other unit is counted.
     pub base: u8,
-    /// Added to `base` for each additional distinct unit in the deck.
+    /// Added to `base` for each counted unit.
     pub increment: u8,
+}
+
+impl DiffSkill {
+    /// Largest number of units the skill counts.
+    pub const MAX_COUNTED_UNITS: u8 = 2;
 }
 
 const _: () = assert!(size_of::<DiffSkill>() == 2);
@@ -224,9 +232,9 @@ const _: () = assert!(size_of::<DiffSkill>() == 2);
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct RefSkill {
-    /// Percentage of the referenced member's score-up that is mirrored.
+    /// Percentage of the referenced member's static skill maximum that is added.
     pub rate: u8,
-    /// Upper clamp on the mirrored score-up, in percent.
+    /// Upper clamp on the added score-up, in percent.
     pub max: u8,
 }
 

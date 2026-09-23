@@ -2,6 +2,7 @@
 mod capacity;
 mod fractional_leader;
 mod leader_honor;
+mod skill_unit_count;
 
 use crate::pool::EventBonusExact;
 use crate::types::{DefaultImage, FINAL_CHAPTER_EVENT_ID};
@@ -1240,6 +1241,7 @@ fn handler_sort_and_gather_reindexes_dense_order() {
             ref_skill: None,
             skill_min: 1,
             skill_max: 2,
+            reference_value: 2,
             full: crate::types::SkillInfo::default(),
         },
         event_bonus: EventBonusExact::from_whole(1, 1),
@@ -1309,6 +1311,7 @@ fn handler_sort_and_gather_moves_fixed_card_states_before_members() {
                     skill_max
                 },
                 skill_max,
+                reference_value: u16::from(skill_max),
                 full: crate::types::SkillInfo {
                     skill_id: if game_card_id == 949 {
                         if matches!(default_image, crate::types::DefaultImage::SpecialTraining) {
@@ -1703,6 +1706,7 @@ fn make_card(
             ref_skill: None,
             skill_min: 1,
             skill_max,
+            reference_value: u16::from(skill_max),
             full: crate::types::SkillInfo::default(),
         },
         event_bonus: EventBonusExact::from_whole(0, 0),

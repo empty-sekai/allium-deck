@@ -70,6 +70,11 @@ Final chapter leader honor: a deck equips one main honor, so the leader-only hon
 | `skillReferenceChooseStrategy` / `skillReferenceStrategy` | string | `"average"` | Reference-skill valuation: `max`, `min`, `average`. |
 | `keepAfterTrainingState` | bool | false | Lock each card's current trained/untrained art state; cultivation overrides do not flip it. |
 
+Skills that depend on the deck are resolved for each evaluated deck, the same way whether or not `keepAfterTrainingState` is set. The art state only selects which skill of a card with an after-training skill applies: the original art uses the base skill, the trained art the after-training skill.
+
+- Different-unit skills count the distinct units of the other four members whose unit differs from the card's own unit, up to two. A Virtual Singer card with a support unit counts as that unit; one without a support unit counts as `piapro`.
+- Reference skills add `min(target × rate / 100, max)` for one other member, chosen by `skillReferenceChooseStrategy` (`average` takes the mean over the other four members). The share is not rounded. `target` is the static maximum of that member's skill at its skill level: every conditional part is taken at its largest row (the highest character-rank row, the full same-unit enhancement, two counted units, the largest reference addition), whatever the deck or the owner's character rank.
+
 ## Multi / Cheerful context
 
 | Key | Type | Default | Notes |

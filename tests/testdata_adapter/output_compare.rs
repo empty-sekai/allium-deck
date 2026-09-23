@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use allium_deck::pool::{CardIdx, CardPool, RefSkill, SkillSlot, UnitCountSkill};
+use allium_deck::pool::{CardIdx, CardPool, DiffSkill, RefSkill, SkillSlot, UnitCountSkill};
 use allium_deck::search::{DeckResult, SearchContext, leaf_evaluate};
 use allium_deck::types::{DECK_SIZE, ScoreTarget, SkillReferenceStrategy};
 use serde::Serialize;
@@ -336,109 +336,49 @@ fn precise_support_bonus(ctx: &SearchContext, deck_game_ids: &[u16; 5]) -> u32 {
 
 fn precise_multi_live_score_up(deck: [CardIdx; 5], pool: &CardPool, ctx: &SearchContext) -> f64 {
     let unit_counts = count_units(deck, pool);
-    let mut prepared = [PreparedSkillPair::default(); DECK_SIZE];
-    let mut enumerate_mask = 0u32;
-    let mut index = 0usize;
-    while index < DECK_SIZE {
-        let card = deck[index];
-        let dense = card.raw();
+    let mut skills = [0.0_f64; DECK_SIZE];
+    for (index, &card) in deck.iter().enumerate() {
         let slot = pool.skill(card);
-        let mut secondary = PreparedSkill::default();
-        let mut primary = PreparedSkill::default();
-        let mut need_enumerate = false;
-        match slot.skill_type {
-            0 => primary.score_up = slot.value as f64,
-            1 => {
-                primary.score_up =
-                    resolve_unit_count_score(slot, pool.special().unit_count(), &unit_counts) as f64
-            }
+        skills[index] = match slot.skill_type {
+            0 => slot.value as f64,
+            1 => resolve_unit_count_score(slot, pool.special().unit_count(), &unit_counts) as f64,
+            2 => resolve_diff_score(
+                slot,
+                pool.special().diff(),
+                different_units(deck, pool, index),
+            )
+            .min(u32::from(pool.skill_max(card))) as f64,
             3 => {
                 let base = pool.skill_min(card) as f64;
-                let reference = resolve_ref_score(slot, pool.special().ref_skills());
-                primary.score_up = base;
-                if let Some((rate, max)) = reference {
-                    secondary.score_up = base + max as f64;
-                    secondary.has_ref = true;
-                    secondary.ref_rate = rate as f64;
-                    secondary.ref_max = max as f64;
-                    need_enumerate = true;
-                }
-            }
-            _ => primary.score_up = pool.skill_max(card) as f64,
-        }
-
-        if ctx.keep_after_training_state {
-            if !ctx.trained_to_special_image_at(dense) && ctx.skill_is_after_training_at(dense) {
-                primary = secondary;
-            }
-        } else if need_enumerate && secondary.score_up > 0.0 {
-            enumerate_mask |= 1u32 << index;
-        } else if secondary.score_up > primary.score_up {
-            primary = secondary;
-        }
-
-        prepared[index] = PreparedSkillPair { secondary, primary };
-        index += 1;
-    }
-
-    let mut best = 0.0;
-    let mut mask = enumerate_mask;
-    loop {
-        let mut skills = [PreparedSkill::default(); DECK_SIZE];
-        let mut idx = 0usize;
-        while idx < DECK_SIZE {
-            let mut skill = if mask & (1u32 << idx) != 0 {
-                prepared[idx].secondary
-            } else {
-                prepared[idx].primary
-            };
-            skill.score_up_to_reference = skill.score_up;
-            skills[idx] = skill;
-            idx += 1;
-        }
-
-        let mut ref_index = 0usize;
-        while ref_index < DECK_SIZE {
-            if skills[ref_index].has_ref {
-                skills[ref_index].score_up -= skills[ref_index].ref_max;
-                let mut reference_scores = [0.0; DECK_SIZE - 1];
-                let mut len = 0usize;
-                let mut other = 0usize;
-                while other < DECK_SIZE {
-                    if other != ref_index {
-                        reference_scores[len] = (skills[other].score_up_to_reference
-                            * skills[ref_index].ref_rate
-                            / 100.0)
-                            .floor()
-                            .min(skills[ref_index].ref_max);
-                        len += 1;
+                match resolve_ref_score(slot, pool.special().ref_skills()) {
+                    Some((rate, max)) if rate != 0 && max != 0 => {
+                        // Share of each other member's static skill maximum, unrounded.
+                        let mut shares = [0.0; DECK_SIZE - 1];
+                        let mut len = 0usize;
+                        for (other, &target) in deck.iter().enumerate() {
+                            if other != index {
+                                shares[len] = (f64::from(pool.skill_reference(target))
+                                    * f64::from(rate)
+                                    / 100.0)
+                                    .min(f64::from(max));
+                                len += 1;
+                            }
+                        }
+                        base + choose_reference_score(&shares, len, ctx.skill_reference_strategy)
                     }
-                    other += 1;
+                    _ => base,
                 }
-                skills[ref_index].score_up +=
-                    choose_reference_score(&reference_scores, len, ctx.skill_reference_strategy);
             }
-            ref_index += 1;
-        }
-
-        let order = leader_order(deck, &skills, ctx.effective_best_skill_as_leader());
-        let mut total = skills[order[0]].score_up;
-        let mut pos = 1usize;
-        while pos < DECK_SIZE {
-            total += skills[order[pos]].score_up * 0.2;
-            pos += 1;
-        }
-        if total > best {
-            best = total;
-        }
-
-        if mask == 0 {
-            break;
-        }
-        mask = (mask - 1) & enumerate_mask;
+            _ => 0.0,
+        };
     }
 
-    best
+    let order = leader_order(deck, &skills, ctx.effective_best_skill_as_leader());
+    let mut total = skills[order[0]];
+    for &position in &order[1..] {
+        total += skills[position] * 0.2;
+    }
+    total
 }
 
 fn choose_reference_score(
@@ -463,19 +403,14 @@ fn choose_reference_score(
     }
 }
 
-fn leader_order(
-    deck: [CardIdx; 5],
-    skills: &[PreparedSkill; 5],
-    best_as_leader: bool,
-) -> [usize; 5] {
+fn leader_order(deck: [CardIdx; 5], skills: &[f64; 5], best_as_leader: bool) -> [usize; 5] {
     let mut order = [0usize, 1, 2, 3, 4];
     if best_as_leader {
         let mut best = 0usize;
         let mut idx = 1usize;
         while idx < DECK_SIZE {
-            if skills[idx].score_up > skills[best].score_up
-                || (skills[idx].score_up == skills[best].score_up
-                    && deck[idx].raw() < deck[best].raw())
+            if skills[idx] > skills[best]
+                || (skills[idx] == skills[best] && deck[idx].raw() < deck[best].raw())
             {
                 best = idx;
             }
@@ -526,23 +461,40 @@ fn resolve_unit_count_score(
     entry.score_up[member_count - 1] as u32
 }
 
+/// Distinct units of the other members that differ from the member's own unit.
+/// A Virtual Singer card with a support unit counts as that unit.
+fn different_units(deck: [CardIdx; 5], pool: &CardPool, index: usize) -> u32 {
+    const PIAPRO: u8 = 1 << 5;
+    let unit_of = |card: CardIdx| {
+        let mask = pool.unit_mask_raw(card);
+        let non_piapro = mask & !PIAPRO;
+        if non_piapro == 0 {
+            mask
+        } else {
+            1 << non_piapro.trailing_zeros()
+        }
+    };
+    let own = unit_of(deck[index]);
+    let mut others = 0u8;
+    for (position, &card) in deck.iter().enumerate() {
+        let unit = unit_of(card);
+        if position != index && unit != own {
+            others |= unit;
+        }
+    }
+    others.count_ones()
+}
+
+fn resolve_diff_score(slot: SkillSlot, table: &[DiffSkill], units: u32) -> u32 {
+    let Some(entry) = table.get(slot.value.saturating_sub(1) as usize) else {
+        return 0;
+    };
+    u32::from(entry.base)
+        + u32::from(entry.increment) * units.min(u32::from(DiffSkill::MAX_COUNTED_UNITS))
+}
+
 fn resolve_ref_score(slot: SkillSlot, table: &[RefSkill]) -> Option<(u8, u8)> {
     table
         .get(slot.value.saturating_sub(1) as usize)
         .map(|entry| (entry.rate, entry.max))
-}
-
-#[derive(Clone, Copy, Default)]
-struct PreparedSkillPair {
-    secondary: PreparedSkill,
-    primary: PreparedSkill,
-}
-
-#[derive(Clone, Copy, Default)]
-struct PreparedSkill {
-    score_up: f64,
-    score_up_to_reference: f64,
-    has_ref: bool,
-    ref_rate: f64,
-    ref_max: f64,
 }

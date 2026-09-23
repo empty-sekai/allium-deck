@@ -20,6 +20,9 @@ pub(crate) struct SkillResult {
     pub skill_min: u8,
     /// 技能上界。
     pub skill_max: u8,
+    /// Value another member's reference skill reads from this skill: its
+    /// static maximum at the skill level, see `static_reference_value`.
+    pub reference_value: u16,
     /// 全精度技能信息。
     pub full: SkillInfo,
 }
@@ -76,6 +79,7 @@ pub(crate) fn build_skill(
     let mut diff = None;
     let mut ref_rate = 0i32;
     let mut ref_max = 0i32;
+    let mut reference = StaticMaximum::default();
 
     for effect in effects {
         match effect.kind {
@@ -84,14 +88,15 @@ pub(crate) fn build_skill(
             }
             PreparedSkillEffectKind::LifeRecovery => life_recovery += i64::from(effect.value),
             PreparedSkillEffectKind::CharacterRank => {
-                if effect
-                    .activate_character_rank
-                    .is_some_and(|rank| rank <= character_rank)
-                {
-                    character_rank_bonus = character_rank_bonus.max(i64::from(effect.value));
+                if let Some(rank) = effect.activate_character_rank {
+                    if rank <= character_rank {
+                        character_rank_bonus = character_rank_bonus.max(i64::from(effect.value));
+                    }
+                    reference.character_rank_row(rank, effect.value);
                 }
             }
             PreparedSkillEffectKind::UnitCount => {
+                reference.unit_count_row(effect.value);
                 unit_count_unit = effect.unit;
                 if let Some(count) = effect.unit_member_count
                     && (1..=5).contains(&count)
@@ -101,6 +106,7 @@ pub(crate) fn build_skill(
                 }
             }
             PreparedSkillEffectKind::Diff => {
+                reference.different_unit_increment = effect.additional_value.unwrap_or(0);
                 diff = Some(DiffSkill {
                     base: capacity::score(i64::from(effect.value), skill_limit, "skill score")?,
                     increment: capacity::score(
@@ -113,11 +119,13 @@ pub(crate) fn build_skill(
             PreparedSkillEffectKind::Reference => {
                 ref_rate = effect.value;
                 ref_max = effect.additional_value.unwrap_or(0);
+                reference.reference_max = ref_max;
             }
             _ => {}
         }
     }
 
+    let reference_value = static_reference_value(base_score_up, &reference)?;
     base_score_up += character_rank_bonus;
     let base_clamped = capacity::score(base_score_up, skill_limit, "base skill score")?;
     let mut result = SkillResult {
@@ -132,6 +140,7 @@ pub(crate) fn build_skill(
         },
         skill_min: base_clamped,
         skill_max: base_clamped,
+        reference_value,
         ..SkillResult::default()
     };
 
@@ -163,7 +172,8 @@ pub(crate) fn build_skill(
         result.diff = Some(diff);
         result.skill_min = diff.base;
         result.skill_max = capacity::score(
-            i64::from(diff.base) + i64::from(diff.increment) * 2,
+            i64::from(diff.base)
+                + i64::from(diff.increment) * i64::from(DiffSkill::MAX_COUNTED_UNITS),
             skill_limit,
             "different-unit upper bound",
         )?;
@@ -206,4 +216,53 @@ pub(crate) fn build_skill(
         value: base_clamped,
     };
     Ok(result)
+}
+
+/// Conditional parts of one skill at one level, each at its largest row.
+#[derive(Debug, Default)]
+struct StaticMaximum {
+    /// Character-rank row with the highest rank threshold: `(rank, value)`.
+    character_rank: Option<(i32, i32)>,
+    /// Largest unit-count row; the row already includes the base score-up.
+    unit_count: Option<i32>,
+    /// Per-unit increment of a different-unit skill.
+    different_unit_increment: i32,
+    /// Largest addition of a reference skill.
+    reference_max: i32,
+}
+
+impl StaticMaximum {
+    fn character_rank_row(&mut self, rank: i32, value: i32) {
+        // The first row wins a tie on the threshold.
+        if self.character_rank.is_none_or(|(best, _)| rank > best) {
+            self.character_rank = Some((rank, value));
+        }
+    }
+
+    fn unit_count_row(&mut self, value: i32) {
+        self.unit_count = Some(self.unit_count.map_or(value, |best| best.max(value)));
+    }
+}
+
+/// Value another member's reference skill reads from this skill.
+///
+/// The target's skill is taken at its skill level, independent of the deck
+/// and of the target's own conditions: the base score-up, the character-rank
+/// row with the highest threshold (not the row the owner's rank reaches), the
+/// full same-unit enhancement, every counted different unit, and the largest
+/// reference addition. The value is not clamped by an event skill cap.
+fn static_reference_value(base_score_up: i64, parts: &StaticMaximum) -> Result<u16, BuildError> {
+    let base = base_score_up.max(0);
+    let character_rank = parts
+        .character_rank
+        .map_or(0, |(_, value)| i64::from(value).max(0));
+    let unit_count = parts
+        .unit_count
+        .map_or(0, |value| (i64::from(value) - base).max(0));
+    let different_unit =
+        i64::from(parts.different_unit_increment).max(0) * i64::from(DiffSkill::MAX_COUNTED_UNITS);
+    let reference = i64::from(parts.reference_max).max(0);
+    let value = (base + character_rank + unit_count + different_unit + reference) as u64;
+    capacity::ensure("skill reference value", value, u64::from(u16::MAX))?;
+    Ok(value as u16)
 }

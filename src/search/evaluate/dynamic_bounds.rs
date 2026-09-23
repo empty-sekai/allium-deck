@@ -1,4 +1,4 @@
-//! Literal per-card skill upper bounds across every materialized skill state.
+//! Literal per-card skill bounds across every deck of a mixed skill pool.
 use super::*;
 use crate::pool::PoolBuilder;
 
@@ -37,6 +37,8 @@ fn mixed_skill_pool() -> CardPool {
         );
         builder.set_skill_min(dense, lower);
         builder.set_skill_max(dense, upper);
+        // Static maxima well above every clamp, so reference shares saturate.
+        builder.set_skill_reference(dense, 400 + dense * 50);
         builder.set_char_id(dense, dense as u8 + 1);
         builder.set_attr(dense, dense as u8 % 5);
         builder.set_unit_mask(dense, units);
@@ -78,60 +80,45 @@ fn every_resolved_dynamic_skill_is_bounded_without_a_margin() {
                     LiveSkillOrder::Specific,
                 ] {
                     for live_type in [LiveType::Solo, LiveType::Multi, LiveType::Auto] {
-                        for training in 0..4 {
-                            let mut ctx = super::tests::ctx(live_type);
-                            ctx.skill_reference_strategy = reference;
-                            ctx.live_skill_order = order;
-                            ctx.specific_skill_order = Some([4, 2, 0, 3, 1]);
-                            ctx.keep_after_training_state = training != 0;
-                            ctx.skill_is_after_training = (0..pool.count())
-                                .map(|i| training == 1 || i % 2 == 0)
-                                .collect();
-                            ctx.trained_to_special_image = (0..pool.count())
-                                .map(|i| training == 2 || i % 2 != 0)
-                                .collect();
-                            let prepared = prepare_skills(&pool, &ctx, &deck);
-                            let mut mask = prepared.enumerate_mask;
-                            loop {
-                                let resolved =
-                                    materialize_permutation(&pool, &deck, &ctx, &prepared, mask);
-                                for (&card, actual) in deck.iter().zip(&resolved.skills) {
-                                    let upper = f64::from(pool.skill_max(card));
-                                    assert!(actual.score_up.is_finite() && actual.score_up >= 0.0);
-                                    assert!(
-                                        actual.score_up <= upper,
-                                        "card={card:?} skill={} upper={upper} ref={reference:?} order={order:?} training={training}",
-                                        actual.score_up
-                                    );
-                                }
-                                // A role-aware additive relaxation bounds the exact
-                                // leader-plus-one-fifth-members Skill objective.
-                                let upper = resolved
-                                    .order
-                                    .iter()
-                                    .enumerate()
-                                    .map(|(slot, &position)| {
-                                        f64::from(pool.skill_max(deck[position]))
-                                            * if slot == 0 { 1.0 } else { 0.2 }
-                                    })
-                                    .sum::<f64>();
-                                assert!(resolved.multi_live_score_up <= upper);
-                                states += 1;
-                                if mask == 0 {
-                                    break;
-                                }
-                                mask = (mask - 1) & prepared.enumerate_mask;
-                            }
+                        let mut ctx = super::tests::ctx(live_type);
+                        ctx.skill_reference_strategy = reference;
+                        ctx.live_skill_order = order;
+                        ctx.specific_skill_order = Some([4, 2, 0, 3, 1]);
+                        let resolved = evaluate_permutation(&pool, &ctx, &deck);
+                        for (&card, actual) in deck.iter().zip(&resolved.skills) {
+                            let lower = f64::from(pool.skill_min(card));
+                            let upper = f64::from(pool.skill_max(card));
+                            assert!(actual.score_up.is_finite());
+                            assert!(
+                                lower <= actual.score_up && actual.score_up <= upper,
+                                "card={card:?} skill={} lower={lower} upper={upper} ref={reference:?} order={order:?}",
+                                actual.score_up
+                            );
                         }
+                        // A role-aware additive relaxation bounds the exact
+                        // leader-plus-one-fifth-members Skill objective.
+                        let upper = resolved
+                            .order
+                            .iter()
+                            .enumerate()
+                            .map(|(slot, &position)| {
+                                f64::from(pool.skill_max(deck[position]))
+                                    * if slot == 0 { 1.0 } else { 0.2 }
+                            })
+                            .sum::<f64>();
+                        assert!(resolved.multi_live_score_up <= upper);
+                        states += 1;
                     }
                 }
             }
             deck.rotate_left(1);
         }
     }
-    assert!(
-        states > 20_000,
-        "expected exhaustive mixed skill-state coverage"
+    // 21 five-card decks x 5 rotations x 3 strategies x 4 orders x 3 live types.
+    assert_eq!(
+        states,
+        21 * 5 * 3 * 4 * 3,
+        "expected exhaustive deck coverage"
     );
     eprintln!(
         "DYNAMIC_SKILL_BOUND states={states} card_checks={}",

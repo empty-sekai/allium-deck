@@ -6,19 +6,12 @@ use super::types::DeckResultSummary;
 
 const SKILL_SCALE: f64 = 10.0;
 
+/// Pool unit bit of Virtual Singer (piapro) cards.
+const PIAPRO_UNIT_BIT: u8 = 1 << 5;
+
 #[derive(Clone, Copy, Debug, Default)]
 struct LiveSkillValue {
     score_up: f64,
-    score_up_to_reference: f64,
-    ref_rate: f64,
-    ref_max: f64,
-    has_ref: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct PreparedSkills {
-    skills: [[LiveSkillValue; 2]; DECK_SIZE],
-    enumerate_mask: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -56,57 +49,31 @@ pub fn summarize_deck(
             + ctx.honor_bonus,
     );
     let total_bonus = resolve_total_bonus(pool, ctx, deck);
-    let prepared = prepare_skills(pool, ctx, deck);
-
-    let mut best: Option<DeckResultSummary> = None;
-    let mut best_key = u64::MIN;
-    let mut mask = prepared.enumerate_mask;
-    loop {
-        let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
-        if permutation_satisfies_lower_bound(ctx, &permutation) {
-            let live_score = if ctx.is_mysekai() {
-                0
-            } else {
-                calc_live_score(total_power, &permutation, ctx)
-            };
-            let event_point = if ctx.is_mysekai() {
-                None
-            } else if ctx.has_event() {
-                Some(calc_event_point(live_score, total_bonus, ctx))
-            } else {
-                None
-            };
-            let key = summarize_key(
-                ctx,
-                total_power,
-                total_bonus,
-                live_score,
-                event_point,
-                &permutation,
-            );
-            if best.is_none() || key > best_key {
-                best_key = key;
-                best = Some(build_summary(
-                    pool,
-                    ctx,
-                    deck,
-                    &card_power_total,
-                    total_power,
-                    total_bonus,
-                    live_score,
-                    event_point,
-                    &permutation,
-                ));
-            }
-        }
-
-        if mask == 0 {
-            break;
-        }
-        mask = (mask - 1) & prepared.enumerate_mask;
+    let permutation = evaluate_permutation(pool, ctx, deck);
+    if !permutation_satisfies_lower_bound(ctx, &permutation) {
+        return None;
     }
-
-    best
+    let live_score = if ctx.is_mysekai() {
+        0
+    } else {
+        calc_live_score(total_power, &permutation, ctx)
+    };
+    let event_point = if !ctx.is_mysekai() && ctx.has_event() {
+        Some(calc_event_point(live_score, total_bonus, ctx))
+    } else {
+        None
+    };
+    Some(build_summary(
+        pool,
+        ctx,
+        deck,
+        &card_power_total,
+        total_power,
+        total_bonus,
+        live_score,
+        event_point,
+        &permutation,
+    ))
 }
 
 /// 精确计算叶子节点排序值；若额外约束不满足则返回 `None`。
@@ -122,66 +89,31 @@ pub(crate) fn leaf_evaluate_checked(
     let power_total = ctx.clamp_power_total(resolve_power_target(pool, deck) + ctx.honor_bonus);
     match ctx.target {
         ScoreTarget::Power => {
-            if !has_valid_permutation(pool, ctx, deck) {
+            if !meets_skill_lower_bound(pool, ctx, deck) {
                 return None;
             }
             Some(power_total as u64)
         }
         ScoreTarget::Mysekai => {
             let total_bonus = resolve_total_bonus(pool, ctx, deck);
-            if !has_valid_permutation(pool, ctx, deck) {
+            if !meets_skill_lower_bound(pool, ctx, deck) {
                 return None;
             }
             Some(calc_mysekai_internal(power_total, total_bonus) as u64)
         }
         ScoreTarget::Skill => {
-            let prepared = prepare_skills(pool, ctx, deck);
-            let mut best = 0u64;
-            let mut found = false;
-            let mut mask = prepared.enumerate_mask;
-            loop {
-                let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
-                if !permutation_satisfies_lower_bound(ctx, &permutation) {
-                    if mask == 0 {
-                        break;
-                    }
-                    mask = (mask - 1) & prepared.enumerate_mask;
-                    continue;
-                }
-                let encoded = encode_skill_target(permutation.multi_live_score_up);
-                if encoded > best {
-                    best = encoded;
-                }
-                found = true;
-                if mask == 0 {
-                    break;
-                }
-                mask = (mask - 1) & prepared.enumerate_mask;
-            }
-            found.then_some(best)
+            let permutation = evaluate_permutation(pool, ctx, deck);
+            permutation_satisfies_lower_bound(ctx, &permutation)
+                .then(|| encode_skill_target(permutation.multi_live_score_up))
         }
         ScoreTarget::Bonus => {
             let total_bonus = resolve_total_bonus(pool, ctx, deck);
-            let prepared = prepare_skills(pool, ctx, deck);
-            let mut best = 0u64;
-            let mut found = false;
-            let mut mask = prepared.enumerate_mask;
-            loop {
-                let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
-                if permutation_satisfies_lower_bound(ctx, &permutation) {
-                    let live_score = calc_live_score(power_total, &permutation, ctx);
-                    let encoded = encode_bonus_target(total_bonus, live_score);
-                    if encoded > best {
-                        best = encoded;
-                    }
-                    found = true;
-                }
-                if mask == 0 {
-                    break;
-                }
-                mask = (mask - 1) & prepared.enumerate_mask;
+            let permutation = evaluate_permutation(pool, ctx, deck);
+            if !permutation_satisfies_lower_bound(ctx, &permutation) {
+                return None;
             }
-            found.then_some(best)
+            let live_score = calc_live_score(power_total, &permutation, ctx);
+            Some(encode_bonus_target(total_bonus, live_score))
         }
         ScoreTarget::Score => {
             // 无活动时加成合计不参与计分，跳过逐卡加成解析。
@@ -190,36 +122,17 @@ pub(crate) fn leaf_evaluate_checked(
             } else {
                 0.0
             };
-            let prepared = prepare_skills(pool, ctx, deck);
-            let mut best = 0u64;
-            let mut found = false;
-            let mut mask = prepared.enumerate_mask;
-            loop {
-                let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
-                if !permutation_satisfies_lower_bound(ctx, &permutation) {
-                    if mask == 0 {
-                        break;
-                    }
-                    mask = (mask - 1) & prepared.enumerate_mask;
-                    continue;
-                }
-                let live_score = calc_live_score(power_total, &permutation, ctx);
-                let event_point = if ctx.has_event() {
-                    calc_event_point(live_score, total_bonus, ctx)
-                } else {
-                    live_score
-                };
-                let encoded = ((event_point as u64) << 32) | (live_score as u32 as u64);
-                if encoded > best {
-                    best = encoded;
-                }
-                found = true;
-                if mask == 0 {
-                    break;
-                }
-                mask = (mask - 1) & prepared.enumerate_mask;
+            let permutation = evaluate_permutation(pool, ctx, deck);
+            if !permutation_satisfies_lower_bound(ctx, &permutation) {
+                return None;
             }
-            found.then_some(best)
+            let live_score = calc_live_score(power_total, &permutation, ctx);
+            let event_point = if ctx.has_event() {
+                calc_event_point(live_score, total_bonus, ctx)
+            } else {
+                live_score
+            };
+            Some(((event_point as u64) << 32) | (live_score as u32 as u64))
         }
     }
 }
@@ -239,57 +152,17 @@ pub(crate) fn leaf_evaluate_challenge_score_checked(
     debug_assert!(matches!(ctx.target, ScoreTarget::Score));
 
     let power_total = ctx.clamp_power_total(resolve_power_target(pool, deck) + ctx.honor_bonus);
-    let prepared = prepare_skills(pool, ctx, deck);
-    let mut best = 0u64;
-    let mut found = false;
-    let mut mask = prepared.enumerate_mask;
-    loop {
-        let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
-        if !permutation_satisfies_lower_bound(ctx, &permutation) {
-            if mask == 0 {
-                break;
-            }
-            mask = (mask - 1) & prepared.enumerate_mask;
-            continue;
-        }
-        let live_score = calc_live_score(power_total, &permutation, ctx);
-        let event_point = if ctx.has_event() {
-            calc_event_point(live_score, 0.0, ctx)
-        } else {
-            live_score
-        };
-        let encoded = ((event_point as u64) << 32) | (live_score as u32 as u64);
-        if encoded > best {
-            best = encoded;
-        }
-        found = true;
-        if mask == 0 {
-            break;
-        }
-        mask = (mask - 1) & prepared.enumerate_mask;
+    let permutation = evaluate_permutation(pool, ctx, deck);
+    if !permutation_satisfies_lower_bound(ctx, &permutation) {
+        return None;
     }
-    found.then_some(best)
-}
-
-#[inline(always)]
-fn summarize_key(
-    ctx: &SearchContext,
-    total_power: u32,
-    total_bonus: f64,
-    live_score: i32,
-    event_point: Option<i32>,
-    permutation: &EvaluatedPermutation,
-) -> u64 {
-    match ctx.target {
-        ScoreTarget::Power => ((total_power as u64) << 32) | (live_score.max(0) as u32 as u64),
-        ScoreTarget::Skill => encode_skill_target(permutation.multi_live_score_up),
-        ScoreTarget::Mysekai => total_power as u64,
-        ScoreTarget::Bonus => encode_bonus_target(total_bonus, live_score),
-        ScoreTarget::Score => {
-            ((event_point.unwrap_or(live_score).max(0) as u64) << 32)
-                | (live_score.max(0) as u32 as u64)
-        }
-    }
+    let live_score = calc_live_score(power_total, &permutation, ctx);
+    let event_point = if ctx.has_event() {
+        calc_event_point(live_score, 0.0, ctx)
+    } else {
+        live_score
+    };
+    Some(((event_point as u64) << 32) | (live_score as u32 as u64))
 }
 
 #[inline(always)]
@@ -645,138 +518,68 @@ pub(crate) fn card_proxy_bonus(
     total
 }
 
+/// Resolves each member's skill value inside one five-card deck.
+///
+/// Composition-dependent skills are resolved exactly for the deck:
+/// - a unit-count skill reads how many members carry the skill's unit;
+/// - a different-unit skill counts the distinct units of the other members
+///   that differ from the card's own unit ([`different_unit_count`]);
+/// - a reference skill adds `min(reference * rate / 100, max)` of another
+///   member's static skill maximum ([`CardPool::skill_reference`]), selected
+///   among the other members by the reference strategy and not rounded.
+///
+/// Admissibility of `skill_max`: every resolved value lies in
+/// `[skill_min, skill_max]` of its card for every deck. Unit-count values are
+/// table entries and `skill_max` is the largest entry; different-unit values
+/// are clamped to `skill_max`; a reference skill adds at most `RefSkill::max`
+/// to `skill_min`, and the builder guarantees `skill_min + max <= skill_max`.
+///
+/// A reference skill is always resolved with its reference; no base-only
+/// alternative is evaluated. Referenced values are static per card, so no
+/// member's value depends on another member's resolved value, the added share
+/// is nonnegative, and every objective is non-decreasing in each member's
+/// value. The base-only alternative can therefore never score higher. It is
+/// also not a state the game produces: a deck of five always has another
+/// member to reference.
 #[inline(always)]
-fn prepare_skills(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) -> PreparedSkills {
-    let unit_counts = count_units(pool, deck);
-    let unit_kind_count = distinct_unit_count(&unit_counts);
-    let diff_count = unit_kind_count.saturating_sub(1).min(2) as u32;
-    let mut prepared = PreparedSkills::default();
-    let mut enumerate_mask = 0u32;
-    let mut card_index = 0usize;
-    while card_index < DECK_SIZE {
-        let card = unsafe { *deck.get_unchecked(card_index) };
-        let slot = pool.skill(card);
-        let skill_dense = card.raw();
-        let mut secondary = LiveSkillValue::default();
-        let mut primary = LiveSkillValue::default();
-        let mut need_enumerate = false;
-
-        match slot.skill_type {
-            0 => {
-                primary.score_up = slot.value as f64;
-            }
-            1 => {
-                primary.score_up =
-                    resolve_unit_count_skill(pool.special().unit_count(), slot, &unit_counts)
-                        as f64;
-            }
-            2 => {
-                primary.score_up = pool.skill_min(card) as f64;
-                secondary.score_up = resolve_diff_skill(pool.special().diff(), slot, diff_count)
-                    .min(pool.skill_max(card) as u32) as f64;
-            }
-            3 => {
-                let base = pool.skill_min(card) as f64;
-                let (ref_rate, ref_max) = resolve_ref_skill(pool.special().ref_skills(), slot);
-                primary.score_up = base;
-                if ref_rate != 0 && ref_max != 0 {
-                    secondary = LiveSkillValue {
-                        score_up: base + ref_max as f64,
-                        ref_rate: ref_rate as f64,
-                        ref_max: ref_max as f64,
-                        has_ref: true,
-                        ..LiveSkillValue::default()
-                    };
-                    need_enumerate = true;
-                }
-            }
-            _ => {}
-        }
-
-        if ctx.keep_after_training_state {
-            if !ctx.trained_to_special_image_at(skill_dense)
-                && ctx.skill_is_after_training_at(skill_dense)
-            {
-                primary = secondary;
-            }
-        } else if need_enumerate && secondary.score_up > 0.0 {
-            enumerate_mask |= 1u32 << card_index;
-        } else if secondary.score_up > primary.score_up {
-            primary = secondary;
-        }
-
-        unsafe {
-            *prepared.skills.get_unchecked_mut(card_index) = [secondary, primary];
-        }
-        card_index += 1;
-    }
-
-    if ctx.is_mysekai() {
-        prepared.enumerate_mask = 0;
-    } else {
-        prepared.enumerate_mask = enumerate_mask;
-    }
-    prepared
-}
-
-#[inline(always)]
-fn materialize_permutation(
+fn resolve_skills(
     pool: &CardPool,
-    deck: &[CardIdx; 5],
     ctx: &SearchContext,
-    prepared: &PreparedSkills,
-    mask: u32,
-) -> EvaluatedPermutation {
+    deck: &[CardIdx; 5],
+) -> [LiveSkillValue; DECK_SIZE] {
+    let unit_counts = count_units(pool, deck);
     let mut skills = [LiveSkillValue::default(); DECK_SIZE];
     let mut index = 0usize;
     while index < DECK_SIZE {
-        let mut skill = if mask & (1u32 << index) != 0 {
-            unsafe { *prepared.skills.get_unchecked(index).get_unchecked(0) }
-        } else {
-            unsafe { *prepared.skills.get_unchecked(index).get_unchecked(1) }
+        let card = unsafe { *deck.get_unchecked(index) };
+        let slot = pool.skill(card);
+        let score_up = match slot.skill_type {
+            0 => slot.value as f64,
+            1 => resolve_unit_count_skill(pool.special().unit_count(), slot, &unit_counts) as f64,
+            2 => resolve_diff_skill(
+                pool.special().diff(),
+                slot,
+                different_unit_count(pool, deck, index),
+            )
+            .min(u32::from(pool.skill_max(card))) as f64,
+            3 => resolve_reference_skill(pool, ctx, deck, index, slot),
+            _ => 0.0,
         };
-        skill.score_up_to_reference = skill.score_up;
         unsafe {
-            *skills.get_unchecked_mut(index) = skill;
+            skills.get_unchecked_mut(index).score_up = score_up;
         }
         index += 1;
     }
+    skills
+}
 
-    let mut ref_index = 0usize;
-    while ref_index < DECK_SIZE {
-        if unsafe { skills.get_unchecked(ref_index).has_ref } {
-            let mut reference_scores = [0.0_f64; DECK_SIZE - 1];
-            let mut reference_len = 0usize;
-            unsafe {
-                skills.get_unchecked_mut(ref_index).score_up -=
-                    skills.get_unchecked(ref_index).ref_max;
-            }
-            let mut other = 0usize;
-            while other < DECK_SIZE {
-                if other != ref_index {
-                    unsafe {
-                        *reference_scores.get_unchecked_mut(reference_len) =
-                            (skills.get_unchecked(other).score_up_to_reference
-                                * skills.get_unchecked(ref_index).ref_rate
-                                / 100.0)
-                                .floor()
-                                .min(skills.get_unchecked(ref_index).ref_max);
-                    }
-                    reference_len += 1;
-                }
-                other += 1;
-            }
-            let chosen = choose_reference_score(
-                &reference_scores,
-                reference_len,
-                ctx.skill_reference_strategy,
-            );
-            unsafe {
-                skills.get_unchecked_mut(ref_index).score_up += chosen;
-            }
-        }
-        ref_index += 1;
-    }
+#[inline(always)]
+fn evaluate_permutation(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; 5],
+) -> EvaluatedPermutation {
+    let skills = resolve_skills(pool, ctx, deck);
 
     let mut order = [0usize, 1, 2, 3, 4];
     // 默认路径（最高技能作队长）保持原样；指定队长时 effective_best_skill_as_leader
@@ -858,13 +661,11 @@ fn sorted_live_skills(
         );
         let self_skill = LiveSkillValue {
             score_up: self_score_up,
-            ..LiveSkillValue::default()
         };
         let other_skill = ctx
             .multi_teammate_score_up
             .map(|score_up| LiveSkillValue {
                 score_up: score_up as f64,
-                ..LiveSkillValue::default()
             })
             .unwrap_or(self_skill);
         buffer[0] = self_skill;
@@ -1062,17 +863,40 @@ fn count_units(pool: &CardPool, deck: &[CardIdx; 5]) -> [u8; 6] {
     unit_counts
 }
 
+/// Unit a member contributes to different-unit counting, as a pool unit bit.
+///
+/// A Virtual Singer card with a support unit carries the piapro bit and its
+/// support unit bit and counts as the support unit. Every other card carries a
+/// single bit: its character's unit, or piapro for a Virtual Singer card
+/// without a support unit.
 #[inline(always)]
-fn distinct_unit_count(unit_counts: &[u8; 6]) -> u8 {
-    let mut count = 0u8;
-    let mut index = 0usize;
-    while index < 6 {
-        if unsafe { *unit_counts.get_unchecked(index) } > 0 {
-            count += 1;
-        }
-        index += 1;
+fn member_unit(unit_mask: u8) -> u8 {
+    let non_piapro = unit_mask & !PIAPRO_UNIT_BIT;
+    if non_piapro == 0 {
+        unit_mask
+    } else {
+        non_piapro & non_piapro.wrapping_neg()
     }
-    count
+}
+
+/// Number of distinct units among the other members whose unit differs from
+/// the unit of the member at `index`. A legal deck holds each card once, so
+/// the position identifies the member itself.
+#[inline(always)]
+fn different_unit_count(pool: &CardPool, deck: &[CardIdx; 5], index: usize) -> u32 {
+    let own = member_unit(pool.unit_mask_raw(unsafe { *deck.get_unchecked(index) }));
+    let mut others = 0u8;
+    let mut pos = 0usize;
+    while pos < DECK_SIZE {
+        if pos != index {
+            let unit = member_unit(pool.unit_mask_raw(unsafe { *deck.get_unchecked(pos) }));
+            if unit != own {
+                others |= unit;
+            }
+        }
+        pos += 1;
+    }
+    others.count_ones()
 }
 
 #[inline(always)]
@@ -1150,12 +974,44 @@ fn resolve_unit_count_skill(
 }
 
 #[inline(always)]
-fn resolve_diff_skill(table: &[DiffSkill], skill: SkillSlot, diff_count: u32) -> u32 {
+fn resolve_diff_skill(table: &[DiffSkill], skill: SkillSlot, unit_count: u32) -> u32 {
     let index = skill.value.saturating_sub(1) as usize;
     let Some(entry) = table.get(index) else {
         return 0;
     };
-    entry.base as u32 + entry.increment as u32 * diff_count
+    entry.base as u32
+        + entry.increment as u32 * unit_count.min(u32::from(DiffSkill::MAX_COUNTED_UNITS))
+}
+
+#[inline(always)]
+fn resolve_reference_skill(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; 5],
+    index: usize,
+    slot: SkillSlot,
+) -> f64 {
+    let base = pool.skill_min(unsafe { *deck.get_unchecked(index) }) as f64;
+    let (rate, max) = resolve_ref_skill(pool.special().ref_skills(), slot);
+    if rate == 0 || max == 0 {
+        return base;
+    }
+    let rate = f64::from(rate);
+    let max = f64::from(max);
+    let mut shares = [0.0_f64; DECK_SIZE - 1];
+    let mut len = 0usize;
+    let mut other = 0usize;
+    while other < DECK_SIZE {
+        if other != index {
+            let reference = f64::from(pool.skill_reference(unsafe { *deck.get_unchecked(other) }));
+            unsafe {
+                *shares.get_unchecked_mut(len) = (reference * rate / 100.0).min(max);
+            }
+            len += 1;
+        }
+        other += 1;
+    }
+    base + choose_reference_score(&shares, len, ctx.skill_reference_strategy)
 }
 
 #[inline(always)]
@@ -1208,24 +1064,11 @@ fn choose_reference_score(
     }
 }
 
+/// Whether the deck meets the optional lower bound on its effective skill value.
 #[inline(always)]
-fn has_valid_permutation(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) -> bool {
-    if ctx.multi_live_score_up_lower_bound.is_none() {
-        return true;
-    }
-    let prepared = prepare_skills(pool, ctx, deck);
-    let mut mask = prepared.enumerate_mask;
-    loop {
-        let permutation = materialize_permutation(pool, deck, ctx, &prepared, mask);
-        if permutation_satisfies_lower_bound(ctx, &permutation) {
-            return true;
-        }
-        if mask == 0 {
-            break;
-        }
-        mask = (mask - 1) & prepared.enumerate_mask;
-    }
-    false
+fn meets_skill_lower_bound(pool: &CardPool, ctx: &SearchContext, deck: &[CardIdx; 5]) -> bool {
+    ctx.multi_live_score_up_lower_bound.is_none()
+        || permutation_satisfies_lower_bound(ctx, &evaluate_permutation(pool, ctx, deck))
 }
 
 #[inline(always)]

@@ -150,6 +150,13 @@ impl PoolBuilder {
         self.column_mut::<u8>(self.layout.off_skill_max)[idx as usize] = val;
     }
 
+    /// Records the skill value other members reference when they copy part of
+    /// this card's skill (see [`CardPool::skill_reference`]).
+    #[inline(always)]
+    pub(crate) fn set_skill_reference(&mut self, idx: u16, val: u16) {
+        self.column_mut::<u16>(self.layout.off_skill_reference)[idx as usize] = val;
+    }
+
     #[inline(always)]
     pub(crate) fn mark_char(&mut self, char_id: u8, card_idx: u16) {
         // `Mask` deliberately remains one 512-bit cache line for the ZMM

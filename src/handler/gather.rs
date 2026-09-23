@@ -340,6 +340,7 @@ pub(crate) fn sort_and_gather(
         builder.set_skill(dense, slot);
         builder.set_skill_min(dense, card.skill.skill_min);
         builder.set_skill_max(dense, card.skill.skill_max);
+        builder.set_skill_reference(dense, card.skill.reference_value);
         builder.set_event_bonus(dense, card.event_bonus);
 
         builder.set_char_id(dense, card.character_id);
