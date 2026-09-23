@@ -5,6 +5,7 @@ use crate::types::{DECK_SIZE, LiveType, ScoreTarget};
 
 use super::bonus_reach::BonusReach;
 use super::context::SearchContext;
+use super::objective::ObjectiveBound;
 use super::placement::evaluate_candidate;
 use super::suffix::{PartialDeck, SuffixBound, UsedSet};
 use super::tracker::TopKTracker;
@@ -21,7 +22,7 @@ const EP_SHADOW_MIN_DEPTH: usize = 3;
 fn score_noevent_threshold_numerator(threshold: u64) -> i64 {
     let live = threshold as u32;
     debug_assert_eq!(threshold >> 32, live as u64);
-    SuffixBound::score_noevent_threshold_numerator(live)
+    ObjectiveBound::score_noevent_threshold_numerator(live)
 }
 
 #[derive(Clone, Copy)]
@@ -671,9 +672,12 @@ impl SearchState<'_> {
                 let tight_skill =
                     partial.skill + self.pool.skill_max(card) as u32 + pre.skill_ub_rest;
                 let tight_leader = (partial.max_skill as u32).max(self.pool.skill_max(card) as u32);
-                let ceil = self
-                    .suffix
-                    .ceiling(tight_power, bonus_total, tight_skill, tight_leader);
+                let ceil = self.suffix.objective().ceiling(
+                    tight_power,
+                    bonus_total,
+                    tight_skill,
+                    tight_leader,
+                );
                 if ceil < threshold {
                     self.stats.mono_break_prunes += 1;
                     break;
@@ -764,11 +768,10 @@ impl SearchState<'_> {
                 let tight_leader = (partial.max_skill as u32)
                     .max(self.pool.skill_max(card) as u32)
                     .max(remaining_best_skill as u32);
-                let live_numerator = self.suffix.score_noevent_live_numerator_ceiling(
-                    tight_power,
-                    tight_skill,
-                    tight_leader,
-                );
+                let live_numerator = self
+                    .suffix
+                    .objective()
+                    .score_noevent_live_numerator_ceiling(tight_power, tight_skill, tight_leader);
                 if live_numerator < threshold_numerator {
                     self.stats.ep_continue_prunes += 1;
                     continue;
@@ -1014,9 +1017,12 @@ impl SearchState<'_> {
                     .max(card_skill_u32)
                     .max(remaining_best_skill as u32);
 
-                let global_ub =
-                    self.suffix
-                        .ceiling(tight_power, bonus_total_global, tight_skill, tight_leader);
+                let global_ub = self.suffix.objective().ceiling(
+                    tight_power,
+                    bonus_total_global,
+                    tight_skill,
+                    tight_leader,
+                );
                 if global_ub < threshold {
                     self.stats.ep_continue_prunes += 1;
                     continue;
@@ -1041,6 +1047,7 @@ impl SearchState<'_> {
                         + extra_bonus_ub;
                     let refined = self
                         .suffix
+                        .objective()
                         .ceiling(tight_power, bonus_total, tight_skill, tight_leader)
                         .min(self.suffix.dense_candidate_ceiling_with_extra(
                             dense,

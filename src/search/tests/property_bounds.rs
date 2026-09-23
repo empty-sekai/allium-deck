@@ -198,7 +198,7 @@ fn fractional_average_ceiling_bounds_the_leaf_and_complete_ordered_top_k() {
                         let actual = evaluate::leaf_evaluate_checked(&pool, &context, &deck)
                             .expect("five distinct characters form a legal leaf");
                         let suffix = SuffixBound::build(&pool, &context);
-                        let upper = suffix.ceiling(500_000, 0, 1, 1);
+                        let upper = suffix.objective().ceiling(500_000, 0, 1, 1);
                         assert!(upper >= actual, "ceiling={upper} leaf={actual}");
                         if power_cap.is_some() {
                             assert_eq!(actual, (167u64 << 32) | 1_344_001);

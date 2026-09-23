@@ -629,7 +629,7 @@ impl ChallengeBounds {
         };
         let mut best = 0u64;
         for state in states {
-            let ceiling = suffix.ceiling(
+            let ceiling = suffix.objective().ceiling(
                 partial.power + state.power,
                 0,
                 partial.skill + state.skill,

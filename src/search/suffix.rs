@@ -1,21 +1,13 @@
 use std::mem::size_of;
 
 use crate::pool::{CardIdx, CardPool};
-use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
+use crate::types::{DECK_SIZE, ScoreTarget};
 
 use super::context::SearchContext;
 use super::evaluate::calc_mysekai_internal;
+use super::objective::{LIVE_SCORE_BOUND_SCALE, ObjectiveBound};
 
 const JOINT_SUPPORT_BUCKET: u32 = 1024;
-const LIVE_SCORE_BOUND_SCALE: i64 = 1_000_000;
-
-/// Round outward for a positive denominator without an unstable signed API.
-#[inline(always)]
-fn ceil_div_positive(numerator: i64, denominator: i64) -> i64 {
-    debug_assert!(denominator > 0);
-    let quotient = numerator / denominator;
-    quotient + i64::from(numerator % denominator > 0)
-}
 
 /// 已选角色集合。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,28 +58,7 @@ pub struct PartialDeck {
 /// 角色感知后缀上界。
 #[derive(Clone, Debug, PartialEq)]
 pub struct SuffixBound {
-    target: ScoreTarget,
-    effective_live_type: LiveType,
-    has_event: bool,
-    music_rate_pct: u32,
-    boost_rate_pct: u32,
-    /// base_rate × 1_000_000, ceil。
-    base_rate_1m: i64,
-    /// (skill_rate_sum / 500) × 1_000_000, ceil。
-    srs_div500_1m: i64,
-    /// Solo/Auto + Average：前 5 个 rate 的和 × 1_000_000, ceil。
-    avg_sum5_1m: i64,
-    /// Solo/Auto + Average：leader 追加 slot 的 rate × 1_000_000, ceil。
-    avg_leader_rate_1m: i64,
-    /// 5 × multi_teammate_score_up（Multi/Cheerful 专用）。
-    teammate_su_5x: i64,
-    /// Multi/Cheerful: 75_000 (= 0.075 × 1M), 其他: 0。
-    active_1m_coeff: i64,
-    other_score: i32,
-    /// Cheerful: 5750 + clamp(life, 500, 1000), 其他: 0。
-    life_rate_num: i32,
-    multi_teammate_power: Option<i32>,
-    live_skill_order: LiveSkillOrder,
+    objective: ObjectiveBound,
     is_world_bloom: bool,
     attr_matching: bool,
     is_final_chapter: bool,
@@ -96,8 +67,6 @@ pub struct SuffixBound {
     diff_attr_bonus: [u16; 6],
     support_cards: Vec<(u16, f64)>,
     support_count: usize,
-    honor_bonus: u32,
-    power_total_cap: Option<u32>,
     power_order: [u8; CHAR_MASK_COUNT],
     power_vals: [u32; CHAR_MASK_COUNT],
     skill_order: [u8; CHAR_MASK_COUNT],
@@ -195,6 +164,11 @@ fn world_bloom_extra_bonus_fallback(
 }
 
 impl SuffixBound {
+    /// The objective relaxation shared by every aggregate ceiling.
+    #[inline(always)]
+    pub(crate) fn objective(&self) -> &ObjectiveBound {
+        &self.objective
+    }
     /// 基于卡池构建一次性后缀上界数据。
     pub fn build(pool: &CardPool, ctx: &SearchContext) -> Self {
         let mut power_per_char = [0u32; CHAR_MASK_COUNT];
@@ -228,58 +202,11 @@ impl SuffixBound {
             dense_leader_tail,
         ) = build_dense_suffix_tails(pool, ctx.is_final_chapter);
 
-        let base_rate: f64 = match ctx.effective_live_type() {
-            LiveType::Auto | LiveType::ChallengeAuto => ctx.base_score_auto,
-            LiveType::Multi | LiveType::Cheerful => ctx.base_score + ctx.fever_score * 0.5,
-            _ => ctx.base_score,
-        };
-        let skill_rate_sum: f64 = ctx.skill_scores[match ctx.effective_live_type() {
-            LiveType::Multi | LiveType::Cheerful => 1,
-            LiveType::Auto | LiveType::ChallengeAuto => 2,
-            _ => 0,
-        }]
-        .iter()
-        .sum();
-        let active_skill_rates = ctx.skill_scores[match ctx.effective_live_type() {
-            LiveType::Multi | LiveType::Cheerful => 1,
-            LiveType::Auto | LiveType::ChallengeAuto => 2,
-            _ => 0,
-        }];
-        let avg_sum5 = active_skill_rates[..DECK_SIZE].iter().sum::<f64>();
-        let avg_leader_rate = active_skill_rates[DECK_SIZE];
         let (support_cards, support_count) = support_upper_envelope(pool, ctx);
         let extra_bonus_ub = world_bloom_extra_bonus_fallback(ctx, &support_cards, support_count);
 
         Self {
-            target: ctx.target,
-            effective_live_type: ctx.effective_live_type(),
-            has_event: ctx.has_event(),
-            music_rate_pct: ctx.music_rate_pct,
-            boost_rate_pct: ctx.boost_rate_pct,
-            base_rate_1m: (base_rate * 1_000_000.0).ceil() as i64,
-            srs_div500_1m: (skill_rate_sum / 500.0 * 1_000_000.0).ceil() as i64,
-            avg_sum5_1m: (avg_sum5 * 1_000_000.0).ceil() as i64,
-            avg_leader_rate_1m: (avg_leader_rate * 1_000_000.0).ceil() as i64,
-            teammate_su_5x: ctx
-                .multi_teammate_score_up
-                .map(|v| v as i64 * 5)
-                .unwrap_or(0),
-            active_1m_coeff: if matches!(
-                ctx.effective_live_type(),
-                LiveType::Multi | LiveType::Cheerful
-            ) {
-                75_000
-            } else {
-                0
-            },
-            other_score: ctx.other_score,
-            life_rate_num: if matches!(ctx.effective_live_type(), LiveType::Cheerful) {
-                5750 + ctx.life.clamp(500, 1000)
-            } else {
-                0
-            },
-            multi_teammate_power: ctx.multi_teammate_power,
-            live_skill_order: ctx.live_skill_order,
+            objective: ObjectiveBound::from_context(ctx),
             is_world_bloom: ctx.is_world_bloom,
             attr_matching: super::tuning::SearchTuning::load().world_bloom_attr_matching,
             is_final_chapter: ctx.is_final_chapter,
@@ -288,8 +215,6 @@ impl SuffixBound {
             diff_attr_bonus: ctx.diff_attr_bonus,
             support_cards,
             support_count,
-            honor_bonus: ctx.honor_bonus,
-            power_total_cap: ctx.power_total_cap,
             power_order,
             power_vals: power_order.map(|char_id| power_per_char[char_id as usize]),
             skill_order,
@@ -334,8 +259,8 @@ impl SuffixBound {
         partial: &PartialDeck,
         slots_left: usize,
     ) -> i64 {
-        debug_assert!(matches!(self.target, ScoreTarget::Score));
-        debug_assert!(!self.has_event);
+        debug_assert!(matches!(self.objective.target, ScoreTarget::Score));
+        debug_assert!(!self.objective.has_event);
         if self.noev_tables.is_empty() {
             let packed = self.upper_bound_for_slots(slots_left, used_chars, partial);
             let live = packed as u32;
@@ -435,7 +360,8 @@ impl SuffixBound {
             idx += 1;
         }
         power += self.noev_tail(allowed, attr_opt, used, slots_left);
-        self.score_noevent_live_numerator_ceiling(power, total_skill, leader_ub)
+        self.objective
+            .score_noevent_live_numerator_ceiling(power, total_skill, leader_ub)
     }
 
     #[inline(always)]
@@ -492,8 +418,8 @@ impl SuffixBound {
         used_chars: &UsedSet,
         partial: &PartialDeck,
     ) -> u64 {
-        match self.target {
-            ScoreTarget::Power => self.clamp_power_total(
+        match self.objective.target {
+            ScoreTarget::Power => self.objective.clamp_power_total(
                 partial.power
                     + suffix_sum_u32(
                         &self.power_order,
@@ -501,7 +427,7 @@ impl SuffixBound {
                         used_chars.bits(),
                         slots_left,
                     )
-                    + self.honor_bonus,
+                    + self.objective.honor_bonus,
             ) as u64,
             ScoreTarget::Skill => {
                 let total_skill = partial.skill
@@ -525,7 +451,7 @@ impl SuffixBound {
                         slots_left,
                     )
                     + self.extra_bonus_ub;
-                let total_power = self.clamp_power_total(
+                let total_power = self.objective.clamp_power_total(
                     partial.power
                         + suffix_sum_u32(
                             &self.power_order,
@@ -533,7 +459,7 @@ impl SuffixBound {
                             used_chars.bits(),
                             slots_left,
                         )
-                        + self.honor_bonus,
+                        + self.objective.honor_bonus,
                 );
                 let total_skill = partial.skill
                     + suffix_sum_u16_as_u32(
@@ -545,11 +471,13 @@ impl SuffixBound {
                 let best_unused =
                     first_unused_val_u16(&self.skill_order, &self.skill_vals, used_chars.bits());
                 let leader_ub = (partial.max_skill as u32).max(best_unused as u32);
-                let live_score = self.calc_live_score_bound(total_power, total_skill, leader_ub);
+                let live_score =
+                    self.objective
+                        .calc_live_score_bound(total_power, total_skill, leader_ub);
                 (((total_bonus.saturating_mul(2)) as u64) << 32) | (live_score.max(0) as u32 as u64)
             }
             ScoreTarget::Score => {
-                let total_power = self.clamp_power_total(
+                let total_power = self.objective.clamp_power_total(
                     partial.power
                         + suffix_sum_u32(
                             &self.power_order,
@@ -557,7 +485,7 @@ impl SuffixBound {
                             used_chars.bits(),
                             slots_left,
                         )
-                        + self.honor_bonus,
+                        + self.objective.honor_bonus,
                 );
                 let total_bonus = partial.bonus
                     + suffix_sum_u16_as_u32(
@@ -577,12 +505,16 @@ impl SuffixBound {
                 let best_unused =
                     first_unused_val_u16(&self.skill_order, &self.skill_vals, used_chars.bits());
                 let leader_ub = (partial.max_skill as u32).max(best_unused as u32);
-                let live_score = self.calc_live_score_bound(total_power, total_skill, leader_ub);
-                let event_point = self.calc_event_point_bound(live_score, total_bonus);
+                let live_score =
+                    self.objective
+                        .calc_live_score_bound(total_power, total_skill, leader_ub);
+                let event_point = self
+                    .objective
+                    .calc_event_point_bound(live_score, total_bonus);
                 ((event_point as u64) << 32) | (live_score as u32 as u64)
             }
             ScoreTarget::Mysekai => {
-                let total_power = self.clamp_power_total(
+                let total_power = self.objective.clamp_power_total(
                     partial.power
                         + suffix_sum_u32(
                             &self.power_order,
@@ -590,7 +522,7 @@ impl SuffixBound {
                             used_chars.bits(),
                             slots_left,
                         )
-                        + self.honor_bonus,
+                        + self.objective.honor_bonus,
                 );
                 let total_bonus = partial.bonus
                     + suffix_sum_u16_as_u32(
@@ -688,148 +620,6 @@ impl SuffixBound {
         }
     }
 
-    /// Score/no-event has a strictly live-score-ordered objective because its
-    /// public key is `(live_score, live_score)`.  Bound pruning can compare the
-    /// pre-division numerator against `threshold * 1_000_000`: for non-negative
-    /// N, `floor(N / D) < T` iff `N < T * D`.
-    #[inline(always)]
-    pub(crate) fn score_noevent_live_numerator_ceiling(
-        &self,
-        power_ub: u32,
-        skill_ub: u32,
-        leader_ub: u32,
-    ) -> i64 {
-        debug_assert!(matches!(self.target, ScoreTarget::Score));
-        debug_assert!(!self.has_event);
-        let power_ub = self.clamp_power_total(power_ub + self.honor_bonus);
-        let numerator = self.calc_live_score_bound_numerator(power_ub, skill_ub, leader_ub);
-        debug_assert!(numerator >= 0);
-        numerator
-    }
-
-    #[cfg(test)]
-    #[inline(always)]
-    pub(crate) fn score_noevent_live_ceiling(
-        &self,
-        power_ub: u32,
-        skill_ub: u32,
-        leader_ub: u32,
-    ) -> u32 {
-        (self.score_noevent_live_numerator_ceiling(power_ub, skill_ub, leader_ub)
-            / LIVE_SCORE_BOUND_SCALE) as u32
-    }
-
-    #[inline(always)]
-    pub(crate) const fn score_noevent_threshold_numerator(live: u32) -> i64 {
-        live as i64 * LIVE_SCORE_BOUND_SCALE
-    }
-
-    /// Generic target-aware ceiling from admissible aggregate inputs.
-    #[inline(always)]
-    pub(crate) fn ceiling(
-        &self,
-        power_ub: u32,
-        bonus_total: u32,
-        skill_ub: u32,
-        leader_ub: u32,
-    ) -> u64 {
-        let power_ub = self.clamp_power_total(power_ub + self.honor_bonus);
-        match self.target {
-            ScoreTarget::Power => power_ub as u64,
-            ScoreTarget::Skill => (2 * skill_ub + 8 * leader_ub) as u64,
-            ScoreTarget::Bonus => {
-                let live = self.calc_live_score_bound(power_ub, skill_ub, leader_ub);
-                (((bonus_total.saturating_mul(2)) as u64) << 32) | (live.max(0) as u32 as u64)
-            }
-            ScoreTarget::Score => {
-                let live = self.calc_live_score_bound(power_ub, skill_ub, leader_ub);
-                let ep = self.calc_event_point_bound(live, bonus_total);
-                ((ep as u64) << 32) | (live as u32 as u64)
-            }
-            ScoreTarget::Mysekai => calc_mysekai_internal(power_ub, bonus_total as f64) as u64,
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) fn ceiling_multi_score_event(
-        &self,
-        power_ub: u32,
-        bonus_total: u32,
-        skill_ub: u32,
-        leader_ub: u32,
-    ) -> u64 {
-        let power_total = self.clamp_power_total(power_ub + self.honor_bonus);
-        let max_slot_5x = (4 * leader_ub as i64 + skill_ub as i64).max(self.teammate_su_5x);
-        let rate_1m = self.base_rate_1m + max_slot_5x * self.srs_div500_1m;
-        let power_sum = if let Some(teammate_power) = self.multi_teammate_power {
-            power_total as i64 + teammate_power as i64 * (DECK_SIZE as i64 - 1)
-        } else {
-            DECK_SIZE as i64 * power_total as i64
-        };
-        let active_1m = self.active_1m_coeff * power_sum;
-        let live_score = ((rate_1m * power_total as i64 * 4 + active_1m) / 1_000_000) as i32;
-        let other_score = if self.other_score == 0 {
-            (live_score as i64).saturating_mul(4)
-        } else {
-            self.other_score as i64
-        };
-        let base_score = 110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
-        let inner = base_score * self.music_rate_pct as i64 * (bonus_total as i64 + 100) / 10_000;
-        let event_point = (inner * self.boost_rate_pct as i64 / 100) as i32;
-        ((event_point as u64) << 32) | (live_score as u32 as u64)
-    }
-
-    #[inline(always)]
-    fn calc_live_score_bound_numerator(
-        &self,
-        power_total: u32,
-        skill_total: u32,
-        leader_ub: u32,
-    ) -> i64 {
-        let rate_1m = match self.effective_live_type {
-            LiveType::Multi | LiveType::Cheerful => {
-                let max_slot_5x =
-                    (4 * leader_ub as i64 + skill_total as i64).max(self.teammate_su_5x);
-                self.base_rate_1m + max_slot_5x * self.srs_div500_1m
-            }
-            LiveType::Solo | LiveType::Auto
-                if matches!(self.live_skill_order, LiveSkillOrder::Average) =>
-            {
-                self.base_rate_1m
-                    + ceil_div_positive(skill_total as i64 * self.avg_sum5_1m, 500)
-                    + ceil_div_positive(leader_ub as i64 * self.avg_leader_rate_1m, 100)
-            }
-            _ => {
-                // 每个技能槽的 score_up 不超过全队最大技能 L（含 leader 复发槽），
-                // 因此 Σ su_i·r_i ≤ L·Σr_i = L·srs。旧值 5*skill_total(=S·srs/100)
-                // 对 Solo/Auto 高估约 5 倍。
-                self.base_rate_1m + 5 * (leader_ub as i64) * self.srs_div500_1m
-            }
-        };
-        let power_sum: i64 = if let Some(tp) = self.multi_teammate_power {
-            power_total as i64 + tp as i64 * (DECK_SIZE as i64 - 1)
-        } else {
-            DECK_SIZE as i64 * power_total as i64
-        };
-        let active_1m = self.active_1m_coeff * power_sum;
-        match self.effective_live_type {
-            LiveType::Mysekai => 0,
-            _ => rate_1m * power_total as i64 * 4 + active_1m,
-        }
-    }
-
-    #[inline(always)]
-    fn calc_live_score_bound(&self, power_total: u32, skill_total: u32, leader_ub: u32) -> i32 {
-        (self.calc_live_score_bound_numerator(power_total, skill_total, leader_ub)
-            / LIVE_SCORE_BOUND_SCALE) as i32
-    }
-
-    #[inline(always)]
-    fn clamp_power_total(&self, power_total: u32) -> u32 {
-        self.power_total_cap
-            .map_or(power_total, |cap| power_total.min(cap))
-    }
-
     /// Score/no-event dense-aware suffix ceiling in pre-division numerator units.
     #[inline(always)]
     pub(crate) fn score_noevent_dense_live_numerator_ceiling(
@@ -853,7 +643,7 @@ impl SuffixBound {
             .get(dense_start)
             .copied()
             .unwrap_or(0) as u32;
-        self.score_noevent_live_numerator_ceiling(
+        self.objective.score_noevent_live_numerator_ceiling(
             partial.power + tail_power,
             partial.skill + tail_skill,
             (partial.max_skill as u32).max(tail_leader),
@@ -884,7 +674,7 @@ impl SuffixBound {
             .get(dense_start)
             .copied()
             .unwrap_or(0) as u32;
-        self.ceiling(
+        self.objective.ceiling(
             partial.power + tail_power,
             partial.bonus + tail_bonus + self.extra_bonus_ub,
             partial.skill + tail_skill,
@@ -919,7 +709,7 @@ impl SuffixBound {
             .get(dense_start)
             .copied()
             .unwrap_or(0) as u32;
-        self.ceiling_multi_score_event(
+        self.objective.ceiling_multi_score_event(
             partial.power + tail_power,
             partial.bonus + tail_bonus + self.extra_bonus_ub,
             partial.skill + tail_skill,
@@ -951,7 +741,7 @@ impl SuffixBound {
             .get(dense_start)
             .copied()
             .unwrap_or(0) as u32;
-        self.ceiling(
+        self.objective.ceiling(
             partial.power + tail_power,
             partial.bonus + tail_bonus + extra_bonus_ub,
             partial.skill + tail_skill,
@@ -1000,7 +790,7 @@ impl SuffixBound {
             .map(|tail| tail[rest])
             .unwrap_or(0);
         let tail_leader = self.dense_leader_tail.get(next_start).copied().unwrap_or(0) as u32;
-        self.ceiling(
+        self.objective.ceiling(
             partial.power + card_power + tail_power,
             partial.bonus + card_bonus + tail_bonus + self.extra_bonus_ub,
             partial.skill + card_skill + tail_skill,
@@ -1035,7 +825,7 @@ impl SuffixBound {
             .map(|tail| tail[rest])
             .unwrap_or(0);
         let tail_leader = self.dense_leader_tail.get(next_start).copied().unwrap_or(0) as u32;
-        self.ceiling_multi_score_event(
+        self.objective.ceiling_multi_score_event(
             partial.power + card_power + tail_power,
             partial.bonus + card_bonus + tail_bonus + self.extra_bonus_ub,
             partial.skill + card_skill + tail_skill,
@@ -1066,7 +856,7 @@ impl SuffixBound {
                     .map(|tail| tail[rest])
                     .unwrap_or(0),
             )
-            .saturating_add(self.honor_bonus)
+            .saturating_add(self.objective.honor_bonus)
             .saturating_add(
                 512u32.saturating_mul(
                     partial
@@ -1084,7 +874,7 @@ impl SuffixBound {
                     .map(|tail| tail[rest])
                     .unwrap_or(0),
             )
-            .saturating_add(self.honor_bonus)
+            .saturating_add(self.objective.honor_bonus)
             .saturating_add(
                 1024u32.saturating_mul(
                     partial
@@ -1108,14 +898,14 @@ impl SuffixBound {
             .first()
             .map(|tail| tail[DECK_SIZE])
             .unwrap_or(0)
-            .saturating_add(self.honor_bonus)
+            .saturating_add(self.objective.honor_bonus)
             .saturating_add(bonus_weight.saturating_mul(self.extra_bonus_ub));
-        let max_power = self.clamp_power_total(
+        let max_power = self.objective.clamp_power_total(
             self.dense_power_tail
                 .first()
                 .map(|tail| tail[DECK_SIZE])
                 .unwrap_or(0)
-                .saturating_add(self.honor_bonus),
+                .saturating_add(self.objective.honor_bonus),
         );
         let max_bonus = self
             .dense_bonus_tail
@@ -1134,7 +924,7 @@ impl SuffixBound {
         let mut bucket = 0usize;
         while bucket <= bucket_count {
             let support = (bucket as u32).saturating_mul(JOINT_SUPPORT_BUCKET);
-            table.push(self.joint_event_point_upper(
+            table.push(self.objective.joint_event_point_upper(
                 max_power.min(support),
                 max_bonus.min(support / bonus_weight),
                 max_skill,
@@ -1145,91 +935,6 @@ impl SuffixBound {
             bucket += 1;
         }
         table
-    }
-
-    #[inline(always)]
-    fn joint_event_point_upper(
-        &self,
-        power_ub: u32,
-        bonus_ub: u32,
-        skill_ub: u32,
-        leader_ub: u32,
-        support_ub: u32,
-        bonus_weight: u32,
-    ) -> u32 {
-        let max_slot_5x = (4 * leader_ub as i64 + skill_ub as i64).max(self.teammate_su_5x);
-        let rate_1m = self.base_rate_1m + max_slot_5x * self.srs_div500_1m;
-        let (power_multiplier, power_constant) = match self.multi_teammate_power {
-            Some(teammate_power) => (1i128, teammate_power as i128 * (DECK_SIZE as i128 - 1)),
-            None => (DECK_SIZE as i128, 0),
-        };
-        let live_power_coeff =
-            4i128 * rate_1m as i128 + self.active_1m_coeff as i128 * power_multiplier;
-        let live_constant = self.active_1m_coeff as i128 * power_constant;
-
-        let capped_power = self
-            .power_total_cap
-            .map_or(power_ub, |cap| power_ub.min(cap));
-        let support_ub = self.power_total_cap.map_or(support_ub, |cap| {
-            support_ub.min(cap.saturating_add(bonus_weight.saturating_mul(bonus_ub)))
-        });
-
-        let capped_other = if self.other_score == 0 {
-            13i128
-        } else {
-            (self.other_score as i128 / 340_000).min(13)
-        };
-        let capped_bound = maximize_joint_event_numerator(
-            capped_power,
-            bonus_ub,
-            support_ub,
-            bonus_weight,
-            123,
-            17_000_000_000,
-            live_power_coeff,
-            live_constant,
-            1,
-        );
-        let capped_ep = ceil_div_i128(
-            capped_bound * self.music_rate_pct as i128 * self.boost_rate_pct as i128,
-            17_000_000_000i128 * 1_000_000,
-        );
-
-        let selected_ep = if self.other_score == 0 {
-            let uncapped_bound = maximize_joint_event_numerator(
-                capped_power,
-                bonus_ub,
-                support_ub,
-                bonus_weight,
-                110,
-                85_000_000_000,
-                live_power_coeff,
-                live_constant,
-                6,
-            );
-            let uncapped_ep = ceil_div_i128(
-                uncapped_bound * self.music_rate_pct as i128 * self.boost_rate_pct as i128,
-                85_000_000_000i128 * 1_000_000,
-            );
-            capped_ep.min(uncapped_ep)
-        } else {
-            let fixed_other_bound = maximize_joint_event_numerator(
-                capped_power,
-                bonus_ub,
-                support_ub,
-                bonus_weight,
-                110 + capped_other as i64,
-                17_000_000_000,
-                live_power_coeff,
-                live_constant,
-                1,
-            );
-            ceil_div_i128(
-                fixed_other_bound * self.music_rate_pct as i128 * self.boost_rate_pct as i128,
-                17_000_000_000i128 * 1_000_000,
-            )
-        };
-        selected_ep.clamp(0, u32::MAX as i128) as u32
     }
 
     /// 当前候选 + dense suffix 的 ceiling，调用方传入更紧的额外 bonus 上界。
@@ -1274,7 +979,7 @@ impl SuffixBound {
             .map(|tail| tail[rest])
             .unwrap_or(0);
         let tail_leader = self.dense_leader_tail.get(next_start).copied().unwrap_or(0) as u32;
-        self.ceiling(
+        self.objective.ceiling(
             partial.power + card_power + tail_power,
             partial.bonus + card_bonus + tail_bonus + extra_bonus_ub,
             partial.skill + card_skill + tail_skill,
@@ -1476,46 +1181,6 @@ impl SuffixBound {
             idx += 1;
         }
         support_sum
-    }
-
-    #[inline(always)]
-    fn calc_event_point_bound(&self, live_score: i32, total_bonus: u32) -> i32 {
-        if !self.has_event {
-            return live_score;
-        }
-        match self.effective_live_type {
-            LiveType::Challenge | LiveType::ChallengeAuto => (100 + live_score / 20_000) * 120,
-            LiveType::Solo | LiveType::Auto => {
-                let base_score = (100 + live_score / 20_000) as i64;
-                let inner =
-                    base_score * self.music_rate_pct as i64 * (total_bonus as i64 + 100) / 10_000;
-                (inner * self.boost_rate_pct as i64 / 100) as i32
-            }
-            LiveType::Multi => {
-                let other_score = if self.other_score == 0 {
-                    (live_score as i64).saturating_mul(4)
-                } else {
-                    self.other_score as i64
-                };
-                let base_score = 110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
-                let inner =
-                    base_score * self.music_rate_pct as i64 * (total_bonus as i64 + 100) / 10_000;
-                (inner * self.boost_rate_pct as i64 / 100) as i32
-            }
-            LiveType::Cheerful => {
-                let other_score = if self.other_score == 0 {
-                    (live_score as i64).saturating_mul(4)
-                } else {
-                    self.other_score as i64
-                };
-                let base_score = 110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
-                let inner = (base_score * self.music_rate_pct as i64 * (total_bonus as i64 + 100)
-                    / 10_000) as i32;
-                let with_life = inner as i64 * self.life_rate_num as i64 / 5000;
-                (with_life * self.boost_rate_pct as i64 / 100) as i32
-            }
-            LiveType::Mysekai => 0,
-        }
     }
 }
 
@@ -1914,61 +1579,6 @@ fn joint_ep_lookup(table: &[u32], support: u32) -> u32 {
     table.get(bucket).copied().unwrap_or(u32::MAX)
 }
 
-#[allow(clippy::too_many_arguments)]
-#[inline(always)]
-fn maximize_joint_event_numerator(
-    power_ub: u32,
-    bonus_ub: u32,
-    support_ub: u32,
-    bonus_weight: u32,
-    base_constant: i64,
-    base_denominator: i128,
-    live_power_coeff: i128,
-    live_constant: i128,
-    live_multiplier: i128,
-) -> i128 {
-    let max_bonus = bonus_ub.min(support_ub / bonus_weight);
-    let linear_power = live_multiplier * live_power_coeff;
-    let linear_constant =
-        base_constant as i128 * base_denominator + live_multiplier * live_constant;
-
-    let evaluate = |bonus: u32| -> i128 {
-        let supported_power = support_ub.saturating_sub(bonus_weight.saturating_mul(bonus));
-        let power = power_ub.min(supported_power) as i128;
-        (linear_constant + linear_power * power) * (bonus as i128 + 100)
-    };
-
-    let mut best = evaluate(0).max(evaluate(max_bonus));
-    if support_ub > power_ub {
-        let flat_end = ((support_ub - power_ub) / bonus_weight).min(max_bonus);
-        best = best.max(evaluate(flat_end));
-        if flat_end < max_bonus {
-            best = best.max(evaluate(flat_end + 1));
-        }
-    }
-
-    let quadratic = linear_power * bonus_weight as i128;
-    if quadratic > 0 {
-        let vertex_numerator =
-            linear_constant + linear_power * support_ub as i128 - quadratic * 100;
-        if vertex_numerator > 0 {
-            let vertex = vertex_numerator / (2 * quadratic);
-            for candidate in [vertex - 1, vertex, vertex + 1] {
-                if candidate >= 0 && candidate <= max_bonus as i128 {
-                    best = best.max(evaluate(candidate as u32));
-                }
-            }
-        }
-    }
-    best
-}
-
-#[inline(always)]
-fn ceil_div_i128(numerator: i128, denominator: i128) -> i128 {
-    debug_assert!(numerator >= 0 && denominator > 0);
-    numerator.saturating_add(denominator - 1) / denominator
-}
-
 /// 单卡在场景 (allowed_full_units, attr_full) 下的综合力上界（对该场景精确）。
 #[inline(always)]
 pub(crate) fn card_scenario_power(
@@ -2115,6 +1725,8 @@ fn insert_topk_u16(values: &mut [u16; DECK_SIZE], value: u16) {
 #[cfg(test)]
 mod support_envelope_tests {
     use super::*;
+    use crate::search::objective::ceil_div_positive;
+    use crate::types::{LiveSkillOrder, LiveType};
     use crate::pool::PoolBuilder;
     use crate::search::SupportDeck;
     use crate::types::{EventType, SkillReferenceStrategy};

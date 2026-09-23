@@ -1489,7 +1489,7 @@ fn character_ceiling(
     } else {
         leader.extra_bonus_ub
     };
-    suffix.ceiling(
+    suffix.objective().ceiling(
         power_sum,
         bonus_sum + limited_sum + extra_bonus_ub,
         skill_sum,
@@ -1552,7 +1552,7 @@ fn selected_card_ceiling_from_partial(
     } else {
         ctx.extra_bonus_ub
     };
-    suffix.ceiling(
+    suffix.objective().ceiling(
         power_sum,
         bonus_sum + limited_sum + extra_bonus_ub,
         skill_sum,
@@ -1591,7 +1591,7 @@ fn selected_card_ceiling_with_candidate_support_ub(
     } else {
         ctx.extra_bonus_ub
     };
-    suffix.ceiling(
+    suffix.objective().ceiling(
         power_sum,
         bonus_sum + limited_sum + extra_bonus_ub,
         skill_sum,
@@ -2114,7 +2114,7 @@ mod skill_ceiling_tests {
                 assert_eq!(actual as u32, 6_720_000);
                 let suffix = SuffixBound::build(&pool, &ctx);
                 if order != LiveSkillOrder::Average {
-                    let invalid = suffix.ceiling(336_000, 0, 400, 0);
+                    let invalid = suffix.objective().ceiling(336_000, 0, 400, 0);
                     assert_eq!(invalid as u32, 1_344_000);
                     assert!(
                         invalid < actual,

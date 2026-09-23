@@ -1,5 +1,6 @@
 //! exact score contracts.
 use super::*;
+use crate::search::objective::ObjectiveBound;
 
 #[test]
 fn search_leaf_evaluate_encodes_targets() {
@@ -26,19 +27,23 @@ fn score_noevent_live_ceiling_is_identical_to_the_packed_score_order() {
     for power in [0, 100, 1_500, 50_000, 500_000] {
         for skill in [0, 25, 100, 500] {
             for leader in [0, 30, 120, 500] {
-                let numerator = suffix.score_noevent_live_numerator_ceiling(power, skill, leader);
-                let live = suffix.score_noevent_live_ceiling(power, skill, leader);
-                let packed = suffix.ceiling(power, 0, skill, leader);
+                let numerator = suffix
+                    .objective()
+                    .score_noevent_live_numerator_ceiling(power, skill, leader);
+                let live = suffix
+                    .objective()
+                    .score_noevent_live_ceiling(power, skill, leader);
+                let packed = suffix.objective().ceiling(power, 0, skill, leader);
                 assert_eq!(
                     numerator / 1_000_000,
                     live as i64,
                     "pre-division bound must preserve floor semantics"
                 );
                 assert_eq!(packed, ((live as u64) << 32) | live as u64);
-                assert!(numerator >= SuffixBound::score_noevent_threshold_numerator(live));
+                assert!(numerator >= ObjectiveBound::score_noevent_threshold_numerator(live));
                 assert!(
                     numerator
-                        < SuffixBound::score_noevent_threshold_numerator(live.saturating_add(1))
+                        < ObjectiveBound::score_noevent_threshold_numerator(live.saturating_add(1))
                 );
             }
         }
