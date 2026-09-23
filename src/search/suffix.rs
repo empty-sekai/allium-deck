@@ -1018,13 +1018,14 @@ impl SuffixBound {
         tail_base + tail_limited
     }
 
+    /// World Bloom extra bonus of any completion: the best diversity bonus
+    /// reachable from `attr_set` plus `support_ceiling`, a bound from
+    /// [`Self::support_ceiling`] on the cards already chosen.
     #[inline(always)]
-    pub(crate) fn world_bloom_extra_bonus_bound_for_candidate_parts(
+    pub(crate) fn world_bloom_extra_bonus_bound(
         &self,
         attr_set: u8,
-        selected: &[u16; DECK_SIZE],
-        selected_len: usize,
-        candidate_game_id: u16,
+        support_ceiling: u32,
         rest: usize,
         dense_start: usize,
         used_chars: u32,
@@ -1042,40 +1043,7 @@ impl SuffixBound {
             diff_ub = diff_ub.max(self.diff_attr_bonus[count] as u32);
             count += 1;
         }
-
-        let support_sum =
-            self.support_sum_excluding_candidate(selected, selected_len, candidate_game_id);
-
-        diff_ub + support_sum.ceil() as u32
-    }
-
-    #[inline(always)]
-    pub(crate) fn world_bloom_extra_bonus_bound_from_parts(
-        &self,
-        attr_set: u8,
-        selected: &[u16; DECK_SIZE],
-        selected_len: usize,
-        rest: usize,
-        dense_start: usize,
-        used_chars: u32,
-    ) -> u32 {
-        if !self.is_world_bloom {
-            return self.extra_bonus_ub;
-        }
-
-        let current_attrs = attr_set.count_ones() as usize;
-        let novel_ub = self.reachable_novel_attr_ub(attr_set, dense_start, used_chars, rest);
-        let max_attrs = (current_attrs + novel_ub).min(DECK_SIZE);
-        let mut diff_ub = 0u32;
-        let mut count = current_attrs;
-        while count <= max_attrs {
-            diff_ub = diff_ub.max(self.diff_attr_bonus[count] as u32);
-            count += 1;
-        }
-
-        let support_sum = self.support_sum_excluding(selected, selected_len);
-
-        diff_ub + support_sum.ceil() as u32
+        diff_ub + support_ceiling
     }
 
     /// Maximum number of NEW attributes that any legal completion can add,
@@ -1125,6 +1093,20 @@ impl SuffixBound {
         matched.min(rest)
     }
 
+    /// Rounded-up support sum of the partial deck `selected[..selected_len]`,
+    /// an upper bound on the support sum of every completion.
+    ///
+    /// The leaf sums, in order, the first `count` support entries (sorted by
+    /// non-increasing bonus) whose cards are outside the deck. Each card a
+    /// completion adds either leaves that selection unchanged or replaces a
+    /// counted entry by a later one, so rank by rank the completion's entries
+    /// are no larger; floating-point addition is monotone in each operand, so
+    /// its sum is no larger either.
+    #[inline(always)]
+    pub(crate) fn support_ceiling(&self, selected: &[u16; DECK_SIZE], selected_len: usize) -> u32 {
+        self.support_sum_excluding(selected, selected_len).ceil() as u32
+    }
+
     #[inline(always)]
     fn support_sum_excluding(&self, selected: &[u16; DECK_SIZE], selected_len: usize) -> f64 {
         let mut support_sum = 0.0_f64;
@@ -1136,38 +1118,6 @@ impl SuffixBound {
             }
             let (game_id, bonus) = unsafe { *self.support_cards.get_unchecked(idx) };
             if (selected_len > 0 && selected[0] == game_id)
-                || (selected_len > 1 && selected[1] == game_id)
-                || (selected_len > 2 && selected[2] == game_id)
-                || (selected_len > 3 && selected[3] == game_id)
-                || (selected_len > 4 && selected[4] == game_id)
-            {
-                idx += 1;
-                continue;
-            }
-            support_sum += bonus;
-            picked += 1;
-            idx += 1;
-        }
-        support_sum
-    }
-
-    #[inline(always)]
-    fn support_sum_excluding_candidate(
-        &self,
-        selected: &[u16; DECK_SIZE],
-        selected_len: usize,
-        candidate_game_id: u16,
-    ) -> f64 {
-        let mut support_sum = 0.0_f64;
-        let mut picked = 0usize;
-        let mut idx = 0usize;
-        while idx < self.support_cards.len() {
-            if picked >= self.support_count {
-                break;
-            }
-            let (game_id, bonus) = unsafe { *self.support_cards.get_unchecked(idx) };
-            if game_id == candidate_game_id
-                || (selected_len > 0 && selected[0] == game_id)
                 || (selected_len > 1 && selected[1] == game_id)
                 || (selected_len > 2 && selected[2] == game_id)
                 || (selected_len > 3 && selected[3] == game_id)
@@ -1835,15 +1785,10 @@ mod support_envelope_tests {
                 let profile = ctx.support_deck_for_leader(leader);
                 let expected = profile_sum(profile, &excluded);
                 assert!(suffix.support_sum_excluding(&selected, excluded.len()) >= expected);
+                let ceiling = suffix.support_ceiling(&selected, excluded.len());
                 assert!(
-                    f64::from(suffix.world_bloom_extra_bonus_bound_from_parts(
-                        0,
-                        &selected,
-                        excluded.len(),
-                        0,
-                        0,
-                        0,
-                    )) >= expected
+                    f64::from(suffix.world_bloom_extra_bonus_bound(0, ceiling, 0, 0, 0))
+                        >= expected
                 );
                 if excluded.len() == DECK_SIZE {
                     continue;
@@ -1851,25 +1796,7 @@ mod support_envelope_tests {
                 for candidate in 1..=7 {
                     let mut with_candidate = excluded.clone();
                     with_candidate.push(candidate);
-                    let expected = profile_sum(profile, &with_candidate);
-                    assert!(
-                        suffix.support_sum_excluding_candidate(
-                            &selected,
-                            excluded.len(),
-                            candidate,
-                        ) >= expected
-                    );
-                    assert!(
-                        f64::from(suffix.world_bloom_extra_bonus_bound_for_candidate_parts(
-                            0,
-                            &selected,
-                            excluded.len(),
-                            candidate,
-                            0,
-                            0,
-                            0,
-                        )) >= expected
-                    );
+                    assert!(f64::from(ceiling) >= profile_sum(profile, &with_candidate));
                 }
             }
         }
@@ -1904,7 +1831,7 @@ mod support_envelope_tests {
         let (pool, mut ctx) = fixture();
         ctx.diff_attr_bonus = [0, 0, 2, 4, 8, 10];
         let suffix = SuffixBound::build(&pool, &ctx);
-        let support = suffix.support_sum_excluding(&[7; DECK_SIZE], 0).ceil() as u32;
+        let support = suffix.support_ceiling(&[7; DECK_SIZE], 0);
         assert_eq!(suffix.extra_bonus_ub, support + 10);
         ctx.extra_bonus_ub = suffix.extra_bonus_ub + 100;
         assert_eq!(

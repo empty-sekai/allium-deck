@@ -341,7 +341,7 @@ pub(crate) fn dfs_search_with_budget(
     (tracker.into_vec(), stats)
 }
 
-fn canonicalize_seed_result(
+pub(super) fn canonicalize_seed_result(
     pool: &CardPool,
     ctx: &SearchContext,
     seed: DeckResult,
@@ -838,30 +838,24 @@ impl SearchState<'_> {
         let world_bloom_parts = self.ctx.is_world_bloom.then(|| {
             let mut attr_set = 0u8;
             let mut selected = [0u16; DECK_SIZE];
-            let mut selected_len = 0usize;
             let mut pos = 0usize;
             while pos < depth {
                 let card = deck[pos];
                 attr_set |= 1u8 << self.pool.attr(card);
-                selected[selected_len] = self.pool.game_id(card);
-                selected_len += 1;
+                selected[pos] = self.pool.game_id(card);
                 pos += 1;
             }
-            (attr_set, selected, selected_len)
+            (attr_set, self.suffix.support_ceiling(&selected, depth))
         });
-        let partial_extra_bonus_ub =
-            world_bloom_parts
-                .as_ref()
-                .map(|(attr_set, selected, selected_len)| {
-                    self.suffix.world_bloom_extra_bonus_bound_from_parts(
-                        *attr_set,
-                        selected,
-                        *selected_len,
-                        slots,
-                        start,
-                        used.bits(),
-                    )
-                });
+        let partial_extra_bonus_ub = world_bloom_parts.map(|(attr_set, support_ceiling)| {
+            self.suffix.world_bloom_extra_bonus_bound(
+                attr_set,
+                support_ceiling,
+                slots,
+                start,
+                used.bits(),
+            )
+        });
 
         let use_avx512_candidate_mask = self.avx512_candidate_mask
             && fixed_leader.is_none()
@@ -1036,20 +1030,15 @@ impl SearchState<'_> {
                     continue;
                 }
 
-                if let Some((selected_attr_set, selected, selected_len)) = world_bloom_parts {
+                if let Some((selected_attr_set, support_ceiling)) = world_bloom_parts {
                     let card_attr_bit = 1u8 << self.pool.attr(card);
-                    let card_game_id = self.pool.game_id(card);
-                    let extra_bonus_ub = self
-                        .suffix
-                        .world_bloom_extra_bonus_bound_for_candidate_parts(
-                            selected_attr_set | card_attr_bit,
-                            &selected,
-                            selected_len,
-                            card_game_id,
-                            slots.saturating_sub(1),
-                            dense,
-                            used.bits() | (1u32 << char_id),
-                        );
+                    let extra_bonus_ub = self.suffix.world_bloom_extra_bonus_bound(
+                        selected_attr_set | card_attr_bit,
+                        support_ceiling,
+                        slots.saturating_sub(1),
+                        dense,
+                        used.bits() | (1u32 << char_id),
+                    );
                     let bonus_total = partial.bonus + card_bonus + pre.suffix_bonus
                         - pre.bonus_delta(char_id)
                         + extra_bonus_ub;

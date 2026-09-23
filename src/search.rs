@@ -150,24 +150,38 @@ fn search_with_budget(
     }
 
     let bounds_enabled = tuning::SearchTuning::load().bounds;
+    // Final Chapter solvers seed per leader job; every other family seeds
+    // once on the whole pool and shares the incumbents across regimes.
+    let seed = |budget: &mut SearchBudget, stats: &mut SearchStats| {
+        if ctx.is_final_chapter {
+            Vec::new()
+        } else {
+            warm_start::warm_start_seeds_with_budget(pool, ctx, params.top_k, budget, stats)
+        }
+    };
     composition::search_regimes(
         pool,
         ctx,
         params,
         budget,
         bounds_enabled,
-        |pool, ctx, floor, budget| search_unique_characters(pool, ctx, params, floor, budget),
+        seed,
+        |pool, ctx, floor, seeds, budget| {
+            search_unique_characters(pool, ctx, params, floor, seeds, budget)
+        },
     )
 }
 
 /// Exact search of one composition regime: character-unique decks whose
 /// per-card power bound is admissible for every deck the caller needs found.
-/// `floor` is a primary objective already reached by K known public sets.
+/// `floor` is a primary objective already reached by K known public sets;
+/// `seeds` are known legal decks of this pool, used only as incumbents.
 fn search_unique_characters(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
     floor: u64,
+    seeds: Vec<DeckResult>,
     budget: &mut SearchBudget,
 ) -> (Vec<DeckResult>, SearchStats) {
     let mut phase_stats = SearchStats::default();
@@ -279,13 +293,7 @@ fn search_unique_characters(
         return (expanded, stats);
     }
     let suffix = SuffixBound::build(&search_pool, &search_ctx);
-    let seeds = warm_start::warm_start_seeds_with_budget(
-        &search_pool,
-        &search_ctx,
-        params.top_k,
-        budget,
-        &mut phase_stats,
-    );
+    let seeds = compact_results(seeds, &original_indices, pool.count());
     let (compacted_results, mut stats) = dfs::dfs_search_with_budget(
         &search_pool,
         &search_ctx,
@@ -380,6 +388,28 @@ fn single_challenge_character(pool: &CardPool) -> Option<u8> {
         }
     }
     only
+}
+
+/// Inverse of [`remap_results`]: keeps the decks whose cards all survive the
+/// compaction and rewrites them in compacted indices.
+fn compact_results(
+    results: Vec<DeckResult>,
+    original_indices: &[crate::pool::CardIdx],
+    original_count: usize,
+) -> Vec<DeckResult> {
+    let mut compacted = vec![None; original_count];
+    for (dense, original) in original_indices.iter().enumerate() {
+        compacted[original.raw()] = Some(crate::pool::CardIdx::new(dense as u16));
+    }
+    results
+        .into_iter()
+        .filter_map(|mut result| {
+            for card in &mut result.cards {
+                *card = compacted[card.raw()]?;
+            }
+            Some(result)
+        })
+        .collect()
 }
 
 fn remap_results(

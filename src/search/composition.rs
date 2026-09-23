@@ -26,12 +26,16 @@
 //! complete for that regime. Decks of other regimes may also be visited and are
 //! then evaluated exactly; they are never required to be found there.
 //!
-//! All regimes feed one canonical tracker in original pool indices. A regime is
-//! searched with the K-th objective already reached by earlier regimes as an
-//! external floor; a branch strictly below that floor cannot enter the global
-//! Top-K because K distinct legal public sets at least that good are known.
+//! All regimes feed one canonical tracker in original pool indices. Incumbent
+//! seeds are generated once on the whole pool and enter that tracker first. A
+//! regime is searched with the K-th objective already reached as an external
+//! floor; a branch strictly below that floor cannot enter the global Top-K
+//! because K distinct legal public sets at least that good are known. Seeds
+//! whose cards are all admitted by a regime are also handed to its search as
+//! ordering hints; they are never needed for completeness.
 
 use super::budget::SearchBudget;
+use super::dfs::canonicalize_seed_result;
 use super::objective::ObjectiveBound;
 use super::tracker::TopKTracker;
 use super::{DeckResult, SearchContext, SearchParams, SearchStats};
@@ -227,18 +231,23 @@ fn top_sum(mut values: [u32; CHARACTER_COUNT]) -> u32 {
     values[..DECK_SIZE].iter().sum()
 }
 
-/// Runs `solve` once per regime that can still reach the shared threshold and
-/// merges every legal result through one canonical tracker.
+/// Seeds the shared tracker once with `seed`, then runs `solve` once per regime
+/// that can still reach the shared threshold and merges every legal result
+/// through that canonical tracker. `solve` receives the regime's pool and
+/// context, the external floor, and the seeds that lie inside the regime in
+/// the regime's dense indices.
 pub(super) fn search_regimes(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
     budget: &mut SearchBudget,
     bounds_enabled: bool,
+    seed: impl FnOnce(&mut SearchBudget, &mut SearchStats) -> Vec<DeckResult>,
     mut solve: impl FnMut(
         &CardPool,
         &SearchContext,
         u64,
+        Vec<DeckResult>,
         &mut SearchBudget,
     ) -> (Vec<DeckResult>, SearchStats),
 ) -> (Vec<DeckResult>, SearchStats) {
@@ -257,6 +266,13 @@ pub(super) fn search_regimes(
     let mut tracker = TopKTracker::new(params.top_k);
     tracker.set_bounds_enabled(bounds_enabled);
     let mut stats = SearchStats::default();
+    let seeds = seed(budget, &mut stats)
+        .into_iter()
+        .filter_map(|seed| canonicalize_seed_result(pool, ctx, seed))
+        .collect::<Vec<_>>();
+    for &seed in &seeds {
+        tracker.insert(pool, ctx, seed);
+    }
     for plan in plans {
         if budget.expired() {
             break;
@@ -266,16 +282,32 @@ pub(super) fn search_regimes(
             continue;
         }
         stats.diagnostics.regimes_searched += 1;
-        let original = plan
-            .keep
+        let mut dense = vec![None; pool.count()];
+        let mut original = Vec::new();
+        for (index, _) in plan.keep.iter().enumerate().filter(|(_, keep)| **keep) {
+            dense[index] = Some(CardIdx::new(original.len() as u16));
+            original.push(CardIdx::new(index as u16));
+        }
+        let regime_seeds = seeds
             .iter()
-            .enumerate()
-            .filter_map(|(dense, &keep)| keep.then_some(CardIdx::new(dense as u16)))
-            .collect::<Vec<_>>();
+            .filter_map(|&seed| {
+                let mut local = seed;
+                for card in &mut local.cards {
+                    *card = dense[card.raw()]?;
+                }
+                Some(local)
+            })
+            .collect();
         let restricted = pool.restrict(&plan.keep, &plan.power_bound);
         let restricted_ctx = ctx.remap(&plan.keep);
         debug_assert!(restricted.count() == original.len());
-        let (results, part) = solve(&restricted, &restricted_ctx, tracker.threshold(), budget);
+        let (results, part) = solve(
+            &restricted,
+            &restricted_ctx,
+            tracker.threshold(),
+            regime_seeds,
+            budget,
+        );
         stats.accumulate(&part);
         for mut result in results {
             for card in &mut result.cards {
