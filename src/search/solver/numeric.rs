@@ -18,9 +18,9 @@ pub(crate) fn search_simple_target(
         return (Vec::new(), SearchStats::default());
     }
 
-    // The unconstrained maximizing Power case has a stronger exact 49-scenario
-    // additive DP.  Every other Power/Skill request uses the proof-carrying B&B
-    // below; heuristic quality-prefix truncation is deliberately forbidden.
+    // The unconstrained maximizing Power case has a stronger exact scenario
+    // branch and bound. Every other Power/Skill request uses the proof-carrying
+    // B&B below; heuristic quality-prefix truncation is deliberately forbidden.
     if matches!(ctx.target, ScoreTarget::Power)
         && !ctx.minimize
         && ctx.enforce_char_uniqueness

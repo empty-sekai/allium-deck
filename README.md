@@ -281,7 +281,7 @@ docker run --rm -p 8080:8080 -v /path/to/data:/data:ro allium-deck-server   --ma
 
 这里的“精确”指的是：**只要搜索以 `Complete` 结束，返回的就是完整可行集合按统一排序规则得到的真正 Top-K**，不是依赖随机种子或经验阈值的近似答案。Score、活动分、MySekai、World Bloom、终章、Challenge、Power、Skill 和精确加成档位都遵守这条规则。
 
-实现里仍然有 warm start、beam、one-swap 等启发式，但它们只用于更早找到好解、提高分支限界阈值或调整访问顺序；不会拿来删除尚未被数学上界否定的候选。无约束 Power 使用精确的 49-scenario DP，其余 Power / Skill 走完整候选集上的有界搜索。
+实现里仍然有 warm start、beam、one-swap 等启发式，但它们只用于更早找到好解、提高分支限界阈值或调整访问顺序；不会拿来删除尚未被数学上界否定的候选。无约束 Power 使用按共同组合与共同属性划分场景的精确分支限界，其余 Power / Skill 走完整候选集上的有界搜索。
 
 搜索有显式 deadline。命中 deadline 时返回 `TimedOut`，已经找到的卡组仍是合法且精确评分的，但这时**不声称 Top-K 已证明完整**。512-bit 元数据位图保持固定宽度，大池仍在 SoA 列中保留所有卡；候选超过稠密 `CardIdx` 的 65,535 张容量，或紧凑元数据无法无损编码时，才返回容量错误，不会静默删卡。
 

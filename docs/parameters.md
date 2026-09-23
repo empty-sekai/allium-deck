@@ -112,7 +112,7 @@ Per-rarity defaults (`rarity1Config` … `rarity4Config`, `rarityBirthdayConfig`
 | `score` World Bloom final chapter, fixed leader character or fixed leader card | grouped character/card B&B + exact attribute-union DP bound + member alternatives / leader rotations | Exact, including Top-K |
 | `score` World Bloom final chapter, auto leader | every leader variant becomes a proof-carrying job, searched in ceiling order; grouped admissible B&B + alternatives / rotations | Exact, including Top-K |
 | `challenge` / `challenge_auto` | full feasible-set search with admissible bound pruning, merged per character for challenge-all | Exact, including Top-K |
-| `power` (no fixed cards/characters, not `minimize`) | 49-scenario additive DP | Exact, including Top-K |
+| `power` (no fixed cards/characters, not `minimize`) | branch and bound over shared-unit / shared-attribute scenarios with additive per-card ceilings | Exact, including Top-K |
 | `power` (with fixed cards/characters, or `minimize`) | full-candidate B&B with an admissible power upper bound / minimization lower bound | Exact, including Top-K |
 | `skill` | full-candidate B&B with a per-card skill-max relaxation | Exact, including Top-K |
 | `bonus` (`targetBonusList`) | per-tier branch and bound over character groups with an exact suffix table of reachable card-bonus sums inside the area-item regimes; World Bloom support loss is folded in per card and the attribute bonus is fixed per diversity class | Exact per tier, including Top-K |

@@ -1,4 +1,10 @@
-//! Additive top-K dynamic programming over unit/attribute power scenarios.
+//! Exact Top-K of the unconstrained maximizing Power target.
+//!
+//! A card's resolved power depends on the rest of the deck only through two
+//! deck-wide facts: the set of units carried by all five members and whether
+//! all five share one attribute. A scenario fixes both facts; inside it every
+//! card has one additive power ceiling, and a branch and bound over
+//! character-distinct decks runs against the one canonical tracker.
 use crate::pool::{CardIdx, CardPool};
 use crate::search::budget::SearchBudget;
 use crate::search::{
@@ -6,11 +12,29 @@ use crate::search::{
 };
 use crate::types::DECK_SIZE;
 
+/// Unit bits the power evaluator reads from a unit mask.
+const UNIT_BITS: u8 = 6;
+const UNIT_MASK: u8 = (1 << UNIT_BITS) - 1;
+/// Attribute ids of pool cards.
+const ATTRS: usize = 6;
+/// Scenario attribute slots: no shared attribute, then one slot per attribute.
+const ATTR_SLOTS: usize = ATTRS + 1;
+
+/// One card inside a scenario.
 #[derive(Clone, Copy)]
-struct PowerPartial {
-    cards: [CardIdx; DECK_SIZE],
-    len: usize,
-    additive_power: u32,
+struct Entry {
+    /// Upper bound on the card's resolved power in every deck of the scenario.
+    power: u32,
+    card: CardIdx,
+    character: u8,
+}
+
+/// A scenario's admitted cards, by descending `power`, then pool index.
+struct Scenario {
+    entries: Vec<Entry>,
+    /// Largest scenario sum of five character-distinct entries.
+    ceiling: u32,
+    order: usize,
 }
 
 pub(super) fn search_power_scenarios(
@@ -19,132 +43,231 @@ pub(super) fn search_power_scenarios(
     params: &SearchParams,
     budget: &mut SearchBudget,
 ) -> (Vec<DeckResult>, SearchStats) {
-    // For an additive scenario, keeping the best K partial states at each
-    // cardinality is exact: every future choice is independent of the cards
-    // already processed. A discarded partial state can therefore never re-enter
-    // the final top K.
-    let state_limit = params.top_k.max(1);
-    let mut tracker = TopKTracker::new(params.top_k);
-    let mut stats = SearchStats::default();
-
-    let mut scenarios = Vec::with_capacity(49);
-    scenarios.push((None, None));
-    for attr in 0u8..6 {
-        scenarios.push((None, Some(attr)));
-    }
-    for unit in 0usize..6 {
-        scenarios.push((Some(unit), None));
-        for attr in 0u8..6 {
-            scenarios.push((Some(unit), Some(attr)));
-        }
-    }
-
-    'scenarios: for (unit_all, attr_all) in scenarios {
-        if budget.expired() {
+    let mut search = PowerSearch {
+        pool,
+        ctx,
+        tracker: TopKTracker::new(params.top_k),
+        stats: SearchStats::default(),
+        budget,
+        deck: [CardIdx::new(0); DECK_SIZE],
+        game_ids: [u16::MAX; DECK_SIZE],
+    };
+    let mut scenarios = build_scenarios(pool);
+    // Any order is exact; the most promising scenarios raise the cutoff first.
+    scenarios.sort_unstable_by(|left, right| {
+        right
+            .ceiling
+            .cmp(&left.ceiling)
+            .then(left.order.cmp(&right.order))
+    });
+    for scenario in &scenarios {
+        if search.budget.expired() {
             break;
         }
-        let mut by_character = vec![Vec::<(u32, CardIdx)>::new(); 27];
-        for card in pool.indices() {
-            if unit_all.is_some_and(|unit| pool.unit_mask_raw(card) & (1u8 << unit) == 0) {
-                continue;
-            }
-            if attr_all.is_some_and(|attr| pool.attr(card) != attr) {
-                continue;
-            }
-            let character = usize::from(pool.char_id(card)).min(26);
-            let power =
-                evaluate::resolve_card_power_scenario(pool, card, unit_all, attr_all.is_some());
-            by_character[character].push((power, card));
+        if search.below_cutoff(scenario.ceiling) {
+            search.stats.ub_prunes += 1;
+        } else if !search.descend(&scenario.entries, 0, 0, 0, 0) {
+            break;
         }
-        for cards in &mut by_character {
-            cards.sort_unstable_by(|left, right| {
-                right
-                    .0
-                    .cmp(&left.0)
-                    .then_with(|| pool.game_id(left.1).cmp(&pool.game_id(right.1)))
-                    .then_with(|| left.1.raw().cmp(&right.1.raw()))
-            });
-            // 同一 game_id 的养成变体互斥（同一张卡），只保留场景值最高的一个：
-            // 变体占多个名额会在每角色候选与 DP 状态里挤出真正不同的次优集合，
-            // 令 Top-K 丢解（issue #24 的 mass_099712 案例）。
-            let mut seen_game_ids = Vec::with_capacity(cards.len());
-            cards.retain(|(_, card)| {
-                let game_id = pool.game_id(*card);
-                if seen_game_ids.contains(&game_id) {
-                    false
-                } else {
-                    seen_game_ids.push(game_id);
-                    true
-                }
-            });
-            cards.truncate(state_limit);
-        }
-
-        let seed = PowerPartial {
-            cards: [CardIdx::new(0); DECK_SIZE],
-            len: 0,
-            additive_power: 0,
-        };
-        let mut states = vec![Vec::<PowerPartial>::new(); DECK_SIZE + 1];
-        states[0].push(seed);
-        for choices in by_character {
-            if budget.expired() {
-                break 'scenarios;
-            }
-            if choices.is_empty() {
-                continue;
-            }
-            let mut count = DECK_SIZE;
-            while count > 0 {
-                count -= 1;
-                if states[count].is_empty() {
-                    continue;
-                }
-                let previous = states[count].clone();
-                for state in previous {
-                    for &(power, card) in &choices {
-                        if budget.expired_sampled() {
-                            break 'scenarios;
-                        }
-                        stats.visited_nodes += 1;
-                        let mut next = state;
-                        next.cards[count] = card;
-                        next.len = count + 1;
-                        next.additive_power = next.additive_power.saturating_add(power);
-                        states[count + 1].push(next);
-                    }
-                }
-                states[count + 1].sort_unstable_by(|left, right| {
-                    right
-                        .additive_power
-                        .cmp(&left.additive_power)
-                        .then_with(|| {
-                            partial_public_key(pool, left).cmp(&partial_public_key(pool, right))
-                        })
-                        .then_with(|| left.cards.cmp(&right.cards))
-                });
-                states[count + 1].truncate(state_limit);
-            }
-        }
-
-        stats.diagnostics.power_scenarios_completed += 1;
-        for state in &states[DECK_SIZE] {
-            stats.leaf_nodes += 1;
-            if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &state.cards) {
-                tracker.insert(pool, ctx, candidate);
-            }
-        }
+        search.stats.diagnostics.power_scenarios_completed += 1;
     }
-    stats.deadline_hit = budget.hit;
-    stats.finalize();
-    (tracker.into_vec(), stats)
+    search.stats.deadline_hit = search.budget.hit;
+    search.stats.finalize();
+    (search.tracker.into_vec(), search.stats)
 }
 
-fn partial_public_key(pool: &CardPool, state: &PowerPartial) -> [u16; DECK_SIZE] {
-    let mut ids = [u16::MAX; DECK_SIZE];
-    for (id, &card) in ids.iter_mut().zip(&state.cards[..state.len]) {
-        *id = pool.game_id(card);
+/// Unit sets that can be carried by all five members of a deck: every such
+/// set is the intersection of its members' unit masks, so the distinct masks
+/// closed under intersection, with the empty set, contain all of them.
+fn unit_sets(pool: &CardPool) -> Vec<u8> {
+    let mut sets = vec![0u8];
+    for card in pool.indices() {
+        let mask = pool.unit_mask_raw(card) & UNIT_MASK;
+        if !sets.contains(&mask) {
+            sets.push(mask);
+        }
     }
-    ids.sort_unstable();
-    ids
+    let mut index = 1;
+    while index < sets.len() {
+        for other in 0..index {
+            let both = sets[index] & sets[other];
+            if !sets.contains(&both) {
+                sets.push(both);
+            }
+        }
+        index += 1;
+    }
+    sets
+}
+
+/// Upper bound on `card`'s resolved power in every deck whose members all
+/// carry exactly the units of `units` in common and share an attribute iff
+/// `attr_all`; exact when `units` has at most one unit.
+fn scenario_power(pool: &CardPool, card: CardIdx, units: u8, attr_all: bool) -> u32 {
+    if units == 0 {
+        return evaluate::resolve_card_power_scenario(pool, card, None, attr_all);
+    }
+    (0..usize::from(UNIT_BITS))
+        .filter(|&unit| units & (1 << unit) != 0)
+        .map(|unit| evaluate::resolve_card_power_scenario(pool, card, Some(unit), attr_all))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Every scenario that admits at least five characters. A scenario with unit
+/// set `U` and attribute slot `a` admits the cards whose mask contains `U` and,
+/// for an attribute slot, whose attribute is that attribute.
+fn build_scenarios(pool: &CardPool) -> Vec<Scenario> {
+    let sets = unit_sets(pool);
+    let mut lists = vec![Vec::<Entry>::new(); sets.len() * ATTR_SLOTS];
+    for card in pool.indices() {
+        let mask = pool.unit_mask_raw(card) & UNIT_MASK;
+        let attr = usize::from(pool.attr(card));
+        let character = pool.char_id(card);
+        for (set_index, &units) in sets.iter().enumerate() {
+            if units & !mask != 0 {
+                continue;
+            }
+            let base = set_index * ATTR_SLOTS;
+            lists[base].push(Entry {
+                power: scenario_power(pool, card, units, false),
+                card,
+                character,
+            });
+            if attr < ATTRS {
+                lists[base + 1 + attr].push(Entry {
+                    power: scenario_power(pool, card, units, true),
+                    card,
+                    character,
+                });
+            }
+        }
+    }
+    lists
+        .into_iter()
+        .enumerate()
+        .filter_map(|(order, mut entries)| {
+            entries.sort_unstable_by(|left, right| {
+                right
+                    .power
+                    .cmp(&left.power)
+                    .then(left.card.raw().cmp(&right.card.raw()))
+            });
+            let ceiling = best_completion(&entries, 0, 0, DECK_SIZE)?;
+            Some(Scenario {
+                entries,
+                ceiling,
+                order,
+            })
+        })
+        .collect()
+}
+
+/// Largest sum of `slots` entries of `entries[pos..]` from distinct characters
+/// outside `used`: the first entry of each character is its largest, and the
+/// best `slots` characters are taken. `None` when fewer characters remain.
+#[inline(always)]
+fn best_completion(entries: &[Entry], pos: usize, used: u32, slots: usize) -> Option<u32> {
+    let mut seen = used;
+    let mut sum = 0u32;
+    let mut taken = 0usize;
+    for entry in &entries[pos..] {
+        if taken == slots {
+            break;
+        }
+        let bit = 1u32 << entry.character;
+        if seen & bit != 0 {
+            continue;
+        }
+        seen |= bit;
+        sum += entry.power;
+        taken += 1;
+    }
+    (taken == slots).then_some(sum)
+}
+
+struct PowerSearch<'a> {
+    pool: &'a CardPool,
+    ctx: &'a SearchContext,
+    tracker: TopKTracker,
+    stats: SearchStats,
+    budget: &'a mut SearchBudget,
+    deck: [CardIdx; DECK_SIZE],
+    game_ids: [u16; DECK_SIZE],
+}
+
+impl PowerSearch<'_> {
+    /// Whether decks whose summed scenario powers are at most `sum` all fall
+    /// strictly below the current K-th objective.
+    #[inline(always)]
+    fn below_cutoff(&self, sum: u32) -> bool {
+        self.tracker.cutoff().is_some_and(|cutoff| {
+            let upper = self
+                .ctx
+                .clamp_power_total(sum.saturating_add(self.ctx.honor_bonus));
+            u64::from(upper) < cutoff
+        })
+    }
+
+    /// Branch and bound over `entries[pos..]` below a prefix of `depth` cards
+    /// from the characters in `used`, whose scenario powers sum to `sum`.
+    /// Returns `false` once the deadline expires.
+    fn descend(
+        &mut self,
+        entries: &[Entry],
+        depth: usize,
+        pos: usize,
+        used: u32,
+        sum: u32,
+    ) -> bool {
+        self.stats.visited_nodes += 1;
+        if depth == DECK_SIZE {
+            self.stats.leaf_nodes += 1;
+            if let Some(candidate) = placement::evaluate_candidate(self.pool, self.ctx, &self.deck)
+            {
+                self.tracker.insert(self.pool, self.ctx, candidate);
+            }
+            return true;
+        }
+        let slots = DECK_SIZE - depth;
+        let Some(completion) = best_completion(entries, pos, used, slots) else {
+            self.stats.feasibility_prunes += 1;
+            return true;
+        };
+        if self.below_cutoff(sum + completion) {
+            self.stats.ub_prunes += 1;
+            return true;
+        }
+        for (offset, entry) in entries[pos..].iter().enumerate() {
+            if self.budget.expired_sampled() {
+                return false;
+            }
+            // Later entries are worth no more than this one.
+            if self.below_cutoff(sum + entry.power * slots as u32) {
+                self.stats.mono_break_prunes += 1;
+                break;
+            }
+            let bit = 1u32 << entry.character;
+            if used & bit != 0 {
+                continue;
+            }
+            let game_id = self.pool.game_id(entry.card);
+            if self.game_ids[..depth].contains(&game_id) {
+                self.stats.feasibility_prunes += 1;
+                continue;
+            }
+            self.deck[depth] = entry.card;
+            self.game_ids[depth] = game_id;
+            if !self.descend(
+                entries,
+                depth + 1,
+                pos + offset + 1,
+                used | bit,
+                sum + entry.power,
+            ) {
+                return false;
+            }
+        }
+        true
+    }
 }

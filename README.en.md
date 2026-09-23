@@ -269,7 +269,7 @@ are separate build arguments, measured in [`docker/README.en.md`](./docker/READM
 
 Here, “exact” has a specific meaning: **when the search finishes with `Complete`, the returned decks are the true Top-K of the full supported feasible set under one deterministic ordering**. This applies to Score, event score, MySekai, World Bloom, Final Chapter, Challenge, Power, Skill, and exact bonus tiers.
 
-Warm starts, beams, one-swap neighborhoods, and similar heuristics are still useful, but only to find incumbents earlier or choose visit order; they never delete a candidate that has not been ruled out by a proved bound. Unconstrained Power uses an exact 49-scenario DP, and the remaining Power / Skill cases search the full candidate set with admissible bounds.
+Warm starts, beams, one-swap neighborhoods, and similar heuristics are still useful, but only to find incumbents earlier or choose visit order; they never delete a candidate that has not been ruled out by a proved bound. Unconstrained Power uses an exact branch and bound over shared-unit and shared-attribute scenarios, and the remaining Power / Skill cases search the full candidate set with admissible bounds.
 
 Search deadlines are explicit. If a deadline is observed, the result is `TimedOut`: every returned deck is legal and exactly evaluated, but Top-K completeness is **not** claimed. The 512-bit metadata masks remain fixed; larger pools retain all cards in the SoA columns. A pool exceeding the dense `CardIdx` capacity of 65,535 cards, or compact metadata that cannot be encoded losslessly, returns a capacity error rather than silently dropping cards.
 

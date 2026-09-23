@@ -13,6 +13,7 @@ mod exact_world_bloom;
 mod numeric_soundness;
 mod overflow;
 mod performance;
+mod power_scenarios;
 mod property_bounds;
 mod property_matrix;
 mod skill_composition;

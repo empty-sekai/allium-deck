@@ -360,19 +360,16 @@ canonical results must remain identical with the optimization disabled.
 
 ### 6.1 Unconstrained maximizing Power
 
-The existing 49-scenario DP is exact.
-
-A card's power resolution depends on two deck-wide binary conditions for each
-unit/attribute scenario: whether all five members satisfy a unit condition and
-whether all five members share an attribute.  Enumerating the no-unit case plus
-six unit choices, crossed with no-all-attribute plus the attribute choices,
-covers every power-resolution scenario.
-
-Inside a fixed scenario each card contributes an additive value.  Processing
-characters independently enforces character uniqueness.  Keeping the best K
-partial distinct states for each cardinality is safe: all future additive
-choices are independent of the discarded prefix, so a prefix already below K
-better prefixes can never re-enter the final Top-K.
+A card's resolved power depends on the rest of the deck only through the set
+of units all five members carry and whether all five share one attribute. The
+solver enumerates scenarios over both facts; every such unit set is an
+intersection of card masks, so the masks closed under intersection cover them.
+Inside a scenario each card has an additive power ceiling, exact for at most
+one shared unit, and a branch and bound over character-distinct decks prunes
+only when that ceiling is strictly below the cutoff. Every deck lies in the
+scenario of its own shared units and attribute, where its ceiling is at least
+its evaluated power, and every leaf is evaluated exactly (pruning-proof
+Section 21).
 
 ### 6.2 Fixed constraints and Power minimization
 

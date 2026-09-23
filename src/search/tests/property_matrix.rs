@@ -13,8 +13,8 @@ fn exact_power_skill_and_world_bloom_match_bruteforce_randomized() {
             timeout_ms: 0,
         };
 
-        // Constrained Power maximize exercises the new exact B&B rather than the
-        // unconstrained 49-scenario DP.
+        // Constrained Power maximize exercises the general exact B&B rather
+        // than the unconstrained scenario search.
         let mut power_ctx = ready_ctx(&pool, ScoreTarget::Power);
         power_ctx.fixed_card_ids = vec![pool.game_id(CardIdx::new(0))];
         power_ctx.fixed_character_ids = vec![2];

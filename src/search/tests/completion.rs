@@ -31,20 +31,23 @@ fn final_search_reports_actual_deadline_stop() {
 fn power_scenarios_honor_a_finite_deadline() {
     let pool = build_pool(&longtail_cards(26, 8));
     let ctx = ready_ctx(&pool, ScoreTarget::Power);
-    let (decks, stats) = search_instrumented(
-        &pool,
-        &ctx,
-        &SearchParams {
-            top_k: 100,
-            timeout_ms: 1,
-        },
-    );
+    let params = SearchParams {
+        top_k: 100,
+        timeout_ms: 0,
+    };
+    let mut budget =
+        crate::search::budget::SearchBudget::new(Some(crate::search::budget::Instant::now()));
+    let (decks, stats) =
+        crate::search::solver::numeric::search_simple_target(&pool, &ctx, &params, &mut budget);
     assert!(
         stats.deadline_hit,
-        "a multi-scenario DP must report unfinished scenarios"
+        "a multi-scenario search must report unfinished scenarios"
     );
     for deck in decks {
-        assert!(leaf_evaluate_checked(&pool, &ctx, &deck.cards).is_some());
+        assert_eq!(
+            leaf_evaluate_checked(&pool, &ctx, &deck.cards),
+            Some(deck.score)
+        );
     }
 }
 

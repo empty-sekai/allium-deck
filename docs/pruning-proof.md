@@ -1319,64 +1319,122 @@ $E$ either: that needs $v(E)=\tau$ and $\pi(E)=\pi(D)$, but a retained
 result with the K-th objective has $\pi(E)\le\pi_K<\pi(D)$. Such a node is
 pruned; any node that might reach a public set at most $\pi_K$ is kept.
 
-## 21. Unconstrained Power: exact Top-K dynamic programming
+## 21. Unconstrained Power: scenario branch and bound
 
 Implementation: src/search/solver/power.rs.
 
-The unconstrained maximizing Power case enumerates 49 deck-wide scenarios:
-unit condition in {none, six units} crossed with attribute condition in
-{none, six attributes}.
+### 21.1 Scenarios
 
-Every legal five-card deck induces at least one of these scenarios matching its
-deck-wide unit/attribute conditions. In that matching scenario,
-resolve_card_power_scenario gives exactly the per-card power contribution used
-by the full evaluator. If more than one unit scenario is applicable, enumerating
-all of them only duplicates coverage; it cannot omit the deck.
-
-Within one scenario, each card has an exact additive power contribution and
-characters are processed independently. Consequently a globally Top-K Power
-deck must occur in the Top-K of at least one scenario that represents it:
-otherwise that scenario alone would already contain K not-worse public sets.
-
-### Lemma 3 — per-character choice truncation
-
-For one character, choices are ordered by additive contribution, then canonical
-public identity. Keeping the first K distinct public card ids is sufficient for
-global Top-K.
-
-**Proof.** A discarded choice has K same-character choices that are not worse.
-For any fixed selection of the other four characters, replacing the discarded
-choice by each of those K alternatives produces K distinct public sets with
-objective no worse. Hence a final deck requiring the discarded choice cannot
-rank above all K replacements. ∎
-
-Cultivation variants sharing one public game_id are reduced to the
-scenario-best representative before this K limit because they are one public
-card identity, not K distinct results.
-
-### Lemma 4 — partial-state Top-K truncation
-
-After processing some character prefix, states are partitioned by selected-card
-count. Future characters and their additive contributions are independent of
-which cards formed a state in the processed prefix.
-
-Suppose state $x$ is outside the best K states of one cardinality. For every
-future extension $E$, the same extension is legal for each of the K states
-that precede $x$, and
+For a deck $D$ let $U(D)$ be the set of unit bits that every member's unit
+mask contains (over the six bits the evaluator reads) and $A(D)$ the
+attribute all five members share, if any. The evaluator resolves member $c$ to
 
 $$
-value(y_i\cup E) \ge value(x\cup E).
+p(c,D)=\max_{w\in units(c)} V_c\bigl[prof_c(w)\bigr]\bigl[2\,[w\in U(D)]+[A(D)\text{ exists}]\bigr],
 $$
 
-For equal additive values, inserting the same future public ids into two sorted
-partial public-id sequences preserves their lexicographic order. Therefore the
-canonical public-set tie order is extension-monotone as well.
+where $V_c[\cdot][k]$ are the card's stored powers by profile and member key,
+and $v(D)=\operatorname{clamp}(\sum_{c\in D}p(c,D)+H)$ with honor power $H$.
 
-Thus $x\cup E$ can never enter global Top-K. Keeping K states per cardinality
-is exact.
+A scenario $S=(U,a)$ pairs a unit set $U$ with $a$, either "no shared
+attribute" or one attribute. It admits the cards whose mask contains $U$ and,
+when $a$ is an attribute, whose attribute is $a$. Every deck $D$ is admitted by
+its own scenario $S(D)=(U(D),A(D))$: each member contains $U(D)$ and carries
+$A(D)$.
 
-The final concrete decks are still exact-evaluated and merged through the
-common TopKTracker.
+$U(D)$ is the intersection of the members' masks. The search takes the empty
+set and the distinct card masks, closed under pairwise intersection; every
+intersection of card masks lies in that closure, so $S(D)$ is always among the
+scenarios. A unit set need not be any card's own mask. A scenario that admits
+fewer than five characters holds no deck and is dropped.
+
+### Lemma 3 — scenario power ceiling
+
+For a card $c$ admitted by $S=(U,a)$ let
+$single(c;u,a)$ = `resolve_card_power_scenario` with all-member unit $u$ (or
+none) and the attribute flag of $a$, and
+
+$$
+g_S(c)=\begin{cases}
+single(c;\varnothing,a) & U=\varnothing,\
+\max_{u\in U} single(c;u,a) & \text{otherwise.}
+\end{cases}
+$$
+
+Then $p(c,D)\le g_S(c)$ for every deck $D$ with $S(D)=S$ and every member
+$c$, with equality when $|U|\le1$.
+
+**Proof.** $single(c;u,a)$ is the maximum over $w\in units(c)$ of
+$V_c[prof_c(w)][2[w=u]+[a]]$. Take any term of the maximum defining
+$p(c,D)$. If $w\in U$, it is the $w$-term of $single(c;w,a)$. If $w\notin U$,
+it is the $w$-term of $single(c;u,a)$ for every $u\in U$, or of
+$single(c;\varnothing,a)$ when $U=\varnothing$. Every term is therefore
+bounded by $g_S(c)$. When $|U|\le1$ the single call uses exactly the member
+keys of $D$. ∎
+
+No order between member keys or between profiles is assumed. Two all-member
+units occur when every member carries both, for example five Virtual Singer
+cards with one support unit. Since clamp is non-decreasing,
+$v(D)\le\operatorname{clamp}(\sum_{c\in D}g_{S(D)}(c)+H)$.
+
+### Lemma 4 — best completion in a scenario
+
+Inside a scenario the entries are sorted by $g_S$ descending, then by pool
+index. For a prefix, the largest $g_S$-sum of $r$ further entries after a
+position, from distinct characters outside the prefix, is obtained by taking
+the first entry of each such character (its largest) and the $r$ largest of
+those; the scan stops after $r$ characters.
+
+**Proof.** A completion uses one entry per character. Replacing each entry by
+the first entry of its character does not lower the sum, and among one value
+per character the $r$ largest maximize the sum. ∎
+
+### 21.2 Search and bounds
+
+Each admitted scenario runs a depth-first search that picks entries in
+increasing position with distinct characters and distinct public ids. Every
+complete deck is evaluated exactly by the placement evaluator and inserted
+into the one canonical TopKTracker; leaves are the only source of results.
+Let $\tau$ be the tracker's K-th objective once it holds K public sets. Every
+bound below is compared as $\operatorname{clamp}(\text{sum}+H)<\tau$:
+
+- **Scenario ceiling.** The Lemma 4 value of the empty prefix; below $\tau$
+  the scenario is skipped.
+- **Node bound.** The selected $g_S$-sum plus the Lemma 4 completion of the
+  remaining $r$ slots from the entries after the last pick. With no such
+  completion the node has no deck.
+- **Candidate break.** A child that takes the entry at position $p$
+  continues only with later entries, none above $g_S$ of that entry, so every
+  completion through it has sum at most the selected sum plus
+  $r\cdot g_S(p)$. This quantity is non-increasing in $p$, and the first
+  candidate below $\tau$ ends the loop.
+
+Scenarios run in order of descending ceiling; any order is exact.
+
+### Theorem 4 — scenario search exactness
+
+Let $R$ be any member of the canonical Top-K, i.e. the best legal
+representative of a Top-K public set. In $S(R)$ the cards of $R$ are admitted
+and visited, and every bound on the path to $R$ is at least
+$\sum_{c\in R}g_{S(R)}(c)$, which by Lemma 3 gives at least $v(R)$: the
+ceiling and the node bounds by Lemma 4, and each candidate break because the
+remaining members of $R$ come after the current entry. The cutoff never
+decreases and ends at the K-th objective, which is at most $v(R)$, so no
+comparison $\text{bound}<\tau$ removes $R$. Its leaf is evaluated exactly,
+inserted, and kept by the canonical tracker. Other decks can be pruned or
+visited in scenarios that are not their own; pruning there removes nothing
+their own scenario needs, and a visit only inserts an exactly evaluated deck.
+∎
+
+**Equality.** A bound equal to $\tau$ is never pruned, so every deck that
+ties the K-th objective with a smaller public set, ordered ids or card
+variants is still reached and ordered by the tracker's canonical key.
+
+**Cultivation variants.** Variants of one public card are separate entries
+of one character. A deck holds at most one of them, and each is searched, so
+the canonical representative of every public set is among the leaves.
+Nothing is truncated per character or per partial state: the only removals
+are the three bounds above and the feasibility checks.
 
 ## 22. Challenge bound frontier
 
@@ -1498,7 +1556,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Final ranked-buffer break | solver/final_chapter.rs | candidates sorted by admissible UB; overflow candidates still visited |
 | Numeric Power max/min | solver/numeric.rs | global max UB / global min LB |
 | Numeric Skill | solver/numeric.rs | Section 20: composition-aware per-card ceilings, per-character frontier, candidate break, public-set equality rule |
-| Power scenario DP | solver/power.rs | exhaustive scenarios + Lemmas 3–4 |
+| Power scenarios | solver/power.rs | Section 21: unit-set scenarios, Lemma 3 scenario ceiling, Lemma 4 completion, Theorem 4 |
 | Challenge bound frontier | solver/challenge.rs | exact skip/take relaxation + componentwise-dominated bound states |
 | Challenge-all Top-K merge | solver/challenge.rs | a global Top-K deck must lie in its character's own Top-K |
 | Feasibility pruning | DFS / numeric / Challenge / placement | exact request constraints |
@@ -1523,7 +1581,7 @@ independent checks designed to expose a violated premise.
 | Exact bonus tiers | bonus_tiers.rs, exact_bonus.rs, fractional_bonus.rs |
 | Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |
-| Power | exact_power.rs and all-scene oracle matrix |
+| Power | exact_power.rs, power_scenarios.rs (Top-K against the exhaustive oracle with unit, attribute and two-unit sharing, cultivation variants, honor power and uniform-bonus MySekai; a deck that shares two units; a shared unit set that is no card mask) and the all-scene oracle matrix |
 | Challenge | exact_challenge.rs and challenge-all timeout regression |
 | SIMD equality | simd::tests::dispatched_mask_keeps_bounds_equal_to_threshold |
 | Historical incomplete oracle | case7_audit.rs |
