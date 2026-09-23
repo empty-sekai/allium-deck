@@ -292,8 +292,8 @@ character, so the selected prefix fixes its attribute union exactly.
 For a suffix of groups, the implementation stores `attr_bonus[k][s]`: the
 maximum `diff_attr_bonus` reachable after selecting exactly `k` groups,
 starting from an already selected 5-bit attribute set `s`.  The transition
-keeps both skipping the current group and OR-ing each attribute available from
-it into the starting set.  This is a memoized form of the complete OR-product,
+keeps both skipping the current group and OR-ing its attribute into the
+starting set.  This is a memoized form of the complete OR-product,
 including nonmonotone bonus tables; it may pick two groups of one character,
 which only enlarges the maximized set.
 

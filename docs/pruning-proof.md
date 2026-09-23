@@ -1019,8 +1019,8 @@ cards with that attribute.
 
 attr_bonus[k][s] stores the maximum `diff_attr_bonus` obtainable by selecting
 exactly $k$ groups from a suffix, starting from attribute union `s`. Its
-transition keeps the skip-current-group value and, for every attribute in the
-current group's mask, takes the value for `s | attribute` in the `k-1` row.
+transition keeps the skip-current-group value and takes the value for
+`s | attribute` in the `k-1` row, where `attribute` is the current group's.
 This is the OR-product DP with the final bonus lookup memoized, and it holds
 for nonmonotone `diff_attr_bonus` tables. The DP may select two groups of one
 character; the legal selections are a subset of the ones it maximizes over,
@@ -1069,9 +1069,10 @@ the previous ceiling.
 
 ### 18.5 Card-level plan
 
-After four member characters are fixed, CardGroupPlan stores suffix sums of
+After four member groups are fixed, CardGroupPlan stores suffix sums of
 each selected group's own best power, skill, base bonus, and sorted limited
-bonuses.
+bonuses. The leader and the four groups fix the deck's attribute union, so
+the plan stores its exact diversity bonus.
 
 At card depth $d$, every legal remaining card from group $g$ is
 componentwise bounded by that group's stored maxima. Summing the remaining

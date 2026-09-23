@@ -26,7 +26,7 @@ struct CharGroup {
     best_skill: u32,
     best_base_bonus: u32,
     best_limited_bonus: u32,
-    attr_mask: u8,
+    attr: u8,
     sort_key: u64,
 }
 
@@ -118,7 +118,8 @@ struct CharacterPrefix {
     max_skill: u32,
     base_bonus: u32,
     limited_values: [u32; MEMBER_COUNT + 1],
-    attr_states: u32,
+    /// Attribute union of the leader and the selected groups.
+    attr_set: u8,
 }
 
 impl CharacterPrefix {
@@ -130,11 +131,7 @@ impl CharacterPrefix {
             max_skill: 0,
             base_bonus: 0,
             limited_values: [0; MEMBER_COUNT + 1],
-            attr_states: if leader.use_group_attr_dp {
-                1u32 << leader.leader_attr_set
-            } else {
-                0
-            },
+            attr_set: leader.leader_attr_set,
         }
     }
 
@@ -145,9 +142,7 @@ impl CharacterPrefix {
         self.max_skill = self.max_skill.max(group.best_skill);
         self.base_bonus += group.best_base_bonus;
         insert_topk_u32(&mut self.limited_values, group.best_limited_bonus);
-        if self.attr_states != 0 {
-            self.attr_states = extend_attr_union_states(self.attr_states, group.attr_mask);
-        }
+        self.attr_set |= 1u8 << group.attr;
         self
     }
 }
@@ -171,7 +166,6 @@ struct CardPartial {
     base_bonus: u32,
     limited_values: [u32; MEMBER_COUNT + 1],
     limited_sum: u32,
-    attr_set: u8,
     selected: [u16; DECK_SIZE],
     selected_len: usize,
     /// End of the support entries summed into `support_bonus_ceil`.
@@ -188,9 +182,9 @@ struct CardGroupPlan {
     rem_limited_values: [[u32; MEMBER_COUNT + 1]; MEMBER_COUNT + 1],
     rem_limited_sum: [u32; MEMBER_COUNT + 1],
     uniform_limited_cap: Option<u32>,
-    /// Exact maximum diversity bonus for the fixed remaining groups and each
-    /// incoming five-bit attribute union.
-    attr_bonus: [[u16; 32]; MEMBER_COUNT + 1],
+    /// Diversity bonus of the deck, whose attribute union the leader and the
+    /// selected groups fix.
+    diversity_bonus: u32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -279,7 +273,6 @@ impl CardPartial {
             base_bonus: leader.base_bonus_const,
             limited_values,
             limited_sum: leader.limited_bonus,
-            attr_set: 1u8 << pool.attr(leader.leader),
             selected,
             selected_len: 1,
             support_next_scan,
@@ -303,7 +296,6 @@ impl CardPartial {
         next.base_bonus += eb.base_ceil();
         insert_topk_u32(&mut next.limited_values, eb.limited_ceil());
         next.limited_sum += eb.limited_ceil();
-        next.attr_set |= 1u8 << pool.attr(card);
         let game_id = pool.game_id(card);
         next.selected[next.selected_len] = game_id;
         next.selected_len += 1;
@@ -330,9 +322,13 @@ fn diversity_bonus(diff_attr_bonus: &[u16; 6]) -> [u16; 32] {
 fn build_card_group_plan(
     groups: &[CharGroup],
     selected: &[usize; MEMBER_COUNT],
+    leader_attr_set: u8,
     diversity: &[u16; 32],
     uniform_limited_cap: Option<u32>,
 ) -> CardGroupPlan {
+    let attr_set = selected.iter().fold(leader_attr_set, |set, &group| {
+        set | (1u8 << groups[group].attr)
+    });
     let mut plan = CardGroupPlan {
         rem_power: [0; MEMBER_COUNT + 1],
         rem_skill: [0; MEMBER_COUNT + 1],
@@ -341,16 +337,13 @@ fn build_card_group_plan(
         rem_limited_values: [[0; MEMBER_COUNT + 1]; MEMBER_COUNT + 1],
         rem_limited_sum: [0; MEMBER_COUNT + 1],
         uniform_limited_cap,
-        attr_bonus: [[0; 32]; MEMBER_COUNT + 1],
+        diversity_bonus: u32::from(diversity[usize::from(attr_set)]),
     };
-    plan.attr_bonus[MEMBER_COUNT] = *diversity;
     let mut depth = MEMBER_COUNT;
     while depth > 0 {
         depth -= 1;
         let next = depth + 1;
         let group = &groups[selected[depth]];
-        let (head, tail) = plan.attr_bonus.split_at_mut(next);
-        attr_step(&tail[0], group.attr_mask, &mut head[depth]);
         plan.rem_power[depth] = plan.rem_power[next] + group.best_power;
         plan.rem_skill[depth] = plan.rem_skill[next] + group.best_skill;
         plan.rem_max_skill[depth] = plan.rem_max_skill[next].max(group.best_skill);
@@ -366,32 +359,23 @@ fn build_card_group_plan(
 }
 
 /// Raises `best[set]` to the best bonus reachable when one card of a group
-/// with `attr_mask` joins the attribute union `set`, given the best bonus
+/// with attribute `attr` joins the attribute union `set`, given the best bonus
 /// `next` of every union after that card.
 #[inline(always)]
-fn attr_step(next: &[u16; 32], attr_mask: u8, best: &mut [u16; 32]) {
-    if attr_mask & !31 != 0 {
-        // An attribute outside the five-bit union leaves every union as is.
-        for (best, &next) in best.iter_mut().zip(next) {
-            *best = (*best).max(next);
-        }
-    }
-    let mut attrs = attr_mask & 31;
-    while attrs != 0 {
-        let bit = 1usize << attrs.trailing_zeros();
-        attrs &= attrs - 1;
-        // In every block of 2*bit unions the lower half lacks `bit` and joins
-        // the upper half, which already holds it.
-        for (best, next) in best
-            .chunks_exact_mut(2 * bit)
-            .zip(next.chunks_exact(2 * bit))
-        {
-            let (best_lo, best_hi) = best.split_at_mut(bit);
-            let next_hi = &next[bit..];
-            for ((lo, hi), &joined) in best_lo.iter_mut().zip(best_hi).zip(next_hi) {
-                *lo = (*lo).max(joined);
-                *hi = (*hi).max(joined);
-            }
+fn attr_step(next: &[u16; 32], attr: u8, best: &mut [u16; 32]) {
+    debug_assert!(attr < 5, "attributes index five-bit unions");
+    let bit = 1usize << attr;
+    // In every block of 2*bit unions the lower half lacks `bit` and joins
+    // the upper half, which already holds it.
+    for (best, next) in best
+        .chunks_exact_mut(2 * bit)
+        .zip(next.chunks_exact(2 * bit))
+    {
+        let (best_lo, best_hi) = best.split_at_mut(bit);
+        let next_hi = &next[bit..];
+        for ((lo, hi), &joined) in best_lo.iter_mut().zip(best_hi).zip(next_hi) {
+            *lo = (*lo).max(joined);
+            *hi = (*hi).max(joined);
         }
     }
 }
@@ -430,7 +414,7 @@ fn build_group_ceiling_suffix(
         for picked in 1..=MEMBER_COUNT {
             attr_step(
                 &next.attr_bonus[picked - 1],
-                group.attr_mask,
+                group.attr,
                 &mut tail.attr_bonus[picked],
             );
         }
@@ -528,7 +512,7 @@ impl LeaderCeilingTails {
             }
             let next = attr_bonus;
             for picked in 1..=MEMBER_COUNT {
-                attr_step(&next[picked - 1], 1u8 << attr, &mut attr_bonus[picked]);
+                attr_step(&next[picked - 1], attr, &mut attr_bonus[picked]);
             }
         }
         Self { tops, attr_bonus }
@@ -545,23 +529,6 @@ impl LeaderCeilingTails {
             ..GroupCeilingTail::default()
         }
     }
-}
-
-#[inline]
-fn extend_attr_union_states(states: u32, attr_mask: u8) -> u32 {
-    let mut out = 0u32;
-    let mut pending_states = states;
-    while pending_states != 0 {
-        let union = pending_states.trailing_zeros() as u8;
-        pending_states &= pending_states - 1;
-        let mut attrs = attr_mask;
-        while attrs != 0 {
-            let attr = attrs.trailing_zeros() as u8;
-            attrs &= attrs - 1;
-            out |= 1u32 << (union | (1u8 << attr));
-        }
-    }
-    out
 }
 
 pub(crate) fn search_fixed_leader(
@@ -967,7 +934,7 @@ fn build_char_groups(
             best_skill: best.skill,
             best_base_bonus: best.base_bonus,
             best_limited_bonus: best.limited_bonus,
-            attr_mask: 1u8 << best.attr,
+            attr: best.attr,
             sort_key: final_chapter_group_key(
                 best.power,
                 best.skill,
@@ -982,7 +949,7 @@ fn build_char_groups(
             .sort_key
             .cmp(&left.sort_key)
             .then_with(|| left.char_id.cmp(&right.char_id))
-            .then_with(|| left.attr_mask.cmp(&right.attr_mask))
+            .then_with(|| left.attr.cmp(&right.attr))
     });
     groups
 }
@@ -1078,6 +1045,7 @@ impl CharacterSearchState<'_> {
             let plan = build_card_group_plan(
                 self.groups,
                 &ordered,
+                self.leader.leader_attr_set,
                 &self.diversity,
                 self.uniform_limited_cap,
             );
@@ -1400,7 +1368,7 @@ fn character_ceiling(
         limited_limit.min(MEMBER_COUNT),
     );
     let extra_bonus_ub = if leader.use_group_attr_dp {
-        final_chapter_character_attr_bonus_bound(tail, remaining, prefix.attr_states)
+        u32::from(tail.attr_bonus[remaining][usize::from(prefix.attr_set)])
             + leader.support_bonus_ub
     } else {
         leader.extra_bonus_ub
@@ -1417,25 +1385,6 @@ fn character_ceiling(
                 .max(if remaining == 0 { 0 } else { tail.top_skill[0] }),
         ),
     )
-}
-
-/// Selected groups are mandatory. The suffix table already maximizes over
-/// every remaining group and attribute choice for each selected union, including
-/// nonmonotone diversity bonuses. Other score dimensions remain independent.
-#[inline]
-fn final_chapter_character_attr_bonus_bound(
-    tail: &GroupCeilingTail,
-    remaining: usize,
-    selected_states: u32,
-) -> u32 {
-    let mut best = 0u32;
-    let mut left = selected_states;
-    while left != 0 {
-        let selected_union = left.trailing_zeros() as usize;
-        left &= left - 1;
-        best = best.max(tail.attr_bonus[remaining][selected_union] as u32);
-    }
-    best
 }
 
 /// The generic live bound uses its fourth input as the whole-deck skill peak
@@ -1464,7 +1413,7 @@ fn selected_card_ceiling_from_partial(
     let bonus_sum = partial.base_bonus + plan.rem_base_bonus[chosen];
     let limited_sum = plan.limited_sum(partial, chosen, ctx.card_bonus_count_limit, 0);
     let extra_bonus_ub = if ctx.is_world_bloom {
-        u32::from(plan.attr_bonus[chosen][partial.attr_set as usize]) + partial.support_bonus_ceil
+        plan.diversity_bonus + partial.support_bonus_ceil
     } else {
         ctx.extra_bonus_ub
     };
@@ -1502,8 +1451,7 @@ fn selected_card_ceiling_with_candidate_support_ub(
         terms.limited_bonus,
     );
     let extra_bonus_ub = if ctx.is_world_bloom {
-        let attr_set = partial.attr_set | (1u8 << terms.attr);
-        u32::from(plan.attr_bonus[chosen][attr_set as usize]) + partial.support_bonus_ceil
+        plan.diversity_bonus + partial.support_bonus_ceil
     } else {
         ctx.extra_bonus_ub
     };
@@ -1589,45 +1537,6 @@ fn final_chapter_extra_bonus_bound(
 
     let support = ctx.support_deck_for_leader(pool.char_id(leader));
     diff_ub + remaining_support(support, &selected, selected_len).0.ceil() as u32
-}
-
-/// Exact attribute-state DP over the already chosen character groups.  Each
-/// remaining group must contribute one card whose attr is in its group mask;
-/// tracking all 5-bit attr sets therefore gives an admissible (indeed exact for
-/// the isolated attribute dimension) upper bound for the WL diversity bonus.
-#[inline]
-#[cfg(test)]
-fn final_chapter_diff_attr_bound(
-    ctx: &SearchContext,
-    initial_attr_set: u8,
-    future_group_attr_masks: &[u8],
-) -> u32 {
-    let mut states = 1u32 << initial_attr_set;
-    for &group_mask in future_group_attr_masks {
-        let mut next = 0u32;
-        let mut state_bits = states;
-        while state_bits != 0 {
-            let set = state_bits.trailing_zeros() as u8;
-            state_bits &= state_bits - 1;
-            let mut attrs = group_mask;
-            while attrs != 0 {
-                let attr = attrs.trailing_zeros() as u8;
-                attrs &= attrs - 1;
-                next |= 1u32 << (set | (1u8 << attr));
-            }
-        }
-        if next != 0 {
-            states = next;
-        }
-    }
-    let mut best = 0u32;
-    let mut state_bits = states;
-    while state_bits != 0 {
-        let set = state_bits.trailing_zeros() as u8;
-        state_bits &= state_bits - 1;
-        best = best.max(ctx.diff_attr_bonus[set.count_ones() as usize] as u32);
-    }
-    best
 }
 
 /// Sum of the first `count` support entries whose game ids are not selected,
@@ -1779,6 +1688,7 @@ mod limited_sum_tests {
                     let plan = build_card_group_plan(
                         &groups,
                         &[0, 1, 2, 3],
+                        1u8 << pool.attr(CardIdx::new(0)),
                         &diversity_bonus(&ctx.diff_attr_bonus),
                         uniform_limited_cap(&pool, cap),
                     );
@@ -1957,6 +1867,7 @@ mod skill_ceiling_tests {
                 let plan = build_card_group_plan(
                     &groups,
                     &selected,
+                    1u8 << pool.attr(deck[0]),
                     &diversity_bonus(&ctx.diff_attr_bonus),
                     uniform_limited_cap(&pool, ctx.card_bonus_count_limit),
                 );
@@ -2027,135 +1938,92 @@ mod skill_ceiling_tests {
 mod attribute_bound_tests {
     use super::*;
 
-    #[test]
-    fn character_prefix_matches_selected_group_reductions() {
-        for masks in [[1, 2, 4, 8, 16, 31], [3, 3, 5, 9, 17, 0], [31; 6]] {
-            let groups: Vec<_> = masks
-                .iter()
-                .enumerate()
-                .map(|(index, &attr_mask)| CharGroup {
-                    char_id: index as u8,
-                    scan: Vec::new(),
-                    best_power: (index as u32 + 1) * 10_003,
-                    best_skill: (index as u32 * 7) % 31,
-                    best_base_bonus: (index as u32 * 13) % 47,
-                    best_limited_bonus: [0, 5, 5, 20, 11, 2][index],
-                    attr_mask,
-                    sort_key: 0,
-                })
-                .collect();
-            for use_group_attr_dp in [false, true] {
-                for leader_attr_set in 0..32u8 {
-                    let leader = LeaderConst {
-                        leader: CardIdx::new(0),
-                        power: 0,
-                        skill: 0,
-                        base_bonus_const: 0,
-                        limited_bonus: 0,
-                        limited_count: 0,
-                        extra_bonus_ub: 0,
-                        support_bonus_ub: 0,
-                        leader_attr_set,
-                        use_group_attr_dp,
-                    };
-                    for selection in 0..(1u32 << groups.len()) {
-                        if selection.count_ones() as usize > MEMBER_COUNT {
-                            continue;
-                        }
-                        let selected: Vec<_> = groups
-                            .iter()
-                            .enumerate()
-                            .filter(|(index, _)| selection & (1u32 << *index) != 0)
-                            .map(|(_, group)| group)
-                            .collect();
-                        let mut prefix = CharacterPrefix::for_leader(&leader);
-                        for group in &selected {
-                            prefix = prefix.with_group(group);
-                        }
-                        assert_eq!(
-                            prefix.power,
-                            selected.iter().map(|g| g.best_power).sum::<u32>()
-                        );
-                        assert_eq!(
-                            prefix.skill,
-                            selected.iter().map(|g| g.best_skill).sum::<u32>()
-                        );
-                        assert_eq!(
-                            prefix.max_skill,
-                            selected.iter().map(|g| g.best_skill).max().unwrap_or(0)
-                        );
-                        assert_eq!(
-                            prefix.base_bonus,
-                            selected.iter().map(|g| g.best_base_bonus).sum::<u32>()
-                        );
-                        // Reference uses full sorting, not the incremental insertion helper.
-                        let mut limited: Vec<_> =
-                            selected.iter().map(|g| g.best_limited_bonus).collect();
-                        limited.resize(MEMBER_COUNT + 1, 0);
-                        limited.sort_unstable_by(|left, right| right.cmp(left));
-                        assert_eq!(prefix.limited_values.as_slice(), limited.as_slice());
-
-                        // Reference enumerates boolean union states without using the
-                        // production bitset transition or prefix implementation.
-                        let mut reachable = [false; 32];
-                        reachable[leader_attr_set as usize] = use_group_attr_dp;
-                        for group in &selected {
-                            let mut next = [false; 32];
-                            for (set, &present) in reachable.iter().enumerate() {
-                                if present {
-                                    for attr in 0..5 {
-                                        if group.attr_mask & (1u8 << attr) != 0 {
-                                            next[set | (1 << attr)] = true;
-                                        }
-                                    }
-                                }
-                            }
-                            reachable = next;
-                        }
-                        let expected = reachable
-                            .iter()
-                            .enumerate()
-                            .fold(0u32, |bits, (set, &yes)| {
-                                bits | if yes { 1u32 << set } else { 0 }
-                            });
-                        assert_eq!(
-                            prefix.attr_states, expected,
-                            "masks={masks:?} leader_attr_set={leader_attr_set} selection={selection} enabled={use_group_attr_dp}"
-                        );
-                    }
-                }
-            }
-        }
+    fn groups_of(attrs: &[u8]) -> Vec<CharGroup> {
+        attrs
+            .iter()
+            .enumerate()
+            .map(|(index, &attr)| CharGroup {
+                char_id: index as u8,
+                scan: Vec::new(),
+                best_power: (index as u32 + 1) * 10_003,
+                best_skill: (index as u32 * 7) % 31,
+                best_base_bonus: (index as u32 * 13) % 47,
+                best_limited_bonus: [0, 5, 5, 20, 11, 2][index],
+                attr,
+                sort_key: 0,
+            })
+            .collect()
     }
 
     #[test]
-    fn fixed_group_attr_table_matches_independent_union_enumeration() {
-        for masks in [[1, 2, 4, 8], [3, 3, 5, 9], [31; MEMBER_COUNT]] {
-            let groups = masks
-                .iter()
-                .map(|&attr_mask| CharGroup {
-                    char_id: 0,
-                    scan: Vec::new(),
-                    best_power: 0,
-                    best_skill: 0,
-                    best_base_bonus: 0,
-                    best_limited_bonus: 0,
-                    attr_mask,
-                    sort_key: 0,
-                })
-                .collect::<Vec<_>>();
-            for bonuses in [[0, 0, 10, 20, 30, 50], [99, 70, 200, 3, 150, 0]] {
-                let (_, mut ctx) = super::skill_ceiling_tests::fixture();
-                ctx.diff_attr_bonus = bonuses;
-                let plan =
-                    build_card_group_plan(&groups, &[0, 1, 2, 3], &diversity_bonus(&bonuses), None);
-                for chosen in 0..=MEMBER_COUNT {
-                    for set in 0..32 {
-                        assert_eq!(
-                            u32::from(plan.attr_bonus[chosen][set]),
-                            final_chapter_diff_attr_bound(&ctx, set as u8, &masks[chosen..]),
-                            "masks={masks:?} bonuses={bonuses:?} chosen={chosen} set={set}"
+    fn character_prefix_matches_selected_group_reductions() {
+        for attrs in [[0, 1, 2, 3, 4, 0], [1, 1, 0, 3, 4, 2], [4; 6]] {
+            let groups = groups_of(&attrs);
+            for leader_attr in 0..5u8 {
+                let leader = LeaderConst {
+                    leader: CardIdx::new(0),
+                    power: 0,
+                    skill: 0,
+                    base_bonus_const: 0,
+                    limited_bonus: 0,
+                    limited_count: 0,
+                    extra_bonus_ub: 0,
+                    support_bonus_ub: 0,
+                    leader_attr_set: 1u8 << leader_attr,
+                    use_group_attr_dp: true,
+                };
+                for selection in 0..(1u32 << groups.len()) {
+                    if selection.count_ones() as usize > MEMBER_COUNT {
+                        continue;
+                    }
+                    let selected: Vec<_> = (0..groups.len())
+                        .filter(|index| selection & (1u32 << index) != 0)
+                        .collect();
+                    let mut prefix = CharacterPrefix::for_leader(&leader);
+                    for &index in &selected {
+                        prefix = prefix.with_group(&groups[index]);
+                    }
+                    let picked = || selected.iter().map(|&index| &groups[index]);
+                    assert_eq!(prefix.power, picked().map(|g| g.best_power).sum::<u32>());
+                    assert_eq!(prefix.skill, picked().map(|g| g.best_skill).sum::<u32>());
+                    assert_eq!(
+                        prefix.max_skill,
+                        picked().map(|g| g.best_skill).max().unwrap_or(0)
+                    );
+                    assert_eq!(
+                        prefix.base_bonus,
+                        picked().map(|g| g.best_base_bonus).sum::<u32>()
+                    );
+                    // Reference uses full sorting, not the incremental insertion helper.
+                    let mut limited: Vec<_> = picked().map(|g| g.best_limited_bonus).collect();
+                    limited.resize(MEMBER_COUNT + 1, 0);
+                    limited.sort_unstable_by(|left, right| right.cmp(left));
+                    assert_eq!(prefix.limited_values.as_slice(), limited.as_slice());
+
+                    let mut present = [false; 5];
+                    present[usize::from(leader_attr)] = true;
+                    for group in picked() {
+                        present[usize::from(group.attr)] = true;
+                    }
+                    let expected = (0..5)
+                        .filter(|&attr| present[attr])
+                        .fold(0u8, |set, attr| set | (1 << attr));
+                    assert_eq!(
+                        prefix.attr_set, expected,
+                        "attrs={attrs:?} selection={selection}"
+                    );
+
+                    if let Ok(four) = <[usize; MEMBER_COUNT]>::try_from(selected.as_slice()) {
+                        let bonuses = [0, 0, 10, 20, 30, 50];
+                        let plan = build_card_group_plan(
+                            &groups,
+                            &four,
+                            1u8 << leader_attr,
+                            &diversity_bonus(&bonuses),
+                            None,
                         );
+                        let count = present.iter().filter(|&&yes| yes).count();
+                        assert_eq!(plan.diversity_bonus, u32::from(bonuses[count]));
                     }
                 }
             }
@@ -2164,51 +2032,33 @@ mod attribute_bound_tests {
 
     #[test]
     fn suffix_bonus_table_matches_exhaustive_attribute_choices() {
-        fn enumerate(masks: &[u8], chosen: usize, set: usize, bonuses: &[u16; 6]) -> u16 {
+        fn enumerate(attrs: &[u8], chosen: usize, set: usize, bonuses: &[u16; 6]) -> u16 {
             if chosen == 0 {
                 return bonuses[set.count_ones() as usize];
             }
-            if masks.len() < chosen {
+            if attrs.len() < chosen {
                 return 0;
             }
-            let mut best = enumerate(&masks[1..], chosen, set, bonuses);
-            for attr in 0..5 {
-                if masks[0] & (1 << attr) != 0 {
-                    best = best.max(enumerate(
-                        &masks[1..],
-                        chosen - 1,
-                        set | (1 << attr),
-                        bonuses,
-                    ));
-                }
-            }
-            best
+            enumerate(&attrs[1..], chosen, set, bonuses).max(enumerate(
+                &attrs[1..],
+                chosen - 1,
+                set | (1 << attrs[0]),
+                bonuses,
+            ))
         }
 
-        for masks in [[1, 2, 4, 8, 16, 31], [3, 3, 5, 9, 17, 0], [31; 6]] {
-            let groups: Vec<_> = masks
-                .iter()
-                .map(|&attr_mask| CharGroup {
-                    char_id: 0,
-                    scan: Vec::new(),
-                    best_power: 0,
-                    best_skill: 0,
-                    best_base_bonus: 0,
-                    best_limited_bonus: 0,
-                    attr_mask,
-                    sort_key: 0,
-                })
-                .collect();
+        for attrs in [[0, 1, 2, 3, 4, 0], [1, 1, 0, 3, 4, 2], [4; 6]] {
+            let groups = groups_of(&attrs);
             // Nonmonotone tables must maximize the bonus itself, not the count.
             for bonuses in [[0, 0, 10, 20, 30, 50], [99, 70, 200, 3, 150, 0], [0; 6]] {
                 let suffix = build_group_ceiling_suffix(&groups, &bonuses);
-                for start in 0..=masks.len() {
+                for start in 0..=attrs.len() {
                     for chosen in 0..=MEMBER_COUNT {
                         for set in 0..32 {
                             assert_eq!(
                                 suffix[start].attr_bonus[chosen][set],
-                                enumerate(&masks[start..], chosen, set, &bonuses),
-                                "masks={masks:?} bonuses={bonuses:?} start={start} chosen={chosen} set={set}"
+                                enumerate(&attrs[start..], chosen, set, &bonuses),
+                                "attrs={attrs:?} bonuses={bonuses:?} start={start} chosen={chosen} set={set}"
                             );
                         }
                     }
