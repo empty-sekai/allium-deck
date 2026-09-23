@@ -1,11 +1,11 @@
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, LiveType, ScoreTarget};
 
+use super::SearchStats;
 use super::budget::SearchBudget;
 use super::context::SearchContext;
 use super::evaluate::{card_proxy_bonus, leaf_evaluate_checked};
 use super::types::DeckResult;
-use super::{SearchParams, SearchStats};
 
 const FINAL_CHAPTER_WARM_START_LEADERS: usize = 20;
 const SCORE_EVENT_SOLO_WARM_START_PREFIX: usize = 16;
@@ -716,18 +716,6 @@ fn promote_best(best: &mut Option<DeckResult>, candidate: DeckResult) {
 pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<DeckResult> {
     let mut budget = SearchBudget::new(None);
     warm_start_best_with_budget(pool, ctx, &mut budget, &mut SearchStats::default())
-}
-
-pub(crate) fn warm_start_seeds(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    top_k: usize,
-) -> Vec<DeckResult> {
-    let mut budget = SearchBudget::from_params(&SearchParams {
-        top_k,
-        timeout_ms: 0,
-    });
-    warm_start_seeds_with_budget(pool, ctx, top_k, &mut budget, &mut SearchStats::default())
 }
 
 fn seed_evaluate(

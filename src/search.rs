@@ -4,8 +4,7 @@
 //! the objective and live type. Before recursing it eliminates dominated cards,
 //! builds character-aware suffix upper bounds ([`SuffixBound`]) and seeds a
 //! lower bound by warm start, so branches that cannot beat the current Top-K are
-//! cut as early as possible. [`PreparedSearch`] keeps those immutable structures
-//! alive across repeated searches over the same pool.
+//! cut as early as possible.
 //!
 //! Searches are bounded by [`SearchParams::timeout_ms`]; on expiry the results
 //! collected so far are returned rather than an error, so a timed-out search is
@@ -33,13 +32,11 @@ pub mod dominance;
 /// 叶子求值：把一副确定的队伍算成分数。
 pub mod evaluate;
 mod objective;
-mod prepared;
 pub mod solver;
 mod tracker;
 #[cfg(test)]
 use alternatives::deck_matches_fixed_slots;
 use alternatives::{expand_alternatives, expand_dominated_alternatives};
-pub use prepared::PreparedSearch;
 use solver::{final_chapter, numeric::search_simple_target};
 use tracker::{TopKTracker, deck_result_cmp};
 mod placement;

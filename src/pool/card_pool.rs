@@ -1,5 +1,4 @@
 use std::slice;
-use std::sync::Arc;
 
 use super::arena::Arena;
 use super::builder::PoolBuilder;
@@ -12,9 +11,6 @@ use super::types::{
 /// HPC SoA 卡池。
 #[derive(Debug)]
 pub struct CardPool {
-    // A retained allocation token gives immutable plans stable identity without
-    // raw-address reuse, content hashes, or an atomic generation counter.
-    instance: Arc<()>,
     arena: Arena,
     layout: PoolLayout,
     count: u16,
@@ -29,16 +25,11 @@ impl CardPool {
         special: SpecialTables,
     ) -> Self {
         Self {
-            instance: Arc::new(()),
             arena,
             layout,
             count,
             special,
         }
-    }
-
-    pub(crate) fn instance_token(&self) -> &Arc<()> {
-        &self.instance
     }
 
     #[inline(always)]

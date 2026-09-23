@@ -7,8 +7,6 @@ use super::context::SearchContext;
 use super::evaluate::calc_mysekai_internal;
 use super::objective::{LIVE_SCORE_BOUND_SCALE, ObjectiveBound};
 
-const JOINT_SUPPORT_BUCKET: u32 = 1024;
-
 /// 已选角色集合。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UsedSet {
@@ -79,10 +77,6 @@ pub struct SuffixBound {
     dense_power_tail: Vec<[u32; DECK_SIZE + 1]>,
     dense_skill_tail: Vec<[u32; DECK_SIZE + 1]>,
     dense_leader_tail: Vec<u16>,
-    dense_power_bonus_512_tail: Vec<[u32; DECK_SIZE + 1]>,
-    dense_power_bonus_1024_tail: Vec<[u32; DECK_SIZE + 1]>,
-    joint_ep_512: Vec<u32>,
-    joint_ep_1024: Vec<u32>,
     /// World Bloom dense suffix: for each attr, bitset of characters having at
     /// least one card of that attr at/after the dense index.  This feeds an
     /// exact 5x27 bipartite matching relaxation for reachable attribute count.
@@ -227,10 +221,6 @@ impl SuffixBound {
             dense_power_tail,
             dense_skill_tail,
             dense_leader_tail,
-            dense_power_bonus_512_tail: Vec::new(),
-            dense_power_bonus_1024_tail: Vec::new(),
-            joint_ep_512: Vec::new(),
-            joint_ep_1024: Vec::new(),
             dense_attr_char_tail: if ctx.is_world_bloom {
                 build_dense_attr_char_tail(pool)
             } else {
@@ -385,15 +375,6 @@ impl SuffixBound {
             slot += 1;
         }
         sum
-    }
-
-    pub(crate) fn build_prepared(pool: &CardPool, ctx: &SearchContext) -> Self {
-        let mut bound = Self::build(pool, ctx);
-        bound.dense_power_bonus_512_tail = build_dense_power_bonus_tail(pool, 512);
-        bound.dense_power_bonus_1024_tail = build_dense_power_bonus_tail(pool, 1024);
-        bound.joint_ep_512 = bound.build_joint_ep_table(512);
-        bound.joint_ep_1024 = bound.build_joint_ep_table(1024);
-        bound
     }
 
     /// 对标准 5 卡搜索计算上界。
@@ -831,110 +812,6 @@ impl SuffixBound {
             partial.skill + card_skill + tail_skill,
             (partial.max_skill as u32).max(card_skill).max(tail_leader),
         )
-    }
-
-    #[inline(always)]
-    pub(crate) fn dense_candidate_joint_ceiling_multi_score_event(
-        &self,
-        next_start: usize,
-        partial: &PartialDeck,
-        card_power: u32,
-        card_bonus: u32,
-        _card_skill: u32,
-        slots: usize,
-    ) -> u64 {
-        if self.joint_ep_512.is_empty() || self.joint_ep_1024.is_empty() {
-            return u64::MAX;
-        }
-        let rest = slots.saturating_sub(1);
-        let support_512 = partial
-            .power
-            .saturating_add(card_power)
-            .saturating_add(
-                self.dense_power_bonus_512_tail
-                    .get(next_start)
-                    .map(|tail| tail[rest])
-                    .unwrap_or(0),
-            )
-            .saturating_add(self.objective.honor_bonus)
-            .saturating_add(
-                512u32.saturating_mul(
-                    partial
-                        .bonus
-                        .saturating_add(card_bonus)
-                        .saturating_add(self.extra_bonus_ub),
-                ),
-            );
-        let support_1024 = partial
-            .power
-            .saturating_add(card_power)
-            .saturating_add(
-                self.dense_power_bonus_1024_tail
-                    .get(next_start)
-                    .map(|tail| tail[rest])
-                    .unwrap_or(0),
-            )
-            .saturating_add(self.objective.honor_bonus)
-            .saturating_add(
-                1024u32.saturating_mul(
-                    partial
-                        .bonus
-                        .saturating_add(card_bonus)
-                        .saturating_add(self.extra_bonus_ub),
-                ),
-            );
-        let ep_512 = joint_ep_lookup(&self.joint_ep_512, support_512);
-        let ep_1024 = joint_ep_lookup(&self.joint_ep_1024, support_1024);
-        ((ep_512.min(ep_1024) as u64) << 32) | u32::MAX as u64
-    }
-
-    fn build_joint_ep_table(&self, bonus_weight: u32) -> Vec<u32> {
-        let support_tail = if bonus_weight == 512 {
-            &self.dense_power_bonus_512_tail
-        } else {
-            &self.dense_power_bonus_1024_tail
-        };
-        let max_support = support_tail
-            .first()
-            .map(|tail| tail[DECK_SIZE])
-            .unwrap_or(0)
-            .saturating_add(self.objective.honor_bonus)
-            .saturating_add(bonus_weight.saturating_mul(self.extra_bonus_ub));
-        let max_power = self.objective.clamp_power_total(
-            self.dense_power_tail
-                .first()
-                .map(|tail| tail[DECK_SIZE])
-                .unwrap_or(0)
-                .saturating_add(self.objective.honor_bonus),
-        );
-        let max_bonus = self
-            .dense_bonus_tail
-            .first()
-            .map(|tail| tail[DECK_SIZE])
-            .unwrap_or(0)
-            .saturating_add(self.extra_bonus_ub);
-        let max_skill = self
-            .dense_skill_tail
-            .first()
-            .map(|tail| tail[DECK_SIZE])
-            .unwrap_or(0);
-        let max_leader = self.dense_leader_tail.first().copied().unwrap_or(0) as u32;
-        let bucket_count = max_support.div_ceil(JOINT_SUPPORT_BUCKET) as usize;
-        let mut table = Vec::with_capacity(bucket_count + 1);
-        let mut bucket = 0usize;
-        while bucket <= bucket_count {
-            let support = (bucket as u32).saturating_mul(JOINT_SUPPORT_BUCKET);
-            table.push(self.objective.joint_event_point_upper(
-                max_power.min(support),
-                max_bonus.min(support / bonus_weight),
-                max_skill,
-                max_leader,
-                support,
-                bonus_weight,
-            ));
-            bucket += 1;
-        }
-        table
     }
 
     /// 当前候选 + dense suffix 的 ceiling，调用方传入更紧的额外 bonus 上界。
@@ -1492,41 +1369,6 @@ fn build_dense_suffix_tails(
         dense_skill_tail,
         dense_leader_tail,
     )
-}
-
-fn build_dense_power_bonus_tail(pool: &CardPool, bonus_weight: u32) -> Vec<[u32; DECK_SIZE + 1]> {
-    let count = pool.count();
-    let mut tails = vec![[0u32; DECK_SIZE + 1]; count + 1];
-    let mut best_by_char = [0u32; CHAR_MASK_COUNT];
-    let mut dense = count;
-    while dense > 0 {
-        dense -= 1;
-        let card = crate::pool::CardIdx::new(dense as u16);
-        let char_id = pool.char_id(card) as usize;
-        let support = pool
-            .power_max(card)
-            .saturating_add(bonus_weight.saturating_mul(pool.event_bonus(card).total_ceil()));
-        best_by_char[char_id] = best_by_char[char_id].max(support);
-
-        let mut top = [0u32; DECK_SIZE];
-        let mut ch = 0usize;
-        while ch < CHAR_MASK_COUNT {
-            insert_topk_u32(&mut top, best_by_char[ch]);
-            ch += 1;
-        }
-        let mut slot = 0usize;
-        while slot < DECK_SIZE {
-            tails[dense][slot + 1] = tails[dense][slot].saturating_add(top[slot]);
-            slot += 1;
-        }
-    }
-    tails
-}
-
-#[inline(always)]
-fn joint_ep_lookup(table: &[u32], support: u32) -> u32 {
-    let bucket = support.div_ceil(JOINT_SUPPORT_BUCKET) as usize;
-    table.get(bucket).copied().unwrap_or(u32::MAX)
 }
 
 /// 单卡在场景 (allowed_full_units, attr_full) 下的综合力上界（对该场景精确）。

@@ -964,26 +964,14 @@ impl SearchState<'_> {
             self.stats.ep_candidates += 1;
 
             let dense_ub_global = if use_multi_score_event_fast_path {
-                let dense_upper = self.suffix.dense_candidate_ceiling_multi_score_event(
+                self.suffix.dense_candidate_ceiling_multi_score_event(
                     dense,
                     &partial,
                     card_power,
                     card_bonus,
                     card_skill_u32,
                     slots,
-                );
-                if dense_upper < threshold || slots < 3 {
-                    dense_upper
-                } else {
-                    dense_upper.min(self.suffix.dense_candidate_joint_ceiling_multi_score_event(
-                        dense,
-                        &partial,
-                        card_power,
-                        card_bonus,
-                        card_skill_u32,
-                        slots,
-                    ))
-                }
+                )
             } else {
                 self.suffix.dense_candidate_ceiling(
                     dense,

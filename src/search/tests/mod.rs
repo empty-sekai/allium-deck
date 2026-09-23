@@ -11,7 +11,6 @@ mod exact_score;
 mod exact_world_bloom;
 mod overflow;
 mod performance;
-mod prepared_search;
 mod property_bounds;
 mod property_matrix;
 

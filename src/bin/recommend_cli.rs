@@ -17,8 +17,8 @@ use allium_deck::handler::{
 };
 use allium_deck::pool::{CardIdx, CardPool};
 use allium_deck::search::{
-    DeckResult, DeckResultSummary, PreparedSearch, SearchCompletion, SearchContext, SearchParams,
-    SearchStats, challenge_search, compare_deck_results, search_targets, summarize_deck,
+    DeckResult, DeckResultSummary, SearchCompletion, SearchContext, SearchParams, SearchStats,
+    challenge_search, compare_deck_results, search_targets, summarize_deck,
 };
 use allium_deck::{LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 use serde::Serialize;
@@ -194,20 +194,15 @@ fn run() -> Result<(), String> {
     );
 
     let search_params = SearchParams { top_k, timeout_ms };
-    // 精确档位组卡：每个档位独立 Top-K，走 search_targets 专属路径。
-    let tiered = !params.target_bonus_list.is_empty();
-    let prepared_search = (!tiered && search_repeats > 1)
-        .then(|| PreparedSearch::build(&pool, &ctx, top_k))
-        .flatten();
     let search_start = Instant::now();
     let mut search_output = None;
     for _ in 0..search_repeats {
-        search_output = Some(match prepared_search.as_ref() {
-            Some(prepared) => prepared
-                .search(&pool, &ctx, &search_params)
-                .expect("prepared search covers requested top_k"),
-            None => search_targets(&pool, &ctx, &search_params, &params.target_bonus_list),
-        });
+        search_output = Some(search_targets(
+            &pool,
+            &ctx,
+            &search_params,
+            &params.target_bonus_list,
+        ));
     }
     let outcome = search_output.expect("search_repeats is non-zero");
     let completion = outcome.completion();
