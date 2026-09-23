@@ -54,7 +54,7 @@ pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceRes
     let compacted = pool.compact(&keep);
     let remapped_ctx = ctx.remap(&keep);
     assert_eq!(
-        remapped_ctx.skill_is_after_training.len(),
+        remapped_ctx.leader_honor_bonus_x10.len(),
         compacted.count(),
         "remapped context must match compacted pool",
     );
@@ -297,13 +297,6 @@ fn dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -
         idx += 1;
     }
 
-    if ctx.keep_after_training_state
-        && (ctx.skill_is_after_training_at(lhs.raw()) != ctx.skill_is_after_training_at(rhs.raw())
-            || ctx.trained_to_special_image_at(lhs.raw())
-                != ctx.trained_to_special_image_at(rhs.raw()))
-    {
-        return false;
-    }
     if !skill_dominates(pool, lhs, rhs) {
         return false;
     }

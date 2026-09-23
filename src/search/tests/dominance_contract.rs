@@ -64,7 +64,7 @@ fn dominance_support_penalty_applies_to_every_cultivation_variant() {
 }
 
 #[test]
-fn dominance_reference_skill_must_compare_base_and_preserved_training_state() {
+fn dominance_reference_skill_must_compare_base_scores() {
     let mut weak = skill_card(400, 1, 1100, 40);
     weak.skill = SkillSlot {
         skill_type: 3,
@@ -86,10 +86,8 @@ fn dominance_reference_skill_must_compare_base_and_preserved_training_state() {
     let mut ctx = ready_ctx(&pool, ScoreTarget::Score);
     ctx.live_type = LiveType::Multi;
     ctx.skill_scores[1] = [0.2; 6];
-    // Both cards are kept in their primary state, so skill_min == skill_max is
-    // a valid exact metadata bound. Their identical reference tables do not
-    // make their different primary scores interchangeable.
-    ctx.keep_after_training_state = true;
+    // Identical reference tables do not make different base scores
+    // interchangeable.
     let params = SearchParams {
         top_k: 1,
         timeout_ms: 0,

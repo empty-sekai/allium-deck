@@ -124,7 +124,6 @@ fn ctx(target: ScoreTarget) -> SearchContext {
         minimize: false,
         live_type: LiveType::Solo,
         event_type: None,
-        keep_after_training_state: false,
         skill_reference_strategy: SkillReferenceStrategy::Average,
         best_skill_as_leader: true,
         live_skill_order: LiveSkillOrder::Best,
@@ -143,8 +142,6 @@ fn ctx(target: ScoreTarget) -> SearchContext {
         leader_honors: Vec::new(),
         leader_limit_bonus_x10: Vec::new(),
         final_chapter_member_keep: Vec::new(),
-        skill_is_after_training: Vec::new(),
-        trained_to_special_image: Vec::new(),
     }
 }
 
@@ -152,8 +149,6 @@ fn ready_ctx(pool: &CardPool, target: ScoreTarget) -> SearchContext {
     let mut ctx = ctx(target);
     ctx.leader_honor_bonus_x10 = vec![0; pool.count()];
     ctx.leader_limit_bonus_x10 = vec![0; pool.count()];
-    ctx.skill_is_after_training = vec![false; pool.count()];
-    ctx.trained_to_special_image = vec![false; pool.count()];
     ctx
 }
 

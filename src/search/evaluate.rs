@@ -1161,7 +1161,6 @@ mod tests {
             minimize: false,
             live_type,
             event_type: None,
-            keep_after_training_state: false,
             skill_reference_strategy: SkillReferenceStrategy::Average,
             best_skill_as_leader: true,
             live_skill_order: LiveSkillOrder::Best,
@@ -1180,8 +1179,6 @@ mod tests {
             leader_honors: Vec::new(),
             leader_limit_bonus_x10: Vec::new(),
             final_chapter_member_keep: Vec::new(),
-            skill_is_after_training: Vec::new(),
-            trained_to_special_image: Vec::new(),
         }
     }
 

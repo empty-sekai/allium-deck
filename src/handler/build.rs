@@ -743,7 +743,6 @@ pub(super) fn build_search_context(
         minimize: params.minimize,
         live_type: params.live_type,
         event_type: event_ctx.map(|ctx| ctx.event_type),
-        keep_after_training_state: params.keep_after_training_state,
         skill_reference_strategy: params.skill_reference_strategy,
         best_skill_as_leader: params.best_skill_as_leader,
         live_skill_order: params.live_skill_order,
@@ -772,8 +771,6 @@ pub(super) fn build_search_context(
         leader_honors: Vec::new(),
         leader_limit_bonus_x10: gathered.leader_limit_bonus_x10,
         final_chapter_member_keep: vec![true; card_count],
-        skill_is_after_training: gathered.skill_is_after_training,
-        trained_to_special_image: gathered.trained_to_special_image,
     }
 }
 

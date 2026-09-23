@@ -1554,7 +1554,6 @@ mod skill_ceiling_tests {
             minimize: false,
             live_type: LiveType::Solo,
             event_type: Some(EventType::WorldBloom),
-            keep_after_training_state: true,
             skill_reference_strategy: SkillReferenceStrategy::Average,
             best_skill_as_leader: false,
             live_skill_order: LiveSkillOrder::Best,
@@ -1573,8 +1572,6 @@ mod skill_ceiling_tests {
             leader_honors: Vec::new(),
             leader_limit_bonus_x10: vec![0; 5],
             final_chapter_member_keep: vec![true; 5],
-            skill_is_after_training: vec![false; 5],
-            trained_to_special_image: vec![false; 5],
         };
         (pool, ctx)
     }

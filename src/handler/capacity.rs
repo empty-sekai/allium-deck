@@ -311,7 +311,6 @@ mod tests {
             minimize: false,
             live_type: LiveType::Multi,
             event_type: Some(EventType::CheerfulCarnival),
-            keep_after_training_state: false,
             skill_reference_strategy: SkillReferenceStrategy::Average,
             best_skill_as_leader: true,
             live_skill_order: LiveSkillOrder::Best,
@@ -330,8 +329,6 @@ mod tests {
             leader_honor_bonus_x10: vec![0; 6],
             leader_limit_bonus_x10: vec![0; 6],
             final_chapter_member_keep: vec![true; 6],
-            skill_is_after_training: vec![false; 6],
-            trained_to_special_image: vec![false; 6],
         }
     }
 

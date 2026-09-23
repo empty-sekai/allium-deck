@@ -1571,7 +1571,6 @@ mod support_envelope_tests {
             minimize: false,
             live_type: LiveType::Multi,
             event_type: Some(EventType::WorldBloom),
-            keep_after_training_state: true,
             skill_reference_strategy: SkillReferenceStrategy::Average,
             best_skill_as_leader: false,
             live_skill_order: LiveSkillOrder::Average,
@@ -1590,8 +1589,6 @@ mod support_envelope_tests {
             leader_honors: Vec::new(),
             leader_limit_bonus_x10: vec![0; 3],
             final_chapter_member_keep: vec![true; 3],
-            skill_is_after_training: vec![false; 3],
-            trained_to_special_image: vec![false; 3],
         };
         (pool, ctx)
     }

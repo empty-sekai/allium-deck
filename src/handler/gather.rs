@@ -93,8 +93,6 @@ pub(crate) struct GatheredContext {
     pub(crate) skill_max: Vec<u8>,
     pub(crate) leader_honor_bonus_x10: Vec<u16>,
     pub(crate) leader_limit_bonus_x10: Vec<u16>,
-    pub(crate) skill_is_after_training: Vec<bool>,
-    pub(crate) trained_to_special_image: Vec<bool>,
 }
 
 fn encode_power(card: &CardIntermediate) -> ([u16; 8], u32) {
@@ -294,8 +292,6 @@ pub(crate) fn sort_and_gather(
         skill_max: Vec::with_capacity(cards.len()),
         leader_honor_bonus_x10: Vec::with_capacity(cards.len()),
         leader_limit_bonus_x10: Vec::with_capacity(cards.len()),
-        skill_is_after_training: Vec::with_capacity(cards.len()),
-        trained_to_special_image: Vec::with_capacity(cards.len()),
     };
 
     for (dense, card) in cards.into_iter().enumerate() {
@@ -362,12 +358,6 @@ pub(crate) fn sort_and_gather(
         gathered
             .leader_limit_bonus_x10
             .push(card.leader_limit_bonus_x10);
-        gathered
-            .skill_is_after_training
-            .push(card.skill.full.is_after_training);
-        gathered
-            .trained_to_special_image
-            .push(matches!(card.default_image, DefaultImage::SpecialTraining));
         if include_details {
             full.push(FullPrecisionCard {
                 game_card_id: card.game_card_id as u16,

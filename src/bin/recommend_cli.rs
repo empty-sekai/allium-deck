@@ -1389,7 +1389,6 @@ impl DeckOut {
                 let card = order[pos];
                 CardOut::build(
                     pool,
-                    ctx,
                     game,
                     original_user,
                     user_cards,
@@ -1417,7 +1416,6 @@ impl DeckOut {
 impl CardOut {
     fn build(
         pool: &CardPool,
-        ctx: &SearchContext,
         game: &GameData<'_>,
         original_user: &UserProfile,
         user_cards: &HashMap<i32, &UserCard>,
@@ -1427,9 +1425,7 @@ impl CardOut {
     ) -> Self {
         let card_id = pool.game_id(card_idx) as i32;
         let user_card = user_cards.get(&card_id).copied();
-        let trained = user_card
-            .map(default_image_is_trained)
-            .unwrap_or_else(|| ctx.trained_to_special_image_at(card_idx.raw()));
+        let trained = user_card.is_some_and(default_image_is_trained);
         let meta = card_meta(game, card_id, trained);
         let event_bonus = summary
             .map(|value| value.card_event_bonus_rates[pos])

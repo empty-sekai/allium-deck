@@ -71,8 +71,6 @@ pub struct SearchContext {
     pub live_type: LiveType,
     /// 活动类型；无活动上下文时为 `None`。
     pub event_type: Option<EventType>,
-    /// 保持卡面当前的特训状态，不为了更优技能而假设已特训。
-    pub keep_after_training_state: bool,
     /// 吸分技能取值策略。
     pub skill_reference_strategy: SkillReferenceStrategy,
     /// 允许把技能最高的卡放到队长位。终章与指定队长时不生效，
@@ -113,20 +111,11 @@ pub struct SearchContext {
     pub leader_limit_bonus_x10: Vec<u16>,
     /// 终章 member 支配裁剪后仍保留的卡，按稠密卡索引。
     pub final_chapter_member_keep: Vec<bool>,
-    /// 每张卡取用的技能是否为花后技能，按稠密卡索引。
-    pub skill_is_after_training: Vec<bool>,
-    /// 每张卡默认立绘是否已是特训图，按稠密卡索引。
-    pub trained_to_special_image: Vec<bool>,
 }
 
 impl SearchContext {
     /// 返回按 `keep` 位图压缩后的搜索上下文。
     pub fn remap(&self, keep: &[bool]) -> Self {
-        assert_eq!(
-            self.skill_is_after_training.len(),
-            keep.len(),
-            "skill_is_after_training length must match pool count",
-        );
         assert_eq!(
             self.leader_honor_bonus_x10.len(),
             keep.len(),
@@ -137,18 +126,11 @@ impl SearchContext {
             keep.len(),
             "leader_limit_bonus_x10 length must match pool count",
         );
-        assert_eq!(
-            self.trained_to_special_image.len(),
-            keep.len(),
-            "trained_to_special_image length must match pool count",
-        );
 
         let mut remapped = self.clone();
-        remapped.skill_is_after_training = remap_vec(&self.skill_is_after_training, keep);
         remapped.leader_honor_bonus_x10 = remap_vec(&self.leader_honor_bonus_x10, keep);
         remapped.leader_limit_bonus_x10 = remap_vec(&self.leader_limit_bonus_x10, keep);
         remapped.final_chapter_member_keep = remap_vec(&self.final_chapter_member_keep, keep);
-        remapped.trained_to_special_image = remap_vec(&self.trained_to_special_image, keep);
         remapped
     }
 
@@ -357,24 +339,6 @@ impl SearchContext {
             .get(dense_idx)
             .copied()
             .unwrap_or(true)
-    }
-
-    /// 判断技能是否为花后技能。
-    #[inline(always)]
-    pub fn skill_is_after_training_at(&self, dense_idx: usize) -> bool {
-        self.skill_is_after_training
-            .get(dense_idx)
-            .copied()
-            .unwrap_or(false)
-    }
-
-    /// 判断当前卡默认立绘是否已是特训图。
-    #[inline(always)]
-    pub fn trained_to_special_image_at(&self, dense_idx: usize) -> bool {
-        self.trained_to_special_image
-            .get(dense_idx)
-            .copied()
-            .unwrap_or(false)
     }
 }
 

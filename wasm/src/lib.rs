@@ -335,7 +335,6 @@ impl DeckOut {
                         let card_idx = summary.ordered_cards[card_pos];
                         CardOut::build(
                             pool,
-                            ctx,
                             game,
                             master_cards,
                             original_user,
@@ -368,7 +367,6 @@ impl DeckOut {
                     .map(|&card_idx| {
                         CardOut::build(
                             pool,
-                            ctx,
                             game,
                             master_cards,
                             original_user,
@@ -408,7 +406,6 @@ impl DeckOut {
 impl CardOut {
     fn build(
         pool: &CardPool,
-        ctx: &SearchContext,
         game: &GameData<'_>,
         master_cards: &HashMap<i32, &MasterCard>,
         original_user: &UserProfile,
@@ -420,9 +417,7 @@ impl CardOut {
     ) -> Self {
         let card_id = pool.game_id(card_idx) as i32;
         let user_card = user_cards.get(&card_id).copied();
-        let trained = user_card
-            .map(default_image_is_trained)
-            .unwrap_or_else(|| ctx.trained_to_special_image_at(card_idx.raw()));
+        let trained = user_card.is_some_and(default_image_is_trained);
         let meta = card_meta(master_cards, card_id, trained);
         let has_canvas_bonus = user_card
             .and_then(|card| card.has_canvas_bonus_override)
