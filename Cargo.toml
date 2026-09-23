@@ -33,6 +33,9 @@ thiserror = "2"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 web-time = "1"
 
+[features]
+# Optional exhaustive diagnostics; excluded from the default production API.
+diagnostics = []
 
 [package.metadata.docs.rs]
 all-features = true

@@ -19,7 +19,6 @@ pub struct PoolBuilder {
 impl PoolBuilder {
     /// 预分配指定数量候选卡的 Arena。
     pub fn new(n: u16) -> Self {
-        assert!(n as usize <= MASK_BITS, "pool count exceeds mask capacity");
         let layout = PoolLayout::compute(n as usize);
         Self {
             arena: Arena::new(layout.total_size),
@@ -153,17 +152,26 @@ impl PoolBuilder {
 
     #[inline(always)]
     pub(crate) fn mark_char(&mut self, char_id: u8, card_idx: u16) {
-        self.char_masks_mut()[char_id as usize].set(card_idx as usize);
+        // `Mask` deliberately remains one 512-bit cache line for the ZMM
+        // fast path. Overflow cards stay in the full SoA columns; search uses
+        // those columns instead of this optional metadata view.
+        if (card_idx as usize) < MASK_BITS {
+            self.char_masks_mut()[char_id as usize].set(card_idx as usize);
+        }
     }
 
     #[inline(always)]
     pub(crate) fn mark_unit(&mut self, unit_id: u8, card_idx: u16) {
-        self.unit_masks_mut()[unit_id as usize].set(card_idx as usize);
+        if (card_idx as usize) < MASK_BITS {
+            self.unit_masks_mut()[unit_id as usize].set(card_idx as usize);
+        }
     }
 
     #[inline(always)]
     pub(crate) fn mark_attr(&mut self, attr_id: u8, card_idx: u16) {
-        self.attr_masks_mut()[attr_id as usize].set(card_idx as usize);
+        if (card_idx as usize) < MASK_BITS {
+            self.attr_masks_mut()[attr_id as usize].set(card_idx as usize);
+        }
     }
 
     #[inline(always)]

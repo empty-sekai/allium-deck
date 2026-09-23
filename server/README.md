@@ -32,7 +32,7 @@
 26 角色、1300 张卡，外加一个满配账号：
 
 ```bash
-cargo run --release --manifest-path server/Cargo.toml --bin export_synth_masterdata -- ./synth
+cargo run --manifest-path server/Cargo.toml --release --bin export-synth-masterdata -- ./synth
 
 cd server
 cargo run --release -- \
@@ -65,12 +65,13 @@ curl localhost:8080/v1/recommend -H 'content-type: application/json' -d "{
   ],
   "diagnostics": { "poolSize": 156, "effectiveLiveType": "multi", "leafNodes": 145 },
   "timing": { "queueWaitMs": 0.03, "buildPoolMs": 1.12, "searchMs": 0.38, "totalMs": 10.49 },
+  "completion": "complete",
   "timedOut": false
 }
 ```
 
 换成真实数据时，`--masterdata` 指向平铺着 masterdata `*.json` 的目录，`--music-metas`
-指向 `music_metas.json`。仓库只约定输入格式，不绑定具体数据来源。
+指向 `music_metas.json`。两者的公开来源列在 [`src/bin/recommend_cli.rs`](../src/bin/recommend_cli.rs)。
 
 ## 端点
 
@@ -132,10 +133,12 @@ HTTP（异步）  --try_send-->  队列（--max-queue）  -->  --workers 个搜�
 服务不为此拒绝请求，而是把两者压到自己的上限：要得更多就返回更小的结果，而不是报错。
 生效中的上限由 `GET /v1/regions` 给出。
 
-搜索一旦走到超时，会返回当时已找到的最优卡组，响应里 `"timedOut": true`。这些卡组**不是**
-被证明的最优解——精确性矩阵见 [`docs/parameters.md`](../docs/parameters.md)。大卡组上的
-World Bloom 终章请求最容易撞到这里；如果你的部署宁可多等也不要近似解，把
-`--max-search-timeout-ms` 调高。
+搜索一旦由共享 `SearchBudget` 观测到 deadline，会返回当时已找到的合法 incumbent，响应里
+`"completion": "timed_out"` 且 `"timedOut": true`。completion 直接来自 solver 的
+`SearchStats.deadline_hit`，不会根据 HTTP 外层 elapsed time 猜测。这些卡组都经过精确叶子求值，
+但**没有证明 canonical Top-K 完整**——完整契约见 [`docs/parameters.md`](../docs/parameters.md) 与
+[`docs/exactness-proof.md`](../docs/exactness-proof.md)。World Bloom 终章大卡池最容易撞到预算；
+如果部署宁可多等，把 `--max-search-timeout-ms` 调高。
 
 ## 错误
 

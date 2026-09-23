@@ -1,61 +1,16 @@
+use crate::search::budget::{Instant, SearchBudget as ChallengeDeadline};
+use crate::search::{SearchOutcome, SearchStats};
 use std::time::Duration;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Instant;
-#[cfg(target_arch = "wasm32")]
-use web_time::Instant;
 
 use crate::pool::{CardIdx, CardPool};
 use crate::types::DECK_SIZE;
 
-use super::SimpleTopKTracker;
-use super::context::SearchContext;
-use super::evaluate::{leaf_evaluate_challenge_score_checked, leaf_evaluate_checked};
-use super::suffix::{PartialDeck, SuffixBound};
-use super::types::{DeckResult, SearchParams};
+use crate::search::TopKTracker;
+use crate::search::context::SearchContext;
+use crate::search::evaluate::{leaf_evaluate_challenge_score_checked, leaf_evaluate_checked};
+use crate::search::suffix::{PartialDeck, SuffixBound};
+use crate::search::types::{DeckResult, SearchParams};
 use crate::types::{LiveType, ScoreTarget};
-
-struct ChallengeDeadline {
-    expires_at: Option<Instant>,
-    checks: u16,
-    hit: bool,
-}
-
-impl ChallengeDeadline {
-    fn new(expires_at: Option<Instant>) -> Self {
-        Self {
-            expires_at,
-            checks: 1023,
-            hit: false,
-        }
-    }
-
-    fn from_params(params: &SearchParams) -> Self {
-        Self::new(
-            (params.timeout_ms != 0)
-                .then(|| Instant::now() + Duration::from_millis(params.timeout_ms)),
-        )
-    }
-
-    #[inline]
-    fn expired(&mut self) -> bool {
-        self.expired_with(Instant::now)
-    }
-
-    #[inline]
-    fn expired_with(&mut self, now: impl FnOnce() -> Instant) -> bool {
-        if self.hit {
-            return true;
-        }
-        let Some(expires_at) = self.expires_at else {
-            return false;
-        };
-        self.checks = self.checks.wrapping_add(1);
-        if self.checks & 1023 == 0 {
-            self.hit = now() >= expires_at;
-        }
-        self.hit
-    }
-}
 
 #[cfg(test)]
 mod deadline_tests {
@@ -66,13 +21,13 @@ mod deadline_tests {
         let start = Instant::now();
         let end = start + Duration::from_secs(1);
         let mut guard = ChallengeDeadline::new(Some(end));
-        assert!(!guard.expired_with(|| start));
+        assert!(!guard.expired_sampled_with(|| start));
         for _ in 0..1023 {
-            assert!(!guard.expired_with(|| panic!("unexpected clock read")));
+            assert!(!guard.expired_sampled_with(|| panic!("unexpected clock read")));
         }
-        assert!(guard.expired_with(|| end));
+        assert!(guard.expired_sampled_with(|| end));
         for _ in 0..2048 {
-            assert!(guard.expired_with(|| panic!("expired guard read the clock")));
+            assert!(guard.expired_sampled_with(|| panic!("expired guard read the clock")));
         }
     }
 
@@ -196,10 +151,10 @@ mod deadline_tests {
     fn challenge_deadline_checks_initial_expiry_and_skips_disabled_clock() {
         let now = Instant::now();
         let mut expired = ChallengeDeadline::new(Some(now));
-        assert!(expired.expired_with(|| now));
+        assert!(expired.expired_sampled_with(|| now));
         let mut disabled = ChallengeDeadline::new(None);
         for _ in 0..2048 {
-            assert!(!disabled.expired_with(|| panic!("disabled deadline read the clock")));
+            assert!(!disabled.expired_sampled_with(|| panic!("disabled deadline read the clock")));
         }
     }
 }
@@ -213,9 +168,23 @@ pub fn search(
     ctx: &SearchContext,
     suffix: &SuffixBound,
     params: &SearchParams,
-) -> (Vec<DeckResult>, super::SearchStats) {
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
     let mut deadline = ChallengeDeadline::from_params(params);
-    search_with_character_filter(pool, ctx, suffix, params, None, &mut deadline)
+    search_with_budget(pool, ctx, suffix, params, &mut deadline)
+}
+
+pub(crate) fn search_with_budget(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+    params: &SearchParams,
+    deadline: &mut ChallengeDeadline,
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
+    let (results, mut stats) =
+        search_with_character_filter(pool, ctx, suffix, params, None, deadline);
+    stats.deadline_hit |= deadline.hit;
+    stats.finalize();
+    (results, stats)
 }
 
 /// 在一个共享 challenge pool 中只搜索指定角色。
@@ -228,9 +197,13 @@ pub fn search_character(
     suffix: &SuffixBound,
     params: &SearchParams,
     character_id: u8,
-) -> (Vec<DeckResult>, super::SearchStats) {
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
     let mut deadline = ChallengeDeadline::from_params(params);
-    search_with_character_filter(pool, ctx, suffix, params, Some(character_id), &mut deadline)
+    let (results, mut stats) =
+        search_with_character_filter(pool, ctx, suffix, params, Some(character_id), &mut deadline);
+    stats.deadline_hit |= deadline.hit;
+    stats.finalize();
+    (results, stats)
 }
 
 /// challenge_all：逐角色搜索后按分数归并出全局 Top-K。
@@ -244,16 +217,25 @@ pub fn search_all_characters(
     ctx: &SearchContext,
     suffix: &SuffixBound,
     params: &SearchParams,
-) -> (Vec<DeckResult>, super::SearchStats) {
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
     let mut deadline = ChallengeDeadline::from_params(params);
+    search_all_characters_with_budget(pool, ctx, suffix, params, &mut deadline)
+}
 
+pub(crate) fn search_all_characters_with_budget(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+    params: &SearchParams,
+    deadline: &mut ChallengeDeadline,
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
     let mut present = [false; 27];
     for card in pool.indices() {
         present[(pool.char_id(card) as usize).min(26)] = true;
     }
 
     let mut merged = Vec::new();
-    let mut stats = super::SearchStats::default();
+    let mut stats = crate::search::SearchStats::default();
     for (character_id, present) in present.iter().copied().enumerate() {
         if !present {
             continue;
@@ -267,34 +249,17 @@ pub fn search_all_characters(
             suffix,
             params,
             Some(character_id as u8),
-            &mut deadline,
+            deadline,
         );
-        accumulate_stats(&mut stats, &character_stats);
+        stats.accumulate(&character_stats);
         merged.extend(results);
     }
 
-    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
-    merged.sort_unstable_by(|left, right| {
-        let ordering = super::deck_result_cmp(left, right);
-        if minimize {
-            ordering.reverse()
-        } else {
-            ordering
-        }
-    });
+    merged.sort_unstable_by(|left, right| crate::search::deck_result_cmp(pool, ctx, left, right));
     merged.truncate(params.top_k);
+    stats.deadline_hit |= deadline.hit;
+    stats.finalize();
     (merged, stats)
-}
-
-fn accumulate_stats(total: &mut super::SearchStats, part: &super::SearchStats) {
-    total.leaf_nodes += part.leaf_nodes;
-    total.ub_prunes += part.ub_prunes;
-    total.leader_prunes += part.leader_prunes;
-    total.ep_candidates += part.ep_candidates;
-    total.ep_break_prunes += part.ep_break_prunes;
-    total.ep_continue_prunes += part.ep_continue_prunes;
-    total.ep_explored += part.ep_explored;
-    total.mono_break_prunes += part.mono_break_prunes;
 }
 
 fn search_with_character_filter(
@@ -304,24 +269,28 @@ fn search_with_character_filter(
     params: &SearchParams,
     character_id: Option<u8>,
     deadline: &mut ChallengeDeadline,
-) -> (Vec<DeckResult>, super::SearchStats) {
-    if params.top_k == 0 || pool.count() < DECK_SIZE || deadline.expired() {
-        return (Vec::new(), super::SearchStats::default());
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
+    if params.top_k == 0 || pool.count() < DECK_SIZE || deadline.expired_sampled() {
+        return (Vec::new(), crate::search::SearchStats::default());
     }
 
-    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
-    let mut tracker = SimpleTopKTracker::new(params.top_k, minimize, pool);
+    let mut tracker = TopKTracker::new(params.top_k);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
-    let mut stats = super::SearchStats::default();
+    let mut stats = crate::search::SearchStats::default();
     let candidates = ordered_candidates(pool, ctx, character_id);
     if candidates.len() < DECK_SIZE {
-        return (Vec::new(), super::SearchStats::default());
+        return (Vec::new(), crate::search::SearchStats::default());
     }
     if params.top_k == 1 && ctx.fixed_card_ids.is_empty() {
         return search_combo_top1(pool, ctx, &candidates, tracker, deadline);
     }
     // Maximization ceilings cannot prune a minimum-power search.
-    let bounds = if minimize {
+    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
+    let bounds = if minimize
+        || !crate::search::tuning::SearchTuning::load().bounds
+        || ctx.has_event()
+        || matches!(ctx.target, ScoreTarget::Bonus | ScoreTarget::Mysekai)
+    {
         None
     } else {
         let Some(bounds) = ChallengeBounds::build(pool, &candidates, deadline) else {
@@ -352,10 +321,10 @@ fn search_combo_top1(
     pool: &CardPool,
     ctx: &SearchContext,
     candidates: &[CardIdx],
-    mut tracker: SimpleTopKTracker,
+    mut tracker: TopKTracker,
     deadline: &mut ChallengeDeadline,
-) -> (Vec<DeckResult>, super::SearchStats) {
-    let mut stats = super::SearchStats::default();
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
+    let mut stats = crate::search::SearchStats::default();
     let game_ids = candidates
         .iter()
         .map(|card| pool.game_id(*card))
@@ -363,12 +332,12 @@ fn search_combo_top1(
     let len = candidates.len();
 
     'search: for a in 0..len - 4 {
-        if deadline.expired() {
+        if deadline.expired_sampled() {
             break;
         }
         let gid_a = game_ids[a];
         for b in a + 1..len - 3 {
-            if deadline.expired() {
+            if deadline.expired_sampled() {
                 break 'search;
             }
             let gid_b = game_ids[b];
@@ -376,7 +345,7 @@ fn search_combo_top1(
                 continue;
             }
             for c in b + 1..len - 2 {
-                if deadline.expired() {
+                if deadline.expired_sampled() {
                     break 'search;
                 }
                 let gid_c = game_ids[c];
@@ -384,7 +353,7 @@ fn search_combo_top1(
                     continue;
                 }
                 for d in c + 1..len - 1 {
-                    if deadline.expired() {
+                    if deadline.expired_sampled() {
                         break 'search;
                     }
                     let gid_d = game_ids[d];
@@ -392,7 +361,7 @@ fn search_combo_top1(
                         continue;
                     }
                     for e in d + 1..len {
-                        if deadline.expired() {
+                        if deadline.expired_sampled() {
                             break 'search;
                         }
                         let gid_e = game_ids[e];
@@ -407,8 +376,9 @@ fn search_combo_top1(
                             candidates[e],
                         ];
                         stats.leaf_nodes += 1;
-                        if let Some(score) = leaf_evaluate_challenge(pool, ctx, &deck) {
-                            tracker.insert(DeckResult::new(deck, score));
+                        stats.visited_nodes += 1;
+                        if let Some(candidate) = leaf_evaluate_challenge(pool, ctx, &deck) {
+                            tracker.insert(pool, ctx, candidate);
                         }
                     }
                 }
@@ -424,16 +394,21 @@ fn leaf_evaluate_challenge(
     pool: &CardPool,
     ctx: &SearchContext,
     deck: &[CardIdx; DECK_SIZE],
-) -> Option<u64> {
-    if matches!(
+) -> Option<DeckResult> {
+    if crate::search::problem::DeckProblem::from_context(ctx).needs_placement_search() {
+        return crate::search::placement::evaluate_candidate(pool, ctx, deck);
+    }
+    let score = if matches!(
         ctx.effective_live_type(),
         LiveType::Challenge | LiveType::ChallengeAuto
     ) && matches!(ctx.target, ScoreTarget::Score)
+        && !ctx.has_event()
     {
         leaf_evaluate_challenge_score_checked(pool, ctx, deck)
     } else {
         leaf_evaluate_checked(pool, ctx, deck)
-    }
+    }?;
+    Some(DeckResult::new(*deck, score))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -447,23 +422,24 @@ fn challenge_recurse(
     start: usize,
     deck: &mut [CardIdx; DECK_SIZE],
     partial: PartialDeck,
-    tracker: &mut SimpleTopKTracker,
-    stats: &mut super::SearchStats,
+    tracker: &mut TopKTracker,
+    stats: &mut crate::search::SearchStats,
     deadline: &mut ChallengeDeadline,
 ) {
-    if deadline.expired() {
+    stats.visited_nodes += 1;
+    if deadline.expired_sampled() {
         return;
     }
     if depth == DECK_SIZE {
         stats.leaf_nodes += 1;
-        if let Some(score) = leaf_evaluate_challenge(pool, ctx, deck) {
-            tracker.insert(DeckResult::new(*deck, score));
+        if let Some(candidate) = leaf_evaluate_challenge(pool, ctx, deck) {
+            tracker.insert(pool, ctx, candidate);
         }
         return;
     }
 
     let remaining = DECK_SIZE - depth;
-    let threshold = tracker.threshold();
+    let threshold = tracker.cutoff();
     // Equal-score branches can still improve the tracker's card-order tie-break.
     if let (Some(bounds), Some(threshold)) = (bounds, threshold)
         && bounds.ceiling(suffix, start, &partial, remaining) < threshold
@@ -474,7 +450,7 @@ fn challenge_recurse(
 
     let mut dense = start;
     while dense < candidates.len() {
-        if deadline.expired() {
+        if deadline.expired_sampled() {
             return;
         }
         let card = candidates[dense];
@@ -594,7 +570,7 @@ impl ChallengeBounds {
         deadline: &mut ChallengeDeadline,
         mut now: impl FnMut() -> Instant,
     ) -> Option<Self> {
-        if deadline.expired_with(&mut now) {
+        if deadline.expired_sampled_with(&mut now) {
             return None;
         }
         let count = candidates.len();
@@ -602,7 +578,7 @@ impl ChallengeBounds {
         frontiers[count][0].push(BoundState::default());
 
         for dense in (0..count).rev() {
-            if deadline.expired_with(&mut now) {
+            if deadline.expired_sampled_with(&mut now) {
                 return None;
             }
             let card = candidates[dense];
@@ -615,14 +591,14 @@ impl ChallengeBounds {
             for slot in 0..=DECK_SIZE {
                 let mut states = Vec::new();
                 for &state in &frontiers[dense + 1][slot] {
-                    if deadline.expired_with(&mut now) {
+                    if deadline.expired_sampled_with(&mut now) {
                         return None;
                     }
                     states.push(state);
                 }
                 if slot > 0 {
                     for &state in &frontiers[dense + 1][slot - 1] {
-                        if deadline.expired_with(&mut now) {
+                        if deadline.expired_sampled_with(&mut now) {
                             return None;
                         }
                         states.push(state.add(card_state));
@@ -691,7 +667,7 @@ fn prune_dominated(
     let mut pruned = Vec::with_capacity(states.len());
     'candidate: for (idx, candidate) in states.iter().copied().enumerate() {
         for (other_idx, other) in states.iter().copied().enumerate() {
-            if deadline.expired_with(&mut *now) {
+            if deadline.expired_sampled_with(&mut *now) {
                 return None;
             }
             // Identical upper-bound states are interchangeable; keep the first.
@@ -732,4 +708,69 @@ fn game_id_in_deck(
         i += 1;
     }
     false
+}
+
+/// One character's independent Top-K, including its actual completion record.
+#[derive(Clone, Debug)]
+pub struct CharacterSearchOutcome {
+    /// The requested character ID.
+    pub character_id: u8,
+    /// Legal incumbents and work for this character, not a fresh request budget.
+    pub outcome: SearchOutcome<Vec<DeckResult>>,
+    /// Diagnostic elapsed time; never used to infer completion.
+    pub search_time: Duration,
+}
+
+/// Search every requested character under ONE operation deadline.
+///
+/// The budget starts before suffix preparation. Unvisited feasible characters
+/// after expiry are explicitly `TimedOut`, not mislabeled as infeasible. Entries
+/// with fewer than five candidates or `top_k == 0` are trivially complete.
+pub fn search_characters_outcome(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    characters: &[u8],
+) -> SearchOutcome<Vec<CharacterSearchOutcome>> {
+    let mut deadline = ChallengeDeadline::from_params(params);
+    let suffix = SuffixBound::build(pool, ctx);
+    let mut entries = Vec::with_capacity(characters.len());
+    let mut total = SearchStats::default();
+    for &character_id in characters {
+        let started = Instant::now();
+        let candidate_count = pool
+            .indices()
+            .filter(|&c| pool.char_id(c) == character_id)
+            .count();
+        let (results, mut stats) = if params.top_k == 0 || candidate_count < DECK_SIZE {
+            (Vec::new(), SearchStats::default())
+        } else if deadline.expired() {
+            (
+                Vec::new(),
+                SearchStats {
+                    deadline_hit: true,
+                    ..Default::default()
+                },
+            )
+        } else {
+            let (results, mut stats) = search_with_character_filter(
+                pool,
+                ctx,
+                &suffix,
+                params,
+                Some(character_id),
+                &mut deadline,
+            );
+            stats.deadline_hit |= deadline.hit;
+            (results, stats)
+        };
+        stats.finalize();
+        total.accumulate(&stats);
+        entries.push(CharacterSearchOutcome {
+            character_id,
+            outcome: SearchOutcome::new(results, stats),
+            search_time: started.elapsed(),
+        });
+    }
+    SearchOutcome::new(entries, total)
 }

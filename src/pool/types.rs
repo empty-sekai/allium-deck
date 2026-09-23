@@ -232,10 +232,14 @@ pub struct RefSkill {
 
 const _: () = assert!(size_of::<RefSkill>() == 2);
 
-/// 单个掩码的机器字数量。
+/// 单个元数据掩码的机器字数量。
+///
+/// One cache line preserves the established 512-bit representation. Pools
+/// may contain more cards; then public metadata-mask access is unavailable
+/// and search walks the full SoA columns.
 pub const MASK_WORDS: usize = 8;
 
-/// 512-bit 候选掩码。
+/// 512-bit CardPool metadata mask.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C, align(64))]
 pub struct Mask([u64; MASK_WORDS]);
@@ -247,16 +251,16 @@ impl Mask {
     /// 置位指定 bit。
     #[inline(always)]
     pub fn set(&mut self, bit: usize) {
-        debug_assert!(bit < MASK_BITS, "mask bit out of range");
-        let word = unsafe { self.0.get_unchecked_mut(bit >> 6) };
+        assert!(bit < MASK_BITS, "mask bit out of range");
+        let word = &mut self.0[bit >> 6];
         *word |= 1u64 << (bit & 63);
     }
 
     /// 测试指定 bit 是否已置位。
     #[inline(always)]
     pub fn test(&self, bit: usize) -> bool {
-        debug_assert!(bit < MASK_BITS, "mask bit out of range");
-        let word = unsafe { *self.0.get_unchecked(bit >> 6) };
+        assert!(bit < MASK_BITS, "mask bit out of range");
+        let word = self.0[bit >> 6];
         word & (1u64 << (bit & 63)) != 0
     }
 

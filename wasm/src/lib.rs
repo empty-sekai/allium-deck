@@ -28,7 +28,8 @@ use allium_deck::handler::{
 };
 use allium_deck::pool::CardPool;
 use allium_deck::search::{
-    DeckResult, SearchContext, SearchParams, search_targets, summarize_deck,
+    DeckResult, SearchCompletion, SearchContext, SearchParams, SearchStats, search_targets,
+    summarize_deck,
 };
 
 #[wasm_bindgen]
@@ -171,6 +172,9 @@ fn recommend_with_user(
         {
             return serde_json::to_string(&DeckResponse {
                 decks: Vec::new(),
+                completion: SearchCompletion::Complete,
+                timed_out: false,
+                stats: SearchStats::default(),
                 performance: DeckPerformance {
                     build_pool_ms: elapsed_ms(build_pool_start),
                     search_ms: 0.0,
@@ -192,16 +196,19 @@ fn recommend_with_user(
     let search_start = performance_now();
     // 走统一搜索入口（与 engine::recommend 同一条分派路径）：
     // 无档位 → 完整搜索流水线；有档位 → 逐档独立 Top-K。
-    let results = search_targets(
+    let outcome = search_targets(
         &pool,
         &ctx,
         &SearchParams {
-            top_k: params.limit.clamp(1, 30),
+            top_k: params.limit,
             timeout_ms: params.timeout_ms,
         },
         &params.target_bonus_list,
     );
     let search_ms = elapsed_ms(search_start);
+    let completion = outcome.completion();
+    let results = outcome.results;
+    let stats = outcome.stats;
 
     // 每张输出卡都线性扫 cards 主表的话是 top_k × 5 次全表扫描；先建一次索引。
     let master_cards = game
@@ -228,6 +235,9 @@ fn recommend_with_user(
 
     serde_json::to_string(&DeckResponse {
         decks,
+        completion,
+        timed_out: completion == SearchCompletion::TimedOut,
+        stats,
         performance: DeckPerformance {
             build_pool_ms,
             search_ms,
@@ -247,6 +257,9 @@ fn elapsed_ms(start: f64) -> f64 {
 
 #[derive(Serialize)]
 struct DeckResponse {
+    completion: SearchCompletion,
+    timed_out: bool,
+    stats: SearchStats,
     decks: Vec<DeckOut>,
     performance: DeckPerformance,
 }

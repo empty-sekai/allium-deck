@@ -1,9 +1,11 @@
 use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, LiveType, ScoreTarget};
 
+use super::budget::SearchBudget;
 use super::context::SearchContext;
 use super::evaluate::{card_proxy_bonus, leaf_evaluate_checked};
 use super::types::DeckResult;
+use super::{SearchParams, SearchStats};
 
 const FINAL_CHAPTER_WARM_START_LEADERS: usize = 20;
 const SCORE_EVENT_SOLO_WARM_START_PREFIX: usize = 16;
@@ -24,7 +26,16 @@ pub fn warm_start(pool: &CardPool, ctx: &SearchContext) -> u64 {
         .unwrap_or(0)
 }
 
-pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<DeckResult> {
+pub(crate) fn warm_start_best_with_budget(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
+) -> Option<DeckResult> {
+    if budget.expired_sampled() {
+        return None;
+    }
+    stats.diagnostics.seed_states += 1;
     let mut best: Option<DeckResult> = None;
     if matches!(ctx.target, ScoreTarget::Score)
         && ctx.has_event()
@@ -34,10 +45,16 @@ pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<De
         )
         && !ctx.is_final_chapter
     {
-        best = warm_start_score_event_solo(pool, ctx, SCORE_EVENT_SOLO_WARM_START_PREFIX);
+        best = warm_start_score_event_solo(
+            pool,
+            ctx,
+            SCORE_EVENT_SOLO_WARM_START_PREFIX,
+            budget,
+            stats,
+        );
     }
     if ctx.is_final_chapter {
-        best = warm_start_final_chapter(pool, ctx).or(best);
+        best = warm_start_final_chapter(pool, ctx, budget, stats).or(best);
     }
     let final_chapter_leaders = if ctx.is_final_chapter {
         top_final_chapter_leaders(pool, ctx)
@@ -45,19 +62,23 @@ pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<De
         [None; FINAL_CHAPTER_WARM_START_LEADERS]
     };
     for strategy in [Strategy::Power, Strategy::Skill, Strategy::Target] {
+        if budget.expired() {
+            break;
+        }
         if ctx.is_final_chapter {
             for leader in final_chapter_leaders.into_iter().flatten() {
-                let Some(deck) = greedy_select(pool, ctx, strategy, Some(leader)) else {
+                let Some(deck) = greedy_select(pool, ctx, strategy, Some(leader), budget, stats)
+                else {
                     continue;
                 };
-                let improved = one_swap_improve(pool, ctx, deck, Some(leader));
-                if let Some(score) = leaf_evaluate_checked(pool, ctx, &improved) {
+                let improved = one_swap_improve(pool, ctx, deck, Some(leader), budget, stats);
+                if let Some(score) = seed_evaluate(pool, ctx, &improved, budget, stats) {
                     promote_best(&mut best, DeckResult::new(improved, score));
                 }
             }
-        } else if let Some(deck) = greedy_select(pool, ctx, strategy, None) {
-            let improved = one_swap_improve(pool, ctx, deck, None);
-            if let Some(score) = leaf_evaluate_checked(pool, ctx, &improved) {
+        } else if let Some(deck) = greedy_select(pool, ctx, strategy, None, budget, stats) {
+            let improved = one_swap_improve(pool, ctx, deck, None, budget, stats);
+            if let Some(score) = seed_evaluate(pool, ctx, &improved, budget, stats) {
                 promote_best(&mut best, DeckResult::new(improved, score));
             }
         }
@@ -65,18 +86,24 @@ pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<De
     best
 }
 
-pub(crate) fn warm_start_seeds(
+pub(crate) fn warm_start_seeds_with_budget(
     pool: &CardPool,
     ctx: &SearchContext,
     top_k: usize,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) -> Vec<DeckResult> {
+    if budget.expired_sampled() {
+        return Vec::new();
+    }
+    stats.diagnostics.seed_states += 1;
     if top_k > 1
         && matches!(ctx.target, ScoreTarget::Score)
         && !ctx.has_event()
-        && !std::env::var_os("ALLIUM_TOPK_WARM_NEIGHBORS").is_some_and(|v| v == "0")
-        && let Some(best) = warm_start_best(pool, ctx)
+        && super::tuning::SearchTuning::load().warm_neighbors
+        && let Some(best) = warm_start_best_with_budget(pool, ctx, budget, stats)
     {
-        return one_swap_seed_neighborhood(pool, ctx, best, top_k);
+        return one_swap_seed_neighborhood(pool, ctx, best, top_k, budget, stats);
     }
     if top_k == 0
         || !matches!(ctx.target, ScoreTarget::Score)
@@ -87,16 +114,22 @@ pub(crate) fn warm_start_seeds(
         )
         || ctx.is_final_chapter
     {
-        return warm_start_best(pool, ctx).into_iter().collect();
+        return warm_start_best_with_budget(pool, ctx, budget, stats)
+            .into_iter()
+            .collect();
     }
 
     let mut seeds = Vec::with_capacity(64);
     for strategy in [Strategy::Power, Strategy::Skill, Strategy::Target] {
-        let Some(deck) = greedy_select(pool, ctx, strategy, None) else {
+        if budget.expired() {
+            break;
+        }
+        let Some(deck) = greedy_select(pool, ctx, strategy, None, budget, stats) else {
             continue;
         };
-        let improved = one_swap_improve_collect(pool, ctx, deck, None, Some(&mut seeds));
-        if let Some(score) = leaf_evaluate_checked(pool, ctx, &improved) {
+        let improved =
+            one_swap_improve_collect(pool, ctx, deck, None, Some(&mut seeds), budget, stats);
+        if let Some(score) = seed_evaluate(pool, ctx, &improved, budget, stats) {
             seeds.push(DeckResult::new(improved, score));
         }
     }
@@ -126,10 +159,15 @@ fn one_swap_seed_neighborhood(
     ctx: &SearchContext,
     best: DeckResult,
     top_k: usize,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) -> Vec<DeckResult> {
-    let candidate_limit = std::env::var("ALLIUM_TOPK_WARM_CANDIDATES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+    if budget.expired_sampled() {
+        return vec![best];
+    }
+    stats.diagnostics.seed_states += 1;
+    let candidate_limit = super::tuning::SearchTuning::load()
+        .warm_candidate_limit
         .unwrap_or(if top_k <= 8 { 32 } else { 64 })
         .min(pool.count());
     let base = best.cards;
@@ -143,7 +181,11 @@ fn one_swap_seed_neighborhood(
         }
         let original = base[slot];
         for candidate in pool.indices().take(candidate_limit) {
-            if candidate == original || !slot_matches(pool, ctx, slot, candidate) {
+            if budget.expired_sampled() {
+                break;
+            }
+            stats.diagnostics.seed_states += 1;
+            if candidate == original || !ctx.card_matches_slot(pool, slot, candidate) {
                 continue;
             }
             if ctx.enforce_char_uniqueness {
@@ -166,7 +208,7 @@ fn one_swap_seed_neighborhood(
             }
             let mut deck = base;
             deck[slot] = candidate;
-            if let Some(score) = leaf_evaluate_checked(pool, ctx, &deck) {
+            if let Some(score) = seed_evaluate(pool, ctx, &deck, budget, stats) {
                 seeds.push(DeckResult::new(deck, score));
             }
         }
@@ -192,7 +234,16 @@ fn one_swap_seed_neighborhood(
     seeds
 }
 
-fn warm_start_final_chapter(pool: &CardPool, ctx: &SearchContext) -> Option<DeckResult> {
+fn warm_start_final_chapter(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
+) -> Option<DeckResult> {
+    if budget.expired_sampled() {
+        return None;
+    }
+    stats.diagnostics.seed_states += 1;
     let leaders = sorted_final_chapter_leaders(pool, ctx)
         .into_iter()
         .take(FINAL_CHAPTER_EXACT_LEADERS)
@@ -200,6 +251,9 @@ fn warm_start_final_chapter(pool: &CardPool, ctx: &SearchContext) -> Option<Deck
     let mut best = None;
 
     for leader in leaders {
+        if budget.expired() {
+            break;
+        }
         let members = sorted_final_chapter_members(pool, ctx, leader)
             .into_iter()
             .take(FINAL_CHAPTER_EXACT_PREFIX)
@@ -219,12 +273,14 @@ fn warm_start_final_chapter(pool: &CardPool, ctx: &SearchContext) -> Option<Deck
             1u32 << pool.char_id(leader),
             &mut deck,
             &mut best,
+            budget,
+            stats,
         );
     }
 
     let best = best?;
-    let improved = one_swap_improve(pool, ctx, best.cards, Some(best.cards[0]));
-    let score = leaf_evaluate_checked(pool, ctx, &improved)?;
+    let improved = one_swap_improve(pool, ctx, best.cards, Some(best.cards[0]), budget, stats);
+    let score = seed_evaluate(pool, ctx, &improved, budget, stats)?;
     Some(DeckResult::new(improved, score))
 }
 
@@ -238,9 +294,15 @@ fn warm_start_final_chapter_recurse(
     used_chars: u32,
     deck: &mut [CardIdx; DECK_SIZE],
     best: &mut Option<DeckResult>,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) {
+    if budget.expired_sampled() {
+        return;
+    }
+    stats.diagnostics.seed_states += 1;
     if depth == DECK_SIZE {
-        if let Some(score) = leaf_evaluate_checked(pool, ctx, deck) {
+        if let Some(score) = seed_evaluate(pool, ctx, deck, budget, stats) {
             promote_best(best, DeckResult::new(*deck, score));
         }
         return;
@@ -250,7 +312,7 @@ fn warm_start_final_chapter_recurse(
     while idx < members.len() {
         let card = members[idx];
         idx += 1;
-        if card == leader {
+        if card == leader || !ctx.card_matches_slot(pool, depth, card) {
             continue;
         }
         let char_id = pool.char_id(card);
@@ -268,6 +330,8 @@ fn warm_start_final_chapter_recurse(
             used_chars | (1u32 << char_id),
             deck,
             best,
+            budget,
+            stats,
         );
     }
 }
@@ -276,7 +340,13 @@ fn warm_start_score_event_solo(
     pool: &CardPool,
     ctx: &SearchContext,
     prefix_len: usize,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) -> Option<DeckResult> {
+    if budget.expired_sampled() {
+        return None;
+    }
+    stats.diagnostics.seed_states += 1;
     let mut cards = pool
         .indices()
         .map(|card| (score_event_solo_key(pool, ctx, card), card))
@@ -298,10 +368,12 @@ fn warm_start_score_event_solo(
 
     let mut deck = [prefix[0]; DECK_SIZE];
     let mut best = None;
-    warm_start_prefix_recurse(pool, ctx, &prefix, 0, 0, 0, &mut deck, &mut best);
+    warm_start_prefix_recurse(
+        pool, ctx, &prefix, 0, 0, 0, &mut deck, &mut best, budget, stats,
+    );
     let best = best?;
-    let improved = one_swap_improve(pool, ctx, best.cards, None);
-    let score = leaf_evaluate_checked(pool, ctx, &improved)?;
+    let improved = one_swap_improve(pool, ctx, best.cards, None, budget, stats);
+    let score = seed_evaluate(pool, ctx, &improved, budget, stats)?;
     Some(DeckResult::new(improved, score))
 }
 
@@ -314,9 +386,15 @@ fn warm_start_prefix_recurse(
     used_chars: u32,
     deck: &mut [CardIdx; DECK_SIZE],
     best: &mut Option<DeckResult>,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) {
+    if budget.expired_sampled() {
+        return;
+    }
+    stats.diagnostics.seed_states += 1;
     if depth == DECK_SIZE {
-        if let Some(score) = leaf_evaluate_checked(pool, ctx, deck) {
+        if let Some(score) = seed_evaluate(pool, ctx, deck, budget, stats) {
             promote_best(best, DeckResult::new(*deck, score));
         }
         return;
@@ -330,7 +408,7 @@ fn warm_start_prefix_recurse(
         if ctx.enforce_char_uniqueness && used_chars & (1u32 << char_id) != 0 {
             continue;
         }
-        if !slot_matches(pool, ctx, depth, card) {
+        if !ctx.card_matches_slot(pool, depth, card) {
             continue;
         }
         deck[depth] = card;
@@ -343,6 +421,8 @@ fn warm_start_prefix_recurse(
             used_chars | (1u32 << char_id),
             deck,
             best,
+            budget,
+            stats,
         );
     }
 }
@@ -353,7 +433,7 @@ fn top_final_chapter_leaders(
 ) -> [Option<CardIdx>; FINAL_CHAPTER_WARM_START_LEADERS] {
     let mut leaders = [None; FINAL_CHAPTER_WARM_START_LEADERS];
     for candidate in sorted_final_chapter_leaders(pool, ctx) {
-        if !slot_matches(pool, ctx, 0, candidate) {
+        if !ctx.card_matches_slot(pool, 0, candidate) {
             continue;
         }
         let Some(slot) = leaders.iter().position(|leader| leader.is_none()) else {
@@ -368,7 +448,10 @@ fn top_final_chapter_leaders(
 }
 
 pub(crate) fn sorted_final_chapter_leaders(pool: &CardPool, ctx: &SearchContext) -> Vec<CardIdx> {
-    let mut leaders = pool.indices().collect::<Vec<_>>();
+    let mut leaders = pool
+        .indices()
+        .filter(|&card| ctx.card_matches_slot(pool, 0, card))
+        .collect::<Vec<_>>();
     leaders.sort_unstable_by(|left, right| {
         leader_key(pool, ctx, *right)
             .cmp(&leader_key(pool, ctx, *left))
@@ -389,11 +472,20 @@ fn greedy_select(
     ctx: &SearchContext,
     strategy: Strategy,
     fixed_leader: Option<CardIdx>,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) -> Option<[CardIdx; 5]> {
+    if budget.expired_sampled() {
+        return None;
+    }
+    stats.diagnostics.seed_states += 1;
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     let mut used_chars = 0u32;
     let mut filled = 0usize;
     if let Some(leader) = fixed_leader {
+        if !ctx.card_matches_slot(pool, 0, leader) {
+            return None;
+        }
         deck[0] = leader;
         used_chars |= 1u32 << pool.char_id(leader);
         filled = 1;
@@ -403,13 +495,17 @@ fn greedy_select(
         let mut candidate = None;
         let mut candidate_score = f64::NEG_INFINITY;
         for card in pool.indices() {
+            if budget.expired_sampled() {
+                return None;
+            }
+            stats.diagnostics.seed_states += 1;
             if ctx.enforce_char_uniqueness && used_chars & (1u32 << pool.char_id(card)) != 0 {
                 continue;
             }
             if fixed_leader.is_some_and(|leader| leader == card) {
                 continue;
             }
-            if !slot_matches(pool, ctx, filled, card) {
+            if !ctx.card_matches_slot(pool, filled, card) {
                 continue;
             }
             let score = strategy_score(pool, ctx, strategy, card);
@@ -436,8 +532,14 @@ fn one_swap_improve(
     ctx: &SearchContext,
     deck: [CardIdx; 5],
     fixed_leader: Option<CardIdx>,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) -> [CardIdx; 5] {
-    one_swap_improve_collect(pool, ctx, deck, fixed_leader, None)
+    if budget.expired_sampled() {
+        return deck;
+    }
+    stats.diagnostics.seed_states += 1;
+    one_swap_improve_collect(pool, ctx, deck, fixed_leader, None, budget, stats)
 }
 
 fn one_swap_improve_collect(
@@ -446,8 +548,14 @@ fn one_swap_improve_collect(
     mut deck: [CardIdx; 5],
     fixed_leader: Option<CardIdx>,
     mut seeds: Option<&mut Vec<DeckResult>>,
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
 ) -> [CardIdx; 5] {
-    let Some(mut best_score) = leaf_evaluate_checked(pool, ctx, &deck) else {
+    if budget.expired_sampled() {
+        return deck;
+    }
+    stats.diagnostics.seed_states += 1;
+    let Some(mut best_score) = seed_evaluate(pool, ctx, &deck, budget, stats) else {
         return deck;
     };
     if let Some(seeds) = seeds.as_deref_mut() {
@@ -475,10 +583,14 @@ fn one_swap_improve_collect(
             let mut best_card = original;
             let mut best_slot_score = best_score;
             for candidate in pool.indices().take(candidate_limit) {
+                if budget.expired_sampled() {
+                    return deck;
+                }
+                stats.diagnostics.seed_states += 1;
                 if candidate == original || fixed_leader.is_some_and(|leader| leader == candidate) {
                     continue;
                 }
-                if !slot_matches(pool, ctx, slot, candidate) {
+                if !ctx.card_matches_slot(pool, slot, candidate) {
                     continue;
                 }
 
@@ -504,7 +616,7 @@ fn one_swap_improve_collect(
                 unsafe {
                     *deck.get_unchecked_mut(slot) = candidate;
                 }
-                let Some(score) = leaf_evaluate_checked(pool, ctx, &deck) else {
+                let Some(score) = seed_evaluate(pool, ctx, &deck, budget, stats) else {
                     unsafe {
                         *deck.get_unchecked_mut(slot) = original;
                     }
@@ -599,17 +711,39 @@ fn promote_best(best: &mut Option<DeckResult>, candidate: DeckResult) {
     }
 }
 
-#[inline(always)]
-fn slot_matches(pool: &CardPool, ctx: &SearchContext, slot: usize, card: CardIdx) -> bool {
-    if let Some(game_id) = ctx.fixed_card_at(slot)
-        && pool.game_id(card) != game_id
-    {
-        return false;
+// Standalone preparation remains explicitly unlimited. Operation entry points
+// pass their existing budget into the corresponding `_with_budget` helpers.
+pub(crate) fn warm_start_best(pool: &CardPool, ctx: &SearchContext) -> Option<DeckResult> {
+    let mut budget = SearchBudget::new(None);
+    warm_start_best_with_budget(pool, ctx, &mut budget, &mut SearchStats::default())
+}
+
+pub(crate) fn warm_start_seeds(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    top_k: usize,
+) -> Vec<DeckResult> {
+    let mut budget = SearchBudget::from_params(&SearchParams {
+        top_k,
+        timeout_ms: 0,
+    });
+    warm_start_seeds_with_budget(pool, ctx, top_k, &mut budget, &mut SearchStats::default())
+}
+
+fn seed_evaluate(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; DECK_SIZE],
+    budget: &mut SearchBudget,
+    stats: &mut SearchStats,
+) -> Option<u64> {
+    if budget.expired_sampled() {
+        return None;
     }
-    if let Some(character_id) = ctx.fixed_character_at(slot)
-        && pool.char_id(card) != character_id
-    {
-        return false;
+    stats.leaf_nodes += 1;
+    stats.diagnostics.seed_leaves += 1;
+    if !ctx.deck_matches_slots(pool, deck) {
+        return None;
     }
-    true
+    leaf_evaluate_checked(pool, ctx, deck)
 }

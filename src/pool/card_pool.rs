@@ -1,4 +1,5 @@
 use std::slice;
+use std::sync::Arc;
 
 use super::arena::Arena;
 use super::builder::PoolBuilder;
@@ -11,6 +12,9 @@ use super::types::{
 /// HPC SoA 卡池。
 #[derive(Debug)]
 pub struct CardPool {
+    // A retained allocation token gives immutable plans stable identity without
+    // raw-address reuse, content hashes, or an atomic generation counter.
+    instance: Arc<()>,
     arena: Arena,
     layout: PoolLayout,
     count: u16,
@@ -25,11 +29,16 @@ impl CardPool {
         special: SpecialTables,
     ) -> Self {
         Self {
+            instance: Arc::new(()),
             arena,
             layout,
             count,
             special,
         }
+    }
+
+    pub(crate) fn instance_token(&self) -> &Arc<()> {
+        &self.instance
     }
 
     #[inline(always)]
@@ -231,63 +240,77 @@ impl CardPool {
     }
 
     /// 安全读取角色掩码。
+    ///
+    /// Available only when the full pool fits the 512-bit mask. For larger
+    /// pools, use [`Self::char_indices`] to inspect every candidate.
     #[inline(always)]
     pub fn char_mask(&self, char_id: u8) -> Option<&Mask> {
-        if (char_id as usize) < CHAR_MASK_COUNT {
-            Some(unsafe { self.char_mask_unchecked(char_id) })
-        } else {
+        if self.exceeds_mask_capacity() {
             None
+        } else {
+            self.char_masks().get(char_id as usize)
         }
     }
 
-    /// 安全读取团属性掩码。
+    /// 安全读取团属性掩码。池超过 512 张时返回 `None`；完整集合见
+    /// [`Self::unit_indices`]。
     #[inline(always)]
     pub fn unit_mask_at(&self, unit_id: u8) -> Option<&Mask> {
-        if (unit_id as usize) < UNIT_MASK_COUNT {
-            Some(unsafe { self.unit_mask_unchecked(unit_id) })
-        } else {
+        if self.exceeds_mask_capacity() {
             None
+        } else {
+            self.unit_masks().get(unit_id as usize)
         }
     }
 
-    /// 安全读取属性掩码。
+    /// 安全读取属性掩码。池超过 512 张时返回 `None`；完整集合见
+    /// [`Self::attr_indices`]。
     #[inline(always)]
     pub fn attr_mask(&self, attr_id: u8) -> Option<&Mask> {
-        if (attr_id as usize) < ATTR_MASK_COUNT {
-            Some(unsafe { self.attr_mask_unchecked(attr_id) })
-        } else {
+        if self.exceeds_mask_capacity() {
             None
+        } else {
+            self.attr_masks().get(attr_id as usize)
         }
+    }
+
+    /// 判断卡池是否包含固定 512-bit metadata mask 无法编码的尾部卡片。
+    ///
+    /// Overflow cards remain in every SoA column and in [`Self::indices`];
+    /// this only reports that the optional mask view is incomplete.
+    #[inline(always)]
+    pub fn exceeds_mask_capacity(&self) -> bool {
+        self.count as usize > crate::pool::MASK_WORDS * 64
+    }
+
+    /// 返回指定角色的完整候选索引。
+    ///
+    /// This remains exact for overflow pools.
+    #[inline(always)]
+    pub fn char_indices(&self, char_id: u8) -> impl Iterator<Item = CardIdx> + '_ {
+        self.indices()
+            .filter(move |&card| self.char_id(card) == char_id)
+    }
+
+    /// 返回包含指定团的完整候选索引。
+    #[inline(always)]
+    pub fn unit_indices(&self, unit_id: u8) -> impl Iterator<Item = CardIdx> + '_ {
+        let bit = ((unit_id as usize) < UNIT_MASK_COUNT).then(|| 1u8 << unit_id);
+        self.indices()
+            .filter(move |&card| bit.is_some_and(|bit| self.unit_mask_raw(card) & bit != 0))
+    }
+
+    /// 返回指定属性的完整候选索引。
+    #[inline(always)]
+    pub fn attr_indices(&self, attr_id: u8) -> impl Iterator<Item = CardIdx> + '_ {
+        self.indices()
+            .filter(move |&card| self.attr(card) == attr_id)
     }
 
     /// 返回特殊技能侧表。
     #[inline(always)]
     pub fn special(&self) -> &SpecialTables {
         &self.special
-    }
-
-    #[inline(always)]
-    pub(crate) unsafe fn char_mask_unchecked(&self, char_id: u8) -> &Mask {
-        unsafe {
-            debug_assert!((char_id as usize) < CHAR_MASK_COUNT);
-            self.char_masks().get_unchecked(char_id as usize)
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) unsafe fn unit_mask_unchecked(&self, unit_id: u8) -> &Mask {
-        unsafe {
-            debug_assert!((unit_id as usize) < UNIT_MASK_COUNT);
-            self.unit_masks().get_unchecked(unit_id as usize)
-        }
-    }
-
-    #[inline(always)]
-    pub(crate) unsafe fn attr_mask_unchecked(&self, attr_id: u8) -> &Mask {
-        unsafe {
-            debug_assert!((attr_id as usize) < ATTR_MASK_COUNT);
-            self.attr_masks().get_unchecked(attr_id as usize)
-        }
     }
 
     /// 根据保留位图重新打包一个紧凑卡池。

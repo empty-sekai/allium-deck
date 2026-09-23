@@ -1,0 +1,840 @@
+{
+  "base_score": 1.0,
+  "best_skill_as_leader": true,
+  "cards": [
+    {
+      "attribute": 2,
+      "base_bonus_x10": 270,
+      "character_id": 1,
+      "dense_id": 0,
+      "dynamic_skill_metadata": null,
+      "game_id": 20000,
+      "limited_bonus_x10": 70,
+      "power_contexts": [
+        2427,
+        2427,
+        2427,
+        2427,
+        2427,
+        2427,
+        2427,
+        2427
+      ],
+      "power_max": 2427,
+      "skill_max": 21,
+      "skill_min": 21,
+      "skill_type": 0,
+      "skill_value": 21,
+      "unit_mask": 8
+    },
+    {
+      "attribute": 2,
+      "base_bonus_x10": 10,
+      "character_id": 2,
+      "dense_id": 1,
+      "dynamic_skill_metadata": null,
+      "game_id": 20001,
+      "limited_bonus_x10": 100,
+      "power_contexts": [
+        1863,
+        1863,
+        1863,
+        1863,
+        1863,
+        1863,
+        1863,
+        1863
+      ],
+      "power_max": 1863,
+      "skill_max": 42,
+      "skill_min": 42,
+      "skill_type": 0,
+      "skill_value": 42,
+      "unit_mask": 4
+    },
+    {
+      "attribute": 1,
+      "base_bonus_x10": 210,
+      "character_id": 3,
+      "dense_id": 2,
+      "dynamic_skill_metadata": null,
+      "game_id": 20002,
+      "limited_bonus_x10": 60,
+      "power_contexts": [
+        1890,
+        1890,
+        1890,
+        1890,
+        1890,
+        1890,
+        1890,
+        1890
+      ],
+      "power_max": 1890,
+      "skill_max": 72,
+      "skill_min": 72,
+      "skill_type": 0,
+      "skill_value": 72,
+      "unit_mask": 32
+    },
+    {
+      "attribute": 1,
+      "base_bonus_x10": 30,
+      "character_id": 4,
+      "dense_id": 3,
+      "dynamic_skill_metadata": null,
+      "game_id": 20003,
+      "limited_bonus_x10": 100,
+      "power_contexts": [
+        2182,
+        2182,
+        2182,
+        2182,
+        2182,
+        2182,
+        2182,
+        2182
+      ],
+      "power_max": 2182,
+      "skill_max": 50,
+      "skill_min": 50,
+      "skill_type": 0,
+      "skill_value": 50,
+      "unit_mask": 16
+    },
+    {
+      "attribute": 0,
+      "base_bonus_x10": 160,
+      "character_id": 5,
+      "dense_id": 4,
+      "dynamic_skill_metadata": null,
+      "game_id": 20004,
+      "limited_bonus_x10": 30,
+      "power_contexts": [
+        1707,
+        1707,
+        1707,
+        1707,
+        1707,
+        1707,
+        1707,
+        1707
+      ],
+      "power_max": 1707,
+      "skill_max": 23,
+      "skill_min": 23,
+      "skill_type": 0,
+      "skill_value": 23,
+      "unit_mask": 8
+    },
+    {
+      "attribute": 1,
+      "base_bonus_x10": 290,
+      "character_id": 6,
+      "dense_id": 5,
+      "dynamic_skill_metadata": null,
+      "game_id": 20005,
+      "limited_bonus_x10": 100,
+      "power_contexts": [
+        800,
+        800,
+        800,
+        800,
+        800,
+        800,
+        800,
+        800
+      ],
+      "power_max": 800,
+      "skill_max": 62,
+      "skill_min": 62,
+      "skill_type": 0,
+      "skill_value": 62,
+      "unit_mask": 2
+    },
+    {
+      "attribute": 4,
+      "base_bonus_x10": 260,
+      "character_id": 7,
+      "dense_id": 6,
+      "dynamic_skill_metadata": null,
+      "game_id": 20006,
+      "limited_bonus_x10": 90,
+      "power_contexts": [
+        1521,
+        1521,
+        1521,
+        1521,
+        1521,
+        1521,
+        1521,
+        1521
+      ],
+      "power_max": 1521,
+      "skill_max": 61,
+      "skill_min": 61,
+      "skill_type": 0,
+      "skill_value": 61,
+      "unit_mask": 16
+    },
+    {
+      "attribute": 4,
+      "base_bonus_x10": 180,
+      "character_id": 1,
+      "dense_id": 7,
+      "dynamic_skill_metadata": null,
+      "game_id": 20007,
+      "limited_bonus_x10": 100,
+      "power_contexts": [
+        1659,
+        1659,
+        1659,
+        1659,
+        1659,
+        1659,
+        1659,
+        1659
+      ],
+      "power_max": 1659,
+      "skill_max": 42,
+      "skill_min": 42,
+      "skill_type": 0,
+      "skill_value": 42,
+      "unit_mask": 8
+    },
+    {
+      "attribute": 2,
+      "base_bonus_x10": 10,
+      "character_id": 2,
+      "dense_id": 8,
+      "dynamic_skill_metadata": null,
+      "game_id": 20008,
+      "limited_bonus_x10": 10,
+      "power_contexts": [
+        1444,
+        1444,
+        1444,
+        1444,
+        1444,
+        1444,
+        1444,
+        1444
+      ],
+      "power_max": 1444,
+      "skill_max": 89,
+      "skill_min": 89,
+      "skill_type": 0,
+      "skill_value": 89,
+      "unit_mask": 4
+    },
+    {
+      "attribute": 3,
+      "base_bonus_x10": 30,
+      "character_id": 3,
+      "dense_id": 9,
+      "dynamic_skill_metadata": null,
+      "game_id": 20009,
+      "limited_bonus_x10": 40,
+      "power_contexts": [
+        1027,
+        1027,
+        1027,
+        1027,
+        1027,
+        1027,
+        1027,
+        1027
+      ],
+      "power_max": 1027,
+      "skill_max": 112,
+      "skill_min": 112,
+      "skill_type": 0,
+      "skill_value": 112,
+      "unit_mask": 8
+    },
+    {
+      "attribute": 4,
+      "base_bonus_x10": 40,
+      "character_id": 4,
+      "dense_id": 10,
+      "dynamic_skill_metadata": null,
+      "game_id": 20010,
+      "limited_bonus_x10": 80,
+      "power_contexts": [
+        2618,
+        2618,
+        2618,
+        2618,
+        2618,
+        2618,
+        2618,
+        2618
+      ],
+      "power_max": 2618,
+      "skill_max": 34,
+      "skill_min": 34,
+      "skill_type": 0,
+      "skill_value": 34,
+      "unit_mask": 4
+    },
+    {
+      "attribute": 2,
+      "base_bonus_x10": 130,
+      "character_id": 5,
+      "dense_id": 11,
+      "dynamic_skill_metadata": null,
+      "game_id": 20011,
+      "limited_bonus_x10": 60,
+      "power_contexts": [
+        2235,
+        2235,
+        2235,
+        2235,
+        2235,
+        2235,
+        2235,
+        2235
+      ],
+      "power_max": 2235,
+      "skill_max": 35,
+      "skill_min": 35,
+      "skill_type": 0,
+      "skill_value": 35,
+      "unit_mask": 8
+    }
+  ],
+  "context_debug": "SearchContext {\n    target: Score,\n    fixed_card_ids: [],\n    fixed_character_ids: [],\n    forced_leader_character_id: None,\n    music_rate_pct: 100,\n    boost_rate_pct: 100,\n    base_score: 1.0,\n    base_score_auto: 1.0,\n    fever_score: 0.0,\n    skill_scores: [\n        [\n            0.21,\n            0.17,\n            0.13,\n            0.11,\n            0.07,\n            0.23,\n        ],\n        [\n            0.0,\n            0.0,\n            0.0,\n            0.0,\n            0.0,\n            0.0,\n        ],\n        [\n            0.0,\n            0.0,\n            0.0,\n            0.0,\n            0.0,\n            0.0,\n        ],\n    ],\n    other_score: 0,\n    life: 1000,\n    diff_attr_bonus: [\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n    ],\n    support_deck: SupportDeck {\n        cards: [],\n        count: 0,\n    },\n    support_decks_by_character: [],\n    is_world_bloom: false,\n    is_final_chapter: false,\n    enforce_char_uniqueness: true,\n    minimize: false,\n    live_type: Solo,\n    event_type: None,\n    keep_after_training_state: false,\n    skill_reference_strategy: Average,\n    best_skill_as_leader: true,\n    live_skill_order: Specific,\n    specific_skill_order: Some(\n        [\n            4,\n            2,\n            0,\n            3,\n            1,\n        ],\n    ),\n    multi_teammate_score_up: None,\n    multi_teammate_power: None,\n    multi_live_score_up_lower_bound: None,\n    extra_bonus_ub: 0,\n    w_power: 2.0,\n    w_bonus: 1.0,\n    skill_ub_global: 0,\n    card_bonus_count_limit: 5,\n    honor_bonus: 0,\n    power_total_cap: None,\n    leader_honor_bonus: [\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n    ],\n    leader_limit_bonus: [\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n        0,\n    ],\n    final_chapter_member_keep: [],\n    skill_is_after_training: [\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n    ],\n    trained_to_special_image: [\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n        false,\n    ],\n}",
+  "event": null,
+  "excluded_cards": [],
+  "fixed_cards": [],
+  "fixed_characters": [],
+  "forced_leader": null,
+  "generator_seed": 3886809095,
+  "live": "Solo",
+  "live_skill_order": "Specific",
+  "name": "case-7-score-solo-specific",
+  "objective": "Score",
+  "production_stats": "SearchStats { visited_nodes: 0, deadline_hit: false, correlated_prunes: 0, leaf_nodes: 152, ub_prunes: 0, leader_prunes: 0, ep_candidates: 0, ep_break_prunes: 0, ep_continue_prunes: 58, ep_explored: 0, mono_break_prunes: 190 }",
+  "results": {
+    "combination_oracle": [
+      {
+        "character_ids": [
+          1,
+          3,
+          2,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          2,
+          8,
+          10,
+          11
+        ],
+        "direct_leaf_score": 276690383207334,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20002,
+          20008,
+          20010,
+          20011
+        ],
+        "score": 276690383207334,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(8), CardIdx(2), CardIdx(0), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [2.0, 27.0, 34.0, 12.0, 19.0], card_skill_score_up: [89.0, 72.0, 21.0, 34.0, 35.0], card_power_total: [1444, 1890, 2427, 2618, 2235], total_power: 10614, live_score: 64422, event_point: None, multi_live_score_up: 121.4, event_bonus_total: Some(94.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          1,
+          9,
+          10,
+          11
+        ],
+        "direct_leaf_score": 275912994126577,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20001,
+          20009,
+          20010,
+          20011
+        ],
+        "score": 275912994126577,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(9), CardIdx(1), CardIdx(0), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [7.0, 11.0, 34.0, 12.0, 19.0], card_skill_score_up: [112.0, 42.0, 21.0, 34.0, 35.0], card_power_total: [1027, 1863, 2427, 2618, 2235], total_power: 10170, live_score: 64241, event_point: None, multi_live_score_up: 138.4, event_bonus_total: Some(83.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          3,
+          7,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          2,
+          6,
+          10,
+          11
+        ],
+        "direct_leaf_score": 273391848323238,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20002,
+          20006,
+          20010,
+          20011
+        ],
+        "score": 273391848323238,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(2), CardIdx(0), CardIdx(6), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [27.0, 34.0, 35.0, 12.0, 19.0], card_skill_score_up: [72.0, 21.0, 61.0, 34.0, 35.0], card_power_total: [1890, 2427, 1521, 2618, 2235], total_power: 10691, live_score: 63654, event_point: None, multi_live_score_up: 102.2, event_bonus_total: Some(127.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          1,
+          2,
+          10,
+          11
+        ],
+        "direct_leaf_score": 272034638657386,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20001,
+          20002,
+          20010,
+          20011
+        ],
+        "score": 272034638657386,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(2), CardIdx(1), CardIdx(0), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [27.0, 11.0, 34.0, 12.0, 19.0], card_skill_score_up: [72.0, 42.0, 21.0, 34.0, 35.0], card_power_total: [1890, 1863, 2427, 2618, 2235], total_power: 11033, live_score: 63338, event_point: None, multi_live_score_up: 98.4, event_bonus_total: Some(103.0) })"
+      }
+    ],
+    "no_dominance_unseeded_dfs": [
+      {
+        "character_ids": [
+          1,
+          3,
+          2,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          2,
+          8,
+          10,
+          11
+        ],
+        "direct_leaf_score": 276690383207334,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20002,
+          20008,
+          20010,
+          20011
+        ],
+        "score": 276690383207334,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(8), CardIdx(2), CardIdx(0), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [2.0, 27.0, 34.0, 12.0, 19.0], card_skill_score_up: [89.0, 72.0, 21.0, 34.0, 35.0], card_power_total: [1444, 1890, 2427, 2618, 2235], total_power: 10614, live_score: 64422, event_point: None, multi_live_score_up: 121.4, event_bonus_total: Some(94.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          1,
+          9,
+          10,
+          11
+        ],
+        "direct_leaf_score": 275912994126577,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20001,
+          20009,
+          20010,
+          20011
+        ],
+        "score": 275912994126577,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(9), CardIdx(1), CardIdx(0), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [7.0, 11.0, 34.0, 12.0, 19.0], card_skill_score_up: [112.0, 42.0, 21.0, 34.0, 35.0], card_power_total: [1027, 1863, 2427, 2618, 2235], total_power: 10170, live_score: 64241, event_point: None, multi_live_score_up: 138.4, event_bonus_total: Some(83.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          3,
+          7,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          2,
+          6,
+          10,
+          11
+        ],
+        "direct_leaf_score": 273391848323238,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20002,
+          20006,
+          20010,
+          20011
+        ],
+        "score": 273391848323238,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(2), CardIdx(0), CardIdx(6), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [27.0, 34.0, 35.0, 12.0, 19.0], card_skill_score_up: [72.0, 21.0, 61.0, 34.0, 35.0], card_power_total: [1890, 2427, 1521, 2618, 2235], total_power: 10691, live_score: 63654, event_point: None, multi_live_score_up: 102.2, event_bonus_total: Some(127.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          1,
+          2,
+          10,
+          11
+        ],
+        "direct_leaf_score": 272034638657386,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20001,
+          20002,
+          20010,
+          20011
+        ],
+        "score": 272034638657386,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(2), CardIdx(1), CardIdx(0), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [27.0, 11.0, 34.0, 12.0, 19.0], card_skill_score_up: [72.0, 42.0, 21.0, 34.0, 35.0], card_power_total: [1890, 1863, 2427, 2618, 2235], total_power: 11033, live_score: 63338, event_point: None, multi_live_score_up: 98.4, event_bonus_total: Some(103.0) })"
+      }
+    ],
+    "ordered_exhaustive": [
+      {
+        "character_ids": [
+          1,
+          2,
+          5,
+          4,
+          3
+        ],
+        "dense_ids": [
+          0,
+          8,
+          11,
+          10,
+          2
+        ],
+        "direct_leaf_score": 288690521835152,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20008,
+          20011,
+          20010,
+          20002
+        ],
+        "score": 288690521835152,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(8), CardIdx(0), CardIdx(11), CardIdx(10), CardIdx(2)], card_event_bonus_rates: [2.0, 34.0, 19.0, 12.0, 27.0], card_skill_score_up: [89.0, 21.0, 35.0, 34.0, 72.0], card_power_total: [1444, 2427, 2235, 2618, 1890], total_power: 10614, live_score: 67216, event_point: None, multi_live_score_up: 121.4, event_bonus_total: Some(94.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          3,
+          5,
+          4,
+          2
+        ],
+        "dense_ids": [
+          0,
+          9,
+          11,
+          10,
+          8
+        ],
+        "direct_leaf_score": 285069864403781,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20009,
+          20011,
+          20010,
+          20008
+        ],
+        "score": 285069864403781,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(9), CardIdx(0), CardIdx(11), CardIdx(10), CardIdx(8)], card_event_bonus_rates: [7.0, 34.0, 19.0, 12.0, 2.0], card_skill_score_up: [112.0, 21.0, 35.0, 34.0, 89.0], card_power_total: [1027, 2427, 2235, 2618, 1444], total_power: 9751, live_score: 66373, event_point: None, multi_live_score_up: 147.8, event_bonus_total: Some(74.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          2,
+          4,
+          5,
+          3
+        ],
+        "dense_ids": [
+          0,
+          8,
+          3,
+          11,
+          2
+        ],
+        "direct_leaf_score": 281483566710786,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20008,
+          20003,
+          20011,
+          20002
+        ],
+        "score": 281483566710786,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(8), CardIdx(0), CardIdx(3), CardIdx(11), CardIdx(2)], card_event_bonus_rates: [2.0, 34.0, 13.0, 19.0, 27.0], card_skill_score_up: [89.0, 21.0, 50.0, 35.0, 72.0], card_power_total: [1444, 2427, 2182, 2235, 1890], total_power: 10178, live_score: 65538, event_point: None, multi_live_score_up: 124.60000000000001, event_bonus_total: Some(95.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          3,
+          5,
+          4,
+          2
+        ],
+        "dense_ids": [
+          0,
+          9,
+          11,
+          10,
+          1
+        ],
+        "direct_leaf_score": 280074817437370,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20009,
+          20011,
+          20010,
+          20001
+        ],
+        "score": 280074817437370,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(9), CardIdx(0), CardIdx(11), CardIdx(10), CardIdx(1)], card_event_bonus_rates: [7.0, 34.0, 19.0, 12.0, 11.0], card_skill_score_up: [112.0, 21.0, 35.0, 34.0, 42.0], card_power_total: [1027, 2427, 2235, 2618, 1863], total_power: 10170, live_score: 65210, event_point: None, multi_live_score_up: 138.4, event_bonus_total: Some(83.0) })"
+      }
+    ],
+    "production": [
+      {
+        "character_ids": [
+          1,
+          3,
+          2,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          2,
+          8,
+          10,
+          11
+        ],
+        "direct_leaf_score": 276690383207334,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20002,
+          20008,
+          20010,
+          20011
+        ],
+        "score": 276690383207334,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(8), CardIdx(2), CardIdx(0), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [2.0, 27.0, 34.0, 12.0, 19.0], card_skill_score_up: [89.0, 72.0, 21.0, 34.0, 35.0], card_power_total: [1444, 1890, 2427, 2618, 2235], total_power: 10614, live_score: 64422, event_point: None, multi_live_score_up: 121.4, event_bonus_total: Some(94.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          1,
+          9,
+          10,
+          11
+        ],
+        "direct_leaf_score": 275912994126577,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20001,
+          20009,
+          20010,
+          20011
+        ],
+        "score": 275912994126577,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(9), CardIdx(1), CardIdx(0), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [7.0, 11.0, 34.0, 12.0, 19.0], card_skill_score_up: [112.0, 42.0, 21.0, 34.0, 35.0], card_power_total: [1027, 1863, 2427, 2618, 2235], total_power: 10170, live_score: 64241, event_point: None, multi_live_score_up: 138.4, event_bonus_total: Some(83.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          3,
+          7,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          2,
+          6,
+          10,
+          11
+        ],
+        "direct_leaf_score": 273391848323238,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20002,
+          20006,
+          20010,
+          20011
+        ],
+        "score": 273391848323238,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(2), CardIdx(0), CardIdx(6), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [27.0, 34.0, 35.0, 12.0, 19.0], card_skill_score_up: [72.0, 21.0, 61.0, 34.0, 35.0], card_power_total: [1890, 2427, 1521, 2618, 2235], total_power: 10691, live_score: 63654, event_point: None, multi_live_score_up: 102.2, event_bonus_total: Some(127.0) })"
+      },
+      {
+        "character_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "dense_ids": [
+          0,
+          1,
+          2,
+          10,
+          11
+        ],
+        "direct_leaf_score": 272034638657386,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20000,
+          20001,
+          20002,
+          20010,
+          20011
+        ],
+        "score": 272034638657386,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(2), CardIdx(1), CardIdx(0), CardIdx(10), CardIdx(11)], card_event_bonus_rates: [27.0, 11.0, 34.0, 12.0, 19.0], card_skill_score_up: [72.0, 42.0, 21.0, 34.0, 35.0], card_power_total: [1890, 1863, 2427, 2618, 2235], total_power: 11033, live_score: 63338, event_point: None, multi_live_score_up: 98.4, event_bonus_total: Some(103.0) })"
+      }
+    ],
+    "raw_warm_seeds": [
+      {
+        "character_ids": [
+          4,
+          1,
+          5,
+          3,
+          2
+        ],
+        "dense_ids": [
+          10,
+          0,
+          11,
+          9,
+          8
+        ],
+        "direct_leaf_score": 285069864403781,
+        "distinct_characters": true,
+        "distinct_game_ids": true,
+        "game_ids": [
+          20010,
+          20000,
+          20011,
+          20009,
+          20008
+        ],
+        "score": 285069864403781,
+        "summary": "Some(DeckResultSummary { ordered_cards: [CardIdx(9), CardIdx(0), CardIdx(11), CardIdx(10), CardIdx(8)], card_event_bonus_rates: [7.0, 34.0, 19.0, 12.0, 2.0], card_skill_score_up: [112.0, 21.0, 35.0, 34.0, 89.0], card_power_total: [1027, 2427, 2235, 2618, 1444], total_power: 9751, live_score: 66373, event_point: None, multi_live_score_up: 147.8, event_bonus_total: Some(74.0) })"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "skill_coefficients": [
+    [
+      0.21,
+      0.17,
+      0.13,
+      0.11,
+      0.07,
+      0.23
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "specific_skill_order": [
+    4,
+    2,
+    0,
+    3,
+    1
+  ]
+}

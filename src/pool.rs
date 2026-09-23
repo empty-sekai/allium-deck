@@ -3,8 +3,9 @@
 //! [`CardPool`] stores one column per card attribute, each aligned to a cache
 //! line, so leaf evaluation walks a deck in column order instead of chasing
 //! per-card structs. Cards are addressed by dense [`CardIdx`] rather than game
-//! id, and candidate sets are carried as [`Mask`] bitmaps. A pool is built once
-//! and read-only afterwards.
+//! id. The 512-bit [`Mask`] metadata is available when the full pool fits;
+//! larger pools retain their complete candidates in the columns. A pool is
+//! built once and read-only afterwards.
 
 mod arena;
 mod builder;
@@ -22,8 +23,8 @@ pub use types::{
 #[cfg(test)]
 mod tests {
     use super::{
-        CardIdx, CardPool, DiffSkill, EventBonusExact, Mask, PoolBuilder, RefSkill, SkillSlot,
-        UnitCountSkill,
+        CardIdx, CardPool, DiffSkill, EventBonusExact, MASK_WORDS, Mask, PoolBuilder, RefSkill,
+        SkillSlot, UnitCountSkill,
     };
 
     fn must_card_idx(pool: &CardPool, dense_idx: u16) -> CardIdx {
@@ -294,5 +295,77 @@ mod tests {
         assert_eq!(mask.lowest_set_bit(), Some(511));
         mask.clear_lowest();
         assert!(mask.is_empty());
+    }
+
+    #[test]
+    fn full_pool_columns_and_compaction_cross_mask_boundary() {
+        for count in [511usize, 512, 513, 529, u16::MAX as usize] {
+            let mut builder = PoolBuilder::new(count as u16);
+            for dense in 0..count {
+                let idx = dense as u16;
+                let character = (dense % 27) as u8;
+                let attr = (dense % 5) as u8;
+                let unit = (dense % 6) as u8;
+                builder.set_power_values(idx, [idx; 8]);
+                builder.set_power_lut(idx, dense as u32);
+                builder.set_char_id(idx, character);
+                builder.set_attr(idx, attr);
+                builder.set_unit_mask(idx, 1 << unit);
+                builder.set_game_id(idx, idx + 1);
+                builder.set_power_max(idx, dense as u32);
+                builder.mark_char(character, idx);
+                builder.mark_unit(unit, idx);
+                builder.mark_attr(attr, idx);
+            }
+            let pool = builder.freeze();
+            assert_eq!(pool.count(), count);
+            assert_eq!(pool.indices().last().unwrap().raw(), count - 1);
+            assert_eq!(pool.exceeds_mask_capacity(), count > MASK_WORDS * 64);
+
+            let last = pool.card_idx((count - 1) as u16).unwrap();
+            let character = pool.char_id(last);
+            let attr = pool.attr(last);
+            let unit = (count - 1) % 6;
+            assert!(pool.char_indices(character).any(|idx| idx == last));
+            assert!(pool.attr_indices(attr).any(|idx| idx == last));
+            assert!(pool.unit_indices(unit as u8).any(|idx| idx == last));
+            if count <= MASK_WORDS * 64 {
+                assert!(pool.char_mask(character).unwrap().test(count - 1));
+                assert!(pool.attr_mask(attr).unwrap().test(count - 1));
+                assert!(pool.unit_mask_at(unit as u8).unwrap().test(count - 1));
+            } else {
+                assert!(pool.char_mask(character).is_none());
+                assert!(pool.attr_mask(attr).is_none());
+                assert!(pool.unit_mask_at(unit as u8).is_none());
+            }
+
+            let mut keep = vec![false; count];
+            keep[count - 1] = true;
+            keep[count - 2] = true;
+            keep[count - 3] = true;
+            let compacted = pool.compact(&keep);
+            assert_eq!(compacted.count(), 3);
+            for (new, old) in compacted.indices().zip((count - 3)..count) {
+                let source = pool.card_idx(old as u16).unwrap();
+                assert_eq!(compacted.power_values(new), pool.power_values(source));
+                assert_eq!(compacted.power_lut(new), pool.power_lut(source));
+                assert_eq!(compacted.char_id(new), pool.char_id(source));
+                assert_eq!(compacted.attr(new), pool.attr(source));
+                assert_eq!(compacted.unit_mask_raw(new), pool.unit_mask_raw(source));
+                assert_eq!(compacted.game_id(new), pool.game_id(source));
+                assert!(
+                    compacted
+                        .char_mask(pool.char_id(source))
+                        .unwrap()
+                        .test(new.raw())
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "mask bit out of range")]
+    fn mask_test_rejects_out_of_range_bits_in_release_too() {
+        Mask::EMPTY.test(512);
     }
 }

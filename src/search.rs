@@ -16,116 +16,80 @@ pub mod bonus_reach;
 /// 穷举参考实现，用于在测试中校验剪枝搜索的结果。
 pub mod bruteforce;
 /// 挑战 live 搜索：五张同角色，逐角色搜索后归并。
-pub mod challenge_search;
+pub use solver::challenge as challenge_search;
+mod alternatives;
+mod budget;
 /// 单次搜索期间不变的上下文。
 pub mod context;
 mod correlated;
+/// Exhaustive bound auditing; intended for tests and opt-in diagnostics.
+#[cfg(any(test, feature = "diagnostics"))]
+pub mod correlated_audit;
 /// 通用 DFS / 分支限界搜索。
 pub mod dfs;
 /// 支配裁剪：剔除不可能出现在最优解里的卡。
 pub mod dominance;
 /// 叶子求值：把一副确定的队伍算成分数。
 pub mod evaluate;
-mod final_chapter;
+mod prepared;
+pub mod solver;
+mod tracker;
+#[cfg(test)]
+use alternatives::deck_matches_fixed_slots;
+use alternatives::{expand_alternatives, expand_dominated_alternatives};
+pub use prepared::PreparedSearch;
+use solver::{final_chapter, numeric::search_simple_target};
+use tracker::{TopKTracker, deck_result_cmp};
+mod placement;
+mod problem;
 /// 角色感知的后缀上界，用于剪枝。
 pub mod suffix;
+mod tuning;
 /// 搜索的输入参数与结果类型。
 pub mod types;
 /// 热启动：先用贪心加一次换位得到一个可用下界。
 pub mod warm_start;
 
-pub use bruteforce::{BruteForceStats, brute_force_search};
+pub use bruteforce::{BruteForceStats, ExactOracle, brute_force_search};
 pub use context::{SearchContext, SupportDeck};
-pub use dfs::{SearchStats, dfs_search};
+pub use dfs::{SearchDiagnostics, SearchStats, dfs_search};
 pub use dominance::eliminate_dominated;
 pub use evaluate::{
     calc_event_point, decode_u18, leaf_evaluate, resolve_power_for_cards, summarize_deck,
 };
 pub use suffix::{PartialDeck, SuffixBound, UsedSet};
-pub use types::{DeckResult, DeckResultSummary, SearchParams};
+pub use types::{DeckResult, DeckResultSummary, SearchCompletion, SearchOutcome, SearchParams};
 pub use warm_start::warm_start;
 
-use crate::pool::{CardIdx, CardPool};
+/// Compare two legal deck results using the same canonical total order as every
+/// exact Top-K tracker. This is the stable ordering contract for public result
+/// sets and cross-solver/challenge aggregation; callers must not reimplement
+/// score-only ordering because objective ties have deterministic public-set and
+/// placement tie-breaks.
+pub fn compare_deck_results(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    left: &DeckResult,
+    right: &DeckResult,
+) -> std::cmp::Ordering {
+    tracker::deck_result_cmp(pool, ctx, left, right)
+}
+
+#[cfg(test)]
+use crate::pool::CardIdx;
+use crate::pool::CardPool;
 use crate::types::{DECK_SIZE, ScoreTarget};
+use budget::SearchBudget;
 
-/// Reusable immutable search data for one `CardPool` / `SearchContext` pair.
-///
-/// Preparing performs dominance compaction, suffix-table construction and warm
-/// seeding once. Callers that already cache the pool can keep this beside it and
-/// execute repeated exact searches without rebuilding those structures.
-pub struct PreparedSearch {
-    pool: CardPool,
-    ctx: SearchContext,
-    original_indices: Vec<CardIdx>,
-    alternatives: Vec<Vec<CardIdx>>,
-    suffix: SuffixBound,
-    warm_seeds: Vec<DeckResult>,
-    max_top_k: usize,
-}
-
-impl PreparedSearch {
-    /// Prepares the standard character-unique DFS path.
-    ///
-    /// Specialized Power/Skill, challenge and Final Chapter searches keep their
-    /// existing entry points and return `None` here.
-    pub fn build(pool: &CardPool, ctx: &SearchContext, max_top_k: usize) -> Option<Self> {
-        if max_top_k == 0
-            || pool.count() < DECK_SIZE
-            || matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill)
-            || !ctx.enforce_char_uniqueness
-            || ctx.is_final_chapter
-        {
-            return None;
-        }
-
-        let dominance = eliminate_dominated(pool, ctx);
-        let suffix = SuffixBound::build_prepared(&dominance.pool, &dominance.ctx);
-        let warm_seeds = warm_start::warm_start_seeds(&dominance.pool, &dominance.ctx, max_top_k);
-        Some(Self {
-            pool: dominance.pool,
-            ctx: dominance.ctx,
-            original_indices: dominance.original_indices,
-            alternatives: dominance.alternatives,
-            suffix,
-            warm_seeds,
-            max_top_k,
-        })
-    }
-
-    /// Executes an exact search when `params.top_k` is covered by this plan.
-    pub fn search_instrumented(
-        &self,
-        original_pool: &CardPool,
-        original_ctx: &SearchContext,
-        params: &SearchParams,
-    ) -> Option<(Vec<DeckResult>, SearchStats)> {
-        if params.top_k == 0 || params.top_k > self.max_top_k {
-            return None;
-        }
-        let seeds = self.warm_seeds.iter().copied().take(params.top_k).collect();
-        let (compacted_results, stats) = dfs::dfs_search_instrumented_with_seeds(
-            &self.pool,
-            &self.ctx,
-            &self.suffix,
-            params,
-            seeds,
-        );
-        let remapped = remap_results(compacted_results, &self.original_indices);
-        let expanded = expand_dominated_alternatives(
-            original_pool,
-            original_ctx,
-            &self.alternatives,
-            params,
-            remapped,
-        );
-        Some((expanded, stats))
-    }
-}
-
-/// 执行完整搜索流水线：dominance 裁剪、上界构建、热启动、DFS/B&B。
-pub fn search(pool: &CardPool, ctx: &SearchContext, params: &SearchParams) -> Vec<DeckResult> {
-    let (results, _) = search_instrumented(pool, ctx, params);
-    results
+/// Execute the complete search pipeline and return its completion certificate.
+/// Only `SearchCompletion::Complete` certifies canonical Top-K; `TimedOut`
+/// contains legal, exactly evaluated incumbents, not a proven ranking.
+pub fn search(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+) -> SearchOutcome<Vec<DeckResult>> {
+    search_outcome(pool, ctx, params)
 }
 
 /// 带统计信息的搜索。
@@ -134,35 +98,73 @@ pub fn search_instrumented(
     ctx: &SearchContext,
     params: &SearchParams,
 ) -> (Vec<DeckResult>, SearchStats) {
+    let outcome = search_outcome(pool, ctx, params);
+    (outcome.results, outcome.stats)
+}
+
+/// Search with an explicit completion certificate and phase-aware work record.
+/// The single cooperative deadline includes preparation, seeds and reconstruction.
+fn search_outcome(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+) -> SearchOutcome<Vec<DeckResult>> {
+    let mut budget = SearchBudget::from_params(params);
+    let (results, mut stats) = search_with_budget(pool, ctx, params, &mut budget);
+    stats.deadline_hit |= budget.hit;
+    SearchOutcome::new(results, stats)
+}
+
+fn search_with_budget(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    budget: &mut SearchBudget,
+) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
     }
 
+    let mut phase_stats = SearchStats::default();
+    let problem = problem::DeckProblem::from_context(ctx);
+
     // 挑战 live 的队伍必须五张同角色，该约束对所有 target 生效，必须先于
     // Power/Skill 通用路径分发：`simple_target_recurse` 无条件要求角色唯一，
     // 会在 challenge 下永远凑不齐 5 张而静默返回空集。
-    if !ctx.enforce_char_uniqueness {
+    if problem.family == problem::SolverFamily::SameCharacter {
         let suffix = SuffixBound::build(pool, ctx);
         // 池里只剩一个角色时（调用方已指定 challenge_live_character_id）直接搜；
         // 留着多个角色则是 challenge_all，必须逐角色搜索后归并——无约束搜索
         // 会产出跨角色的非法卡组，组合数也是逐角色之和的数个量级。
         return match single_challenge_character(pool) {
-            Some(_) => challenge_search::search(pool, ctx, &suffix, params),
-            None => challenge_search::search_all_characters(pool, ctx, &suffix, params),
+            Some(_) => challenge_search::search_with_budget(pool, ctx, &suffix, params, budget),
+            None => challenge_search::search_all_characters_with_budget(
+                pool, ctx, &suffix, params, budget,
+            ),
         };
     }
 
-    if matches!(ctx.target, ScoreTarget::Power | ScoreTarget::Skill) {
-        return search_simple_target(pool, ctx, params);
+    if problem.family == problem::SolverFamily::NumericObjective {
+        return search_simple_target(pool, ctx, params, budget);
     }
 
     let dominance = eliminate_dominated(pool, ctx);
+    phase_stats.dominance_prunes = (dominance.before - dominance.after) as u64;
+    if budget.expired() {
+        phase_stats.deadline_hit = true;
+        return (Vec::new(), phase_stats);
+    }
     let mut search_pool = dominance.pool;
     let mut search_ctx = dominance.ctx;
     let mut original_indices = dominance.original_indices;
     let alternatives = dominance.alternatives;
     if search_ctx.is_final_chapter {
         let member = dominance::compute_member_dominance(&search_pool, &search_ctx);
+        phase_stats.dominance_prunes += member.keep.iter().filter(|&&keep| !keep).count() as u64;
+        if budget.expired() {
+            phase_stats.deadline_hit = true;
+            return (Vec::new(), phase_stats);
+        }
         // member 裁剪的替代记录映射回原始索引，并与第一轮 alternatives 做跨轮链闭包：
         // 真实次优卡组的 member 位可能是第一轮就被裁的卡（根 x），而 x 又被 member 轮
         // 裁掉（根 r）——从 r 出发必须能一步回换到它们（issue #7）。
@@ -199,23 +201,44 @@ pub fn search_instrumented(
         } else {
             search_ctx.final_chapter_member_keep = member_keep;
         }
-        let (compacted_results, stats) = if search_ctx.final_chapter_leader_character().is_some() {
-            final_chapter::search_fixed_leader(&search_pool, &search_ctx, params)
-        } else if !search_ctx.has_fixed_leader() {
-            final_chapter::search_auto_leader(&search_pool, &search_ctx, params)
-        } else {
-            let suffix = SuffixBound::build(&search_pool, &search_ctx);
-            let seeds = warm_start::warm_start_best(&search_pool, &search_ctx)
-                .into_iter()
-                .collect();
-            dfs::dfs_search_instrumented_with_seeds(
+        // Grouped Final search currently models only an optional leader role.
+        // Multiple fixed slots use the complete slot-aware DFS, never a grouped
+        // solver that silently omits their constraints.
+        let grouped_constraints = matches!(search_ctx.target, ScoreTarget::Score)
+            && search_ctx.fixed_card_ids.is_empty()
+            && search_ctx.fixed_character_ids.len() <= 1
+            && !placement::bonus_order_observable(
                 &search_pool,
                 &search_ctx,
-                &suffix,
-                params,
-                seeds,
-            )
-        };
+                &search_pool.indices().collect::<Vec<_>>(),
+            );
+        let (compacted_results, mut stats) =
+            if grouped_constraints && search_ctx.final_chapter_leader_character().is_some() {
+                final_chapter::search_fixed_leader(&search_pool, &search_ctx, params, budget)
+            } else if grouped_constraints && !search_ctx.has_fixed_leader() {
+                final_chapter::search_auto_leader(&search_pool, &search_ctx, params, budget)
+            } else {
+                let suffix = SuffixBound::build(&search_pool, &search_ctx);
+                let seeds = warm_start::warm_start_best_with_budget(
+                    &search_pool,
+                    &search_ctx,
+                    budget,
+                    &mut phase_stats,
+                )
+                .into_iter()
+                .collect();
+                dfs::dfs_search_with_budget(
+                    &search_pool,
+                    &search_ctx,
+                    &suffix,
+                    params,
+                    seeds,
+                    None,
+                    None,
+                    budget,
+                )
+            };
+        stats.accumulate(&phase_stats);
         let remapped = remap_results(compacted_results, &original_indices);
         let expanded = expand_alternatives(
             pool,
@@ -224,15 +247,44 @@ pub fn search_instrumented(
             &member_alternatives,
             params,
             remapped,
+            budget,
+            &mut stats,
         );
+        stats.deadline_hit |= budget.hit;
+        stats.finalize();
         return (expanded, stats);
     }
     let suffix = SuffixBound::build(&search_pool, &search_ctx);
-    let seeds = warm_start::warm_start_seeds(&search_pool, &search_ctx, params.top_k);
-    let (compacted_results, stats) =
-        dfs::dfs_search_instrumented_with_seeds(&search_pool, &search_ctx, &suffix, params, seeds);
+    let seeds = warm_start::warm_start_seeds_with_budget(
+        &search_pool,
+        &search_ctx,
+        params.top_k,
+        budget,
+        &mut phase_stats,
+    );
+    let (compacted_results, mut stats) = dfs::dfs_search_with_budget(
+        &search_pool,
+        &search_ctx,
+        &suffix,
+        params,
+        seeds,
+        None,
+        None,
+        budget,
+    );
+    stats.accumulate(&phase_stats);
     let remapped = remap_results(compacted_results, &original_indices);
-    let expanded = expand_dominated_alternatives(pool, ctx, &alternatives, params, remapped);
+    let expanded = expand_dominated_alternatives(
+        pool,
+        ctx,
+        &alternatives,
+        params,
+        remapped,
+        budget,
+        &mut stats,
+    );
+    stats.deadline_hit |= budget.hit;
+    stats.finalize();
     (expanded, stats)
 }
 
@@ -243,6 +295,21 @@ pub fn search_bonus_targets(
     params: &SearchParams,
     targets: &[i32],
 ) -> (Vec<DeckResult>, SearchStats) {
+    let mut budget = SearchBudget::from_params(params);
+    let (results, mut stats) =
+        search_bonus_targets_with_budget(pool, ctx, params, targets, &mut budget);
+    stats.deadline_hit |= budget.hit;
+    stats.finalize();
+    (results, stats)
+}
+
+fn search_bonus_targets_with_budget(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    targets: &[i32],
+    budget: &mut SearchBudget,
+) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0
         || pool.count() < DECK_SIZE
         || targets.is_empty()
@@ -252,7 +319,16 @@ pub fn search_bonus_targets(
     }
     let suffix = SuffixBound::build(pool, ctx);
     let bonus_reach = bonus_reach::BonusReach::build(pool);
-    dfs::dfs_search_bonus_targets(pool, ctx, &suffix, params, targets, &bonus_reach)
+    dfs::dfs_search_with_budget(
+        pool,
+        ctx,
+        &suffix,
+        params,
+        Vec::new(),
+        Some(targets),
+        Some(&bonus_reach),
+        budget,
+    )
 }
 
 /// 统一搜索入口（engine 与 wasm 共用，避免入口分叉）：
@@ -262,580 +338,8 @@ pub fn search_targets(
     ctx: &SearchContext,
     params: &SearchParams,
     target_bonus_list: &[i32],
-) -> Vec<DeckResult> {
-    if target_bonus_list.is_empty() {
-        search(pool, ctx, params)
-    } else {
-        search_bonus_targets(pool, ctx, params, target_bonus_list).0
-    }
-}
-
-/// Top-K 支配替代展开。
-///
-/// dominance 裁剪对 Top-1 无损（被裁卡换成支配者分数不降），但 Top-K 下被裁卡参与的
-/// 组合本身可能是合法的次优解（issue #2）。设真实 Top-K 中存在含被裁卡的卡组 D，把
-/// 其中每张被裁卡换成其支配根得到 D'，则 score(D') >= score(D) >= 第 K 名阈值，故 D'
-/// 必在裁剪池的精确 Top-K 结果里。因此对每个搜索结果按槽位做替代回换（含多槽组合）、
-/// 重新评估并合并，即可还原全部丢失的次优解。
-///
-/// 回换方向是支配的逆向，分数单调不升，按当前第 K 名阈值剪枝；`top_k <= 1` 直接跳过，
-/// 主搜索路径零开销。
-fn expand_dominated_alternatives(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    alternatives: &[Vec<CardIdx>],
-    params: &SearchParams,
-    results: Vec<DeckResult>,
-) -> Vec<DeckResult> {
-    expand_alternatives(pool, ctx, alternatives, &[], params, results)
-}
-
-/// `member_alternatives` 仅在 member 槽位（slot >= 1）参与回换：终章 member 裁剪
-/// 忽略队长专属加成，被裁卡作队长仍可能更优，不能回换进队长槽。
-///
-/// 终章额外从每个结果的队长轮换出发展开：Top-K tracker 按卡集合去重、只保留最优
-/// 排列，若某替代根恰是自身集合的最佳队长，它在结果里只出现在队长槽，直接回换
-/// 永远不触发；轮换把根移回 member 槽后再回换，并顺带修正集合在其它队长下的
-/// 最优排列分数。轮换按固定槽约束过滤，逐一精确评估后并入 tracker。
-fn expand_alternatives(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    alternatives: &[Vec<CardIdx>],
-    member_alternatives: &[Vec<CardIdx>],
-    params: &SearchParams,
-    results: Vec<DeckResult>,
-) -> Vec<DeckResult> {
-    if params.top_k <= 1 {
-        return results;
-    }
-    let rotate_leader = ctx.is_final_chapter;
-    let has_alternatives = results.iter().any(|result| {
-        result.cards.iter().enumerate().any(|(slot, card)| {
-            !alternatives[card.raw()].is_empty()
-                || ((slot > 0 || rotate_leader)
-                    && member_alternatives
-                        .get(card.raw())
-                        .is_some_and(|alts| !alts.is_empty()))
-        })
-    });
-    if !has_alternatives && !rotate_leader {
-        return results;
-    }
-
-    let mut tracker = dfs::TopKTracker::new(
-        params.top_k,
-        pool,
-        matches!(ctx.target, ScoreTarget::Mysekai),
-    );
-    for result in &results {
-        tracker.insert(*result);
-    }
-    for result in &results {
-        let mut deck = result.cards;
-        expand_substitutions(
-            pool,
-            ctx,
-            alternatives,
-            member_alternatives,
-            &mut deck,
-            result.score,
-            0,
-            &mut tracker,
-        );
-        if !rotate_leader {
-            continue;
-        }
-        let mut slot = 1usize;
-        while slot < DECK_SIZE {
-            let mut rotated = result.cards;
-            rotated.swap(0, slot);
-            slot += 1;
-            if !deck_matches_fixed_slots(pool, ctx, &rotated) {
-                continue;
-            }
-            let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, &rotated) else {
-                continue;
-            };
-            tracker.insert(DeckResult::new(rotated, score));
-            expand_substitutions(
-                pool,
-                ctx,
-                alternatives,
-                member_alternatives,
-                &mut rotated,
-                score,
-                0,
-                &mut tracker,
-            );
-        }
-    }
-    tracker.into_vec()
-}
-
-/// 判断卡组每个槽位是否满足固定卡/固定角色约束（队长轮换用）。
-fn deck_matches_fixed_slots(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    deck: &[CardIdx; DECK_SIZE],
-) -> bool {
-    let mut slot = 0usize;
-    while slot < DECK_SIZE {
-        if ctx
-            .fixed_card_at(slot)
-            .is_some_and(|game_id| pool.game_id(deck[slot]) != game_id)
-        {
-            return false;
-        }
-        if ctx
-            .fixed_character_at(slot)
-            .is_some_and(|character_id| pool.char_id(deck[slot]) != character_id)
-        {
-            return false;
-        }
-        slot += 1;
-    }
-    true
-}
-
-/// 自 `from_slot` 起逐槽尝试把支配者回换成其支配的卡（多槽组合经递归覆盖）。
-/// `node_score` 是当前替换组合的分数；再多换任何一张分数不会更高，因此 tracker
-/// 满且 node_score 严格低于阈值时整棵子树可剪（同分仍展开，保住 tie-break 名次）。
-/// 两轮支配都含支援惩罚维度（issue #23/#7），该单调性在 WL 下同样成立。
-#[allow(clippy::too_many_arguments)]
-fn expand_substitutions(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    alternatives: &[Vec<CardIdx>],
-    member_alternatives: &[Vec<CardIdx>],
-    deck: &mut [CardIdx; DECK_SIZE],
-    node_score: u64,
-    from_slot: usize,
-    tracker: &mut dfs::TopKTracker,
-) {
-    let threshold = tracker.threshold();
-    if threshold != 0 && node_score < threshold {
-        return;
-    }
-    let mut slot = from_slot;
-    while slot < DECK_SIZE {
-        // 固定卡槽位按 game_id 锁死，被支配的替代卡 game_id 必不同（固定卡不参与裁剪），跳过。
-        if ctx.fixed_card_at(slot).is_some() {
-            slot += 1;
-            continue;
-        }
-        let original = deck[slot];
-        let member_alts: &[CardIdx] = if slot > 0 {
-            member_alternatives
-                .get(original.raw())
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-        } else {
-            &[]
-        };
-        for &alt in alternatives[original.raw()].iter().chain(member_alts) {
-            deck[slot] = alt;
-            // 支配卡与被支配卡同角色，角色唯一性与固定角色槽位约束自然保持。
-            let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) else {
-                continue;
-            };
-            tracker.insert(DeckResult::new(*deck, score));
-            expand_substitutions(
-                pool,
-                ctx,
-                alternatives,
-                member_alternatives,
-                deck,
-                score,
-                slot + 1,
-                tracker,
-            );
-        }
-        deck[slot] = original;
-        slot += 1;
-    }
-}
-
-fn search_simple_target(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    params: &SearchParams,
-) -> (Vec<DeckResult>, SearchStats) {
-    const POWER_PREFIX: usize = 28;
-    const POWER_PER_CHAR: usize = 6;
-    const SKILL_PREFIX: usize = 20;
-    const SKILL_PER_CHAR: usize = 3;
-    const SCORE_NOEV_PREFIX: usize = 30;
-    const SCORE_NOEV_PER_CHAR: usize = 6;
-
-    if params.top_k == 0 || pool.count() < DECK_SIZE {
-        return (Vec::new(), SearchStats::default());
-    }
-
-    if matches!(ctx.target, ScoreTarget::Power)
-        && !ctx.minimize
-        && ctx.enforce_char_uniqueness
-        && ctx.fixed_card_ids.is_empty()
-        && ctx.fixed_character_ids.is_empty()
-        && ctx.forced_leader_character_id.is_none()
-    {
-        return search_power_scenarios(pool, ctx, params);
-    }
-
-    let (prefix_len, per_char_cap) = match ctx.target {
-        ScoreTarget::Power => (POWER_PREFIX, POWER_PER_CHAR),
-        ScoreTarget::Skill => (SKILL_PREFIX, SKILL_PER_CHAR),
-        _ => (SCORE_NOEV_PREFIX, SCORE_NOEV_PER_CHAR),
-    };
-
-    let mut cards: Vec<CardIdx> = pool.indices().collect();
-    let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
-    cards.sort_unstable_by(|a, b| {
-        let (ka, kb) = match ctx.target {
-            ScoreTarget::Power => (pool.power_max(*a) as u64, pool.power_max(*b) as u64),
-            ScoreTarget::Skill => (pool.skill_max(*a) as u64, pool.skill_max(*b) as u64),
-            _ => {
-                let ka = pool.power_max(*a) as u64 * (256 + pool.skill_max(*a) as u64);
-                let kb = pool.power_max(*b) as u64 * (256 + pool.skill_max(*b) as u64);
-                (ka, kb)
-            }
-        };
-        // minimize 时按质量升序取最弱前缀；否则降序取最强。
-        let ordering = if minimize { ka.cmp(&kb) } else { kb.cmp(&ka) };
-        ordering.then_with(|| a.raw().cmp(&b.raw()))
-    });
-
-    let mut prefix = Vec::with_capacity(prefix_len + 8);
-    let mut in_prefix = vec![false; pool.count()];
-    let mut char_counts = [0usize; 27];
-
-    for &card in &cards {
-        let gid = pool.game_id(card);
-        let cid = pool.char_id(card);
-        if (ctx.fixed_card_ids.contains(&gid) || ctx.fixed_character_ids.contains(&cid))
-            && !in_prefix[card.raw()]
-        {
-            in_prefix[card.raw()] = true;
-            char_counts[(cid as usize).min(26)] += 1;
-            prefix.push(card);
-        }
-    }
-
-    // Fixed-character alternatives occupy one slot, not one slot per card.
-    // Reserve the ordinary candidate budget for the still-unfixed slots even
-    // when the fixed prefix itself exceeds the usual search prefix length.
-    let fixed_slots = ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len();
-    let free_budget = if fixed_slots >= DECK_SIZE {
-        0
-    } else {
-        prefix_len.saturating_sub(fixed_slots)
-    };
-    let prefix_limit = prefix.len() + free_budget;
-    for &card in &cards {
-        if prefix.len() >= prefix_limit {
-            break;
-        }
-        if in_prefix[card.raw()] {
-            continue;
-        }
-        let ch = (pool.char_id(card) as usize).min(26);
-        if char_counts[ch] >= per_char_cap {
-            continue;
-        }
-        char_counts[ch] += 1;
-        in_prefix[card.raw()] = true;
-        prefix.push(card);
-    }
-
-    if prefix.len() < DECK_SIZE {
-        return (Vec::new(), SearchStats::default());
-    }
-
-    let mut tracker = SimpleTopKTracker::new(params.top_k, minimize, pool);
-    let mut deck = [prefix[0]; DECK_SIZE];
-    let mut stats = SearchStats::default();
-    simple_target_recurse(
-        pool,
-        ctx,
-        &prefix,
-        0,
-        0,
-        crate::pool::Mask::EMPTY,
-        0,
-        &mut deck,
-        &mut tracker,
-        &mut stats,
-    );
-
-    (tracker.into_vec(), stats)
-}
-
-#[derive(Clone, Copy)]
-struct PowerPartial {
-    cards: [CardIdx; DECK_SIZE],
-    len: usize,
-    additive_power: u32,
-}
-
-fn search_power_scenarios(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    params: &SearchParams,
-) -> (Vec<DeckResult>, SearchStats) {
-    // For an additive scenario, keeping the best K partial states at each
-    // cardinality is exact: every future choice is independent of the cards
-    // already processed. A discarded partial state can therefore never re-enter
-    // the final top K.
-    let state_limit = params.top_k.max(1);
-    let mut tracker = SimpleTopKTracker::new(params.top_k, false, pool);
-    let mut stats = SearchStats::default();
-
-    let mut scenarios = Vec::with_capacity(49);
-    scenarios.push((None, None));
-    for attr in 0u8..6 {
-        scenarios.push((None, Some(attr)));
-    }
-    for unit in 0usize..6 {
-        scenarios.push((Some(unit), None));
-        for attr in 0u8..6 {
-            scenarios.push((Some(unit), Some(attr)));
-        }
-    }
-
-    for (unit_all, attr_all) in scenarios {
-        let mut by_character = vec![Vec::<(u32, CardIdx)>::new(); 27];
-        for card in pool.indices() {
-            if unit_all.is_some_and(|unit| pool.unit_mask_raw(card) & (1u8 << unit) == 0) {
-                continue;
-            }
-            if attr_all.is_some_and(|attr| pool.attr(card) != attr) {
-                continue;
-            }
-            let character = usize::from(pool.char_id(card)).min(26);
-            let power =
-                evaluate::resolve_card_power_scenario(pool, card, unit_all, attr_all.is_some());
-            by_character[character].push((power, card));
-        }
-        for cards in &mut by_character {
-            cards.sort_unstable_by(|left, right| {
-                right
-                    .0
-                    .cmp(&left.0)
-                    .then_with(|| left.1.raw().cmp(&right.1.raw()))
-            });
-            // 同一 game_id 的养成变体互斥（同一张卡），只保留场景值最高的一个：
-            // 变体占多个名额会在每角色候选与 DP 状态里挤出真正不同的次优集合，
-            // 令 Top-K 丢解（issue #24 的 mass_099712 案例）。
-            let mut seen_game_ids = Vec::with_capacity(cards.len());
-            cards.retain(|(_, card)| {
-                let game_id = pool.game_id(*card);
-                if seen_game_ids.contains(&game_id) {
-                    false
-                } else {
-                    seen_game_ids.push(game_id);
-                    true
-                }
-            });
-            cards.truncate(state_limit);
-        }
-
-        let seed = PowerPartial {
-            cards: [CardIdx::new(0); DECK_SIZE],
-            len: 0,
-            additive_power: 0,
-        };
-        let mut states = vec![Vec::<PowerPartial>::new(); DECK_SIZE + 1];
-        states[0].push(seed);
-        for choices in by_character.into_iter().skip(1) {
-            if choices.is_empty() {
-                continue;
-            }
-            let mut count = DECK_SIZE;
-            while count > 0 {
-                count -= 1;
-                if states[count].is_empty() {
-                    continue;
-                }
-                let previous = states[count].clone();
-                for state in previous {
-                    for &(power, card) in &choices {
-                        let mut next = state;
-                        next.cards[count] = card;
-                        next.len = count + 1;
-                        next.additive_power = next.additive_power.saturating_add(power);
-                        states[count + 1].push(next);
-                    }
-                }
-                states[count + 1].sort_unstable_by(|left, right| {
-                    right
-                        .additive_power
-                        .cmp(&left.additive_power)
-                        .then_with(|| left.cards.cmp(&right.cards))
-                });
-                states[count + 1].truncate(state_limit);
-            }
-        }
-
-        for state in &states[DECK_SIZE] {
-            stats.leaf_nodes += 1;
-            if let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, &state.cards) {
-                tracker.insert(DeckResult::new(state.cards, score));
-            }
-        }
-    }
-    (tracker.into_vec(), stats)
-}
-
-fn simple_target_recurse(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    prefix: &[CardIdx],
-    depth: usize,
-    min_free_idx: usize,
-    used_cards: crate::pool::Mask,
-    used_chars: u32,
-    deck: &mut [CardIdx; DECK_SIZE],
-    tracker: &mut SimpleTopKTracker,
-    stats: &mut SearchStats,
-) {
-    if depth == DECK_SIZE {
-        stats.leaf_nodes += 1;
-        if let Some(score) = evaluate::leaf_evaluate_checked(pool, ctx, deck) {
-            tracker.insert(DeckResult::new(*deck, score));
-        }
-        return;
-    }
-
-    let is_fixed = ctx.is_fixed_slot(depth);
-    let scan_from = if is_fixed { 0 } else { min_free_idx };
-
-    let mut idx = scan_from;
-    while idx < prefix.len() {
-        if used_cards.test(idx) {
-            idx += 1;
-            continue;
-        }
-        let card = prefix[idx];
-        let char_id = pool.char_id(card);
-        let fixed_char_at_depth = ctx.fixed_character_at(depth);
-        if used_chars & (1u32 << char_id) != 0 {
-            // 固定角色槽位允许同一角色的另一张卡入队
-            if fixed_char_at_depth != Some(char_id) {
-                idx += 1;
-                continue;
-            }
-        }
-        if let Some(game_id) = ctx.fixed_card_at(depth)
-            && pool.game_id(card) != game_id
-        {
-            idx += 1;
-            continue;
-        }
-        if let Some(character_id) = fixed_char_at_depth
-            && char_id != character_id
-        {
-            idx += 1;
-            continue;
-        }
-        deck[depth] = card;
-        let next_min_free = if is_fixed { min_free_idx } else { idx + 1 };
-        let mut next_used_cards = used_cards;
-        next_used_cards.set(idx);
-        simple_target_recurse(
-            pool,
-            ctx,
-            prefix,
-            depth + 1,
-            next_min_free,
-            next_used_cards,
-            used_chars | (1u32 << char_id),
-            deck,
-            tracker,
-            stats,
-        );
-        idx += 1;
-    }
-}
-
-struct SimpleTopKTracker {
-    top_k: usize,
-    minimize: bool,
-    game_ids: Vec<u16>,
-    results: Vec<DeckResult>,
-}
-
-impl SimpleTopKTracker {
-    fn new(top_k: usize, minimize: bool, pool: &CardPool) -> Self {
-        Self {
-            top_k,
-            minimize,
-            game_ids: pool.indices().map(|card| pool.game_id(card)).collect(),
-            results: Vec::with_capacity(top_k),
-        }
-    }
-
-    /// Returns a pruning cutoff only after the requested number of sets is present.
-    fn threshold(&self) -> Option<u64> {
-        if self.results.len() < self.top_k {
-            None
-        } else {
-            self.results.last().map(|result| result.score)
-        }
-    }
-
-    /// candidate 是否比 incumbent 更优。minimize 时「更优」= 分数更小。
-    #[inline(always)]
-    fn is_better(&self, candidate: &DeckResult, incumbent: &DeckResult) -> bool {
-        let cmp = deck_result_cmp(candidate, incumbent);
-        if self.minimize {
-            cmp.is_gt()
-        } else {
-            cmp.is_lt()
-        }
-    }
-
-    fn insert(&mut self, candidate: DeckResult) {
-        if let Some(existing_pos) = self
-            .results
-            .iter()
-            .position(|existing| self.same_game_card_set(existing, &candidate))
-        {
-            if !self.is_better(&candidate, &self.results[existing_pos]) {
-                return;
-            }
-            self.results.remove(existing_pos);
-        }
-        let pos = self
-            .results
-            .iter()
-            .position(|existing| self.is_better(&candidate, existing))
-            .unwrap_or(self.results.len());
-        self.results.insert(pos, candidate);
-        if self.results.len() > self.top_k {
-            self.results.pop();
-        }
-    }
-
-    fn into_vec(self) -> Vec<DeckResult> {
-        self.results
-    }
-
-    fn same_game_card_set(&self, left: &DeckResult, right: &DeckResult) -> bool {
-        self.game_card_set_key(left) == self.game_card_set_key(right)
-    }
-
-    fn game_card_set_key(&self, result: &DeckResult) -> [u16; 5] {
-        let mut cards = result.cards.map(|card| self.game_ids[card.raw()]);
-        cards.sort_unstable();
-        cards
-    }
-}
-
-#[inline(always)]
-fn deck_result_cmp(left: &DeckResult, right: &DeckResult) -> std::cmp::Ordering {
-    right
-        .score
-        .cmp(&left.score)
-        .then_with(|| left.cards.cmp(&right.cards))
+) -> SearchOutcome<Vec<DeckResult>> {
+    search_targets_outcome(pool, ctx, params, target_bonus_list)
 }
 
 /// 池里只有一个角色时返回它；challenge 池保留多角色即为 challenge_all。
@@ -876,3 +380,20 @@ fn remap_results(
 
 #[cfg(test)]
 mod tests;
+
+/// Unified ordinary/tiered search, preserving completion and all work statistics.
+/// Each requested exact bonus tier has its own canonical Top-K tracker, but all
+/// tiers share this operation's deadline.
+fn search_targets_outcome(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    target_bonus_list: &[i32],
+) -> SearchOutcome<Vec<DeckResult>> {
+    if target_bonus_list.is_empty() {
+        search_outcome(pool, ctx, params)
+    } else {
+        let (results, stats) = search_bonus_targets(pool, ctx, params, target_bonus_list);
+        SearchOutcome::new(results, stats)
+    }
+}

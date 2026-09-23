@@ -17,7 +17,7 @@ use crate::handler::{
     UserGateBonus, UserHonor, UserProfile, UserWBSupportDeck, WBSupportDeckBonus,
     WBSupportDeckUnitEventLimitedBonus, WorldBloom, WorldBloomDiffAttrBonus,
 };
-use crate::search::SearchParams;
+use crate::search::{SearchCompletion, SearchOutcome, SearchParams, SearchStats};
 use crate::{CardId, DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
 use serde::de::{DeserializeOwned, Error as _};
 use serde::{Deserialize, Serialize};
@@ -71,8 +71,12 @@ pub fn recommend_json(
 
     let user = parse_user_profile_json(user_data_json)?;
     let params = parse_build_params_json(params_json)?;
-    let decks = recommend(&user, &owned.as_ref(), &params)?;
-    let response = JsonDeckResponse { decks };
+    let outcome = recommend(&user, &owned.as_ref(), &params)?;
+    let response = JsonDeckResponse {
+        completion: outcome.completion(),
+        decks: outcome.results,
+        stats: outcome.stats,
+    };
     serde_json::to_string(&response).map_err(EngineError::from)
 }
 
@@ -81,14 +85,14 @@ pub fn recommend(
     user: &UserProfile,
     game: &GameData<'_>,
     params: &crate::handler::BuildParams,
-) -> Result<Vec<Recommendation>, EngineError> {
+) -> Result<SearchOutcome<Vec<Recommendation>>, EngineError> {
     let build = crate::handler::build_card_pool(user, game, params);
     let (pool, ctx) = match build {
         Ok(ok) => ok,
         // 精确档位组卡：候选不足等价于「所有目标档位都不可达」，
         // 返回空结果而非错误（与逐档搜索的空 bucket 行为一致）。
         Err(crate::handler::BuildError::EmptyPool) if !params.target_bonus_list.is_empty() => {
-            return Ok(Vec::new());
+            return Ok(SearchOutcome::new(Vec::new(), SearchStats::default()));
         }
         Err(error) => return Err(EngineError::Build(error.to_string())),
     };
@@ -96,23 +100,25 @@ pub fn recommend(
         top_k: params.limit,
         timeout_ms: params.timeout_ms,
     };
-    let results =
+    let outcome =
         crate::search::search_targets(&pool, &ctx, &search_params, &params.target_bonus_list);
 
-    Ok(results
-        .iter()
-        .map(|result| {
-            // 搜索结果里的是候选池稠密索引，出了这个池就没有意义，必须在
-            // 池还活着时换成游戏卡 ID。站位顺序同样由 summarize_deck 决定；
-            // 没有满足约束的排列时退回搜索给出的原始顺序。
-            let ordered = crate::search::summarize_deck(&pool, &ctx, &result.cards)
-                .map_or(result.cards, |summary| summary.ordered_cards);
-            Recommendation {
-                cards: ordered.map(|card| pool.game_id(card)),
-                score: result.score,
-            }
-        })
-        .collect())
+    Ok(outcome.map(|results| {
+        results
+            .iter()
+            .map(|result| {
+                // 搜索结果里的是候选池稠密索引，出了这个池就没有意义，必须在
+                // 池还活着时换成游戏卡 ID。站位顺序同样由 summarize_deck 决定；
+                // 没有满足约束的排列时退回搜索给出的原始顺序。
+                let ordered = crate::search::summarize_deck(&pool, &ctx, &result.cards)
+                    .map_or(result.cards, |summary| summary.ordered_cards);
+                Recommendation {
+                    cards: ordered.map(|card| pool.game_id(card)),
+                    score: result.score,
+                }
+            })
+            .collect()
+    }))
 }
 
 /// 一个推荐卡组。
@@ -133,6 +139,8 @@ pub struct Recommendation {
 #[derive(Debug, Serialize)]
 struct JsonDeckResponse {
     decks: Vec<Recommendation>,
+    completion: SearchCompletion,
+    stats: SearchStats,
 }
 
 /// 将上传链路的 camelCase 用户数据转换为内部 `UserProfile`。
@@ -2762,7 +2770,8 @@ mod tests {
     fn recommend_reports_game_card_ids() {
         let (game, user, owned_ids) = minimal_game_and_user();
         let decks = recommend(&user, &game.as_ref(), &multi_score_params()).expect("组卡");
-        let deck = decks.first().expect("至少一组");
+        assert_eq!(decks.completion(), SearchCompletion::Complete);
+        let deck = decks.results.first().expect("至少一组");
 
         for card in deck.cards {
             assert!(
@@ -2803,6 +2812,8 @@ mod tests {
         .expect("组卡");
 
         let parsed: Value = serde_json::from_str(&response).expect("响应");
+        assert_eq!(parsed["completion"], "complete");
+        assert_eq!(parsed["stats"]["deadline_hit"], false);
         let cards = parsed["decks"][0]["cards"].as_array().expect("cards 数组");
         assert_eq!(cards.len(), DECK_SIZE);
         for card in cards {
