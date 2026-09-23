@@ -257,3 +257,83 @@ fn power_scenarios_include_every_representable_character_group() {
     assert_eq!(expected.len(), 1);
     assert_eq!(search_exact(&pool, &ctx, &params), expected);
 }
+
+#[test]
+fn final_chapter_numeric_targets_choose_their_leader_like_the_oracle() {
+    // Composition-dependent skills resolve below their maximum, so the
+    // leader of a set is not fixed by the order its cards were picked in.
+    let pool = build_special_exact_pool();
+    for (target, minimize) in [
+        (ScoreTarget::Skill, false),
+        (ScoreTarget::Power, false),
+        (ScoreTarget::Power, true),
+    ] {
+        for live_type in [LiveType::Solo, LiveType::Multi, LiveType::Auto] {
+            for forced_leader in [None, Some(3)] {
+                let mut ctx = ready_ctx(&pool, target);
+                ctx.minimize = minimize;
+                ctx.is_final_chapter = true;
+                ctx.is_world_bloom = true;
+                ctx.event_type = Some(EventType::WorldBloom);
+                ctx.live_type = live_type;
+                ctx.live_skill_order = LiveSkillOrder::Average;
+                ctx.forced_leader_character_id = forced_leader;
+                for top_k in [1, 5, 30] {
+                    let params = SearchParams {
+                        top_k,
+                        timeout_ms: 0,
+                    };
+                    let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
+                    assert_eq!(
+                        search_exact(&pool, &ctx, &params),
+                        expected,
+                        "target={target:?} minimize={minimize} live={live_type:?} \
+                         leader={forced_leader:?} k={top_k}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn final_chapter_skill_leader_is_not_the_first_picked_card() {
+    // The unit-count card has the largest skill maximum but resolves to its
+    // one-member entry here, so another member is the best leader.
+    let mut cards = vec![TestCard {
+        char_id: 1,
+        attr: 0,
+        unit_mask: 1 << 1,
+        game_id: 101,
+        power: 1_000,
+        skill: SkillSlot {
+            skill_type: 1,
+            value: 1,
+        },
+        base_bonus: 0,
+        limited_bonus: 0,
+        power_max: 1_000,
+        skill_max: 50,
+    }];
+    for (offset, skill) in [40u8, 30, 20, 20].into_iter().enumerate() {
+        let mut card = skill_card(102 + offset as u16, 2 + offset as u8, 1_000, skill);
+        card.unit_mask = 1 << 2;
+        cards.push(card);
+    }
+    let pool = build_pool(&cards);
+    for live_type in [LiveType::Solo, LiveType::Multi, LiveType::Auto] {
+        let mut ctx = ready_ctx(&pool, ScoreTarget::Skill);
+        ctx.is_final_chapter = true;
+        ctx.is_world_bloom = true;
+        ctx.event_type = Some(EventType::WorldBloom);
+        ctx.live_type = live_type;
+        let params = SearchParams {
+            top_k: 1,
+            timeout_ms: 0,
+        };
+        let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
+        let actual = search_exact(&pool, &ctx, &params);
+        assert_eq!(actual, expected, "live={live_type:?}");
+        assert_eq!(pool.game_id(actual[0].cards[0]), 102, "live={live_type:?}");
+    }
+}

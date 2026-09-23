@@ -59,6 +59,15 @@ only when there are no fixed cards, at most one fixed character, and bonus
 ordering is not observable; multiple fixed slots or position-sensitive bonus
 semantics fall back to the slot-aware DFS.
 
+A leaf's placement assigns every observable role of its card set. The Final
+Chapter leader occupies slot 0. The grouped Final Chapter search and the
+slot-aware DFS enumerate that leader themselves, so their slot 0 is a fixed
+role. The Power and Skill solvers pick only a card set. For their leaves a
+forced leader character is moved to slot 0; otherwise every member is tried
+as leader whenever the objective or the multi-live score-up constraint reads
+the leader, and the Power objective, which never reads it, orders all five
+cards canonically.
+
 Challenge-family dispatch happens before the generic numeric-target dispatch,
 because Challenge requires five cards of one character whereas ordinary Power /
 Skill search requires character uniqueness. Specific / role-order cases that

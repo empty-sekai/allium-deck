@@ -26,6 +26,12 @@ pub(super) struct DeckProblem {
     pub family: SolverFamily,
     pub placement: PlacementModel,
     pub fixed_prefix: usize,
+    /// Slot 0 of a leaf holds the Final Chapter leader: the Final Chapter
+    /// solvers choose it for every target except the numeric ones, and for
+    /// those a forced leader character is moved there.
+    pub leader_slot_fixed: bool,
+    /// The leaf's forced Final Chapter leader card is moved to slot 0.
+    pub move_forced_leader: bool,
 }
 
 impl DeckProblem {
@@ -40,6 +46,11 @@ impl DeckProblem {
             SolverFamily::UniqueCombinations
         };
         let fixed_prefix = (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len()).min(5);
+        let solver_leader = ctx.is_final_chapter && family != SolverFamily::NumericObjective;
+        let move_forced_leader = ctx.is_final_chapter
+            && family == SolverFamily::NumericObjective
+            && fixed_prefix == 0
+            && ctx.forced_leader_character_id.is_some();
         // Only a single-player live scores its skill slots one by one; a
         // MySekai live has no live score at all.
         let single_player = !matches!(
@@ -52,7 +63,8 @@ impl DeckProblem {
             && matches!(ctx.target, ScoreTarget::Score | ScoreTarget::Bonus)
         {
             PlacementModel::OrderedFreeSlots
-        } else if !ctx.is_final_chapter
+        } else if !solver_leader
+            && !move_forced_leader
             && fixed_prefix == 0
             && ctx.forced_leader_character_id.is_none()
             && !ctx.effective_best_skill_as_leader()
@@ -69,6 +81,8 @@ impl DeckProblem {
             family,
             placement,
             fixed_prefix,
+            leader_slot_fixed: solver_leader || move_forced_leader,
+            move_forced_leader,
         }
     }
 

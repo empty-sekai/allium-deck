@@ -16,10 +16,17 @@ pub(super) fn evaluate_candidate(
     ctx: &SearchContext,
     deck: &[CardIdx; DECK_SIZE],
 ) -> Option<DeckResult> {
+    let problem = DeckProblem::from_context(ctx);
+    let mut leaf = *deck;
+    if problem.move_forced_leader
+        && let Some(slot) = ctx.forced_leader_slot(pool, &leaf)
+    {
+        leaf[..=slot].rotate_right(1);
+    }
+    let deck = &leaf;
     if !ctx.deck_matches_slots(pool, deck) {
         return None;
     }
-    let problem = DeckProblem::from_context(ctx);
     if bonus_order_observable(pool, ctx, deck) {
         let mut work = *deck;
         let mut best = None;
@@ -27,7 +34,7 @@ pub(super) fn evaluate_candidate(
             pool,
             ctx,
             &mut work,
-            problem.fixed_prefix.max(usize::from(ctx.is_final_chapter)),
+            exchangeable_prefix(problem),
             &mut best,
         );
         return best;
@@ -37,7 +44,7 @@ pub(super) fn evaluate_candidate(
         // is canonicalized.
         let score = leaf_evaluate_checked(pool, ctx, deck)?;
         let mut work = *deck;
-        sort_exchangeable(pool, &mut work, exchangeable_prefix(problem, ctx));
+        sort_exchangeable(pool, &mut work, exchangeable_prefix(problem));
         return Some(DeckResult::new(work, score));
     }
     let mut work = *deck;
@@ -182,15 +189,17 @@ pub(super) fn exchangeable_order(
     sort_exchangeable(
         pool,
         &mut work,
-        exchangeable_prefix(DeckProblem::from_context(ctx), ctx),
+        exchangeable_prefix(DeckProblem::from_context(ctx)),
     );
     work
 }
 
 /// Slots before this index hold fixed roles: fixed cards or characters, and
-/// the Final Chapter leader.
-fn exchangeable_prefix(problem: DeckProblem, ctx: &SearchContext) -> usize {
-    problem.fixed_prefix.max(usize::from(ctx.is_final_chapter))
+/// a fixed Final Chapter leader.
+fn exchangeable_prefix(problem: DeckProblem) -> usize {
+    problem
+        .fixed_prefix
+        .max(usize::from(problem.leader_slot_fixed))
 }
 
 /// Orders the free slots by (public card ID, dense index).
