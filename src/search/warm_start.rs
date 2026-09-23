@@ -113,6 +113,10 @@ pub(crate) fn warm_start_seeds_with_budget(
         )
         || ctx.is_final_chapter
     {
+        // A single incumbent raises the cutoff only once it fills the Top-K.
+        if top_k != 1 {
+            return Vec::new();
+        }
         return warm_start_best_with_budget(pool, ctx, budget, stats)
             .into_iter()
             .collect();
