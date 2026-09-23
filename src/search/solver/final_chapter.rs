@@ -154,7 +154,6 @@ impl CharacterPrefix {
 
 #[derive(Clone)]
 struct AutoLeaderJob {
-    group_set: usize,
     leader: LeaderConst,
     ceiling: u64,
 }
@@ -479,13 +478,72 @@ impl CharacterTop {
     }
 
     fn values(&self) -> [u32; MEMBER_COUNT + 1] {
-        core::array::from_fn(|slot| {
-            if slot < self.len {
-                self.entries[slot].0
-            } else {
-                0
+        self.values_without(u8::MAX)
+    }
+
+    /// The values of every character but `skip`, best first. The first
+    /// `MEMBER_COUNT` are the exact largest maxima of the other characters.
+    fn values_without(&self, skip: u8) -> [u32; MEMBER_COUNT + 1] {
+        let mut values = [0; MEMBER_COUNT + 1];
+        let kept = self.entries[..self.len]
+            .iter()
+            .filter(|&&(_, owner)| owner != skip);
+        for (slot, &(value, _)) in values.iter_mut().zip(kept) {
+            *slot = value;
+        }
+        values
+    }
+}
+
+/// Job ceilings of every leader character from one pass over the pool. The
+/// top lists skip the leader's character; the attribute rows keep the groups
+/// of every character, which can only raise them.
+struct LeaderCeilingTails {
+    tops: [CharacterTop; 4],
+    attr_bonus: [[u16; 32]; MEMBER_COUNT + 1],
+}
+
+impl LeaderCeilingTails {
+    fn build(
+        pool: &CardPool,
+        buckets: &AttributeBuckets,
+        member_keep: &[bool],
+        diff_attr_bonus: &[u16; 6],
+    ) -> Self {
+        let mut tops = [CharacterTop::default(); 4];
+        let mut attr_bonus = [[0u16; 32]; MEMBER_COUNT + 1];
+        attr_bonus[0] = diversity_bonus(diff_attr_bonus);
+        for &((char_id, attr), ref cards) in buckets {
+            let Some(best) = cards
+                .iter()
+                .filter(|card| member_keep.get(card.raw()).copied().unwrap_or(true))
+                .map(|&card| MemberTerms::of(pool, card))
+                .reduce(MemberTerms::max)
+            else {
+                continue;
+            };
+            let values = [best.power, best.skill, best.base_bonus, best.limited_bonus];
+            for (top, value) in tops.iter_mut().zip(values) {
+                top.raise(char_id, value);
             }
-        })
+            let next = attr_bonus;
+            for picked in 1..=MEMBER_COUNT {
+                attr_step(&next[picked - 1], 1u8 << attr, &mut attr_bonus[picked]);
+            }
+        }
+        Self { tops, attr_bonus }
+    }
+
+    /// A table for [`character_ceiling`] with every member slot open.
+    fn for_leader(&self, leader_char: u8) -> GroupCeilingTail {
+        GroupCeilingTail {
+            top_power: self.tops[0].values_without(leader_char),
+            top_skill: self.tops[1].values_without(leader_char),
+            top_base_bonus: self.tops[2].values_without(leader_char),
+            top_limited_bonus: self.tops[3].values_without(leader_char),
+            attr_bonus: self.attr_bonus,
+            ..GroupCeilingTail::default()
+        }
     }
 }
 
@@ -551,7 +609,7 @@ fn search_leaders(
     let mut tracker = TopKTracker::with_floor(params.top_k, floor);
     tracker.set_bounds_enabled(crate::search::tuning::SearchTuning::load().bounds);
     let mut stats = SearchStats::default();
-    if leader_char_filter.is_none() {
+    let Some(leader_char) = leader_char_filter else {
         return search_auto_leaders_two_phase(
             pool,
             ctx,
@@ -562,26 +620,10 @@ fn search_leaders(
             tracker,
             stats,
         );
-    }
-    let mut leader_chars = Vec::new();
-    if let Some(leader_char) = leader_char_filter {
-        leader_chars.push(leader_char);
-    } else {
-        for character_id in 0..=26 {
-            leader_chars.push(character_id);
-        }
-    }
-
+    };
     let buckets = attribute_buckets(pool);
-    for leader_char in leader_chars {
-        if guard.expired() {
-            break;
-        }
-        let groups =
-            build_char_groups(pool, ctx, &buckets, leader_char, &member_keep, params.top_k);
-        if groups.len() < MEMBER_COUNT {
-            continue;
-        }
+    let groups = build_char_groups(pool, ctx, &buckets, leader_char, &member_keep, params.top_k);
+    if groups.len() >= MEMBER_COUNT {
         let group_suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
         let mut leaders = pool
             .indices()
@@ -654,6 +696,7 @@ fn search_leaders(
     (tracker.into_vec(), stats)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_auto_leaders_two_phase(
     pool: &CardPool,
     ctx: &SearchContext,
@@ -665,18 +708,13 @@ fn search_auto_leaders_two_phase(
     mut stats: SearchStats,
 ) -> (Vec<DeckResult>, SearchStats) {
     let buckets = attribute_buckets(pool);
+    let leader_tails = LeaderCeilingTails::build(pool, &buckets, member_keep, &ctx.diff_attr_bonus);
     let mut jobs = Vec::new();
-    let mut group_sets = Vec::new();
     for leader_char in 0..=26 {
         if guard.expired() {
             break;
         }
-        let groups = build_char_groups(pool, ctx, &buckets, leader_char, member_keep, params.top_k);
-        if groups.len() < MEMBER_COUNT {
-            continue;
-        }
-        let group_suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
-        let group_set = group_sets.len();
+        let tail = [leader_tails.for_leader(leader_char)];
         let mut leaders = pool
             .indices()
             .filter(|card| pool.char_id(*card) == leader_char)
@@ -697,22 +735,17 @@ fn search_auto_leaders_two_phase(
             let ceiling = character_ceiling(
                 suffix,
                 ctx,
-                &group_suffix,
+                &tail,
                 0,
                 0,
                 &CharacterPrefix::for_leader(&leader_const),
                 &leader_const,
             );
             jobs.push(AutoLeaderJob {
-                group_set,
                 leader: leader_const,
                 ceiling,
             });
         }
-        group_sets.push(AutoLeaderGroupSet {
-            groups,
-            suffix: group_suffix,
-        });
     }
 
     jobs.sort_unstable_by(|left, right| {
@@ -721,6 +754,8 @@ fn search_auto_leaders_two_phase(
             .cmp(&left.ceiling)
             .then_with(|| left.leader.leader.raw().cmp(&right.leader.leader.raw()))
     });
+    // A leader character's group set is built when its first job runs.
+    let mut group_sets: [Option<AutoLeaderGroupSet>; 27] = Default::default();
     for job in jobs {
         if guard.expired() {
             break;
@@ -729,7 +764,31 @@ fn search_auto_leaders_two_phase(
             stats.leader_prunes += 1;
             continue;
         }
-        let group_set = &group_sets[job.group_set];
+        let leader_char = pool.char_id(job.leader.leader);
+        let group_set = group_sets[usize::from(leader_char)].get_or_insert_with(|| {
+            let groups =
+                build_char_groups(pool, ctx, &buckets, leader_char, member_keep, params.top_k);
+            let suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
+            AutoLeaderGroupSet { groups, suffix }
+        });
+        if group_set.groups.len() < MEMBER_COUNT {
+            continue;
+        }
+        // The character's own table reads a subset of the cards and groups
+        // behind the job ceiling, so it bounds the job at least as tightly.
+        let ceiling = character_ceiling(
+            suffix,
+            ctx,
+            &group_set.suffix,
+            0,
+            0,
+            &CharacterPrefix::for_leader(&job.leader),
+            &job.leader,
+        );
+        if tracker.threshold() != 0 && ceiling < tracker.threshold() {
+            stats.leader_prunes += 1;
+            continue;
+        }
         seed_leader_groups(
             pool,
             ctx,
@@ -739,7 +798,7 @@ fn search_auto_leaders_two_phase(
             &mut stats,
             guard,
         );
-        if tracker.threshold() != 0 && job.ceiling < tracker.threshold() {
+        if tracker.threshold() != 0 && ceiling < tracker.threshold() {
             stats.leader_prunes += 1;
             continue;
         }
@@ -749,7 +808,7 @@ fn search_auto_leaders_two_phase(
             suffix,
             groups: &group_set.groups,
             group_suffix: &group_set.suffix,
-            support: ctx.support_deck_for_leader(pool.char_id(job.leader.leader)),
+            support: ctx.support_deck_for_leader(leader_char),
             uniform_limited_cap: uniform_limited_cap(pool, ctx.card_bonus_count_limit),
             diversity: diversity_bonus(&ctx.diff_attr_bonus),
             tracker: &mut tracker,
@@ -2235,6 +2294,14 @@ mod scan_tests {
                 let mut expected = best;
                 expected.sort_unstable_by(|left, right| right.cmp(left));
                 assert_eq!(top.values()[..], expected[..MEMBER_COUNT + 1]);
+                let skip = next(9) as u8;
+                let mut others = best;
+                others[usize::from(skip)] = 0;
+                others.sort_unstable_by(|left, right| right.cmp(left));
+                assert_eq!(
+                    top.values_without(skip)[..MEMBER_COUNT],
+                    others[..MEMBER_COUNT]
+                );
             }
         }
     }

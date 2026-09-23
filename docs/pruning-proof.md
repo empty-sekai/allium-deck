@@ -999,8 +999,13 @@ Every surviving leader card becomes a search job. There is no heuristic
 per-character leader cap.
 
 A leader job is skipped only if character_ceiling(...) < threshold. Auto-leader
-jobs run in non-increasing ceiling order, so the first job whose ceiling falls
-below the threshold also bounds every later one.
+jobs are ordered by a ceiling read from one table for every leader character:
+its top lists skip the leader's character exactly, and its attribute rows
+maximize over the groups of every character, a superset of the leader's
+groups. Section 18.3 is non-decreasing in every table entry, so this ceiling
+bounds the one of the leader character's own table. A job is skipped when
+either ceiling is below the threshold; the character's own table is built when
+its first job is reached.
 
 ### 18.2 Character-attribute groups and the attribute-union DP
 
