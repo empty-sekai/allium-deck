@@ -9,6 +9,7 @@ mod exact_mysekai;
 mod exact_power;
 mod exact_score;
 mod exact_world_bloom;
+mod numeric_soundness;
 mod overflow;
 mod performance;
 mod property_bounds;

@@ -125,16 +125,10 @@ a legal completion. The packed objective keeps event point in the high 32 bits
 and live score in the low 32 bits, so this ceiling is directly comparable with
 the canonical numeric threshold while equality remains unpruned.
 
-Multi/Cheerful event search may additionally intersect that bound with a joint
-power/bonus relaxation. For each suffix, production upper-bounds a linear
-support quantity `power + w * bonus` for `w = 512` and `w = 1024`. Holding that
-support ceiling turns the event numerator into a one-dimensional concave
-quadratic in bonus: power is relaxed to `min(power_ub, support_ub - w*bonus)`.
-The implementation checks the interval endpoints, the cap transition, and the
-integer points around the quadratic vertex, then rounds division upward. Each
-weight therefore yields an event-point upper bound; taking the minimum of the
-two admissible bounds remains admissible. If the joint tables are unavailable,
-production returns the independent bound rather than guessing.
+Unique-character searches are additionally split by area-item composition
+regime (pruning-proof Section 13): each regime searches only the cards it
+admits, with a per-card power bound valid for every deck of that regime, and
+all regimes share one canonical tracker whose K-th value floors the later ones.
 
 ### Score / no-event exact ordering and pre-division comparison
 
@@ -521,6 +515,15 @@ bounds and leaf evaluation. Dynamic skill upper bounds are derived from the
 same resolved skill tables / semantics used by evaluation. A bound may relax
 correlations upward, but it may not silently change numeric precision in a way
 that can underestimate a legal completion.
+
+The floating-point side of these invariants is proved in
+[pruning-proof.md, Section 29](pruning-proof.md#29-numeric-admissibility): every
+integer or fixed-point ceiling dominates the `f64` leaf evaluator after its
+truncations, because the ceilings' integer grids are coarser than the
+evaluator's accumulated rounding on the numeric domain that pool construction
+enforces (`numeric_domain` in handler/capacity.rs). Inputs outside that domain
+are rejected as capacity or configuration errors, like the representation
+limits of Section 12.
 
 ## 14. SearchStats contract
 

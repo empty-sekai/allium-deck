@@ -88,8 +88,16 @@ fn quadratic(t: u128, lambda: u32, c: u128, b: u128) -> u64 {
     } else {
         (a * a, lambda * h * Q)
     };
-    // Coefficients are upper-rounded at 1e12. Bounds on base/rates/P/skill below
-    // put the arithmetic below u128::MAX. +1 also covers final bounded FP noise.
+    // Each prepared coefficient is ceil(fl(c * Q)) + 1, which exceeds c * Q by
+    // at least 1 - 5e-4 because the rounding of fl(c * Q) stays below 5e-4 in
+    // the checked domain (base <= 4, rates <= 1). That excess, at least
+    // 4P(1 + S + L)(1 - 5e-4) / Q live points, is more than 180 times the
+    // evaluator's accumulated rounding (at most 12 roundings of
+    // 4P(4 + (S + L) / 100)), so every plane already dominates the
+    // floating-point live score before the upward integer steps below. The
+    // final +1 is not needed for admissibility. The same domain, with power
+    // <= 262143 and skill <= 255 per card, keeps every product below
+    // u128::MAX.
     num.div_ceil(den).saturating_add(1).min(i32::MAX as u128) as u64
 }
 #[inline]

@@ -173,6 +173,30 @@ pub(crate) fn validate_build_params(params: &types::BuildParams) -> Result<(), B
             "multi_live_score_up_lower_bound 仅支持 multi live".to_string(),
         ));
     }
+    // Score ceilings are monotone only for non-negative teammate and opponent
+    // inputs; the power cap also keeps the evaluator's i32 power sum exact.
+    if params
+        .multi_teammate_power
+        .is_some_and(|power| !(0..=super::capacity::NUMERIC_POWER_MAX as i32).contains(&power))
+    {
+        return Err(BuildError::InvalidConfig(format!(
+            "multi_teammate_power must be in 0..={}",
+            super::capacity::NUMERIC_POWER_MAX
+        )));
+    }
+    if params
+        .multi_teammate_score_up
+        .is_some_and(|score_up| score_up < 0)
+    {
+        return Err(BuildError::InvalidConfig(
+            "multi_teammate_score_up must be non-negative".to_string(),
+        ));
+    }
+    if params.other_score.is_some_and(|score| score < 0) {
+        return Err(BuildError::InvalidConfig(
+            "other_score must be non-negative".to_string(),
+        ));
+    }
     if !params.target_bonus_list.is_empty()
         && !matches!(params.target, crate::types::ScoreTarget::Bonus)
     {

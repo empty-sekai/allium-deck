@@ -84,7 +84,7 @@ $$
 is also admissible.
 
 This justifies intersecting the generic suffix bound with dense-suffix,
-correlated, World Bloom, or joint event-point bounds.
+correlated, World Bloom, or composition-regime bounds.
 
 ### Arithmetic invariant — rounding must be outward
 
@@ -105,6 +105,10 @@ representation does not round below the real bound. Throughout the search code:
 If a specialized bound cannot establish its required domain or arithmetic
 assumptions, its constructor returns None and the search falls back to a looser
 already-proved bound. Disabling a tighter bound cannot remove a legal branch.
+
+Section 29 proves that these integer and fixed-point ceilings also dominate the
+floating-point leaf evaluator after its truncations, on the numeric domain that
+pool construction enforces.
 
 The end-to-end precision invariants, including x10 leader/event bonus handling,
 are also recorded in [exactness-proof.md](exactness-proof.md).
@@ -493,6 +497,8 @@ These are exactly the two branches of **quadratic** in
 src/search/correlated.rs. Coefficient preparation uses ceilings, the final
 division is rounded upward, and the implementation adds one further integer
 safety unit for bounded floating-point preparation error.
+Section 29 (Lemma N8) shows that the prepared coefficients alone already
+dominate the floating-point evaluator.
 
 Hence each correlated plane is admissible. By Lemma 1, taking the minimum of
 several planes and the ordinary suffix bound remains admissible.
@@ -528,65 +534,99 @@ The encoded objective uses event point in the high 32 bits and live score in
 the low 32 bits. The resulting packed ceiling can therefore be compared
 directly with the tracker's numeric threshold.
 
-## 13. Joint Multi event-point power/bonus bound
+## 13. Area-item composition regimes
 
-Implementation:
-dense_candidate_joint_ceiling_multi_score_event,
-build_joint_ep_table, joint_event_point_upper,
-maximize_joint_event_numerator in src/search/suffix.rs.
+Implementation: src/search/composition.rs (`search_regimes`, `RegimePlan`) and
+`CardPool::restrict`.
 
-For $w\in\{512,1024\}$, dense suffix preprocessing provides
-
-$$
-P + wB \le S_w
-$$
-
-for every legal completion, where $P$ is power and $B$ event bonus. The suffix
-table itself is built by the same top-per-character relaxation as Section 7, but
-on the additive quantity $power+w\cdot bonus$, so this inequality is
-admissible.
-
-For a fixed bonus $b$, power is therefore relaxed to
+For a deck $D$ let $A(D)$ be the attribute shared by all five cards, if any,
+and $U(D)$ the set of units contained in all five cards. The evaluator resolves
+card $c$ of $D$ to
 
 $$
-P(b) \le \min(P_{\max},\,S_w-wb).
+p_D(c)=\max_{w\in\mathrm{units}(c)} v_c\bigl(\pi_c(w),\,[w\in U(D)],\,[A(D)=\mathrm{attr}(c)]\bigr),
 $$
 
-After the independent skill/leader relaxation is folded into the Multi
-coefficients, each supported event-point numerator evaluated by
-**maximize_joint_event_numerator** has the form
+where $v_c(\pi,u,a)$ is the stored power of profile $\pi$ under member key
+$2u+a$. Since $A(D)=\mathrm{attr}(c)$ holds for every card exactly when $A(D)$
+exists, the key of each unit depends only on $(w\in U(D),\ A(D)\text{ exists})$.
+
+**Regimes.** The feasible decks are covered by 49 regimes:
+
+| regime | condition on $D$ | admitted cards | member keys $K_R$ |
+| --- | --- | --- | --- |
+| Mixed | $A(D)$ none, $U(D)=\emptyset$ | all | $\{0\}$ |
+| SharedAttr$(a)$ | $A(D)=a$, $U(D)=\emptyset$ | attribute $a$ | $\{1\}$ |
+| SharedUnit$(u)$ | $A(D)$ none, $u\in U(D)$ | containing $u$ | $\{0,2\}$ |
+| SharedUnitAttr$(u,a)$ | $A(D)=a$, $u\in U(D)$ | attribute $a$, containing $u$ | $\{1,3\}$ |
+
+*Coverage.* Every deck satisfies at least one row: choose Mixed or
+SharedAttr$(A(D))$ when $U(D)$ is empty, and otherwise any $u\in U(D)$ with
+SharedUnit or SharedUnitAttr. Every card of a deck of a regime is admitted by
+that regime.
+
+*Per-regime power bound.* For a deck of regime $R$ every unit key that occurs
+in $p_D(c)$ lies in $K_R$, hence
 
 $$
-E(b)=\bigl(A+K\min(P_{\max},S_w-wb)\bigr)(b+100),
+p_D(c)\le b_R(c)=\max_{w\in\mathrm{units}(c)}\ \max_{k\in K_R} v_c(\pi_c(w),k).
 $$
 
-where $A\ge0$ is the power-independent constant and $K\ge0$ is the live-score
-power coefficient for that event formula.
+`RegimePlan::new` computes $b_R$ and `CardPool::restrict` builds the pool of
+admitted cards with $b_R$ as their `power_max`; every other column, including
+the eight exact power contexts, is copied unchanged. Every bound of Sections
+4–12 and 14–18 uses `power_max` only as a per-card upper bound on resolved
+power, so on the restricted pool each of them is admissible for every deck of
+$R$. Decks outside $R$ may be visited and are then evaluated exactly; they are
+never required to be found in $R$.
 
-There are only two regions:
+*Dominance inside a regime.* Dominance (Sections 4–6) runs on the restricted
+pool. It removes a card only in favour of one with the same attribute and the
+same unit membership, so a substitution leaves $A(D)$ and $U(D)$ unchanged and
+keeps the deck inside $R$. Theorem 2 and the recovery of Section 6 therefore
+apply verbatim to the feasible decks of $R$, with $b_R$ in place of
+`power_max`.
 
-1. while $P_{\max}\le S_w-wb$, the min is constant and $E(b)$ is linear;
-2. afterwards,
-   $E(b)=(A+KS_w-Kwb)(b+100)$, a concave quadratic because the coefficient of
-   $b^2$ is $-Kw\le0$.
+*Regime ceiling.* For each regime the plan takes, per character, the largest
+$b_R$, skill maximum and card-bonus ceiling among admitted cards, and adds an
+admissible extra-bonus term: for World Bloom the best diversity bonus over the
+attribute counts the admitted cards can reach (one when the regime fixes the
+attribute) plus, over every support profile, the rounded-up sum of its first
+`count` entries, which is the largest sum any exclusion can leave; otherwise
+the context's extra-bonus bound; and for Final Chapter the largest leader
+bonus. A deck uses five distinct characters, so each sum of five per-character
+maxima bounds the corresponding deck sum, and the objective relaxation is
+monotone in every argument (Sections 10 and 12). The resulting ceiling is admissible
+for every deck of $R$. A plan is dropped when the regime admits fewer than five
+characters or cannot satisfy a fixed card, fixed character or forced leader;
+it then has no feasible deck.
 
-Therefore the integer maximum on the valid bonus interval can occur only at an
-interval endpoint, at the two integer points around the region transition, or
-at an integer adjacent to the quadratic vertex. The code evaluates the global
-endpoints, **flat_end** / **flat_end + 1**, and
-**vertex - 1, vertex, vertex + 1**, exactly covering those cases.
+**Shared tracker and external floor.** All regimes feed one canonical tracker
+in original pool indices. `restrict` preserves the relative order of dense
+indices, so remapping a regime result keeps every tie-break of the canonical
+order (exactness-proof Section 2), and a deck found in several regimes is
+deduplicated by public set with its best representative kept.
 
-The enclosing **joint_event_point_upper** constructs both capped and
-uncapped/fixed-opponent forms with independently relaxed skill and leader
-coefficients, applies upward integer division, and where two formula-derived
-upper bounds describe the same true event value takes their minimum. That last
-step is safe by Lemma 1.
+Let $f$ be the K-th primary objective held by that tracker. There are K
+distinct legal public sets at least as good as $f$, so by Theorem 1 a deck
+whose objective is strictly below $f$ cannot enter the global Top-K. Each
+regime search therefore starts its own tracker with $f$ as an external floor:
+its cutoff is the larger of its own K-th value and $f$, and the floor never
+evicts a result. Regimes are visited in non-increasing ceiling order, and a
+regime whose ceiling is strictly below the current cutoff is skipped: every
+deck of it is below the K-th known value. Equality is never pruned.
 
-Therefore each $w$ produces an admissible event-point upper bound.
+**Incumbents.** Before the first regime, warm-start seeds are generated once
+on the whole pool, canonicalized to their optimal legal placement and inserted
+into the shared tracker. They are legal, exactly evaluated decks, so they only
+raise $f$ (Section 24). Seeds whose cards are all admitted by a regime are also
+passed to that regime's search in its dense indices; they are ordering hints
+and are never needed for completeness.
 
-The table key uses div_ceil on the support value, so table lookup rounds to a
-not-smaller support bucket. Finally, taking the minimum of the $w=512$ and
-$w=1024$ upper bounds is safe by Lemma 1.
+Consequently every deck of the global canonical Top-K is found: it belongs to
+some regime, that regime is either searched with admissible bounds or has a
+ceiling below a value already reached by K known sets, and the shared tracker
+keeps the canonical best of everything any regime returns.
 
 ## 14. SIMD event candidate mask
 
@@ -1046,6 +1086,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Hard request filters | handler/filter.rs, handler/build.rs | removes infeasible cards only |
 | Exact-tier over-target filter | handler/build.rs | non-negative unavoidable bonus exceeds every requested tier |
 | Capacity handling | handler/capacity.rs | explicit error; never truncates |
+| Numeric domain | handler/capacity.rs, handler/validate.rs | Section 29: integer ceilings dominate the `f64` evaluator |
 | Same-character dominance | search/dominance.rs | Theorems 2–3 |
 | Dominance Top-K recovery | search/alternatives.rs | root mapping + exhaustive inverse substitution |
 | Alternative-tree threshold | search/alternatives.rs | inverse substitutions are score non-increasing |
@@ -1056,7 +1097,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | No-event numerator | search/dfs.rs, search/suffix.rs | exact floor/division equivalence |
 | Correlated Score bound | search/correlated.rs | linear relaxation + concave quadratic envelope |
 | Event independent bound | search/suffix.rs | monotonic formula over componentwise maxima |
-| Joint Multi event bound | search/suffix.rs | P+wB relaxation + exact concave maximum candidates |
+| Composition regimes | search/composition.rs, pool/card_pool.rs | per-regime member-key power bound, regime ceiling, shared tracker floor |
 | SIMD threshold mask | simd.rs | vectorized scalar upper >= threshold |
 | WL attribute matching | search/suffix.rs | every legal novel-attribute set induces a matching |
 | WL support upper bound | search/suffix.rs, Final helpers | support can only stay or decrease as main deck grows |
@@ -1098,6 +1139,7 @@ independent checks designed to expose a violated premise.
 | Challenge | exact_challenge.rs and challenge-all timeout regression |
 | SIMD equality | simd::tests::dispatched_mask_keeps_bounds_equal_to_threshold |
 | Historical incomplete oracle | case7_audit.rs |
+| Numeric admissibility | numeric_soundness.rs, handler/capacity.rs unit tests |
 
 The permanent case7 fixture is important evidence for the methodology:
 agreement with another implementation, or even with an incomplete “oracle”, is
@@ -1109,7 +1151,8 @@ independent counterexample search.
 
 Assume:
 
-1. pool construction succeeds without a capacity/representation error;
+1. pool construction succeeds without a capacity/representation error,
+   including the numeric domain of Section 29;
 2. the request is within a solver mode covered above;
 3. the shared search budget is not observed expired;
 4. exact leaf evaluation and the canonical tracker implement the ordering
@@ -1122,3 +1165,282 @@ Section 6. Every specialized DP truncation is exact by Sections 21–22.
 
 Therefore a search that ends with SearchCompletion::Complete returns exactly
 the canonical Top-K of the full supported feasible set. ∎
+
+## 29. Numeric admissibility
+
+Sections 3–23 prove that each ceiling dominates the *real-valued* objective of
+every legal completion. The leaf evaluator, however, computes live score, event
+point and bonus in IEEE-754 `f64` and truncates, while the ceilings are integer
+or fixed-point expressions whose coefficients are themselves rounded from `f64`
+constants. This section proves that each ceiling also dominates the
+*floating-point* leaf value after the evaluator's truncations, on an explicit
+numeric domain that pool construction enforces. Together with Sections 3–23
+this makes Definition 1 hold for the implemented evaluator, not only for the
+real formulas.
+
+### 29.1 Floating-point facts
+
+Let $u=2^{-53}$ and let $\mathrm{fl}$ denote round-to-nearest. Every operand
+below is finite and non-negative, and nonzero magnitudes stay far above the
+subnormal range.
+
+- **(F1) Relative error.** $\mathrm{fl}(x\circ y)=(x\circ y)(1+\delta)$ with
+  $|\delta|\le u$ for $\circ\in\{+,\times,/\}$. A chain of $k$ such operations
+  on non-negative operands has relative error at most
+  $(1+u)^k-1\le1.01\,ku$ while $ku\le10^{-2}$.
+- **(F2) Monotonicity.** Rounding is monotone: if $0\le a\le a'$ and
+  $0\le b\le b'$ then $\mathrm{fl}(a+b)\le\mathrm{fl}(a'+b')$,
+  $\mathrm{fl}(ab)\le\mathrm{fl}(a'b')$ and $\mathrm{fl}(a/b)\le\mathrm{fl}(a'/b)$.
+  A left-to-right sum of non-negative terms is therefore monotone in every term
+  and does not decrease when a further non-negative term is appended.
+- **(F3) Exact values.** Integers of magnitude at most $2^{53}$, and multiples
+  of $1/4$ well inside that range, are exact, and so are their sums while they
+  stay in range. Decimal constants such as $0.1$, $1.1$ or $1.15$ are not.
+- **(F4) Truncation.** On non-negative values the evaluator's `as i32` /
+  `as u32` / `as u64` casts and `floor` are the floor function; on non-negative
+  integers the ceilings' integer `/` is the floor function.
+
+### 29.2 Numeric domain
+
+`numeric_domain` in `handler/capacity.rs` runs on every pool built by
+`build_card_pool`, and `handler/validate.rs` checks the request parameters.
+Together with the existing representation checks (card power at most
+$2^{18}-1$, skill values at most 255, per-card bonus at most 409.5%, reference
+skill base plus maximum at most the card's skill maximum) they establish:
+
+- **(D1)** base, auto-base and fever constants, every skill-rate constant and
+  every support-deck bonus are finite and non-negative; teammate power,
+  teammate score-up and opponent score are non-negative; teammate power is at
+  most $2^{24}$.
+- **(D2)** Let $\hat P$ be the sum of the five largest card power maxima plus
+  the honor bonus: $\hat P\le2^{24}$. After the optional power cap, let
+  $\hat s$ be the largest card skill value and $\hat\sigma=\hat s$ for
+  single-player lives, $\hat\sigma=\max(9\hat s/5,\ \text{teammate score-up})$
+  for Multi/Cheerful. For Score and Bonus targets the a priori rate
+  $\hat R=\text{base rate}+\hat\sigma\sum_k r_k/100$ is at most $2^{16}$ and
+  the a priori live score $\hat X=4\hat P\hat R+0.075\cdot\text{power sum}$ is
+  at most $2^{27}$.
+- **(D3)** The a priori bonus $\hat B$ (five largest per-card ceilings, the
+  largest leader-only bonus, the largest diversity bonus, the top-count sums
+  of all support profiles added together, and the fallback extra bound) is at
+  most $2^{20}$.
+- **(D4)** For event Score let $\hat b$ be the event base score at $\hat X$
+  ($100+\hat X/20000$ for Solo/Auto, $123+\hat X/17000$ for Multi/Cheerful),
+  $m$ the music rate percent, $\beta$ the boost percent and $\lambda$ the
+  Cheerful life factor (1 otherwise). Then
+  $\hat I=\hat b\,m(\hat B+100)/10^4\le2^{27}$,
+  $\hat E=\hat I\lambda\beta/100\le2^{30}$, and the slack $\sigma$ of Lemma N6
+  is at most $10^{-5}$.
+
+Every argument passed to an aggregate ceiling is a sum of at most five
+per-card maxima (power, skill, bonus ceilings) plus request constants, and the
+skill-peak argument is a single card's skill value. Hence every ceiling value
+evaluated for a request is at most the corresponding a priori quantity, and
+(D2) also keeps every `i64` numerator product below $2^{63}$ and every `u32`
+power sum below $2^{32}$. The limits keep a factor of at least 2 below the
+thresholds at which the lemmas stop holding; real master data lies one to three
+orders of magnitude inside them. A `SearchContext` constructed directly for the
+search API is expected to satisfy the same domain.
+
+### 29.3 Lemma N1 — fixed-point coefficients
+
+For a non-negative `f64` constant $c$ the prepared coefficient
+$K=\lceil\mathrm{fl}(c\cdot10^6)\rceil$ satisfies $K\ge10^6c(1-u)$. The
+rate-sum coefficients carry at most seven roundings, e.g.
+
+$$
+\left\lceil\mathrm{fl}\!\left(\mathrm{fl}\Big(\sum_{k<6}r_k\Big)/500\cdot10^6\right)\right\rceil
+\ge10^6\,\frac{\sum_k r_k}{500}\,(1-u)^7,
+$$
+
+and likewise for the Average five-slot sum and leader rate. The integer steps
+that follow (products and `ceil_div_positive`) are exact or round up, and the
+base rate is the same `f64` value on both sides. Hence the live numerator
+satisfies
+
+$$
+N\ge10^6X_B(1-u)^7,
+$$
+
+where $X_B$ is the real-valued ceiling evaluated at the exact `f64` constants.
+
+The ceiling of a rounded product can lie below the real product: the constant
+$1.1$ is stored as $1.1+8.9\cdot10^{-17}$ and $\mathrm{fl}(1.1\cdot10^6)$ is
+exactly $1\,100\,000$, so $K/10^6<c$. Lemma N1 needs only the relative form.
+
+### 29.4 Lemma N2 — evaluator rounding
+
+Let $X^*(D)$ be the live score of a legal completion $D$ computed in exact
+arithmetic from the same `f64` constants, and $X_e(D)$ the evaluator's value
+before truncation. Then $X_e\le X^*(1+u)^{20}$:
+
+- integral and quarter-integral slot score-ups are exact (F3); the Multi self
+  score-up $L+\sum_i o_i/5$ costs at most 5 roundings, and a further Average
+  division at most 5 more;
+- the rate $\mathrm{base}+\sum_k\mathrm{fl}(\mathrm{fl}(su_k r_k)/100)$ costs 2
+  roundings per term and 6 additions;
+- the product with power costs 1 (the factor 4 is exact), the co-op term
+  $\mathrm{fl}(\mathrm{fl}(5\cdot0.015)\cdot\text{power sum})$ costs 3 and the
+  final addition 1.
+
+All terms are non-negative, so by F1 the counts compose to at most 20. The
+monotonicity arguments of Section 12 and of exactness-proof Section 3 (every
+slot score-up is at most the slot peak used by the ceiling, rates are
+non-negative, power and skill inputs are upper bounds) give $X^*\le X_B$.
+
+### 29.5 Theorem N3 — live-score granularity
+
+Inside the domain, $\lfloor X_e\rfloor\le\lfloor N/10^6\rfloor$ for every legal
+completion.
+
+**Proof.** By N1 and N2,
+$X_e\le(N/10^6)(1+u)^{20}(1-u)^{-7}\le N/10^6+28u\,N/10^6$. By (D2),
+$N/10^6\le2^{27}(1+10^{-12})$, so $28u\,N/10^6<4.2\cdot10^{-7}<10^{-6}$. Since
+$N$ is an integer, $\lfloor N/10^6\rfloor+1\ge(N+1)/10^6>X_e$. ∎
+
+The argument needs no extra margin in the code: the $10^{-6}$ grid of the
+numerator is the margin. It fails only beyond $N/10^6\approx3.2\cdot10^8$; at
+real magnitudes (live scores near $10^7$) the rounding uses less than 4% of one
+grid step. Section 10 compares the same integer $N$, and the packed live
+component takes $\lfloor N/10^6\rfloor<2^{31}$ without wrapping.
+
+### 29.6 Theorem N4 — event-point stages
+
+Write $b$ for the integer event base score, $t$ for the evaluator's `f64` bonus
+and $T$ for the integer bonus handed to the ceiling, with $t\le T+\varepsilon$.
+
+1. *Base score.* $b$ is non-decreasing in the live score, and Theorem N3 makes
+   the ceiling's live score at least the evaluator's. For Multi/Cheerful the
+   evaluator's `(live as f64 / 17000.0) as i32` equals the integer quotient:
+   for $0\le\text{live}<2^{31}$ the real quotient is either an integer or at
+   least $1/17000$ away from one. The opponent term is the same integer
+   expression on both sides; for live scores below $2^{29}$ neither the
+   saturating `i32` nor the `i64` product by 4 saturates.
+2. *First stage.* The evaluator computes
+   $I_e=\lfloor\mathrm{fl}(\mathrm{fl}(b\cdot\mathrm{fl}(m/100))\cdot\mathrm{fl}(\mathrm{fl}(t/100)+1))\rfloor$
+   and the ceiling $I_B=\lfloor V_B\rfloor$ with $V_B=b_Bm(T+100)/10^4$. The
+   float value is at most $V_B(1+5.1u)+1.01\,b_Bm\varepsilon/10^4$. $V_B$ is a
+   multiple of $10^{-4}$, so $V_B\le\lfloor V_B\rfloor+1-10^{-4}$ unless it is
+   an integer. Therefore $I_e\le I_B$ whenever
+
+   $$
+   \sigma=5.1u\,V_B+1.01\,\frac{b_Bm}{10^4}\,\varepsilon<10^{-4}.
+   $$
+
+   For $\varepsilon=0$ this needs only $V_B<1.7\cdot10^{11}$; (D4) gives
+   $V_B\le2^{27}$ and $\sigma\le10^{-5}$.
+3. *Cheerful life stage.* The evaluator's life factor is
+   $\mathrm{fl}(\mathrm{fl}(1.15)+q)$ where $q=\mathrm{fl}(\ell/5000)$ clamped to
+   $[\mathrm{fl}(0.1),\mathrm{fl}(0.2)]$. Because $\mathrm{fl}(0.1)$ and
+   $\mathrm{fl}(0.2)$ are exactly $\mathrm{fl}(500/5000)$ and
+   $\mathrm{fl}(1000/5000)$, $q=\mathrm{fl}(c/5000)$ with
+   $c=\mathrm{clamp}(\ell,500,1000)$, the ceiling's integer clamp, and the
+   factor is at most $(1+u)^2(5750+c)/5000$. The ceiling's stage
+   $\lfloor I_B(5750+c)/5000\rfloor$ lies on a $1/5000$ grid; with
+   $I_B\le2^{27}$ the float error $1.35\cdot3.1u\,I_B<10^{-7}$ stays far below
+   the grid step $2\cdot10^{-4}$.
+4. *Boost stage.* $\lfloor W\beta/100\rfloor$ lies on a $1/100$ grid and the
+   float error is at most $2.1u\,\hat E<10^{-6}$. For the normalized boost
+   values, multiples of 100, the stage is exact.
+5. *Range.* By (D4) every intermediate is below $2^{30}$, so the ceiling's
+   `i64 → i32` casts are lossless and the evaluator's casts do not saturate.
+
+Challenge event points use the same integer expression on both sides, and a
+MySekai live has event point 0 on both sides. Component-wise dominance of event
+point and live score gives dominance of the packed key
+`(event_point << 32) | live`.
+
+### 29.7 Lemma N5 — directly summed bonus
+
+Let the ceiling's bonus be $T=C+D+\lceil S_B\rceil$, where $C$ is a sum of
+per-card and leader-only ceilings of tenth-percent values, $D$ an integer
+diversity bound, and $S_B$ a left-to-right `f64` sum over a support list. If the
+support sum is computed directly, then $t\le T$ exactly ($\varepsilon=0$):
+
+- $\mathrm{fl}(x_{10}/10)\le C$ by F2–F3, because $C\ge x_{10}/10$ is an
+  exactly representable integer;
+- both sides scan a support list sorted by non-increasing bonus. The ceiling
+  excludes the game ids of the selected prefix, the evaluator those of the
+  whole deck, a superset. The $k$-th element of a subsequence of a
+  non-increasing list occurs no earlier than the $k$-th element of any longer
+  subsequence containing it, so the ceiling's $k$-th picked value dominates
+  the evaluator's, and the ceiling picks at least as many non-negative terms.
+  For the Final Chapter envelope (per-id maximum over every profile, count
+  equal to the largest count) the same order-statistic argument applies to the
+  $k$-th largest remaining value. By F2 the evaluator's `f64` support sum is at
+  most $S_B$;
+- the final additions satisfy
+  $\mathrm{fl}(\mathrm{fl}(\mathrm{fl}(x_{10}/10)+d)+s)\le C+D+\lceil S_B\rceil$
+  by F2–F3.
+
+This covers the suffix support bounds, the Final Chapter leader helpers and the
+build-time extra bonus bound. Consequently the Bonus key satisfies
+$\mathrm{round}(2t)\le2T$, and the MySekai value, a monotone `f64` chain in its
+power and bonus inputs, is dominated by F2.
+
+### 29.8 Lemma N6 — incrementally maintained support sums
+
+The Final Chapter card-level plan maintains the remaining support sum with one
+subtraction and one addition per selected card instead of re-summing. In exact
+arithmetic it equals the direct sum of Lemma N5; in `f64` it may differ. For
+the profile $(2.2,2.2,0.6,0.2,0.2)$ with count 3, removing the second $2.2$ and
+the first $0.2$ updates the sum to exactly $3$, while the evaluator sums
+$2.2+0.6+0.2$ to $3.0000000000000004$; the ceiling then carries bonus $3$,
+below the evaluator's $t$.
+
+Each of the at most $c+8$ operations of the incremental sum, and each of the
+$c$ additions of the direct sum, errs by at most $uM$, where $c$ is the profile
+count and $M$ the largest sum of $c+5$ support values of a profile. Adding the
+evaluator's final rounding of the total gives $t\le T+\varepsilon$ with
+
+$$
+\varepsilon=(2c+10)\,uM+u\hat B.
+$$
+
+These plans serve the Score target only. (D4) bounds the resulting
+$\sigma\le10^{-5}$, so Theorem N4 still gives $I_e\le I_B$, and the later
+stages consume integers. The event point, and hence the packed key, remain
+dominated.
+
+### 29.9 Lemma N7 — Skill key
+
+The Skill key is $\lfloor\mathrm{fl}(\mathrm{fl}(10v)+10^{-6})\rfloor$, where
+$v$ is the left-to-right sum of the leader's score-up and $0.2$ times each
+other score-up. With integral or quarter-integral score-ups, the exact $10v^*$
+is a multiple of $1/2$ and at most the ceiling $2S+8L$. For $10v^*<10^5$ the
+float error is below $10^{-9}$, so the float value lies in
+$(\lfloor10v^*\rfloor,\lfloor10v^*\rfloor+1)$ and the key is at most
+$\lfloor10v^*\rfloor\le2S+8L$.
+
+### 29.10 Lemma N8 — correlated bound
+
+The coefficients of Section 11 are
+$C=\lceil\mathrm{fl}(\mathrm{base}\cdot Q)\rceil+1$ and likewise $B$, $D$, with
+$Q=10^{12}$, and the constructor's own domain requires base $\le4$, rates
+$\le1$ and card power at most $2^{18}-1$. The rounding of each
+$\mathrm{fl}(cQ)$ is below $5\cdot10^{-4}$, so each coefficient exceeds $cQ$ by
+at least $1-5\cdot10^{-4}$, and the plane's real live expression exceeds the
+exact-constant live score by at least $4P(1+S+L)(1-5\cdot10^{-4})/Q$. The
+Solo/Auto Average evaluator exceeds that live score by at most
+$((1+u)^{12}-1)\cdot4P(4+(S+L)/100)$. The first is more than 180 times the
+second for all $S,L\ge0$, so every plane dominates the floating-point value
+before its outward integer steps. The final `+1` in **quadratic** is not
+required by this argument.
+
+### 29.11 Scope
+
+Everything else in the search is integer arithmetic on exact discrete state.
+Floating-point values enter a ceiling only through the aggregate objective
+coefficients (N1–N4, N7), the correlated coefficients (N8), support sums
+(N5–N6) and the MySekai value (N5). A MySekai live type has no live-score
+formula of its own: the evaluator scores it with the solo constants and the
+Bonus and Score keys keep that live score, so the aggregate ceiling uses the
+same formula.
+
+Verification: src/search/tests/numeric_soundness.rs enumerates every deck of
+generated pools under decimal constants and asserts packed and component-wise
+dominance for every live type, skill order and target; targets exact-integer
+and near-integer grid points of the live numerator and of the event stages;
+checks the correlated bound and the support ceilings at every prefix; and
+compares complete searches, including the incremental-support example above,
+with the exhaustive oracle.

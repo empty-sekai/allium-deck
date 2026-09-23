@@ -7,6 +7,18 @@
 //! event constants), never on the card pool, so one [`ObjectiveBound`] serves
 //! every pool restriction of the same request. All integer steps round
 //! outward, which keeps each ceiling admissible for the exact evaluator.
+//!
+//! The evaluator itself computes in `f64` and truncates. A fixed-point
+//! coefficient here is `ceil(fl(c * 10^6))`, which can lie a few roundings
+//! below the real coefficient; admissibility against the floating-point value
+//! comes from the integer grid instead. The live numerator is an integer on a
+//! `10^-6` grid and each event-point stage is a rational on a `10^-4` (or
+//! coarser) grid, while the evaluator's accumulated relative rounding is at
+//! most `28 * 2^-53`. Inside the numeric domain that pool construction
+//! enforces (`handler::capacity::numeric_domain`) the rounding never reaches
+//! the next grid point, so every truncated ceiling dominates the truncated
+//! evaluator value. The full argument is "Numeric admissibility" in
+//! `docs/pruning-proof.md`.
 
 use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
 
@@ -220,10 +232,10 @@ impl ObjectiveBound {
             DECK_SIZE as i64 * power_total as i64
         };
         let active_1m = self.active_1m_coeff * power_sum;
-        match self.effective_live_type {
-            LiveType::Mysekai => 0,
-            _ => rate_1m * power_total as i64 * 4 + active_1m,
-        }
+        // The leaf evaluator has no separate MySekai live formula: a MySekai
+        // live type scores with the solo constants, and Bonus / Score keys keep
+        // that live score. The ceiling therefore uses the same formula.
+        rate_1m * power_total as i64 * 4 + active_1m
     }
 
     #[inline(always)]
