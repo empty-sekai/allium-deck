@@ -29,7 +29,8 @@ struct Entry {
     character: u8,
 }
 
-/// A scenario's admitted cards, by descending `power`, then pool index.
+/// A scenario's admitted cards, by descending `power`, then public id and
+/// pool index.
 struct Scenario {
     entries: Vec<Entry>,
     /// Largest scenario sum of five character-distinct entries.
@@ -147,13 +148,16 @@ fn build_scenarios(pool: &CardPool) -> Vec<Scenario> {
         .into_iter()
         .enumerate()
         .filter_map(|(order, mut entries)| {
+            // Equal powers in public id order reach small public sets first,
+            // which the equality check below compares against.
             entries.sort_unstable_by(|left, right| {
                 right
                     .power
                     .cmp(&left.power)
+                    .then(pool.game_id(left.card).cmp(&pool.game_id(right.card)))
                     .then(left.card.raw().cmp(&right.card.raw()))
             });
-            let ceiling = best_completion(&entries, 0, 0, DECK_SIZE)?;
+            let (ceiling, _) = best_completion(&entries, 0, 0, DECK_SIZE)?;
             Some(Scenario {
                 entries,
                 ceiling,
@@ -164,12 +168,14 @@ fn build_scenarios(pool: &CardPool) -> Vec<Scenario> {
 }
 
 /// Largest sum of `slots` entries of `entries[pos..]` from distinct characters
-/// outside `used`: the first entry of each character is its largest, and the
-/// best `slots` characters are taken. `None` when fewer characters remain.
+/// outside `used`, and the smallest entry it takes: the first entry of each
+/// character is its largest, and the best `slots` characters are taken.
+/// `None` when fewer characters remain.
 #[inline(always)]
-fn best_completion(entries: &[Entry], pos: usize, used: u32, slots: usize) -> Option<u32> {
+fn best_completion(entries: &[Entry], pos: usize, used: u32, slots: usize) -> Option<(u32, u32)> {
     let mut seen = used;
     let mut sum = 0u32;
+    let mut last = 0u32;
     let mut taken = 0usize;
     for entry in &entries[pos..] {
         if taken == slots {
@@ -181,9 +187,10 @@ fn best_completion(entries: &[Entry], pos: usize, used: u32, slots: usize) -> Op
         }
         seen |= bit;
         sum += entry.power;
+        last = entry.power;
         taken += 1;
     }
-    (taken == slots).then_some(sum)
+    (taken == slots).then_some((sum, last))
 }
 
 struct PowerSearch<'a> {
@@ -209,6 +216,60 @@ impl PowerSearch<'_> {
         })
     }
 
+    /// Whether no completion of the node can enter the Top-K when its bound
+    /// `sum` equals the K-th objective without reaching the power cap: such a
+    /// completion must take the best completion's sum, so every entry it adds
+    /// is at least `least`, the smallest entry of that completion, and its
+    /// public set is at least the selected ids joined with the smallest such
+    /// ids. When even that set is larger than the K-th public set, or too few
+    /// ids remain, the node is pruned.
+    fn tie_cannot_enter(
+        &self,
+        entries: &[Entry],
+        depth: usize,
+        pos: usize,
+        used: u32,
+        sum: u32,
+        least: u32,
+    ) -> bool {
+        let Some(kth) = self.tracker.cutoff_public_set() else {
+            return false;
+        };
+        let raw = sum.saturating_add(self.ctx.honor_bonus);
+        if self.ctx.clamp_power_total(raw) != raw || self.tracker.cutoff() != Some(u64::from(raw)) {
+            return false;
+        }
+        let slots = DECK_SIZE - depth;
+        let selected = &self.game_ids[..depth];
+        let mut smallest = [u16::MAX; DECK_SIZE];
+        for entry in entries[pos..]
+            .iter()
+            .take_while(|entry| entry.power >= least)
+        {
+            if used & (1u32 << entry.character) != 0 {
+                continue;
+            }
+            let id = self.pool.game_id(entry.card);
+            if id >= smallest[slots - 1] || selected.contains(&id) || smallest.contains(&id) {
+                continue;
+            }
+            let mut at = slots - 1;
+            while at > 0 && smallest[at - 1] > id {
+                smallest[at] = smallest[at - 1];
+                at -= 1;
+            }
+            smallest[at] = id;
+        }
+        if smallest[slots - 1] == u16::MAX {
+            return true;
+        }
+        let mut set = [0u16; DECK_SIZE];
+        set[..depth].copy_from_slice(selected);
+        set[depth..].copy_from_slice(&smallest[..slots]);
+        set.sort_unstable();
+        set > kth
+    }
+
     /// Branch and bound over `entries[pos..]` below a prefix of `depth` cards
     /// from the characters in `used`, whose scenario powers sum to `sum`.
     /// Returns `false` once the deadline expires.
@@ -230,11 +291,13 @@ impl PowerSearch<'_> {
             return true;
         }
         let slots = DECK_SIZE - depth;
-        let Some(completion) = best_completion(entries, pos, used, slots) else {
+        let Some((completion, least)) = best_completion(entries, pos, used, slots) else {
             self.stats.feasibility_prunes += 1;
             return true;
         };
-        if self.below_cutoff(sum + completion) {
+        if self.below_cutoff(sum + completion)
+            || self.tie_cannot_enter(entries, depth, pos, used, sum + completion, least)
+        {
             self.stats.ub_prunes += 1;
             return true;
         }

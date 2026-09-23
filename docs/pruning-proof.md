@@ -1448,9 +1448,23 @@ visited in scenarios that are not their own; pruning there removes nothing
 their own scenario needs, and a visit only inserts an exactly evaluated deck.
 ∎
 
-**Equality.** A bound equal to $\tau$ is never pruned, so every deck that
-ties the K-th objective with a smaller public set, ordered ids or card
-variants is still reached and ordered by the tracker's canonical key.
+**Equality.** Let a node's bound equal $\tau$ without the power cap, i.e.
+$\text{sum}+H=\tau$ with no clamp. A deck $D$ of the scenario through the node
+with $v(D)=\tau$ then has $\sum_{c\in D} g_S(c)\ge\tau-H$, so its completion
+reaches the node's best completion. Each remaining character contributes at
+most its largest entry after the node, and a set of character maxima reaches
+the best sum only if every one is at least $\ell$, the smallest entry the
+best completion takes. So every entry $D$ adds has $g_S\ge\ell$, a character
+outside the prefix and an unselected public id, and its sorted public set is
+at least the selected ids joined with the smallest such ids. If that set is
+larger than the K-th public set $\pi_K$, or fewer such ids exist, $D$ cannot
+enter the Top-K by the argument of Section 20.5, and the node is pruned. For
+$R$ in $S(R)$ this happens on its path only if $v(R)=\tau$ and
+$\pi(R)>\pi_K$, which the K-th key already excludes. A capped bound or one
+above $\tau$ is never pruned by equality, so every other deck that ties the
+K-th objective is still reached and ordered by the tracker's canonical key.
+Entries of equal power are visited in public id order, which only decides how
+soon small public sets are found.
 
 **Cultivation variants.** Variants of one public card are separate entries
 of one character. A deck holds at most one of them, and each is searched, so

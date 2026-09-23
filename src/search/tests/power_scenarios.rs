@@ -154,6 +154,41 @@ fn a_shared_unit_set_that_is_no_card_mask_is_searched() {
     }
 }
 
+/// Most decks of eight characters with equal card powers tie on the
+/// objective, and public ids run against pool order, so public sets decide
+/// the Top-K; a power cap below the best total makes more decks tie.
+#[test]
+fn tied_decks_are_ranked_by_public_set() {
+    let cards: Vec<_> = (0..24u16)
+        .map(|index| {
+            let char_id = (index % 8) as u8 + 1;
+            let power = if index % 7 == 3 { 1_100 } else { 1_000 };
+            PowerCard {
+                char_id,
+                attr: char_id % 5,
+                unit_mask: 1 << (char_id % 3),
+                game_id: 100 + (index * 7) % 24,
+                profiles: [[power; 4]; 2],
+                second_profile_units: 0,
+            }
+        })
+        .collect();
+    let pool = power_pool(&cards);
+    for cap in [None, Some(5_100)] {
+        let mut context = ready_ctx(&pool, ScoreTarget::Power);
+        context.power_total_cap = cap;
+        for top_k in [1, 5, 30, 100] {
+            let params = top_k_params(top_k);
+            let (expected, _) = ExactOracle::new(&pool, &context).search(&params);
+            assert_eq!(
+                search_exact(&pool, &context, &params),
+                expected,
+                "cap={cap:?} top_k={top_k}"
+            );
+        }
+    }
+}
+
 fn random_profile(rng: &mut ExactLcg, base: u32) -> [u32; 4] {
     let attr = rng.range(0, 4) * 997;
     let unit = rng.range(0, 4) * 1_231;
