@@ -939,14 +939,7 @@ impl CharacterSearchState<'_> {
                 deck[depth + 1] = card;
                 let next_partial =
                     partial.with_card(self.pool, self.ctx.is_world_bloom, self.support, card);
-                let ub = selected_card_ceiling_from_partial(
-                    self.suffix,
-                    self.ctx,
-                    plan,
-                    depth + 1,
-                    &next_partial,
-                    self.leader.skill,
-                );
+                let ub = self.child_ceiling(plan, depth, &partial, &next_partial, optimistic_ub);
                 if ub < threshold {
                     continue;
                 }
@@ -982,8 +975,9 @@ impl CharacterSearchState<'_> {
             // 这一段在组不超过 RANKED_CAP 时不产生任何迭代。
             for &card in group.cards.iter().skip(ranked.len()) {
                 threshold = self.tracker.threshold();
+                let mut optimistic_ub = 0;
                 if threshold != 0 {
-                    let optimistic_ub = selected_card_ceiling_with_candidate_support_ub(
+                    optimistic_ub = selected_card_ceiling_with_candidate_support_ub(
                         self.pool,
                         self.suffix,
                         self.ctx,
@@ -1001,14 +995,8 @@ impl CharacterSearchState<'_> {
                 let next_partial =
                     partial.with_card(self.pool, self.ctx.is_world_bloom, self.support, card);
                 if threshold != 0 {
-                    let ub = selected_card_ceiling_from_partial(
-                        self.suffix,
-                        self.ctx,
-                        plan,
-                        depth + 1,
-                        &next_partial,
-                        self.leader.skill,
-                    );
+                    let ub =
+                        self.child_ceiling(plan, depth, &partial, &next_partial, optimistic_ub);
                     if ub < threshold {
                         self.stats.ep_continue_prunes += 1;
                         continue;
@@ -1032,6 +1020,33 @@ impl CharacterSearchState<'_> {
                 );
             }
         }
+    }
+}
+
+impl CharacterSearchState<'_> {
+    /// Ceiling of `next`, the child of `partial` that adds one card, given the
+    /// candidate ceiling computed from `partial` with that card. The two differ
+    /// only in the support ceiling, so an unchanged support sum reuses it.
+    #[inline(always)]
+    fn child_ceiling(
+        &self,
+        plan: &CardGroupPlan,
+        depth: usize,
+        partial: &CardPartial,
+        next: &CardPartial,
+        candidate_ub: u64,
+    ) -> u64 {
+        if next.support_bonus_ceil == partial.support_bonus_ceil {
+            return candidate_ub;
+        }
+        selected_card_ceiling_from_partial(
+            self.suffix,
+            self.ctx,
+            plan,
+            depth + 1,
+            next,
+            self.leader.skill,
+        )
     }
 }
 
