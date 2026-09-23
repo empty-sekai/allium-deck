@@ -119,7 +119,6 @@ fn recurse(
             skill: partial.skill.saturating_add(pool.skill_max(card) as u32),
             bonus: partial.bonus,
             max_skill: partial.max_skill.max(pool.skill_max(card)),
-            limited_count: partial.limited_count,
         };
         if let Some(score) = recurse(
             pool,

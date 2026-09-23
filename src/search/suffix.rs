@@ -49,8 +49,6 @@ pub struct PartialDeck {
     pub bonus: u32,
     /// 已选卡里最高的单卡技能值，用于队长位取值。
     pub max_skill: u8,
-    /// 已选卡里享受 limited bonus 的张数，用于对照计入上限。
-    pub limited_count: u8,
 }
 
 /// 角色感知后缀上界。
@@ -654,7 +652,7 @@ impl SuffixBound {
         partial: &PartialDeck,
         slots: usize,
     ) -> u64 {
-        let tail_bonus = self.dense_bonus_from_start(dense_start, slots, partial.limited_count);
+        let tail_bonus = self.dense_bonus_from_start(dense_start, slots, 0);
         let tail_power = self
             .dense_power_tail
             .get(dense_start)
@@ -721,7 +719,7 @@ impl SuffixBound {
         slots: usize,
         extra_bonus_ub: u32,
     ) -> u64 {
-        let tail_bonus = self.dense_bonus_from_start(dense_start, slots, partial.limited_count);
+        let tail_bonus = self.dense_bonus_from_start(dense_start, slots, 0);
         let tail_power = self
             .dense_power_tail
             .get(dense_start)
@@ -759,21 +757,17 @@ impl SuffixBound {
         slots: usize,
     ) -> u64 {
         let rest = slots.saturating_sub(1);
-        let card_bonus = if self.is_final_chapter {
-            card_base_bonus
-                + if partial.limited_count as usize >= self.limited_bonus_cap {
-                    0
-                } else {
-                    card_limited_bonus
-                }
-        } else {
+        // The partial bonus already counts every selected limited amount, so
+        // the whole limited cap remains for the candidate and the tail.
+        let counts_limited = self.is_final_chapter && self.limited_bonus_cap > 0;
+        let card_bonus = if !self.is_final_chapter {
             card_bonus
+        } else if counts_limited {
+            card_base_bonus + card_limited_bonus
+        } else {
+            card_base_bonus
         };
-        let next_limited_count = partial.limited_count.saturating_add(
-            (self.is_final_chapter
-                && card_limited_bonus > 0
-                && (partial.limited_count as usize) < self.limited_bonus_cap) as u8,
-        );
+        let next_limited_count = u8::from(counts_limited && card_limited_bonus > 0);
         let tail_bonus = self.dense_bonus_from_start(next_start, rest, next_limited_count);
         let tail_power = self
             .dense_power_tail
@@ -844,21 +838,17 @@ impl SuffixBound {
         extra_bonus_ub: u32,
     ) -> u64 {
         let rest = slots.saturating_sub(1);
-        let card_bonus = if self.is_final_chapter {
-            card_base_bonus
-                + if partial.limited_count as usize >= self.limited_bonus_cap {
-                    0
-                } else {
-                    card_limited_bonus
-                }
-        } else {
+        // The partial bonus already counts every selected limited amount, so
+        // the whole limited cap remains for the candidate and the tail.
+        let counts_limited = self.is_final_chapter && self.limited_bonus_cap > 0;
+        let card_bonus = if !self.is_final_chapter {
             card_bonus
+        } else if counts_limited {
+            card_base_bonus + card_limited_bonus
+        } else {
+            card_base_bonus
         };
-        let next_limited_count = partial.limited_count.saturating_add(
-            (self.is_final_chapter
-                && card_limited_bonus > 0
-                && (partial.limited_count as usize) < self.limited_bonus_cap) as u8,
-        );
+        let next_limited_count = u8::from(counts_limited && card_limited_bonus > 0);
         let tail_bonus = self.dense_bonus_from_start(next_start, rest, next_limited_count);
         let tail_power = self
             .dense_power_tail

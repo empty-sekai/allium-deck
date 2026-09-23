@@ -262,13 +262,12 @@ pub(crate) fn dfs_search_with_budget(
             deck[0] = leader;
             let mut used = UsedSet::new();
             used.insert(pool.char_id(leader));
-            let (leader_bonus, leader_limited_inc) = partial_bonus_add(pool, ctx, leader, true, 0);
+            let leader_bonus = partial_bonus_add(pool, ctx, leader, true);
             let partial = PartialDeck {
                 power: pool.power_max(leader),
                 skill: pool.skill_max(leader) as u32,
                 bonus: leader_bonus,
                 max_skill: pool.skill_max(leader),
-                limited_count: leader_limited_inc,
             };
             let threshold = state.threshold();
             if threshold != 0 {
@@ -543,14 +542,12 @@ impl SearchState<'_> {
             deck[depth] = card;
             let mut next_used = used;
             next_used.insert(character);
-            let (bonus, limited) =
-                partial_bonus_add(self.pool, self.ctx, card, depth == 0, partial.limited_count);
+            let bonus = partial_bonus_add(self.pool, self.ctx, card, depth == 0);
             let next = PartialDeck {
                 power: partial.power + self.pool.power_max(card),
                 skill: partial.skill + self.pool.skill_max(card) as u32,
                 bonus: partial.bonus + bonus,
                 max_skill: partial.max_skill.max(self.pool.skill_max(card)),
-                limited_count: partial.limited_count + limited,
             };
             self.recurse(depth + 1, 0, deck, next_used, next, fixed_leader);
             if self.budget.hit {
@@ -614,14 +611,12 @@ impl SearchState<'_> {
             }
             let mut next_used = used;
             next_used.insert(char_id);
-            let (card_bonus, limited_inc) =
-                partial_bonus_add(self.pool, self.ctx, card, false, partial.limited_count);
+            let card_bonus = partial_bonus_add(self.pool, self.ctx, card, false);
             let next_partial = PartialDeck {
                 power: partial.power + self.pool.power_max(card),
                 skill: partial.skill + self.pool.skill_max(card) as u32,
                 bonus: partial.bonus + card_bonus,
                 max_skill: partial.max_skill.max(self.pool.skill_max(card)),
-                limited_count: partial.limited_count + limited_inc,
             };
             self.recurse(
                 depth + 1,
@@ -707,14 +702,12 @@ impl SearchState<'_> {
             }
             let mut next_used = used;
             next_used.insert(char_id);
-            let (card_bonus, limited_inc) =
-                partial_bonus_add(self.pool, self.ctx, card, false, partial.limited_count);
+            let card_bonus = partial_bonus_add(self.pool, self.ctx, card, false);
             let next_partial = PartialDeck {
                 power: partial.power + self.pool.power_max(card),
                 skill: partial.skill + self.pool.skill_max(card) as u32,
                 bonus: partial.bonus + card_bonus,
                 max_skill: partial.max_skill.max(self.pool.skill_max(card)),
-                limited_count: partial.limited_count + limited_inc,
             };
             self.recurse(
                 depth + 1,
@@ -974,14 +967,12 @@ impl SearchState<'_> {
             }
             let mut next_used = used;
             next_used.insert(char_id);
-            let (card_bonus_add, limited_inc) =
-                partial_bonus_add(self.pool, self.ctx, card, false, partial.limited_count);
+            let card_bonus_add = partial_bonus_add(self.pool, self.ctx, card, false);
             let next_partial = PartialDeck {
                 power: partial.power + card_power,
                 skill: partial.skill + card_skill_u32,
                 bonus: partial.bonus + card_bonus_add,
                 max_skill: partial.max_skill.max(card_skill),
-                limited_count: partial.limited_count + limited_inc,
             };
             self.recurse(
                 depth + 1,
@@ -1186,7 +1177,6 @@ impl SearchState<'_> {
             skill: partial.skill + card_skill as u32,
             bonus: partial.bonus + card_bonus,
             max_skill: partial.max_skill.max(card_skill),
-            limited_count: partial.limited_count,
         };
         self.recurse(
             depth + 1,
@@ -1234,14 +1224,12 @@ impl SearchState<'_> {
             }
             let mut next_used = used;
             next_used.insert(char_id);
-            let (card_bonus, limited_inc) =
-                partial_bonus_add(self.pool, self.ctx, card, false, partial.limited_count);
+            let card_bonus = partial_bonus_add(self.pool, self.ctx, card, false);
             let next_partial = PartialDeck {
                 power: partial.power + self.pool.power_max(card),
                 skill: partial.skill + self.pool.skill_max(card) as u32,
                 bonus: partial.bonus + card_bonus,
                 max_skill: partial.max_skill.max(self.pool.skill_max(card)),
-                limited_count: partial.limited_count + limited_inc,
             };
             self.recurse(
                 depth + 1,
@@ -1282,13 +1270,7 @@ impl SearchState<'_> {
 }
 
 #[inline(always)]
-fn partial_bonus_add(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    card: CardIdx,
-    is_leader: bool,
-    _limited_count: u8,
-) -> (u32, u8) {
+fn partial_bonus_add(pool: &CardPool, ctx: &SearchContext, card: CardIdx, is_leader: bool) -> u32 {
     // Free roles may be permuted at a leaf. Counting only the first limited
     // cards of the traversal prefix can underestimate a different legal order.
     // Counting every selected limited amount is an order-independent upper
@@ -1297,7 +1279,7 @@ fn partial_bonus_add(
     if ctx.is_final_chapter && is_leader {
         bonus += ctx.leader_bonus_upper_at(card.raw());
     }
-    (bonus, 0)
+    bonus
 }
 
 #[inline(always)]

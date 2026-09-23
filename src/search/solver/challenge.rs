@@ -400,7 +400,6 @@ fn challenge_recurse(
             skill: partial.skill + pool.skill_max(card) as u32,
             bonus: partial.bonus,
             max_skill: partial.max_skill.max(pool.skill_max(card)),
-            limited_count: partial.limited_count,
         };
         if let (Some(bounds), Some(threshold)) = (bounds, threshold)
             && bounds.ceiling(suffix, dense, &next_partial, remaining - 1) < threshold

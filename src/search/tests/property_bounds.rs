@@ -31,7 +31,6 @@ fn search_suffix_bound_is_sound_and_zero_pool_is_zero() {
         skill: pool.skill_max(selected) as u32,
         bonus: pool.event_bonus_exact(selected).base_ceil(),
         max_skill: pool.skill_max(selected),
-        limited_count: 0,
     };
 
     let upper = suffix.upper_bound_with_depth(1, &used, &partial);

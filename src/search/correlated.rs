@@ -254,7 +254,6 @@ impl CorrelatedBound {
                     skill: pool.skill_max(card) as u32,
                     bonus: 0,
                     max_skill: pool.skill_max(card),
-                    limited_count: 0,
                 };
                 let start = card.raw() + 1;
                 let first = plane_upper_score(
