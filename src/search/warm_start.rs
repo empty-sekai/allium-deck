@@ -100,7 +100,6 @@ pub(crate) fn warm_start_seeds_with_budget(
     if top_k > 1
         && matches!(ctx.target, ScoreTarget::Score)
         && !ctx.has_event()
-        && super::tuning::SearchTuning::load().warm_neighbors
         && let Some(best) = warm_start_best_with_budget(pool, ctx, budget, stats)
     {
         return one_swap_seed_neighborhood(pool, ctx, best, top_k, budget, stats);
@@ -166,10 +165,7 @@ fn one_swap_seed_neighborhood(
         return vec![best];
     }
     stats.diagnostics.seed_states += 1;
-    let candidate_limit = super::tuning::SearchTuning::load()
-        .warm_candidate_limit
-        .unwrap_or(if top_k <= 8 { 32 } else { 64 })
-        .min(pool.count());
+    let candidate_limit = (if top_k <= 8 { 32 } else { 64 }).min(pool.count());
     let base = best.cards;
     let mut seeds = Vec::with_capacity(1 + DECK_SIZE * candidate_limit);
     seeds.push(best);

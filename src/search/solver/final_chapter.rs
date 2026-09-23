@@ -1427,14 +1427,7 @@ fn insert_topk_u32(values: &mut [u32], value: u32) {
 
 #[inline]
 fn seeds_enabled() -> bool {
-    #[cfg(test)]
-    {
-        crate::search::tuning::SearchTuning::load().final_seeds
-    }
-    #[cfg(not(test))]
-    {
-        true
-    }
+    crate::search::tuning::SearchTuning::load().final_seeds
 }
 
 #[cfg(test)]

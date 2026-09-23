@@ -129,9 +129,7 @@ impl CorrelatedBound {
         top_k: usize,
         kth_threshold: u64,
     ) -> Option<Self> {
-        let tuning = super::tuning::SearchTuning::load();
-        if !tuning.bounds
-            || !tuning.correlated_bound
+        if !super::tuning::SearchTuning::load().bounds
             || ctx.target != ScoreTarget::Score
             || ctx.has_event()
             || ctx.is_final_chapter
@@ -219,10 +217,7 @@ impl CorrelatedBound {
         if choices[0].0 as u128 * 100 >= independent * 97 {
             return None;
         }
-        let auto_planes = tuning.correlated_planes.is_none();
-        let plane_count = tuning
-            .correlated_planes
-            .unwrap_or(if top_k > 1 { 2 } else { 1 });
+        let plane_count = if top_k > 1 { 2 } else { 1 };
         let n = pool.count();
         let mut planes = Vec::new();
         // Multiple individually-admissible planes stay admissible under min().
@@ -247,17 +242,9 @@ impl CorrelatedBound {
                 leader: lead,
             });
         }
-        if auto_planes && planes.len() > 1 {
-            let mut improved = 0usize;
-            let mut material = 0usize;
-            let mut gain_1pct = 0usize;
-            let mut max_delta = 0u64;
+        if planes.len() > 1 {
             let mut max_gain_ppm = 0u64;
             let mut direct_prunes = 0usize;
-            let mut gap_quarter = 0usize;
-            let mut gap_half = 0usize;
-            let mut gap_sum = 0u128;
-            let mut gap_saved = 0u128;
             for card in pool.indices() {
                 let ch = pool.char_id(card);
                 let mut used = UsedSet::new();
@@ -291,31 +278,11 @@ impl CorrelatedBound {
                     &partial,
                 );
                 if second < first {
-                    improved += 1;
                     let delta = first - second;
-                    max_delta = max_delta.max(delta);
                     let gain_ppm = delta.saturating_mul(1_000_000) / first.max(1);
                     max_gain_ppm = max_gain_ppm.max(gain_ppm);
-                    if delta.saturating_mul(1000) >= first {
-                        material += 1;
-                    }
-                    if gain_ppm >= 10_000 {
-                        gain_1pct += 1;
-                    }
-                    if kth_threshold > 0 && first > kth_threshold {
-                        let gap = first - kth_threshold;
-                        let saved = delta.min(gap);
-                        gap_sum += gap as u128;
-                        gap_saved += saved as u128;
-                        if second <= kth_threshold {
-                            direct_prunes += 1;
-                        }
-                        if saved.saturating_mul(4) >= gap {
-                            gap_quarter += 1;
-                        }
-                        if saved.saturating_mul(2) >= gap {
-                            gap_half += 1;
-                        }
+                    if kth_threshold > 0 && first > kth_threshold && second <= kth_threshold {
+                        direct_prunes += 1;
                     }
                 }
             }
@@ -325,11 +292,6 @@ impl CorrelatedBound {
             // The 6% selector separated all >=20% node-reduction cases in the AS
             // synthetic selector sweep (70 fixtures) without false positives.
             let keep_second = direct_prunes > 0 || max_gain_ppm >= 60_000;
-            if tuning.correlated_trace {
-                eprintln!(
-                    "correlated-auto top_k={top_k} kth={kth_threshold} improved={improved} material={material} gain_1pct={gain_1pct} max_delta={max_delta} max_gain_ppm={max_gain_ppm} direct_prunes={direct_prunes} gap_quarter={gap_quarter} gap_half={gap_half} gap_saved={gap_saved} gap_sum={gap_sum} keep_second={keep_second}"
-                );
-            }
             if !keep_second {
                 planes.truncate(1);
             }

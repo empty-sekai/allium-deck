@@ -106,7 +106,6 @@ fn search_simple_target_exact(
         .map(|card| pool.skill_max(card) as u32)
         .max()
         .unwrap_or(0);
-    let tuning = tuning::SearchTuning::load();
     let mut state = SimpleExactState {
         pool,
         ctx,
@@ -118,7 +117,7 @@ fn search_simple_target_exact(
         global_power_max,
         global_power_min,
         global_skill_max,
-        bounds_enabled: tuning.bounds && tuning.simple_bound,
+        bounds_enabled: tuning::SearchTuning::load().bounds,
         tracker: TopKTracker::new(params.top_k),
         stats: SearchStats::default(),
         budget,
