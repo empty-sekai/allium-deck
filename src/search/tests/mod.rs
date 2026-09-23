@@ -1,4 +1,5 @@
 //! Shared fixtures and helpers for independently named exactness contracts.
+mod bonus_tiers;
 mod completion;
 mod constraints;
 mod exact_bonus;

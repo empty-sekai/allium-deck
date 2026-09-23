@@ -347,19 +347,7 @@ fn search_bonus_targets_with_budget(
     {
         return (Vec::new(), SearchStats::default());
     }
-    let suffix = SuffixBound::build(pool, ctx);
-    let bonus_reach = bonus_reach::BonusReach::build(pool);
-    dfs::dfs_search_with_budget(
-        pool,
-        ctx,
-        &suffix,
-        params,
-        Vec::new(),
-        Some(targets),
-        Some(&bonus_reach),
-        0,
-        budget,
-    )
+    solver::bonus_tiers::search(pool, ctx, params, targets, budget)
 }
 
 /// 统一搜索入口（engine 与 wasm 共用，避免入口分叉）：

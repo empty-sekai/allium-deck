@@ -115,7 +115,7 @@ Per-rarity defaults (`rarity1Config` … `rarity4Config`, `rarityBirthdayConfig`
 | `power` (no fixed cards/characters, not `minimize`) | 49-scenario additive DP | Exact, including Top-K |
 | `power` (with fixed cards/characters, or `minimize`) | full-candidate B&B with an admissible power upper bound / minimization lower bound | Exact, including Top-K |
 | `skill` | full-candidate B&B with a per-card skill-max relaxation | Exact, including Top-K |
-| `bonus` (`targetBonusList`) | dedicated exact-reachability DFS per bonus tier | Exact per tier, including Top-K |
+| `bonus` (`targetBonusList`) | per-tier branch and bound over character groups with an exact suffix table of reachable card-bonus sums inside the area-item regimes; World Bloom support loss is folded in per card and the attribute bonus is fixed per diversity class | Exact per tier, including Top-K |
 
 Leader-only honor and limited bonuses also remain in integer tenths throughout preparation and evaluation. Only upper bounds round them upward to whole percentages. The low-level context and full-precision card fields carry an explicit `_x10` suffix; public result bonuses remain percentage values. A nonzero fractional leader bonus cannot trigger the legacy zero-entry default.
 

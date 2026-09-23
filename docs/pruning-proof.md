@@ -710,45 +710,262 @@ Combined World Bloom ceilings may independently maximize power, skill,
 attribute bonus, and support bonus. Incompatibility between these maxima only
 makes the bound larger, never smaller.
 
-## 17. Exact bonus-tier reachability
+## 17. Exact bonus tiers
 
-Implementation: src/search/bonus_reach.rs and the Bonus tracker in
-src/search/dfs.rs.
+Implementation: src/search/solver/bonus_tiers.rs.
 
-In the additive bonus model, every candidate has an exact integer bonus in
-0.1% units. BonusReach[pos][r] is constructed by the recurrence
+A request lists integer tiers $T$ (percent). For each tier the solver returns
+the canonical Top-K (§2 of [exactness-proof.md](exactness-proof.md)) of legal
+ordered decks whose evaluated total bonus is exactly $T$. All decks of one
+tier share the bonus half of the ranking key, so inside a tier the primary
+objective is the live score, and $\tau_T$ below is the tier's K-th live
+score. Each tier has its own tracker; pruning for tier $T$ reads only
+$\tau_T$.
+
+### 17.1 Groups and leaves
+
+A deck takes one card from each of five distinct **groups**:
+
+- the *fixed roles* in slot order — slot $s$ of a fixed card or fixed
+  character, and in the Final Chapter the leader slot 0 — each holding every
+  card that satisfies that slot's public constraint;
+- the *free groups* — one per character under character uniqueness, one per
+  public card id inside a Challenge character (Challenge-all solves every
+  character as its own scope and merges through the shared trackers, which is
+  exact by §22).
+
+Fixed roles and, outside the Final Chapter, a forced leader's character are
+mandatory. A character (public id) that every card of a fixed role shares is
+removed from the free groups; any remaining overlap (for example the leader
+role of an automatic Final leader) is rejected per branch by the character /
+public-id checks. Hence the sets of cards reachable as leaves are exactly the
+legal card sets with a legal fixed-slot assignment, each fixed role in its
+slot and the free cards in the remaining slots.
+
+A leaf is evaluated by the shared placement routine
+(`visit_bonus_candidates`). When first-N limited counting can distinguish
+orders of the free slots, it offers every permutation of the free slots;
+otherwise every legal placement has the same total and it offers the
+canonically best one. Each offered deck is inserted into the tier whose value
+equals its evaluated total (`resolve_total_bonus == T`, exact comparison), so
+for every visited card set and fixed-role assignment the tier trackers
+receive exactly the placements the ordered oracle enumerates for that set.
+The trackers deduplicate by public set with the canonical order. It remains
+to show that no pruned branch contains a deck that belongs to some tier's
+Top-K.
+
+### 17.2 Keys, slack and support excess
+
+Every card $c$ in its group has an integer **key** $\kappa_c$, a **slack**
+$\sigma_c \ge 0$ (tenths of a percent) and a **displaced count**
+$q_c\ge 0$. There is a non-decreasing integer **excess** function $\xi$
+with $\xi(0)=\xi(1)=0$ such that for every legal deck $D$ with total
+$\operatorname{total}(D)$ and $q(D)=\sum_{c\in D}q_c$ there are deck-level
+terms $E(D)$ with
 
 $$
-R_{pos,r}
-= R_{pos+1,r}
-\cup
-\{x+b_{pos}:x\in R_{pos+1,r-1}\}.
+\sum_{c\in D}\kappa_c + E(D) - \xi\bigl(q(D)\bigr)
+\;\le\; 10\cdot\operatorname{total}(D) \;\le\;
+\sum_{c\in D}(\kappa_c+\sigma_c) + E(D),
 $$
 
-By induction on pos, this is exactly the set of sums obtainable by choosing
-$r$ cards from the raw suffix.
+and a known outward range $E(D)\in[E_{lo},E_{hi}]$.
 
-The DP intentionally ignores character uniqueness and other deck constraints,
-so its reachable set is a **superset** of legal-completion sums. Therefore, if
-no relaxed sum lies in the exact interval still needed for a requested tier, no
-legal completion can hit that tier and the bucket is safely pruned.
+*Without World Bloom*, $\sigma_c = q_c = 0$, $\xi\equiv 0$ and $E(D)=0$:
+$\kappa_c$ is the card's exact counted bonus in tenths — the whole card
+bonus when every limited bonus counts, otherwise its base bonus plus its
+limited bonus when (and only when) that card is one of the counted limited
+cards (§17.4). On the Final leader role $\kappa_c$ also contains the exact
+leader-only honor and limit bonus of that card. The inequality is then the equality computed by the evaluator,
+which sums these integer tenths.
 
-When limited-count, World Bloom, or Final semantics make raw card bonus
-non-additive, the implementation disables this reachability proof.
+*With World Bloom* the evaluator adds the diversity bonus $d(k)$ of the
+deck's number $k$ of distinct attributes and the support bonus. Let a support
+profile list entries $s_1\ge s_2\ge\cdots\ge 0$ with $W$ counted entries,
+let $M$ be the largest number of entries five main cards can hold (a main
+card removes every entry of its public id), and put $s_i=0$ past the end.
+With base $B=\sum_{i\le W}s_i$ the support bonus is $B-\operatorname{loss}(D)$.
+Let $R$ be the positions of the removed entries and $a=|R\cap[1,W]|$. The
+counted entries are the surviving positions $\le W$ and the first $a$
+surviving positions $w_1<\cdots<w_a$ after $W$, so
 
-In the additive model the already-selected exact bonus is accumulated as
-bonus_x10. floor(bonus_x10 / 5) is therefore a conservative lower bound in the
-tracker's half-percent x2 coordinate, while the high 32 bits of the generic
-suffix ceiling are an admissible upper bound. A requested tier outside that
-closed interval is unreachable.
+$$
+\operatorname{loss}(D)
+= \sum_{\substack{i\in R\\ i\le W}} s_i - \sum_{j=1}^{a} s_{w_j}
+= \sum_{c\in D}\ell_c + X(D),\qquad
+\ell_c=\sum_{\substack{i\le W\\ i\in c}}(s_i-s_{W+1}),\quad
+X(D)=\sum_{j=1}^{a}\bigl(s_{W+1}-s_{w_j}\bigr),
+$$
 
-For an empty tier bucket, the subset-sum test above is additionally required
-before the whole subtree may be declared irrelevant. For a bucket that already
-contains K results, the remaining question is only whether the branch can beat
-that bucket's K-th **live-score** value. The branch therefore compares the low
-32-bit live ceiling with the low 32-bit bucket threshold, not with the full
-bonus<<32 | live encoded key. Equal-live branches remain searchable for
-canonical tie resolution.
+with $\ell_c$ summed over the card's own entries. Every term of $X(D)$ is
+non-negative because $w_j>W$. Let $q=|R\cap[1,W+M]|\le M$. The positions
+$W+1,\dots,W+q$ hold at most $q-a$ removed entries, hence at least $a$
+surviving ones, so every $w_j\le W+q$ and
+
+$$
+0\le X(D)\le X_q=\sum_{k=1}^{q}\bigl(s_{W+1}-s_{W+k}\bigr),
+$$
+
+a sum of non-negative terms that contains every term of $X(D)$. $X_q$ is
+non-decreasing in $q$ and $X_0=X_1=0$: a deck holding at most one entry of
+the first $W+M$ positions loses exactly $\sum\ell_c$. With $q_c$ the number
+of the card's entries at positions $\le W+M$, $q=\sum_{c\in D}q_c$.
+
+Write $[\ell_c^{\min},\ell_c^{\max}]$ for the range of $\ell_c$ over the
+support profiles in use: a single profile outside the Final Chapter, where
+both ends are $\ell_c$; in the Final Chapter the profile depends on the
+leader and every profile is included. $q_c$ is the maximum over those
+profiles, and $\xi(q)$ the maximum over profiles of
+$\lceil 10X_{\min(q,M)}\rceil$ with that profile's $M$; since a deck holds
+at most $M$ entries of each profile and each $X$ is non-decreasing,
+$10X(D)\le\xi(q(D))$ under every leader. The key folds the
+card's own loss in: with the card's exact counted bonus $b_c$ (as above) and
+unit $u$ (§17.3),
+
+$$
+\kappa_c = b_c + u\left\lfloor\frac{\lfloor -10\ell_c^{\max}\rfloor}{u}\right\rfloor,
+\qquad
+\kappa_c+\sigma_c = b_c + \lceil -10\ell_c^{\min}\rceil ,
+$$
+
+so $-10\operatorname{loss}(D)$ lies between the key sum minus $\xi(q(D))$
+and the key-plus-slack sum. $E(D)=10\,d(k)+10B$ is bounded by $10\,d(k)$
+plus the outward integer range of $10B$ — of the leader's profile once the
+leader is chosen, of all profiles before. A card with no entry in the first
+$W+M$ positions keeps $\kappa_c=b_c$ and $\sigma_c=q_c=0$.
+
+*Rounding.* Each real-valued term $x$ (a card loss, a profile base, an excess
+bound) enters as $\lfloor 10x+\varepsilon\rfloor$ where it bounds from
+below and $\lceil 10x-\varepsilon\rceil$ where it bounds from above, with
+$\varepsilon=10^{-6}$. A deck's bound sums at most eight such terms, so a
+rounded lower bound exceeds the exact one by less than $8\varepsilon$ plus
+the binary rounding of the support sums (below $10^{-9}$), and symmetrically
+for upper bounds. The bounds are compared only with the integer $10T$: an
+integer that exceeds a quantity that is at most $10T$ by less than one is
+itself at most $10T$. Values within $\varepsilon$ of a whole tenth are thus
+taken exactly, and the integer inequalities hold for every deck whose
+evaluated total is $T$.
+
+If some profile is unsorted, negative or non-finite, the fold is not used:
+$\kappa_c=b_c$, $\sigma_c=q_c=0$ and $E(D)$ is treated as unbounded, which
+leaves only count and counting-state feasibility (§17.5) to prune.
+
+*Diversity classes.* The search runs once per class $v$ of attribute counts
+$k$ with equal $d(k)$, fixing $d(k)=v$, and rejects a branch as soon as no
+count of the class is reachable: with $a$ distinct attributes selected and
+$r$ cards left, the final count lies in $[\max(a,1),\min(5,a+r)]$. Every deck
+lies in exactly one class, so the classes partition the feasible set.
+
+### 17.3 Regimes and the suffix table
+
+The decks are covered by the area-item composition regimes documented in
+src/search/composition.rs: `Mixed`, `SharedAttr(a)`, `SharedUnit(u)` and
+`SharedUnitAttr(u,a)`. A deck of a regime has every card admitted by it, and
+each admitted card's resolved power is at most its regime power bound, the
+maximum of its power over the regime's member keys. Every deck belongs to
+at least one regime. The regime searches below are complete for the decks of
+their regime; decks of other regimes they visit are evaluated exactly and
+never required. A regime that shares an attribute needs only decks with one
+attribute, the others only decks with at least two, which fixes the
+diversity classes it searches.
+
+Let $u$ be the greatest common divisor of every card's counted bonus parts
+(base, limited, and on the leader role base plus the leader-only bonus). Keys
+are multiples of $u$, and a common offset $O$ (a multiple of $u$) makes every
+$\kappa_c+O\ge 0$. For a regime, order the groups: fixed roles first, then
+the free groups by decreasing best power bound. Define for position $p$,
+remaining count $r$, counting state and shifted key sum $x$ the table entry
+
+$$
+G_p(r,\text{state},x) = \Bigl(\max\sum P,\ \max\sum S,\ \max\max L\Bigr)
+$$
+
+over all selections of exactly $r$ admitted cards from distinct groups at
+positions $\ge p$, containing one card of every mandatory group there, with
+that counting state and $\sum(\kappa+O)=x\,u$. $P$ is the regime power bound,
+$S$ and $L$ the per-card skill maximum; each component is maximized
+independently and an empty set is marked unreachable. The recurrence over
+$p$ from the end — skip the group (unless mandatory) or take one card of it,
+in either counting state for a limited card (§17.4) — is the standard
+exact selection DP, so by induction every entry is exact for its definition.
+Cards with equal key, slack, displaced count and limited bonus share one
+table item with their componentwise maxima, which can only raise entries.
+Sums above the largest value any hitting deck can need are dropped: with
+bounded deck terms ($E_{lo}\ge -1$ tenth) a hitting deck has
+$\sum\kappa\le 10T_{\max}+1+\max_q\xi(q)$.
+
+The fixed roles are treated in the table as if their limited bonus could be
+counted or not; this only enlarges the selection set.
+
+### 17.4 First-N limited counting
+
+When the event counts limited bonuses only for the first $N<5$ positive
+limited cards in slot order, the fixed roles precede every free slot, so
+their limited bonuses count deterministically in slot order while capacity
+remains. Among the free cards the offered placements realize exactly the
+counted sets $S$ of the free positive limited cards with
+$|S|=\min(|\Lambda|,N')$, $N'$ the remaining capacity. Writing $j$ for the
+counted number and $u\in\{0,1\}$ for "some positive limited card is not
+counted", these are exactly the choices with $j\le N'$ and $u=1\Rightarrow
+j=N'$. The search branches on counted/uncounted for each free positive
+limited card and carries $(j,u)$; the table indexes the suffix by its own
+$(j,u)$ and the query admits exactly the suffix states compatible with the
+prefix (mode 0: prefix $u=0$; mode 1: prefix $u=1$, the suffix must fill the
+capacity). Hence the path of every deck under the placement that hits the
+tier survives these feasibility tests.
+
+### 17.5 Pruning
+
+At a state after deciding the groups before position $p$, with $r$ cards
+left, prefix key sum $K$, prefix slack $\Sigma$, prefix displaced count
+$q_{pre}$ and deck-term range $[E_{lo},E_{hi}]$, let $\sigma^{\max}_p(r)$
+and $q^{\max}_p(r)$ be the sums of the $r$ largest per-group maximum slacks
+and displaced counts among positions $\ge p$. Every completion has
+$q(D)\le q_{pre}+q^{\max}_p(r)$, and $\xi$ is non-decreasing, so by §17.2
+the suffix $Q$ of every completion that hits $T$ satisfies
+
+$$
+10T - E_{hi} - \Sigma - \sigma^{\max}_p(r) - K
+\;\le\; \sum_{c\in Q}\kappa_c \;\le\;
+10T - E_{lo} + \xi\bigl(q_{pre}+q^{\max}_p(r)\bigr) - K .
+$$
+
+The branch is discarded when this interval contains no shifted multiple of
+$u$ below the table cap, or when every such entry $G_p(r,\cdot,\cdot)$
+compatible with the counting state is unreachable: then no completion hits
+$T$ (a feasibility proof). Otherwise let $(P^*,S^*,L^*)$ be the componentwise
+maximum of those entries. Every hitting completion's suffix is one of the
+selections counted there, so
+
+$$
+\operatorname{live}(D)\le
+\operatorname{ceiling}\bigl(P_{pre}+P^*,\ S_{pre}+S^*,\ \max(L_{pre},L^*)\bigr),
+$$
+
+the `ObjectiveBound` live-score ceiling, which is monotone in non-negative
+power, skill-sum and leader-skill upper bounds (§12) and admissible because
+the per-card skill maximum bounds every resolved skill value (§20). The branch
+is discarded only when this ceiling is strictly below $\tau_T$ (Theorem 1,
+Corollary 1). A class of cards with a common key, slack, displaced count and
+counting choice is first tested with its componentwise maxima, which dominate each card of
+the class. Children are explored in non-increasing ceiling order and the
+loop stops at the first child below the current $\tau_T$; $\tau_T$ only
+increases, so every later child is also below it. A regime is skipped for a
+tier when its unconditioned regime ceiling — roles' best power, skill and
+the top remaining groups — is below $\tau_T$.
+
+When the live type has no admissible live-score relaxation (MySekai), the
+trackers disable numeric cutoffs and only the feasibility proofs above
+prune.
+
+### 17.6 Result
+
+Every deck in some tier's canonical Top-K lies in a regime and a diversity
+class whose search reaches its card set with its fixed-role assignment and
+its counting choices, because every test on its path is either a
+feasibility test it passes or a strict bound test its live score passes. Its
+leaf offers its hitting placements (§17.1). Hence a completed search returns,
+per tier, exactly the canonical Top-K of the full ordered feasible set.
 
 ## 18. Final Chapter bounds
 
