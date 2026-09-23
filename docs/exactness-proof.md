@@ -406,17 +406,22 @@ skill:
 - different-unit skill: its maximum possible base + increments;
 - reference skill: base/reference contribution capped by the stored maximum.
 
-Let S be the selected skill_max sum, L the largest selected possible leader
-skill, G the global largest skill_max and r the remaining slots.  Production
-uses
+The search tightens these per-card maxima with the deck composition: a
+unit-count skill is bounded by its best table entry for the largest member
+count its unit can still reach, and a different-unit skill by the largest
+number of units it can still count (pruning-proof.md, Section 20).  Let S be
+the sum of the selected cards' ceilings, L the largest of them, G the global
+largest skill_max and r the remaining slots.  Every node satisfies
 
-    UB = 2*(S + r*G) + 8*max(L, G).
+    UB = 2*(S + r*G) + 8*max(L, G),
 
-This permits card reuse, ignores character uniqueness and fixed slots, and
+which permits card reuse, ignores character uniqueness and fixed slots, and
 chooses the best possible leader, so it can only overestimate a real
-completion.  Randomized exhaustive tests additionally cover unit-count,
-different-unit and reference skills, all reference strategies, cultivation
-variants sharing a public game id, and fixed card/character constraints.
+completion.  Nodes whose remaining slots are all free also use the
+per-character frontier of those ceilings.  Randomized exhaustive tests
+additionally cover unit-count, different-unit and reference skills, all
+reference strategies, cultivation variants sharing a public game id, and fixed
+card/character constraints.
 
 ## 8. Challenge Live
 

@@ -867,7 +867,7 @@ fn count_units(pool: &CardPool, deck: &[CardIdx; 5]) -> [u8; 6] {
 /// single bit: its character's unit, or piapro for a Virtual Singer card
 /// without a support unit.
 #[inline(always)]
-fn member_unit(unit_mask: u8) -> u8 {
+pub(crate) fn member_unit(unit_mask: u8) -> u8 {
     let non_piapro = unit_mask & !PIAPRO_UNIT_BIT;
     if non_piapro == 0 {
         unit_mask

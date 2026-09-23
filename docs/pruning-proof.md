@@ -1147,30 +1147,166 @@ lower bound is strictly worse than the K-th minimizing threshold.
 
 ## 20. Skill upper bound
 
-The encoded Skill objective is
+Implementation: src/search/solver/numeric.rs (`SkillCeiling`,
+`selected_value`, `skill_frontier`, `global_skill_upper`).
+
+### 20.1 Objective
+
+Let $s_i$ be the resolved score-up of member $i$ and $s_L$ that of the
+leader. The encoded Skill objective is
 
 $$
-10L + 2\sum_{\text{other 4}} s_i
-= 2\sum_{i=1}^5 s_i + 8L.
+10s_L + 2\sum_{\text{other 4}} s_i
+= 2\sum_{i=1}^5 s_i + 8s_L.
 $$
 
-For every card, skill_max is an upper bound on its resolved value:
+Whatever rule fixes the leader (best skill, a forced leader character, the
+first fixed slot, or the slot order of a fully fixed lineup), the leader is a
+member, so $s_L\le\max_i s_i$. Hence integers $c_i\ge s_i$ give
+
+$$
+10v \le 2\sum_i c_i + 8\max_i c_i ,
+$$
+
+and by Lemma N6 the key obeys the same inequality.
+
+### 20.2 Static ceiling
+
+For every card, skill_max is an upper bound on its resolved value in every
+deck:
 
 - ordinary score-up: exact maximum;
 - unit-count: maximum table entry;
-- different-unit: maximum base plus increments;
-- reference skill: maximum allowed reference contribution.
+- different-unit: maximum base plus increments, clamped to skill_max;
+- reference skill: skill_min plus the reference maximum, which pool
+  construction keeps within skill_max.
 
-Let $S$ be the selected skill_max sum,
-$G=\max_c skill\_max(c)$, and $r$ remaining slots. Let $L_p$ be the
-largest selected leader-capable value. Then
+Let $G=\max_c skill\_max(c)$.
+
+### 20.3 Composition-aware ceilings
+
+Fix a node with selected cards $P$ and $r=5-|P|$ remaining slots, and let
+$D=P\cup C$ be any legal completion, $|C|=r$. For a unit bit $u$ let
+$c_u(P)$ be the number of cards of $P$ whose unit mask contains $u$, and
+$n_u(D)$ the same count over $D$. A member counts once for every bit it
+carries: a Virtual Singer card with a support unit carries the piapro bit and
+its support-unit bit and counts toward both units, and no member counts twice
+toward one unit. Therefore
+$n_u(D)=c_u(P)+|\{y\in C: u\in units(y)\}|$, so
 
 $$
-U = 2(S+rG) + 8\max(L_p,G)
+\text{(U1)}\quad n_u(D)\le c_u(P)+r,
+\qquad
+\text{(U2)}\quad n_u(D)\le c_u(P)+[u\in units(y)]+(r-1)\ \text{ for } y\in C.
 $$
 
-permits card reuse, ignores character uniqueness, and chooses the best possible
-leader independently. It is therefore an admissible upper bound.
+**Unit-count skill.** A card whose skill counts unit $u$ with table
+$T[1..5]$ resolves to $T[\operatorname{clamp}(n_u(D),1,5)]$. For every
+integer $N\ge n_u(D)$, $\operatorname{clamp}(n_u(D),1,5)\le
+\operatorname{clamp}(N,1,5)$, hence
+
+$$
+s\le M_T(\operatorname{clamp}(N,1,5)),
+\qquad M_T(k)=\max_{1\le j\le k}T[j].
+$$
+
+Tables need not be non-decreasing (a table may peak below five members), so
+the prefix maximum $M_T$ is required; $T[\operatorname{clamp}(N,1,5)]$ alone
+would not be a bound. The card itself need not carry $u$; (U2) adds its own
+bit only when it does. Taking $N$ from (U1) for a selected card and from (U2)
+for an unselected one, and intersecting with skill_max (Lemma 1), gives the
+ceiling.
+
+**Different-unit skill.** Every member contributes at most one unit bit,
+its member unit $m(y)$ (`member_unit`: the support unit of a Virtual Singer
+card that has one, otherwise the card's unit). A card $x$ counts
+$d(x,D)=|\{m(y): y\in D\setminus\{x\},\ m(y)\ne m(x)\}|$ units. With
+$M_P=\bigcup_{y\in P}m(y)$, the members of $P\setminus\{x\}$ contribute a
+subset of $M_P\setminus m(x)$ and every other member at most one more unit, so
+
+$$
+d(x,D)\le|M_P\setminus m(x)|+r\ \ (x\in P),
+\qquad
+d(x,D)\le|M_P\setminus m(x)|+(r-1)\ \ (x\in C).
+$$
+
+The resolved value $\min(skill\_max,\ b+i\cdot\min(2,d))$ is non-decreasing
+in $d$, so substituting these bounds yields a ceiling.
+
+**Other skills.** Ordinary and reference skills, and entries the evaluator
+resolves to zero, keep skill_max.
+
+Write $\kappa_P(x)$ for the ceiling of a selected card $x\in P$ and
+$\kappa'_P(y)$ for that of an unselected card $y$ taken as one of the $r$
+remaining picks. By construction $\kappa_P,\kappa'_P\le skill\_max$, and for
+every legal completion $D$: $s_x\le\kappa_P(x)$ for $x\in P$ and
+$s_y\le\kappa'_P(y)$ for $y\in C$.
+
+### 20.4 Node bounds
+
+Let $S_P=\sum_{x\in P}\kappa_P(x)$ and $L_P=\max_{x\in P}\kappa_P(x)$.
+Integers throughout are at most $5\cdot255$.
+
+**Global bound.** Every remaining pick resolves to at most $G$, so
+
+$$
+U_g = 2(S_P+rG) + 8\max(L_P,G)
+$$
+
+is admissible at every node, including nodes with fixed roles left. It permits
+card reuse and ignores character uniqueness.
+
+**Frontier bound.** When every remaining slot is free, the completion is
+drawn from `cards[pos..]` and uses $r$ distinct unused characters, one card
+each. For each unused character $h$ let
+$m_h=\max\{\kappa'_P(y): y\in cards[pos..],\ char(y)=h\}$. Then
+$\sum_{y\in C}s_y\le\operatorname{Top}_r\{m_h\}$ and
+$\max_{y\in C}s_y\le\max_h m_h$, so
+
+$$
+U_f = 2\bigl(S_P+\operatorname{Top}_r\{m_h\}\bigr) + 8\max\bigl(L_P,\max_h m_h\bigr)
+$$
+
+is admissible. If fewer than $r$ unused characters remain, the node has no
+completion.
+
+The scan visits `cards[pos..]` in descending skill_max and keeps the best
+$r$ characters seen, best-first; every other character seen has a maximum no
+larger than the last kept value $t$. Once $r$ characters are kept and the next
+card has skill_max at most $t$, every later card $y$ has
+$\kappa'_P(y)\le skill\_max(y)\le t$. If $char(y)$ is kept, its maximum is
+already at least $t$; otherwise its maximum stays at most $t$. Neither changes
+$\operatorname{Top}_r\{m_h\}$ or $\max_h m_h$, so stopping the scan returns
+the exact relaxation.
+
+**Candidate break.** At a free layer the child that takes $x=cards[p]$
+continues only with cards after $p$. Every deck of that child contains $P$
+and $r$ further members, so (U1) and the different-unit bound for $x\in P$
+still apply to the selected cards; $x$ and every later pick resolve to at most
+their skill_max, which is at most $skill\_max(x)$ by the scan order. Hence
+
+$$
+B(p) = 2\bigl(S_P + r\cdot skill\_max(x)\bigr) + 8\max\bigl(L_P, skill\_max(x)\bigr)
+$$
+
+bounds the child and is non-increasing in $p$. The first child with
+$B(p)<\tau$ ends the loop by Theorem 1.
+
+### 20.5 Equality with the K-th result
+
+For the Power and Skill targets the canonical key orders equal objectives by
+the sorted public card set, then by the ordered ids and card variants. Let a
+node's frontier or candidate bound equal $\tau$, and let every public set that
+a completion could have be lexicographically larger than the K-th result's
+public set $\pi_K$. `smallest_public_set` gives a lower bound on those sets:
+the selected ids together with the smallest distinct unused ids of the
+suffix minimize every rank of the sorted set at once. A completion $D$ is
+no better than $\tau$; if it is strictly worse it cannot enter (Theorem 1).
+If $v(D)=\tau$, its key exceeds the K-th key because its public set exceeds
+$\pi_K$. It cannot replace a better representative of a retained public set
+$E$ either: that needs $v(E)=\tau$ and $\pi(E)=\pi(D)$, but a retained
+result with the K-th objective has $\pi(E)\le\pi_K<\pi(D)$. Such a node is
+pruned; any node that might reach a public set at most $\pi_K$ is kept.
 
 ## 21. Unconstrained Power: exact Top-K dynamic programming
 
@@ -1349,7 +1485,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Final card-group bound | solver/final_chapter.rs | independent per-group maxima + limited top-cap + support UB |
 | Final ranked-buffer break | solver/final_chapter.rs | candidates sorted by admissible UB; overflow candidates still visited |
 | Numeric Power max/min | solver/numeric.rs | global max UB / global min LB |
-| Numeric Skill | solver/numeric.rs | per-card skill-max relaxation |
+| Numeric Skill | solver/numeric.rs | Section 20: composition-aware per-card ceilings, per-character frontier, candidate break, public-set equality rule |
 | Power scenario DP | solver/power.rs | exhaustive scenarios + Lemmas 3–4 |
 | Challenge bound frontier | solver/challenge.rs | exact skip/take relaxation + componentwise-dominated bound states |
 | Challenge-all Top-K merge | solver/challenge.rs | a global Top-K deck must lie in its character's own Top-K |
@@ -1380,6 +1516,7 @@ independent checks designed to expose a violated premise.
 | SIMD equality | simd::tests::dispatched_mask_keeps_bounds_equal_to_threshold |
 | Historical incomplete oracle | case7_audit.rs |
 | Numeric admissibility | numeric_soundness.rs, handler/capacity.rs unit tests |
+| Skill ceilings | skill_composition.rs — every bound on the search path of every deck dominates its key and member values; Top-K against the exhaustive oracle with unit-count, different-unit, reference and two-unit cards, and an equal-objective variant at the public-set equality rule |
 
 The permanent case7 fixture is important evidence for the methodology:
 agreement with another implementation, or even with an incomplete “oracle”, is

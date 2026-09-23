@@ -15,6 +15,7 @@ mod overflow;
 mod performance;
 mod property_bounds;
 mod property_matrix;
+mod skill_composition;
 
 mod canonical_topk;
 mod case7_audit;
