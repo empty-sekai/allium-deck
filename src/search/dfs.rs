@@ -1222,6 +1222,25 @@ impl SearchState<'_> {
     ) {
         let mut dense = start;
         while dense < self.pool.count() {
+            // Once the tracker has a threshold, the pruned scan takes over the
+            // rest of this loop. With unique characters it admits the same
+            // candidates: a repeated card shares its character.
+            if self.ctx.enforce_char_uniqueness {
+                let threshold = self.threshold();
+                if threshold != 0 {
+                    self.recurse_ep(
+                        depth,
+                        dense,
+                        deck,
+                        used,
+                        partial,
+                        fixed_leader,
+                        DECK_SIZE - depth,
+                        threshold,
+                    );
+                    return;
+                }
+            }
             let card = CardIdx::new(dense as u16);
             dense += 1;
             if fixed_leader.is_some_and(|leader| leader == card) {
