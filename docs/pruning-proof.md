@@ -384,7 +384,7 @@ maxima from $i$, and dense tails from $j+1$ no larger than those from $i+1$,
 because the suffixes are nested. The candidate ceiling is non-decreasing in
 card power, card skill and every tail, so the ceiling evaluated with the run
 maxima and the tails after $i$ bounds every candidate in $[i,e)$. When it is
-below $	au$, the scan resumes at $e$.
+below $\tau$, the scan resumes at $e$.
 
 The dense-suffix break of Corollary 2 is checked by scan position rather than
 stride alignment, so a skip never lowers how often that check runs.
@@ -1067,6 +1067,17 @@ total as an optimistic bound. A surviving candidate then updates its exact
 support displacement before a second bound is checked. The updated support
 value still bounds all later extensions by Section 16.
 
+Each group scans its cards in attribute runs: cards of one attribute are
+consecutive, and every scan position stores the maxima of power, skill, base
+bonus and rounded limited bonus from that card to the end of its run. The
+candidate ceiling reads only these four terms and the attribute, and it is
+non-decreasing in each term: the power, skill and base sums grow, the merged
+top limited values cannot shrink when one value grows, and the attribute
+table is read at the same union. The ceiling of the run maxima therefore
+bounds every later card of the run. When it is below $\tau$, the scan resumes
+after the run (Theorem 1). A skip that passes the end of the ranked buffer
+also holds for the cards after it, since the threshold never decreases.
+
 ### 18.6 Ranked card buffer and its monotone break
 
 The fixed-size RANKED_CAP buffer only reorders the first candidates by their
@@ -1074,8 +1085,8 @@ already-proved upper bound. Insertion keeps this buffer in non-increasing upper
 bound order.
 
 During exploration the tracker threshold can only stay equal or increase. If
-the next ranked entry has upper bound (U<	au), every later ranked entry has
-upper bound at most (U) and is also below the current (or any future) threshold.
+the next ranked entry has upper bound $U<\tau$, every later ranked entry has
+upper bound at most $U$ and is also below the current (or any future) threshold.
 The ranked-loop break is therefore an instance of Theorem 1 plus sorted
 monotonicity.
 
@@ -1483,6 +1494,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Final attribute DP | solver/final_chapter.rs | exact isolated OR-union DP |
 | Final character-loop break | solver/final_chapter.rs | nested group suffixes imply non-increasing character ceiling |
 | Final card-group bound | solver/final_chapter.rs | independent per-group maxima + limited top-cap + support UB |
+| Final attribute runs | solver/final_chapter.rs | same attribute, run maxima and a non-decreasing candidate ceiling bound the rest of a run |
 | Final ranked-buffer break | solver/final_chapter.rs | candidates sorted by admissible UB; overflow candidates still visited |
 | Numeric Power max/min | solver/numeric.rs | global max UB / global min LB |
 | Numeric Skill | solver/numeric.rs | Section 20: composition-aware per-card ceilings, per-character frontier, candidate break, public-set equality rule |

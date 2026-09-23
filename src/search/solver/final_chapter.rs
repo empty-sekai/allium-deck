@@ -19,13 +19,103 @@ type RankedSlot = (u64, CardIdx, CardPartial);
 #[derive(Clone)]
 struct CharGroup {
     char_id: u8,
+    /// Best first by the member key.
     cards: Vec<CardIdx>,
+    /// The same cards grouped into attribute runs; see [`ScanCard`].
+    scan: Vec<ScanCard>,
     best_power: u32,
     best_skill: u32,
     best_base_bonus: u32,
     best_limited_bonus: u32,
     attr_mask: u8,
     sort_key: u64,
+}
+
+/// The terms a member card contributes to a card-stage ceiling, or their
+/// maxima over several cards of one attribute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MemberTerms {
+    power: u32,
+    skill: u32,
+    base_bonus: u32,
+    limited_bonus: u32,
+    attr: u8,
+}
+
+impl MemberTerms {
+    #[inline(always)]
+    fn of(pool: &CardPool, card: CardIdx) -> Self {
+        let eb = pool.event_bonus_exact(card);
+        Self {
+            power: pool.power_max(card),
+            skill: pool.skill_max(card) as u32,
+            base_bonus: eb.base_ceil(),
+            limited_bonus: eb.limited_ceil(),
+            attr: pool.attr(card),
+        }
+    }
+
+    #[inline(always)]
+    fn max(self, other: Self) -> Self {
+        debug_assert_eq!(self.attr, other.attr);
+        Self {
+            power: self.power.max(other.power),
+            skill: self.skill.max(other.skill),
+            base_bonus: self.base_bonus.max(other.base_bonus),
+            limited_bonus: self.limited_bonus.max(other.limited_bonus),
+            attr: self.attr,
+        }
+    }
+}
+
+/// A group card in scan order. Cards of one attribute are consecutive; `run`
+/// holds the maxima of the terms from this card to the end of its attribute
+/// run, which ends before `run_end`.
+#[derive(Clone, Copy, Debug)]
+struct ScanCard {
+    card: CardIdx,
+    terms: MemberTerms,
+    run: MemberTerms,
+    run_end: u16,
+}
+
+/// Attribute runs ordered by their best card, each best first; `cards` is
+/// best first by the member key.
+fn build_scan(pool: &CardPool, cards: &[CardIdx]) -> Vec<ScanCard> {
+    let mut order = cards.to_vec();
+    // A stable sort by each attribute's first appearance keeps the key order
+    // inside a run and puts the run of the best card first.
+    let mut first_seen = [usize::MAX; 8];
+    for (rank, &card) in cards.iter().enumerate() {
+        let attr = usize::from(pool.attr(card));
+        first_seen[attr] = first_seen[attr].min(rank);
+    }
+    order.sort_by_key(|&card| first_seen[usize::from(pool.attr(card))]);
+    let mut scan: Vec<ScanCard> = order
+        .iter()
+        .map(|&card| {
+            let terms = MemberTerms::of(pool, card);
+            ScanCard {
+                card,
+                terms,
+                run: terms,
+                run_end: 0,
+            }
+        })
+        .collect();
+    let mut idx = scan.len();
+    while idx > 0 {
+        idx -= 1;
+        let (run, run_end) = match scan.get(idx + 1) {
+            Some(next) if next.terms.attr == scan[idx].terms.attr => {
+                (scan[idx].terms.max(next.run), next.run_end)
+            }
+            _ => (scan[idx].terms, (idx + 1) as u16),
+        };
+        scan[idx].run = run;
+        scan[idx].run_end = run_end;
+    }
+    scan
 }
 
 #[derive(Clone, Copy)]
@@ -723,6 +813,7 @@ fn build_char_groups(
             final_chapter_group_key(best_power, best_skill, best_base_bonus, best_limited_bonus);
         groups.push(CharGroup {
             char_id: char_id as u8,
+            scan: build_scan(pool, &sorted_cards),
             cards: sorted_cards,
             best_power,
             best_skill,
@@ -921,21 +1012,30 @@ impl CharacterSearchState<'_> {
             let Some((ranked, scratch_tail)) = scratch.split_first_mut() else {
                 return;
             };
+            let head = group.scan.len().min(ranked.len());
             let mut ranked_len = 0usize;
-            for &card in group.cards.iter().take(ranked.len()) {
-                let optimistic_ub = selected_card_ceiling_with_candidate_support_ub(
-                    self.pool,
-                    self.suffix,
-                    self.ctx,
-                    plan,
-                    depth + 1,
-                    &partial,
-                    card,
-                    self.leader.skill,
-                );
+            // A run skip may pass the end of the ranked head; the tail scan
+            // resumes after it, since the threshold never decreases.
+            let mut tail_start = head;
+            let mut idx = 0usize;
+            while idx < head {
+                let entry = group.scan[idx];
+                let Some(optimistic_ub) =
+                    self.candidate_ceiling(plan, depth, &partial, &entry, threshold)
+                else {
+                    self.stats.ep_continue_prunes += 1;
+                    let next = usize::from(entry.run_end);
+                    if next > head {
+                        tail_start = next;
+                    }
+                    idx = next;
+                    continue;
+                };
+                idx += 1;
                 if optimistic_ub < threshold {
                     continue;
                 }
+                let card = entry.card;
                 deck[depth + 1] = card;
                 let next_partial =
                     partial.with_card(self.pool, self.ctx.is_world_bloom, self.support, card);
@@ -943,18 +1043,16 @@ impl CharacterSearchState<'_> {
                 if ub < threshold {
                     continue;
                 }
-                if ranked_len < ranked.len() {
-                    let mut pos = ranked_len;
-                    while pos > 0
-                        && (ranked[pos - 1].0 < ub
-                            || (ranked[pos - 1].0 == ub && card.raw() < ranked[pos - 1].1.raw()))
-                    {
-                        ranked[pos] = ranked[pos - 1];
-                        pos -= 1;
-                    }
-                    ranked[pos] = (ub, card, next_partial);
-                    ranked_len += 1;
+                let mut pos = ranked_len;
+                while pos > 0
+                    && (ranked[pos - 1].0 < ub
+                        || (ranked[pos - 1].0 == ub && card.raw() < ranked[pos - 1].1.raw()))
+                {
+                    ranked[pos] = ranked[pos - 1];
+                    pos -= 1;
                 }
+                ranked[pos] = (ub, card, next_partial);
+                ranked_len += 1;
             }
             let mut ranked_idx = 0usize;
             while ranked_idx < ranked_len {
@@ -969,29 +1067,31 @@ impl CharacterSearchState<'_> {
                 ranked_idx += 1;
             }
 
-            // 排序缓冲只覆盖组内前 RANKED_CAP 张：它决定的是访问顺序，不是
-            // 候选集。组更大时余下的卡仍要逐张过同一个上界——只有被上界拒绝
-            // 才能不展开，按缓冲容量截断会把没被任何界否定过的卡静默丢掉。
+            // 排序缓冲只覆盖组内扫描序的前 RANKED_CAP 张：它决定的是访问顺序，
+            // 不是候选集。组更大时余下的卡仍要逐张过同一个上界——只有被上界
+            // 拒绝才能不展开，按缓冲容量截断会把没被任何界否定过的卡静默丢掉。
             // 这一段在组不超过 RANKED_CAP 时不产生任何迭代。
-            for &card in group.cards.iter().skip(ranked.len()) {
+            let mut idx = tail_start;
+            while idx < group.scan.len() {
+                let entry = group.scan[idx];
                 threshold = self.tracker.threshold();
                 let mut optimistic_ub = 0;
                 if threshold != 0 {
-                    optimistic_ub = selected_card_ceiling_with_candidate_support_ub(
-                        self.pool,
-                        self.suffix,
-                        self.ctx,
-                        plan,
-                        depth + 1,
-                        &partial,
-                        card,
-                        self.leader.skill,
-                    );
-                    if optimistic_ub < threshold {
+                    let Some(ub) = self.candidate_ceiling(plan, depth, &partial, &entry, threshold)
+                    else {
                         self.stats.ep_continue_prunes += 1;
+                        idx = usize::from(entry.run_end);
+                        continue;
+                    };
+                    if ub < threshold {
+                        self.stats.ep_continue_prunes += 1;
+                        idx += 1;
                         continue;
                     }
+                    optimistic_ub = ub;
                 }
+                idx += 1;
+                let card = entry.card;
                 let next_partial =
                     partial.with_card(self.pool, self.ctx.is_world_bloom, self.support, card);
                 if threshold != 0 {
@@ -1006,7 +1106,8 @@ impl CharacterSearchState<'_> {
                 self.recurse_cards(selected, plan, depth + 1, deck, next_partial, scratch_tail);
             }
         } else {
-            for &card in &group.cards {
+            for entry in &group.scan {
+                let card = entry.card;
                 deck[depth + 1] = card;
                 let next_partial =
                     partial.with_card(self.pool, self.ctx.is_world_bloom, self.support, card);
@@ -1024,6 +1125,41 @@ impl CharacterSearchState<'_> {
 }
 
 impl CharacterSearchState<'_> {
+    /// Candidate ceiling of `entry`, or `None` when the ceiling over the rest
+    /// of its attribute run is already below `threshold`: every later card of
+    /// the run has the same attribute and no larger term, and the ceiling is
+    /// non-decreasing in every term.
+    #[inline(always)]
+    fn candidate_ceiling(
+        &self,
+        plan: &CardGroupPlan,
+        depth: usize,
+        partial: &CardPartial,
+        entry: &ScanCard,
+        threshold: u64,
+    ) -> Option<u64> {
+        let ceiling = |terms: &MemberTerms| {
+            selected_card_ceiling_with_candidate_support_ub(
+                self.suffix,
+                self.ctx,
+                plan,
+                depth + 1,
+                partial,
+                terms,
+                self.leader.skill,
+            )
+        };
+        let run_ub = ceiling(&entry.run);
+        if run_ub < threshold {
+            return None;
+        }
+        Some(if entry.run == entry.terms {
+            run_ub
+        } else {
+            ceiling(&entry.terms)
+        })
+    }
+
     /// Ceiling of `next`, the child of `partial` that adds one card, given the
     /// candidate ceiling computed from `partial` with that card. The two differ
     /// only in the support ceiling, so an unchanged support sum reuses it.
@@ -1185,29 +1321,29 @@ fn selected_card_ceiling_from_partial(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Ceiling of every child of `partial` that adds a member with at most
+/// `terms`, before that member's support exclusion. The ceiling is
+/// non-decreasing in every numeric term.
 fn selected_card_ceiling_with_candidate_support_ub(
-    pool: &CardPool,
     suffix: &SuffixBound,
     ctx: &SearchContext,
     plan: &CardGroupPlan,
     chosen: usize,
     partial: &CardPartial,
-    card: CardIdx,
+    terms: &MemberTerms,
     leader_skill: u32,
 ) -> u64 {
-    let eb = pool.event_bonus_exact(card);
-    let power_sum = partial.power + pool.power_max(card) + plan.rem_power[chosen];
-    let skill_sum = partial.skill + pool.skill_max(card) as u32 + plan.rem_skill[chosen];
-    let bonus_sum = partial.base_bonus + eb.base_ceil() + plan.rem_base_bonus[chosen];
+    let power_sum = partial.power + terms.power + plan.rem_power[chosen];
+    let skill_sum = partial.skill + terms.skill + plan.rem_skill[chosen];
+    let bonus_sum = partial.base_bonus + terms.base_bonus + plan.rem_base_bonus[chosen];
     let limited_sum = plan.limited_sum(
         partial,
         chosen,
         ctx.card_bonus_count_limit,
-        eb.limited_ceil(),
+        terms.limited_bonus,
     );
     let extra_bonus_ub = if ctx.is_world_bloom {
-        let attr_set = partial.attr_set | (1u8 << pool.attr(card));
+        let attr_set = partial.attr_set | (1u8 << terms.attr);
         u32::from(plan.attr_bonus[chosen][attr_set as usize]) + partial.support_bonus_ceil
     } else {
         ctx.extra_bonus_ub
@@ -1221,7 +1357,7 @@ fn selected_card_ceiling_with_candidate_support_ub(
             leader_skill,
             partial
                 .max_skill
-                .max(pool.skill_max(card) as u32)
+                .max(terms.skill)
                 .max(plan.rem_max_skill[chosen]),
         ),
     )
@@ -1710,13 +1846,12 @@ mod skill_ceiling_tests {
                     }
                     let card = groups[chosen].cards[0];
                     let upper = selected_card_ceiling_with_candidate_support_ub(
-                        &pool,
                         &suffix,
                         &ctx,
                         &plan,
                         chosen + 1,
                         &partial,
-                        card,
+                        &MemberTerms::of(&pool, card),
                         leader.skill,
                     );
                     assert!(
@@ -1745,6 +1880,7 @@ mod attribute_bound_tests {
                 .map(|(index, &attr_mask)| CharGroup {
                     char_id: index as u8,
                     cards: Vec::new(),
+                    scan: Vec::new(),
                     best_power: (index as u32 + 1) * 10_003,
                     best_skill: (index as u32 * 7) % 31,
                     best_base_bonus: (index as u32 * 13) % 47,
@@ -1845,6 +1981,7 @@ mod attribute_bound_tests {
                 .map(|&attr_mask| CharGroup {
                     char_id: 0,
                     cards: Vec::new(),
+                    scan: Vec::new(),
                     best_power: 0,
                     best_skill: 0,
                     best_base_bonus: 0,
@@ -1900,6 +2037,7 @@ mod attribute_bound_tests {
                 .map(|&attr_mask| CharGroup {
                     char_id: 0,
                     cards: Vec::new(),
+                    scan: Vec::new(),
                     best_power: 0,
                     best_skill: 0,
                     best_base_bonus: 0,
@@ -1924,5 +2062,64 @@ mod attribute_bound_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+    use crate::pool::{EventBonusExact, PoolBuilder};
+
+    #[test]
+    fn attribute_runs_follow_the_best_card_and_carry_run_maxima() {
+        // (attr, power, skill, base_x10, limited_x10), best first.
+        let cards = [
+            (2u8, 50u32, 10u8, 100u16, 0u16),
+            (0, 40, 30, 50, 100),
+            (2, 45, 20, 200, 0),
+            (0, 60, 5, 50, 0),
+            (2, 10, 40, 0, 50),
+        ];
+        let mut builder = PoolBuilder::new(cards.len() as u16);
+        for (dense, &(attr, power, skill, base_x10, limited_x10)) in cards.iter().enumerate() {
+            let dense = dense as u16;
+            builder.set_game_id(dense, 10 + dense);
+            builder.set_char_id(dense, 1);
+            builder.set_attr(dense, attr);
+            builder.set_power_max(dense, power);
+            builder.set_skill_max(dense, skill);
+            builder.set_event_bonus(
+                dense,
+                EventBonusExact {
+                    base_x10,
+                    limited_x10,
+                },
+            );
+        }
+        let pool = builder.freeze();
+        let order: Vec<_> = pool.indices().collect();
+        let summary: Vec<_> = build_scan(&pool, &order)
+            .iter()
+            .map(|entry| {
+                (
+                    entry.card.raw(),
+                    entry.run_end,
+                    entry.run.power,
+                    entry.run.skill,
+                    entry.run.base_bonus,
+                    entry.run.limited_bonus,
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                (0, 3, 50, 40, 20, 5),
+                (2, 3, 45, 40, 20, 5),
+                (4, 3, 10, 40, 0, 5),
+                (1, 5, 60, 30, 5, 10),
+                (3, 5, 60, 5, 5, 0),
+            ]
+        );
     }
 }
