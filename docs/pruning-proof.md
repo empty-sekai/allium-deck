@@ -1275,8 +1275,9 @@ before truncation. Then $X_e\le X^*(1+u)^{20}$:
 
 - integral and quarter-integral slot score-ups are exact (F3); the Multi self
   score-up $L+\sum_i o_i/5$ costs at most 5 roundings, and a further Average
-  division at most 5 more. These sums add their terms in ascending order, so
-  the value is the same for every order of the deck's free members;
+  division at most 5 more. These sums, and the Average reference-skill share,
+  add their terms in ascending order, so the value is the same for every
+  order of the deck's free members;
 - the rate $\mathrm{base}+\sum_k\mathrm{fl}(\mathrm{fl}(su_k r_k)/100)$ costs 2
   roundings per term and 6 additions;
 - the product with power costs 1 (the factor 4 is exact), the co-op term

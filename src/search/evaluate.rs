@@ -1007,7 +1007,7 @@ fn resolve_reference_skill(
         }
         other += 1;
     }
-    base + choose_reference_score(&shares, len, ctx.skill_reference_strategy)
+    base + choose_reference_score(&shares, ctx.skill_reference_strategy)
 }
 
 #[inline(always)]
@@ -1019,44 +1019,14 @@ fn resolve_ref_skill(table: &[RefSkill], skill: SkillSlot) -> (u8, u8) {
     (entry.rate, entry.max)
 }
 
+/// Reference share taken from the other four members' `shares`.
 #[inline(always)]
-fn choose_reference_score(
-    reference_scores: &[f64; DECK_SIZE - 1],
-    reference_len: usize,
-    strategy: SkillReferenceStrategy,
-) -> f64 {
+fn choose_reference_score(shares: &[f64; DECK_SIZE - 1], strategy: SkillReferenceStrategy) -> f64 {
     match strategy {
-        SkillReferenceStrategy::Max => {
-            let mut best = 0.0;
-            let mut index = 0usize;
-            while index < reference_len {
-                if unsafe { *reference_scores.get_unchecked(index) } > best {
-                    best = unsafe { *reference_scores.get_unchecked(index) };
-                }
-                index += 1;
-            }
-            best
-        }
-        SkillReferenceStrategy::Min => {
-            let mut best = unsafe { *reference_scores.get_unchecked(0) };
-            let mut index = 1usize;
-            while index < reference_len {
-                if unsafe { *reference_scores.get_unchecked(index) } < best {
-                    best = unsafe { *reference_scores.get_unchecked(index) };
-                }
-                index += 1;
-            }
-            best
-        }
-        SkillReferenceStrategy::Average => {
-            let mut total = 0.0;
-            let mut index = 0usize;
-            while index < reference_len {
-                total += unsafe { *reference_scores.get_unchecked(index) };
-                index += 1;
-            }
-            total / reference_len as f64
-        }
+        SkillReferenceStrategy::Max => shares.iter().copied().fold(0.0, f64::max),
+        SkillReferenceStrategy::Min => shares.iter().copied().fold(f64::INFINITY, f64::min),
+        // Ascending accumulation: the value is the same for every member order.
+        SkillReferenceStrategy::Average => add_ascending(0.0, *shares) / shares.len() as f64,
     }
 }
 
