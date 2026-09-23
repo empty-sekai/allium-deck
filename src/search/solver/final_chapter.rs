@@ -774,7 +774,9 @@ fn seed_leader_groups(
     stats: &mut SearchStats,
     guard: &mut DeadlineGuard,
 ) {
-    if !seeds_enabled() || guard.expired() {
+    // Seeds only fill a tracker that has no threshold yet; once it holds K
+    // decks, later leaders start from that threshold.
+    if !seeds_enabled() || guard.expired() || tracker.threshold() != 0 {
         return;
     }
     let prefix_len = groups.len().min(FINAL_CHAPTER_SEED_GROUP_PREFIX);
