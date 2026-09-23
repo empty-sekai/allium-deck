@@ -145,6 +145,11 @@ fn search_with_budget(
         return search_simple_target(pool, ctx, params, budget);
     }
 
+    if let Some(power_ctx) = mysekai_power_view(pool, ctx) {
+        let (results, stats) = search_simple_target(pool, &power_ctx, params, budget);
+        return (rescore(pool, ctx, results), stats);
+    }
+
     let bounds_enabled = tuning::SearchTuning::load().bounds;
     // Final Chapter solvers seed per leader job; every other family seeds
     // once on the whole pool and shares the incumbents across regimes.
@@ -359,6 +364,40 @@ pub fn search_targets(
     target_bonus_list: &[i32],
 ) -> SearchOutcome<Vec<DeckResult>> {
     search_targets_outcome(pool, ctx, params, target_bonus_list)
+}
+
+/// A Power view of a MySekai search in which every deck has the same total
+/// bonus. The MySekai value is then a non-decreasing function of resolved
+/// power, which is also its first tie-break, so both targets share one
+/// canonical order and one Top-K.
+fn mysekai_power_view(pool: &CardPool, ctx: &SearchContext) -> Option<SearchContext> {
+    if ctx.target != ScoreTarget::Mysekai || ctx.is_world_bloom || ctx.is_final_chapter {
+        return None;
+    }
+    let first = pool.event_bonus_exact(crate::pool::CardIdx::new(0));
+    pool.indices()
+        .all(|card| pool.event_bonus_exact(card) == first)
+        .then(|| SearchContext {
+            target: ScoreTarget::Power,
+            minimize: false,
+            ..ctx.clone()
+        })
+}
+
+/// Replace each result's objective by its value under `ctx`.
+fn rescore(pool: &CardPool, ctx: &SearchContext, results: Vec<DeckResult>) -> Vec<DeckResult> {
+    results
+        .into_iter()
+        .filter_map(|mut result| {
+            let score = evaluate::leaf_evaluate_checked(pool, ctx, &result.cards);
+            debug_assert!(
+                score.is_some(),
+                "a legal deck stays legal under a new target"
+            );
+            result.score = score?;
+            Some(result)
+        })
+        .collect()
 }
 
 /// 池里只有一个角色时返回它；challenge 池保留多角色即为 challenge_all。

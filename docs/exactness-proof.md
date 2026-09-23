@@ -114,6 +114,18 @@ evaluator.  Pruning uses SuffixBound relaxations:
 Therefore every suffix value is greater than or equal to the value of any legal
 completion.
 
+### MySekai with a uniform bonus
+
+When every card of the pool has the same exact event bonus and the event is
+neither World Bloom nor Final Chapter, every deck has the same total bonus $B$.
+The MySekai value $m(P, B)$ is non-decreasing in the resolved power $P$ for
+fixed $B$, and resolved power is the first MySekai tie-break. For two decks,
+$P_1 > P_2$ gives $m_1 \ge m_2$ and the first deck ranks higher under either
+target; $P_1 = P_2$ gives $m_1 = m_2$ and both targets fall through to the same
+public-set and placement keys. The canonical MySekai order therefore equals the
+canonical Power order under the same constraints, so the search runs the exact
+Power solver and re-evaluates each returned deck with the MySekai evaluator.
+
 ### Event-point ceilings
 
 For event Score targets, the independent suffix first forms admissible ceilings

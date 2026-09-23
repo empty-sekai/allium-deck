@@ -186,3 +186,34 @@ fn mysekai_top_k_is_monotone_across_limits() {
         prev_power = power;
     }
 }
+
+#[test]
+fn uniform_bonus_mysekai_matches_the_exact_oracle() {
+    // Deck powers straddle several 45k steps of the MySekai value, so many
+    // decks tie on it and resolved power decides.
+    for (seed, base_bonus, limited_bonus, cap) in [(0x5E1, 0, 0, 5), (0x5E2, 12, 4, 2)] {
+        let mut cards = randomized_exact_cards(seed, 14, 7);
+        for card in &mut cards {
+            card.power = 40_000 + card.power * 10;
+            card.power_max = card.power;
+            card.base_bonus = base_bonus;
+            card.limited_bonus = limited_bonus;
+        }
+        let pool = build_pool(&cards);
+        let mut ctx = ready_ctx(&pool, ScoreTarget::Mysekai);
+        ctx.live_type = LiveType::Mysekai;
+        ctx.card_bonus_count_limit = cap;
+        for top_k in [1, 5, 30] {
+            let params = SearchParams {
+                top_k,
+                timeout_ms: 0,
+            };
+            let (expected, _) = ExactOracle::new(&pool, &ctx).search(&params);
+            assert_eq!(
+                search_exact(&pool, &ctx, &params),
+                expected,
+                "seed={seed:#x} k={top_k}"
+            );
+        }
+    }
+}
