@@ -373,6 +373,22 @@ Fixed-role slots deliberately restart their free-card frontier at zero; the
 monotone argument is never applied across a fixed slot that would otherwise
 hide earlier legal cards.
 
+### Corollary 3 — candidate runs
+
+A candidate run is a maximal block of consecutive dense cards whose candidate
+bonus terms are equal: the rounded total bonus, or under Final Chapter the base
+bonus plus any counted limited amount together with whether the card takes a
+limited slot. Let candidate $i$ lie in a run ending at $e$. Every candidate $j$
+with $i<j<e$ has the same bonus terms, power and skill no larger than the run
+maxima from $i$, and dense tails from $j+1$ no larger than those from $i+1$,
+because the suffixes are nested. The candidate ceiling is non-decreasing in
+card power, card skill and every tail, so the ceiling evaluated with the run
+maxima and the tails after $i$ bounds every candidate in $[i,e)$. When it is
+below $	au$, the scan resumes at $e$.
+
+The dense-suffix break of Corollary 2 is checked by scan position rather than
+stride alignment, so a skip never lowers how often that check runs.
+
 ## 9. Monotone Power / Skill candidate breaks
 
 For the general monotone path, the pool ordering is descending by power_max for
@@ -709,6 +725,12 @@ global extra-bonus fallback and exclusion-aware bounds use the same envelope.
 Combined World Bloom ceilings may independently maximize power, skill,
 attribute bonus, and support bonus. Incompatibility between these maxima only
 makes the bound larger, never smaller.
+
+Each event-score layer computes the extra-bonus bound of any completion of its
+prefix once, from the matching bound of Section 15 and the support sum above,
+capped by the pool-wide fallback; the minimum of two admissible bounds is
+admissible by Lemma 1. The candidate, run and exclusion-aware ceilings of that
+layer use it in place of the fallback.
 
 ## 17. Exact bonus tiers
 
@@ -1310,6 +1332,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Character suffix bound | search/suffix.rs | top-r per-character relaxation |
 | Exclusion delta | search/suffix.rs | exact removal/replacement inside relaxed top-r set |
 | Dense suffix break | search/dfs.rs, search/suffix.rs | nested suffix sets imply non-increasing ceiling |
+| Candidate runs | search/dfs.rs, search/suffix.rs | equal bonus terms, run maxima and nested tails bound the rest of a run |
 | Sorted Power / Skill break | search/dfs.rs | descending candidate component + fixed relaxed tail |
 | No-event numerator | search/dfs.rs, search/suffix.rs | exact floor/division equivalence |
 | Correlated Score bound | search/correlated.rs | linear relaxation + concave quadratic envelope |

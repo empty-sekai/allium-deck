@@ -272,9 +272,12 @@ pub(crate) fn dfs_search_with_budget(
             let threshold = state.threshold();
             if threshold != 0 {
                 let leader_global = state.suffix.upper_bound_with_depth(1, &used, &partial);
-                let leader_dense = state
-                    .suffix
-                    .dense_suffix_ceiling(0, &partial, DECK_SIZE - 1);
+                let leader_dense = state.suffix.dense_suffix_ceiling(
+                    0,
+                    &partial,
+                    DECK_SIZE - 1,
+                    state.suffix.extra_bonus_ub(),
+                );
                 if leader_global.min(leader_dense) < threshold {
                     state.stats.leader_prunes += 1;
                     continue;
@@ -440,9 +443,12 @@ impl SearchState<'_> {
             let prunable = if matches!(self.ctx.target, ScoreTarget::Score) && self.ctx.has_event()
             {
                 let global = self.suffix.upper_bound_with_depth(depth, &used, &partial);
-                let dense = self
-                    .suffix
-                    .dense_suffix_ceiling(start, &partial, DECK_SIZE - depth);
+                let dense = self.suffix.dense_suffix_ceiling(
+                    start,
+                    &partial,
+                    DECK_SIZE - depth,
+                    self.suffix.extra_bonus_ub(),
+                );
                 global.min(dense) < threshold
             } else if matches!(self.ctx.target, ScoreTarget::Score) {
                 self.suffix.upper_bound_score_noevent_numerator(
@@ -755,15 +761,19 @@ impl SearchState<'_> {
             }
             (attr_set, self.suffix.support_ceiling(&selected, depth))
         });
-        let partial_extra_bonus_ub = world_bloom_parts.map(|(attr_set, support_ceiling)| {
-            self.suffix.world_bloom_extra_bonus_bound(
-                attr_set,
-                support_ceiling,
-                slots,
-                start,
-                used.bits(),
-            )
-        });
+        // Extra bonus of any completion of this prefix.
+        let node_extra_bonus_ub = world_bloom_parts.map_or(
+            self.suffix.extra_bonus_ub(),
+            |(attr_set, support_ceiling)| {
+                self.suffix.world_bloom_extra_bonus_bound(
+                    attr_set,
+                    support_ceiling,
+                    slots,
+                    start,
+                    used.bits(),
+                )
+            },
+        );
 
         let use_avx512_candidate_mask = self.avx512_candidate_mask
             && fixed_leader.is_none()
@@ -781,26 +791,24 @@ impl SearchState<'_> {
         let mut mask_block_start = usize::MAX;
         let mut mask_block = 0u16;
         let mut dense = start;
+        // Run skips move the scan by more than one card, so the break check
+        // is due by position rather than by stride alignment.
+        let mut next_break_check = start;
         while dense < self.pool.count() {
             if self.timed_out() {
                 return;
             }
             if threshold != 0
                 && matches!(self.ctx.target, ScoreTarget::Score)
-                && (dense - start).is_multiple_of(EP_DENSE_BREAK_STRIDE)
+                && dense >= next_break_check
             {
+                next_break_check = dense + EP_DENSE_BREAK_STRIDE;
                 let ceil = if use_multi_score_event_fast_path {
                     self.suffix
                         .dense_suffix_ceiling_multi_score_event(dense, &partial, slots)
-                } else if let Some(extra_bonus_ub) = partial_extra_bonus_ub {
-                    self.suffix.dense_suffix_ceiling_with_extra(
-                        dense,
-                        &partial,
-                        slots,
-                        extra_bonus_ub,
-                    )
                 } else {
-                    self.suffix.dense_suffix_ceiling(dense, &partial, slots)
+                    self.suffix
+                        .dense_suffix_ceiling(dense, &partial, slots, node_extra_bonus_ub)
                 };
                 if ceil < threshold {
                     self.stats.mono_break_prunes += 1;
@@ -871,26 +879,40 @@ impl SearchState<'_> {
 
             self.stats.ep_candidates += 1;
 
-            let dense_ub_global = if use_multi_score_event_fast_path {
-                self.suffix.dense_candidate_ceiling_multi_score_event(
-                    dense,
-                    &partial,
-                    card_power,
-                    card_bonus,
-                    card_skill_u32,
-                    slots,
-                )
+            let suffix = self.suffix;
+            let candidate_ceiling = |power: u32, skill: u32| {
+                if use_multi_score_event_fast_path {
+                    suffix.dense_candidate_ceiling_multi_score_event(
+                        dense, &partial, power, card_bonus, skill, slots,
+                    )
+                } else {
+                    suffix.dense_candidate_ceiling(
+                        dense,
+                        &partial,
+                        power,
+                        card_bonus,
+                        card_base_bonus,
+                        card_limited_bonus,
+                        skill,
+                        slots,
+                        node_extra_bonus_ub,
+                    )
+                }
+            };
+            // Every later card of this run has the same bonus terms, no more
+            // power or skill, and dense tails no larger than this card's, so
+            // the ceiling over the run maxima bounds the rest of the run.
+            let run = suffix.candidate_run(dense - 1);
+            let run_ub = candidate_ceiling(run.power_max, run.skill_max as u32);
+            if run_ub < threshold {
+                self.stats.ep_continue_prunes += 1;
+                dense = run.end as usize;
+                continue;
+            }
+            let dense_ub_global = if run.power_max == card_power && run.skill_max == card_skill {
+                run_ub
             } else {
-                self.suffix.dense_candidate_ceiling(
-                    dense,
-                    &partial,
-                    card_power,
-                    card_bonus,
-                    card_base_bonus,
-                    card_limited_bonus,
-                    card_skill_u32,
-                    slots,
-                )
+                candidate_ceiling(card_power, card_skill_u32)
             };
             if dense_ub_global < threshold {
                 self.stats.ep_continue_prunes += 1;
@@ -903,7 +925,7 @@ impl SearchState<'_> {
                     partial.power + card_power + pre.suffix_power_rest - pre.power_delta(char_id);
                 let bonus_total_global = partial.bonus + card_bonus + pre.suffix_bonus
                     - pre.bonus_delta(char_id)
-                    + pre.extra_bonus_ub;
+                    + node_extra_bonus_ub;
                 let tight_skill =
                     partial.skill + card_skill_u32 + pre.skill_ub_rest - pre.skill_delta(char_id);
                 let remaining_best_skill = if char_id == pre.best_skill_char {
@@ -942,7 +964,7 @@ impl SearchState<'_> {
                         .suffix
                         .objective()
                         .ceiling(tight_power, bonus_total, tight_skill, tight_leader)
-                        .min(self.suffix.dense_candidate_ceiling_with_extra(
+                        .min(self.suffix.dense_candidate_ceiling(
                             dense,
                             &partial,
                             card_power,

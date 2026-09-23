@@ -75,6 +75,9 @@ pub struct SuffixBound {
     dense_power_tail: Vec<[u32; DECK_SIZE + 1]>,
     dense_skill_tail: Vec<[u32; DECK_SIZE + 1]>,
     dense_leader_tail: Vec<u16>,
+    /// Per dense card, the run of consecutive cards sharing its candidate bonus
+    /// terms, with the largest power and skill from that card to the run end.
+    dense_candidate_runs: Vec<CandidateRun>,
     /// World Bloom dense suffix: for each attr, bitset of characters having at
     /// least one card of that attr at/after the dense index.  This feeds an
     /// exact 5x27 bipartite matching relaxation for reachable attribute count.
@@ -85,6 +88,17 @@ pub struct SuffixBound {
 }
 
 const _: () = assert!(size_of::<SuffixBound>() <= 736);
+
+/// Consecutive dense cards whose candidate bonus terms are identical.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CandidateRun {
+    /// Largest power from this card to the end of the run.
+    pub(crate) power_max: u32,
+    /// Exclusive dense end of the run.
+    pub(crate) end: u16,
+    /// Largest skill from this card to the end of the run.
+    pub(crate) skill_max: u8,
+}
 
 /// One support relaxation for every possible leader. For every game ID the
 /// envelope keeps the largest profile bonus, and its count is at least every
@@ -208,6 +222,11 @@ impl SuffixBound {
             dense_skill_tail,
             dense_leader_tail,
         ) = build_dense_suffix_tails(pool, ctx.is_final_chapter);
+        let dense_candidate_runs = build_candidate_runs(
+            pool,
+            ctx.is_final_chapter,
+            ctx.is_final_chapter && ctx.card_bonus_count_limit > 0,
+        );
 
         let (support_cards, support_count) = support_upper_envelope(pool, ctx);
         let extra_bonus_ub = world_bloom_extra_bonus_fallback(ctx, &support_cards, support_count);
@@ -234,6 +253,7 @@ impl SuffixBound {
             dense_power_tail,
             dense_skill_tail,
             dense_leader_tail,
+            dense_candidate_runs,
             dense_attr_char_tail: if ctx.is_world_bloom {
                 build_dense_attr_char_tail(pool)
             } else {
@@ -601,7 +621,6 @@ impl SuffixBound {
             suffix_power_rest,
             suffix_bonus,
             skill_ub_rest,
-            extra_bonus_ub: self.extra_bonus_ub,
             best_unused_skill: best_skill,
             second_best_skill: second_best,
             best_skill_char: best_char,
@@ -644,38 +663,6 @@ impl SuffixBound {
         )
     }
 
-    /// 当前 dense suffix 的 target-aware ceiling。
-    #[inline(always)]
-    pub(crate) fn dense_suffix_ceiling(
-        &self,
-        dense_start: usize,
-        partial: &PartialDeck,
-        slots: usize,
-    ) -> u64 {
-        let tail_bonus = self.dense_bonus_from_start(dense_start, slots, 0);
-        let tail_power = self
-            .dense_power_tail
-            .get(dense_start)
-            .map(|tail| tail[slots])
-            .unwrap_or(0);
-        let tail_skill = self
-            .dense_skill_tail
-            .get(dense_start)
-            .map(|tail| tail[slots])
-            .unwrap_or(0);
-        let tail_leader = self
-            .dense_leader_tail
-            .get(dense_start)
-            .copied()
-            .unwrap_or(0) as u32;
-        self.objective.ceiling(
-            partial.power + tail_power,
-            partial.bonus + tail_bonus + self.extra_bonus_ub,
-            partial.skill + tail_skill,
-            (partial.max_skill as u32).max(tail_leader),
-        )
-    }
-
     #[inline(always)]
     pub(crate) fn dense_suffix_ceiling_multi_score_event(
         &self,
@@ -711,8 +698,10 @@ impl SuffixBound {
         )
     }
 
+    /// Target-aware ceiling of any completion from the dense suffix, given an
+    /// admissible bound on the non-card extra bonus.
     #[inline(always)]
-    pub(crate) fn dense_suffix_ceiling_with_extra(
+    pub(crate) fn dense_suffix_ceiling(
         &self,
         dense_start: usize,
         partial: &PartialDeck,
@@ -743,49 +732,16 @@ impl SuffixBound {
         )
     }
 
-    /// 当前候选 + dense suffix 的廉价 ceiling。
+    /// The candidate run starting at `dense`.
     #[inline(always)]
-    pub(crate) fn dense_candidate_ceiling(
-        &self,
-        next_start: usize,
-        partial: &PartialDeck,
-        card_power: u32,
-        card_bonus: u32,
-        card_base_bonus: u32,
-        card_limited_bonus: u32,
-        card_skill: u32,
-        slots: usize,
-    ) -> u64 {
-        let rest = slots.saturating_sub(1);
-        // The partial bonus already counts every selected limited amount, so
-        // the whole limited cap remains for the candidate and the tail.
-        let counts_limited = self.is_final_chapter && self.limited_bonus_cap > 0;
-        let card_bonus = if !self.is_final_chapter {
-            card_bonus
-        } else if counts_limited {
-            card_base_bonus + card_limited_bonus
-        } else {
-            card_base_bonus
-        };
-        let next_limited_count = u8::from(counts_limited && card_limited_bonus > 0);
-        let tail_bonus = self.dense_bonus_from_start(next_start, rest, next_limited_count);
-        let tail_power = self
-            .dense_power_tail
-            .get(next_start)
-            .map(|tail| tail[rest])
-            .unwrap_or(0);
-        let tail_skill = self
-            .dense_skill_tail
-            .get(next_start)
-            .map(|tail| tail[rest])
-            .unwrap_or(0);
-        let tail_leader = self.dense_leader_tail.get(next_start).copied().unwrap_or(0) as u32;
-        self.objective.ceiling(
-            partial.power + card_power + tail_power,
-            partial.bonus + card_bonus + tail_bonus + self.extra_bonus_ub,
-            partial.skill + card_skill + tail_skill,
-            (partial.max_skill as u32).max(card_skill).max(tail_leader),
-        )
+    pub(crate) fn candidate_run(&self, dense: usize) -> CandidateRun {
+        self.dense_candidate_runs[dense]
+    }
+
+    /// Extra bonus bound of any deck of this pool.
+    #[inline(always)]
+    pub(crate) fn extra_bonus_ub(&self) -> u32 {
+        self.extra_bonus_ub
     }
 
     #[inline(always)]
@@ -823,9 +779,10 @@ impl SuffixBound {
         )
     }
 
-    /// 当前候选 + dense suffix 的 ceiling，调用方传入更紧的额外 bonus 上界。
+    /// Ceiling of the candidate plus any completion from the dense suffix
+    /// after it, given an admissible bound on the non-card extra bonus.
     #[inline(always)]
-    pub(crate) fn dense_candidate_ceiling_with_extra(
+    pub(crate) fn dense_candidate_ceiling(
         &self,
         next_start: usize,
         partial: &PartialDeck,
@@ -925,7 +882,8 @@ impl SuffixBound {
             diff_ub = diff_ub.max(self.diff_attr_bonus[count] as u32);
             count += 1;
         }
-        diff_ub + support_ceiling
+        // Both bounds are admissible, hence so is the smaller one.
+        (diff_ub + support_ceiling).min(self.extra_bonus_ub)
     }
 
     /// Maximum number of NEW attributes that any legal completion can add,
@@ -1108,7 +1066,6 @@ pub(crate) struct LayerPrecomputedEp {
     pub suffix_power_rest: u32,
     pub suffix_bonus: u32,
     pub skill_ub_rest: u32,
-    pub extra_bonus_ub: u32,
     pub best_unused_skill: u16,
     pub second_best_skill: u16,
     pub best_skill_char: u8,
@@ -1292,6 +1249,56 @@ fn suffix_compact_u16(
 }
 
 type SuffixTail = Vec<[u32; DECK_SIZE + 1]>;
+
+/// Candidate runs keyed by exactly the bonus terms a candidate ceiling reads:
+/// the rounded total, or under Final Chapter the base plus any counted limited
+/// amount and whether the card consumes a limited slot.
+fn build_candidate_runs(
+    pool: &CardPool,
+    split_limited_bonus: bool,
+    counts_limited: bool,
+) -> Vec<CandidateRun> {
+    let key = |card: crate::pool::CardIdx| {
+        if split_limited_bonus {
+            let exact = pool.event_bonus_exact(card);
+            let limited = if counts_limited {
+                exact.limited_ceil()
+            } else {
+                0
+            };
+            (exact.base_ceil() + limited, limited > 0)
+        } else {
+            (pool.event_bonus(card).total_ceil(), false)
+        }
+    };
+    let count = pool.count();
+    let mut runs = vec![CandidateRun::default(); count];
+    let mut next_key = None;
+    let mut dense = count;
+    while dense > 0 {
+        dense -= 1;
+        let card = crate::pool::CardIdx::new(dense as u16);
+        let card_key = key(card);
+        let power = pool.power_max(card);
+        let skill = pool.skill_max(card);
+        runs[dense] = if next_key == Some(card_key) {
+            let next = runs[dense + 1];
+            CandidateRun {
+                power_max: next.power_max.max(power),
+                end: next.end,
+                skill_max: next.skill_max.max(skill),
+            }
+        } else {
+            CandidateRun {
+                power_max: power,
+                end: (dense + 1) as u16,
+                skill_max: skill,
+            }
+        };
+        next_key = Some(card_key);
+    }
+    runs
+}
 
 fn build_dense_suffix_tails(
     pool: &CardPool,
@@ -1522,7 +1529,7 @@ fn insert_topk_u16(values: &mut [u16; DECK_SIZE], value: u16) {
 #[cfg(test)]
 mod support_envelope_tests {
     use super::*;
-    use crate::pool::PoolBuilder;
+    use crate::pool::{EventBonusExact, PoolBuilder};
     use crate::search::SupportDeck;
     use crate::search::objective::ceil_div_positive;
     use crate::types::{EventType, SkillReferenceStrategy};
@@ -1681,6 +1688,76 @@ mod support_envelope_tests {
         assert_eq!(
             SuffixBound::build(&pool, &ctx).extra_bonus_ub,
             ctx.extra_bonus_ub
+        );
+    }
+
+    #[test]
+    fn candidate_runs_end_where_bonus_terms_change_and_carry_suffix_maxima() {
+        // (base, limited, power, skill) per dense card.
+        let cards = [
+            (300u16, 0u16, 10u32, 4u8),
+            (300, 0, 30, 2),
+            (300, 0, 20, 5),
+            (200, 100, 50, 1),
+            (300, 0, 40, 3),
+            (300, 100, 5, 1),
+        ];
+        let mut builder = PoolBuilder::new(cards.len() as u16);
+        for (dense, &(base, limited, power, skill)) in cards.iter().enumerate() {
+            let dense = dense as u16;
+            builder.set_game_id(dense, 101 + dense);
+            builder.set_char_id(dense, dense as u8 + 1);
+            builder.set_event_bonus(
+                dense,
+                EventBonusExact {
+                    base_x10: base,
+                    limited_x10: limited,
+                },
+            );
+            builder.set_power_max(dense, power);
+            builder.set_skill_max(dense, skill);
+        }
+        let pool = builder.freeze();
+        let summarize = |runs: Vec<CandidateRun>| {
+            runs.iter()
+                .map(|run| (run.end, run.power_max, run.skill_max))
+                .collect::<Vec<_>>()
+        };
+        // Card 3 shares the rounded total with its neighbours but not the
+        // Final Chapter terms; card 5 differs only in its limited amount.
+        assert_eq!(
+            summarize(build_candidate_runs(&pool, false, false)),
+            [
+                (5, 50, 5),
+                (5, 50, 5),
+                (5, 50, 5),
+                (5, 50, 3),
+                (5, 40, 3),
+                (6, 5, 1)
+            ]
+        );
+        assert_eq!(
+            summarize(build_candidate_runs(&pool, true, true)),
+            [
+                (3, 30, 5),
+                (3, 30, 5),
+                (3, 20, 5),
+                (4, 50, 1),
+                (5, 40, 3),
+                (6, 5, 1)
+            ]
+        );
+        // Without a limited cap only the base bonus is read.
+        assert_eq!(
+            summarize(build_candidate_runs(&pool, true, false)),
+            [
+                (3, 30, 5),
+                (3, 30, 5),
+                (3, 20, 5),
+                (4, 50, 1),
+                (6, 40, 3),
+                (6, 5, 1)
+            ]
         );
     }
 
