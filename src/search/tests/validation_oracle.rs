@@ -630,6 +630,7 @@ fn validation_oracle_final_fallback_uses_leader_support_for_bounds() {
                         Vec::new(),
                         None,
                         None,
+                        0,
                         &mut budget,
                     )
                 } else {

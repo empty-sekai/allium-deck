@@ -103,7 +103,7 @@ Per-rarity defaults (`rarity1Config` … `rarity4Config`, `rarityBirthdayConfig`
 | --- | --- | --- |
 | `score` (with or without event, incl. World Bloom chapters, `mysekai`) | dominance pruning + admissible B&B, Top-K alternatives expansion; WL uses an attribute/character matching relaxation | Exact, including Top-K |
 | `score` World Bloom final chapter, fixed leader character or fixed leader card | grouped character/card B&B + exact attribute-union DP bound + member alternatives / leader rotations | Exact, including Top-K |
-| `score` World Bloom final chapter, auto leader | every leader variant becomes a proof-carrying job; beam/one-swap are seed-only; grouped admissible B&B + alternatives / rotations | Exact, including Top-K |
+| `score` World Bloom final chapter, auto leader | every leader variant becomes a proof-carrying job, searched in ceiling order; grouped admissible B&B + alternatives / rotations | Exact, including Top-K |
 | `challenge` / `challenge_auto` | full feasible-set search with admissible bound pruning, merged per character for challenge-all | Exact, including Top-K |
 | `power` (no fixed cards/characters, not `minimize`) | 49-scenario additive DP | Exact, including Top-K |
 | `power` (with fixed cards/characters, or `minimize`) | full-candidate B&B with an admissible power upper bound / minimization lower bound | Exact, including Top-K |

@@ -19,6 +19,7 @@ pub mod bruteforce;
 pub use solver::challenge as challenge_search;
 mod alternatives;
 mod budget;
+mod composition;
 /// 单次搜索期间不变的上下文。
 pub mod context;
 mod correlated;
@@ -126,7 +127,6 @@ fn search_with_budget(
         return (Vec::new(), SearchStats::default());
     }
 
-    let mut phase_stats = SearchStats::default();
     let problem = problem::DeckProblem::from_context(ctx);
 
     // 挑战 live 的队伍必须五张同角色，该约束对所有 target 生效，必须先于
@@ -149,6 +149,28 @@ fn search_with_budget(
         return search_simple_target(pool, ctx, params, budget);
     }
 
+    let bounds_enabled = tuning::SearchTuning::load().bounds;
+    composition::search_regimes(
+        pool,
+        ctx,
+        params,
+        budget,
+        bounds_enabled,
+        |pool, ctx, floor, budget| search_unique_characters(pool, ctx, params, floor, budget),
+    )
+}
+
+/// Exact search of one composition regime: character-unique decks whose
+/// per-card power bound is admissible for every deck the caller needs found.
+/// `floor` is a primary objective already reached by K known public sets.
+fn search_unique_characters(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    params: &SearchParams,
+    floor: u64,
+    budget: &mut SearchBudget,
+) -> (Vec<DeckResult>, SearchStats) {
+    let mut phase_stats = SearchStats::default();
     let dominance = eliminate_dominated(pool, ctx);
     phase_stats.dominance_prunes = (dominance.before - dominance.after) as u64;
     if budget.expired() {
@@ -215,9 +237,9 @@ fn search_with_budget(
             );
         let (compacted_results, mut stats) =
             if grouped_constraints && search_ctx.final_chapter_leader_character().is_some() {
-                final_chapter::search_fixed_leader(&search_pool, &search_ctx, params, budget)
+                final_chapter::search_fixed_leader(&search_pool, &search_ctx, params, floor, budget)
             } else if grouped_constraints && !search_ctx.has_fixed_leader() {
-                final_chapter::search_auto_leader(&search_pool, &search_ctx, params, budget)
+                final_chapter::search_auto_leader(&search_pool, &search_ctx, params, floor, budget)
             } else {
                 let suffix = SuffixBound::build(&search_pool, &search_ctx);
                 let seeds = warm_start::warm_start_best_with_budget(
@@ -236,6 +258,7 @@ fn search_with_budget(
                     seeds,
                     None,
                     None,
+                    floor,
                     budget,
                 )
             };
@@ -271,6 +294,7 @@ fn search_with_budget(
         seeds,
         None,
         None,
+        floor,
         budget,
     );
     stats.accumulate(&phase_stats);
@@ -328,6 +352,7 @@ fn search_bonus_targets_with_budget(
         Vec::new(),
         Some(targets),
         Some(&bonus_reach),
+        0,
         budget,
     )
 }

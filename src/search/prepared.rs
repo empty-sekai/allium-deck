@@ -86,6 +86,7 @@ impl PreparedSearch {
             seeds,
             None,
             None,
+            0,
             &mut budget,
         );
         let remapped = remap_results(compacted_results, &self.original_indices);

@@ -315,6 +315,26 @@ impl CardPool {
 
     /// 根据保留位图重新打包一个紧凑卡池。
     pub fn compact(&self, keep: &[bool]) -> CardPool {
+        self.compact_with_power_bound(keep, |card| self.power_max(card))
+    }
+
+    /// Repacks the kept cards like [`Self::compact`], replacing each card's
+    /// power upper bound. The caller must supply a bound that is admissible
+    /// for every deck the restricted pool is searched for.
+    pub(crate) fn restrict(&self, keep: &[bool], power_bound: &[u32]) -> CardPool {
+        assert_eq!(
+            power_bound.len(),
+            self.count(),
+            "power bound length must match pool count"
+        );
+        self.compact_with_power_bound(keep, |card| power_bound[card.raw()])
+    }
+
+    fn compact_with_power_bound(
+        &self,
+        keep: &[bool],
+        power_bound: impl Fn(CardIdx) -> u32,
+    ) -> CardPool {
         assert_eq!(
             keep.len(),
             self.count(),
@@ -353,7 +373,7 @@ impl CardPool {
             builder.set_attr(next_idx, self.attr(src));
             builder.set_unit_mask(next_idx, self.unit_mask_raw(src));
             builder.set_game_id(next_idx, self.game_id(src));
-            builder.set_power_max(next_idx, self.power_max(src));
+            builder.set_power_max(next_idx, power_bound(src));
             builder.set_skill_min(next_idx, self.skill_min(src));
             builder.set_skill_max(next_idx, self.skill_max(src));
 

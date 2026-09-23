@@ -260,8 +260,8 @@ A historical 3-leaders-per-character cap is provably unsound.  The permanent
 regression constructs five characters with four mutually non-dominating
 variants each.  The first three variants are stronger by the leader ranking but
 occupy valuable World Bloom support slots; the fourth variants are absent from
-support and together form the global optimum.  Extra high-key decoys keep those
-fourth variants out of the warm beam.  Before removing the cap, production
+support and together form the global optimum.  Extra high-key decoys outrank
+those fourth variants in every leader ranking.  Before removing the cap, production
 returned 9,401,683,454,275 while the independent leader-by-leader oracle
 returned 9,861,244,954,337.
 
@@ -443,14 +443,14 @@ suite.
 
 ## 10. Seed / incumbent generation
 
-Warm starts, Final Chapter beams, leader-key ranking and local improvement are
+Warm starts, Final Chapter group seeds, leader-key ranking and local improvement are
 not part of the feasible-set proof. They may only:
 
 - choose traversal order; or
 - contribute exactly evaluated incumbents that raise the pruning threshold.
 
 A seed is canonicalized and legality-checked before it can enter the tracker.
-No production branch may use seed membership, beam membership or a Top-K seed
+No production branch may use seed membership or a Top-K seed
 buffer as a feasibility predicate.
 
 The unlimited seed-on / seed-off property test is the direct regression for

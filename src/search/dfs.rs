@@ -56,6 +56,10 @@ pub struct SearchDiagnostics {
     pub power_scenarios_completed: u64,
     /// Auto/fixed leader jobs inspected by the proof search.
     pub leader_jobs: u64,
+    /// Composition regimes searched.
+    pub regimes_searched: u64,
+    /// Composition regimes whose admissible ceiling was below the threshold.
+    pub regimes_pruned: u64,
 }
 
 /// Search work and actual solver termination, not elapsed-time estimates.
@@ -140,6 +144,8 @@ impl SearchStats {
         self.diagnostics.alternative_leaves += part.diagnostics.alternative_leaves;
         self.diagnostics.power_scenarios_completed += part.diagnostics.power_scenarios_completed;
         self.diagnostics.leader_jobs += part.diagnostics.leader_jobs;
+        self.diagnostics.regimes_searched += part.diagnostics.regimes_searched;
+        self.diagnostics.regimes_pruned += part.diagnostics.regimes_pruned;
     }
 }
 
@@ -204,6 +210,7 @@ fn dfs_search_seeded_inner(
         seeds,
         bonus_targets,
         bonus_reach,
+        0,
         &mut budget,
     )
 }
@@ -216,6 +223,7 @@ pub(crate) fn dfs_search_with_budget(
     seeds: Vec<DeckResult>,
     bonus_targets: Option<&[i32]>,
     bonus_reach: Option<&BonusReach>,
+    floor: u64,
     budget: &mut SearchBudget,
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
@@ -241,7 +249,7 @@ pub(crate) fn dfs_search_with_budget(
 
     let mut tracker = match bonus_targets {
         Some(targets) => SearchTracker::Bonus(BonusBucketTracker::new(params.top_k, targets)),
-        None => SearchTracker::TopK(TopKTracker::new(params.top_k)),
+        None => SearchTracker::TopK(TopKTracker::with_floor(params.top_k, floor)),
     };
     let correlated_hint = seeds.iter().max_by_key(|r| r.score).map(|r| {
         (

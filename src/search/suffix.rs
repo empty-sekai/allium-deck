@@ -1725,11 +1725,11 @@ fn insert_topk_u16(values: &mut [u16; DECK_SIZE], value: u16) {
 #[cfg(test)]
 mod support_envelope_tests {
     use super::*;
-    use crate::search::objective::ceil_div_positive;
-    use crate::types::{LiveSkillOrder, LiveType};
     use crate::pool::PoolBuilder;
     use crate::search::SupportDeck;
+    use crate::search::objective::ceil_div_positive;
     use crate::types::{EventType, SkillReferenceStrategy};
+    use crate::types::{LiveSkillOrder, LiveType};
 
     fn fixture() -> (CardPool, SearchContext) {
         let mut builder = PoolBuilder::new(3);

@@ -121,7 +121,7 @@ confused.
 2. **Proof-based pruning.** A legal partial state is omitted because a theorem
    proves that no completion can enter Top-K. These are the mechanisms proved
    below.
-3. **Ordering only.** Warm starts, one-swap neighborhoods, beams, candidate
+3. **Ordering only.** Warm starts, one-swap neighborhoods, group seeds, candidate
    ranking, correlated-plane selection, and Final ranked buffers choose which
    nodes are visited first or seed an incumbent. They do not remove an
    otherwise unproved branch.
@@ -719,10 +719,9 @@ Implementation: src/search/solver/final_chapter.rs.
 Every surviving leader card becomes a search job. There is no heuristic
 per-character leader cap.
 
-A leader job is skipped only if character_ceiling(...) < threshold.
-
-The warm auto-leader beam seeds incumbents only; it does not define the job
-set.
+A leader job is skipped only if character_ceiling(...) < threshold. Auto-leader
+jobs run in non-increasing ceiling order, so the first job whose ceiling falls
+below the threshold also bounds every later one.
 
 ### 18.2 Exact attribute-union DP
 
@@ -1018,7 +1017,7 @@ These mechanisms may strongly affect speed but do not remove a search branch:
 
 - greedy warm start;
 - one-swap local improvement;
-- Final member beam used to seed incumbents;
+- Final per-leader group seeds;
 - leader-key sorting;
 - candidate sorting;
 - correlated-plane auto selection;

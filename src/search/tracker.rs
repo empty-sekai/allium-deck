@@ -52,15 +52,26 @@ pub(super) fn deck_result_cmp(
 pub(super) struct TopKTracker {
     top_k: usize,
     bounds_enabled: bool,
+    /// A primary objective that K known legal public sets already reach.
+    floor: u64,
     results: Vec<DeckResult>,
     keys: Vec<ResultKey>,
 }
 
 impl TopKTracker {
     pub(super) fn new(top_k: usize) -> Self {
+        Self::with_floor(top_k, 0)
+    }
+
+    /// Starts from an external incumbent: K distinct legal public sets whose
+    /// primary objective is at least `floor` exist outside this tracker, so
+    /// a branch strictly below `floor` cannot contribute to the global Top-K.
+    /// The floor only raises pruning cutoffs; it never evicts a result.
+    pub(super) fn with_floor(top_k: usize, floor: u64) -> Self {
         Self {
             top_k,
             bounds_enabled: true,
+            floor,
             results: Vec::with_capacity(top_k),
             keys: Vec::with_capacity(top_k),
         }
@@ -72,19 +83,22 @@ impl TopKTracker {
 
     /// Numeric cutoffs exclude ties only with a strict bound comparison.
     pub(super) fn cutoff(&self) -> Option<u64> {
-        if !self.bounds_enabled || self.results.len() < self.top_k {
+        if !self.bounds_enabled {
+            return None;
+        }
+        let own = if self.results.len() < self.top_k {
             None
         } else {
             self.results.last().map(|result| result.score)
+        };
+        match own {
+            Some(score) => Some(score.max(self.floor)),
+            None => (self.floor != 0).then_some(self.floor),
         }
     }
 
     pub(super) fn threshold(&self) -> u64 {
         self.cutoff().unwrap_or(0)
-    }
-
-    pub(super) fn results(&self) -> &[DeckResult] {
-        &self.results
     }
 
     /// Inputs must already satisfy the exact leaf and placement contracts.

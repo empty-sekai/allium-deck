@@ -5,7 +5,6 @@ use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType};
 
 use crate::search::context::{SearchContext, SupportDeck};
 use crate::search::dfs::SearchStats;
-use crate::search::evaluate::decode_u18;
 use crate::search::suffix::SuffixBound;
 use crate::search::types::{DeckResult, SearchParams};
 use crate::search::{placement, tracker::TopKTracker};
@@ -339,6 +338,7 @@ pub(crate) fn search_fixed_leader(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
+    floor: u64,
     guard: &mut DeadlineGuard,
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
@@ -347,16 +347,17 @@ pub(crate) fn search_fixed_leader(
     let Some(leader_char) = ctx.final_chapter_leader_character() else {
         return (Vec::new(), SearchStats::default());
     };
-    search_leaders(pool, ctx, params, Some(leader_char), guard)
+    search_leaders(pool, ctx, params, Some(leader_char), floor, guard)
 }
 
 pub(crate) fn search_auto_leader(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
+    floor: u64,
     guard: &mut DeadlineGuard,
 ) -> (Vec<DeckResult>, SearchStats) {
-    search_leaders(pool, ctx, params, None, guard)
+    search_leaders(pool, ctx, params, None, floor, guard)
 }
 
 fn search_leaders(
@@ -364,6 +365,7 @@ fn search_leaders(
     ctx: &SearchContext,
     params: &SearchParams,
     leader_char_filter: Option<u8>,
+    floor: u64,
     guard: &mut DeadlineGuard,
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
@@ -374,7 +376,7 @@ fn search_leaders(
     // member 位图由 search_instrumented 统一计算（含支援惩罚维度与替代记录），
     // 经 ctx 透传；空位图等价全保留。
     let member_keep = ctx.final_chapter_member_keep.clone();
-    let mut tracker = TopKTracker::new(params.top_k);
+    let mut tracker = TopKTracker::with_floor(params.top_k, floor);
     tracker.set_bounds_enabled(crate::search::tuning::SearchTuning::load().bounds);
     let mut stats = SearchStats::default();
     if leader_char_filter.is_none() {
@@ -487,8 +489,6 @@ fn search_auto_leaders_two_phase(
     mut tracker: TopKTracker,
     mut stats: SearchStats,
 ) -> (Vec<DeckResult>, SearchStats) {
-    seed_auto_leader_beam(pool, ctx, member_keep, &mut tracker, &mut stats, guard);
-
     let mut jobs = Vec::new();
     let mut group_sets = Vec::new();
     for leader_char in 0..=26 {
@@ -510,8 +510,8 @@ fn search_auto_leaders_two_phase(
                 .cmp(&final_chapter_card_key(pool, *left))
                 .then_with(|| left.raw().cmp(&right.raw()))
         });
-        // Exact auto-leader jobs cover every surviving card.  The warm beam may
-        // rank/filter seeds, but the proof-carrying search frontier may not.
+        // Exact auto-leader jobs cover every surviving card; only an
+        // admissible job ceiling below the threshold may discard one.
         for leader in leaders {
             if guard.expired() {
                 break;
@@ -588,338 +588,6 @@ fn search_auto_leaders_two_phase(
     (tracker.into_vec(), stats)
 }
 
-#[derive(Clone, Copy)]
-struct MemberBeamState {
-    cards: [CardIdx; DECK_SIZE],
-    len: u8,
-    start: usize,
-    used_chars: u32,
-    key: u64,
-}
-
-#[inline(always)]
-fn member_beam_cmp(left: &MemberBeamState, right: &MemberBeamState) -> std::cmp::Ordering {
-    right
-        .key
-        .cmp(&left.key)
-        .then_with(|| left.cards.cmp(&right.cards))
-}
-
-fn seed_auto_leader_beam(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    member_keep: &[bool],
-    tracker: &mut TopKTracker,
-    stats: &mut SearchStats,
-    guard: &mut DeadlineGuard,
-) {
-    if !seeds_enabled() || guard.expired() {
-        return;
-    }
-    const LEADER_LIMIT: usize = 16;
-    const BEAM_WIDTH: usize = 256;
-    const MEMBER_LIMIT: usize = 96;
-
-    let mut leaders = pool.indices().collect::<Vec<_>>();
-    leaders.sort_unstable_by(|left, right| {
-        final_chapter_card_key(pool, *right)
-            .cmp(&final_chapter_card_key(pool, *left))
-            .then_with(|| left.raw().cmp(&right.raw()))
-    });
-    let leaders = filter_leader_variants(pool, ctx, leaders)
-        .into_iter()
-        .take(LEADER_LIMIT)
-        .collect::<Vec<_>>();
-
-    for leader in leaders {
-        if guard.expired() {
-            return;
-        }
-        seed_auto_leader_beam_for_leader(
-            pool,
-            ctx,
-            member_keep,
-            tracker,
-            stats,
-            leader,
-            MEMBER_LIMIT,
-            BEAM_WIDTH,
-            guard,
-        );
-    }
-    improve_final_chapter_results(pool, ctx, tracker, stats, guard);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn seed_auto_leader_beam_for_leader(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    member_keep: &[bool],
-    tracker: &mut TopKTracker,
-    stats: &mut SearchStats,
-    leader: CardIdx,
-    member_limit: usize,
-    beam_width: usize,
-    guard: &mut DeadlineGuard,
-) {
-    let leader_char = pool.char_id(leader);
-    let candidates =
-        final_chapter_beam_candidates(pool, ctx, leader_char, member_keep, member_limit);
-    if candidates.len() < MEMBER_COUNT {
-        return;
-    }
-    // The member key is leader-dependent but state-independent.  Computing it
-    // once per candidate avoids repeating support-penalty scans for every beam
-    // prefix; this changes only seed ranking cost, never the proof search.
-    let candidate_keys = candidates
-        .iter()
-        .map(|&card| final_chapter_member_key(pool, ctx, leader_char, card))
-        .collect::<Vec<_>>();
-    let mut beam = vec![MemberBeamState {
-        cards: [leader; DECK_SIZE],
-        len: 0,
-        start: 0,
-        used_chars: 1u32 << leader_char,
-        key: final_chapter_card_key(pool, leader),
-    }];
-    let mut depth = 0usize;
-    while depth < MEMBER_COUNT {
-        let mut next = Vec::with_capacity(beam_width.min(beam.len() * candidates.len()));
-        for state in &beam {
-            if guard.expired_sampled() {
-                return;
-            }
-            let mut idx = state.start;
-            while idx < candidates.len() {
-                if guard.expired_sampled() {
-                    return;
-                }
-                stats.diagnostics.seed_states += 1;
-                let card = candidates[idx];
-                let member_key = candidate_keys[idx];
-                idx += 1;
-                let char_id = pool.char_id(card);
-                if state.used_chars & (1u32 << char_id) != 0 {
-                    continue;
-                }
-                let mut cards = state.cards;
-                cards[state.len as usize + 1] = card;
-                next.push(MemberBeamState {
-                    cards,
-                    len: state.len + 1,
-                    start: idx,
-                    used_chars: state.used_chars | (1u32 << char_id),
-                    key: state.key + member_key,
-                });
-            }
-        }
-        if next.is_empty() {
-            break;
-        }
-        if next.len() > beam_width {
-            // Beam membership is heuristic-only.  The comparator is a total
-            // order, so selecting the first beam_width elements preserves the
-            // exact same seed set as a full sort while reducing O(n log n)
-            // sorting of discarded states to linear partitioning.
-            next.select_nth_unstable_by(beam_width, member_beam_cmp);
-            next.truncate(beam_width);
-        }
-        next.sort_unstable_by(member_beam_cmp);
-        beam = next;
-        depth += 1;
-    }
-    if depth != MEMBER_COUNT {
-        return;
-    }
-    for state in beam {
-        if guard.expired_sampled() {
-            return;
-        }
-        stats.leaf_nodes += 1;
-        stats.diagnostics.seed_leaves += 1;
-        if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &state.cards) {
-            tracker.insert(pool, ctx, candidate);
-        }
-    }
-}
-
-fn improve_final_chapter_results(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    tracker: &mut TopKTracker,
-    stats: &mut SearchStats,
-    guard: &mut DeadlineGuard,
-) {
-    let mut pass = 0usize;
-    while pass < 1 {
-        let seeds = tracker.results().to_vec();
-        let mut changed = false;
-        for seed in seeds {
-            if guard.expired() {
-                return;
-            }
-            changed |= insert_one_swap_variants(pool, ctx, seed, tracker, stats, guard);
-        }
-        if !changed {
-            break;
-        }
-        pass += 1;
-    }
-}
-
-fn insert_one_swap_variants(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    seed: DeckResult,
-    tracker: &mut TopKTracker,
-    stats: &mut SearchStats,
-    guard: &mut DeadlineGuard,
-) -> bool {
-    const SWAP_CANDIDATE_LIMIT: usize = 128;
-
-    let mut changed = false;
-    let mut deck = seed.cards;
-    let leader = deck[0];
-    let leader_char = pool.char_id(leader);
-    let member_keep = vec![true; pool.count()];
-    let candidates =
-        final_chapter_beam_candidates(pool, ctx, leader_char, &member_keep, SWAP_CANDIDATE_LIMIT);
-    let mut slot = 1usize;
-    while slot < DECK_SIZE {
-        let original = deck[slot];
-        for &candidate in &candidates {
-            if guard.expired_sampled() {
-                return changed;
-            }
-            stats.diagnostics.seed_states += 1;
-            if candidate == leader || pool.char_id(candidate) == leader_char {
-                continue;
-            }
-            let cand_char = pool.char_id(candidate);
-            let mut conflict = false;
-            let mut idx = 1usize;
-            while idx < DECK_SIZE {
-                if idx != slot {
-                    let current = deck[idx];
-                    if current == candidate || pool.char_id(current) == cand_char {
-                        conflict = true;
-                        break;
-                    }
-                }
-                idx += 1;
-            }
-            if conflict {
-                continue;
-            }
-            deck[slot] = candidate;
-            stats.leaf_nodes += 1;
-            stats.diagnostics.seed_leaves += 1;
-            if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &deck) {
-                if candidate.score > seed.score {
-                    changed = true;
-                }
-                tracker.insert(pool, ctx, candidate);
-            }
-        }
-        deck[slot] = original;
-        slot += 1;
-    }
-    changed
-}
-
-fn final_chapter_beam_candidates(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    leader_char: u8,
-    member_keep: &[bool],
-    limit: usize,
-) -> Vec<CardIdx> {
-    let mut keep = vec![false; pool.count()];
-    let mut out = Vec::with_capacity(limit);
-    push_final_chapter_candidates(
-        pool,
-        ctx,
-        leader_char,
-        member_keep,
-        limit,
-        &mut keep,
-        &mut out,
-        final_chapter_member_key,
-    );
-    push_final_chapter_candidates(
-        pool,
-        ctx,
-        leader_char,
-        member_keep,
-        limit / 2,
-        &mut keep,
-        &mut out,
-        |pool, _ctx, _leader_char, card| pool.power_max(card) as u64,
-    );
-    push_final_chapter_candidates(
-        pool,
-        ctx,
-        leader_char,
-        member_keep,
-        limit / 2,
-        &mut keep,
-        &mut out,
-        |pool, _ctx, _leader_char, card| {
-            let eb = pool.event_bonus_exact(card);
-            eb.total_x10() as u64 * 1_000_000 + pool.power_max(card) as u64
-        },
-    );
-    push_final_chapter_candidates(
-        pool,
-        ctx,
-        leader_char,
-        member_keep,
-        limit / 3,
-        &mut keep,
-        &mut out,
-        |pool, _ctx, _leader_char, card| {
-            pool.skill_max(card) as u64 * 1_000_000 + pool.power_max(card) as u64
-        },
-    );
-    out
-}
-
-fn push_final_chapter_candidates(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    leader_char: u8,
-    member_keep: &[bool],
-    take: usize,
-    keep: &mut [bool],
-    out: &mut Vec<CardIdx>,
-    key_fn: impl Fn(&CardPool, &SearchContext, u8, CardIdx) -> u64,
-) {
-    let mut ranked = pool
-        .indices()
-        .filter(|card| {
-            pool.char_id(*card) != leader_char
-                && member_keep.get(card.raw()).copied().unwrap_or(true)
-        })
-        .map(|card| (key_fn(pool, ctx, leader_char, card), card))
-        .collect::<Vec<_>>();
-    ranked.sort_unstable_by(|left, right| {
-        right
-            .0
-            .cmp(&left.0)
-            .then_with(|| left.1.raw().cmp(&right.1.raw()))
-    });
-    for (_, card) in ranked.into_iter().take(take) {
-        let idx = card.raw();
-        if keep.get(idx).copied().unwrap_or(false) {
-            continue;
-        }
-        if let Some(slot) = keep.get_mut(idx) {
-            *slot = true;
-        }
-        out.push(card);
-    }
-}
-
 fn seed_leader_groups(
     pool: &CardPool,
     ctx: &SearchContext,
@@ -983,77 +651,6 @@ fn seed_leader_groups(
         }
         a += 1;
     }
-}
-
-fn filter_leader_variants(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    leaders: Vec<CardIdx>,
-) -> Vec<CardIdx> {
-    let mut keep = vec![true; leaders.len()];
-    let mut left = 0usize;
-    while left < leaders.len() {
-        if !keep[left] {
-            left += 1;
-            continue;
-        }
-        let lhs = leaders[left];
-        let mut right = 0usize;
-        while right < leaders.len() {
-            if left != right && keep[right] {
-                let rhs = leaders[right];
-                if leader_dominates(pool, ctx, lhs, rhs) {
-                    keep[right] = false;
-                }
-            }
-            right += 1;
-        }
-        left += 1;
-    }
-    leaders
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(leader, keep)| keep.then_some(leader))
-        .collect()
-}
-
-fn leader_dominates(pool: &CardPool, ctx: &SearchContext, lhs: CardIdx, rhs: CardIdx) -> bool {
-    let lhs_values = pool.power_values(lhs);
-    let rhs_values = pool.power_values(rhs);
-    let lhs_lut = pool.power_lut(lhs);
-    let rhs_lut = pool.power_lut(rhs);
-    let mut idx = 0usize;
-    while idx < 8 {
-        if decode_u18(lhs_values, lhs_lut, idx) < decode_u18(rhs_values, rhs_lut, idx) {
-            return false;
-        }
-        idx += 1;
-    }
-
-    let lhs_skill = pool.skill(lhs);
-    let rhs_skill = pool.skill(rhs);
-    if lhs_skill.skill_type != rhs_skill.skill_type || lhs_skill.value < rhs_skill.value {
-        return false;
-    }
-
-    let lhs_bonus = pool.event_bonus_exact(lhs);
-    let rhs_bonus = pool.event_bonus_exact(rhs);
-    if lhs_bonus.base_x10() < rhs_bonus.base_x10()
-        || lhs_bonus.limited_x10() < rhs_bonus.limited_x10()
-    {
-        return false;
-    }
-    if ctx.leader_honor_bonus_x10_at(lhs.raw()) < ctx.leader_honor_bonus_x10_at(rhs.raw())
-        || ctx.leader_limit_bonus_x10_at(lhs.raw()) < ctx.leader_limit_bonus_x10_at(rhs.raw())
-    {
-        return false;
-    }
-    if pool.attr(lhs) != pool.attr(rhs) {
-        return false;
-    }
-    let lhs_mask = pool.unit_mask_raw(lhs);
-    let rhs_mask = pool.unit_mask_raw(rhs);
-    (rhs_mask & lhs_mask) == rhs_mask
 }
 
 fn build_char_groups(
