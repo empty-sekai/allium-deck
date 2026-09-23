@@ -479,8 +479,8 @@ fn exhaustive_challenge_results(pool: &CardPool, search_ctx: &SearchContext) -> 
                         if game_ids.windows(2).any(|pair| pair[0] == pair[1]) {
                             continue;
                         }
-                        // Challenge slots follow fixed-card groups, then the
-                        // public search's descending power/skill candidate order.
+                        // Fixed cards take their slots in order; the exchangeable
+                        // rest follow the canonical (game id, dense index) order.
                         deck.sort_unstable_by_key(|&card| {
                             (
                                 search_ctx
@@ -488,9 +488,8 @@ fn exhaustive_challenge_results(pool: &CardPool, search_ctx: &SearchContext) -> 
                                     .iter()
                                     .position(|&id| id == pool.game_id(card))
                                     .unwrap_or(usize::MAX),
-                                std::cmp::Reverse(pool.power_max(card)),
-                                std::cmp::Reverse(pool.skill_max(card)),
                                 pool.game_id(card),
+                                card.raw(),
                             )
                         });
                         if !deck_matches_fixed_slots(pool, search_ctx, &deck) {
@@ -622,6 +621,10 @@ fn assert_property_results(
             actual.game_card_set_key(pool),
             oracle.game_card_set_key(pool),
             "{label}: card set differs at rank {rank}",
+        );
+        assert_eq!(
+            actual.cards, oracle.cards,
+            "{label}: slot assignment differs at rank {rank}",
         );
     }
 }

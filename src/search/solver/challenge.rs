@@ -281,9 +281,6 @@ fn search_with_character_filter(
     if candidates.len() < DECK_SIZE {
         return (Vec::new(), crate::search::SearchStats::default());
     }
-    if params.top_k == 1 && ctx.fixed_card_ids.is_empty() {
-        return search_combo_top1(pool, ctx, &candidates, tracker, deadline);
-    }
     // Maximization ceilings cannot prune a minimum-power search.
     let minimize = ctx.minimize && matches!(ctx.target, ScoreTarget::Power);
     let bounds = if minimize
@@ -317,78 +314,6 @@ fn search_with_character_filter(
     (tracker.into_vec(), stats)
 }
 
-fn search_combo_top1(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    candidates: &[CardIdx],
-    mut tracker: TopKTracker,
-    deadline: &mut ChallengeDeadline,
-) -> (Vec<DeckResult>, crate::search::SearchStats) {
-    let mut stats = crate::search::SearchStats::default();
-    let game_ids = candidates
-        .iter()
-        .map(|card| pool.game_id(*card))
-        .collect::<Vec<_>>();
-    let len = candidates.len();
-
-    'search: for a in 0..len - 4 {
-        if deadline.expired_sampled() {
-            break;
-        }
-        let gid_a = game_ids[a];
-        for b in a + 1..len - 3 {
-            if deadline.expired_sampled() {
-                break 'search;
-            }
-            let gid_b = game_ids[b];
-            if gid_b == gid_a {
-                continue;
-            }
-            for c in b + 1..len - 2 {
-                if deadline.expired_sampled() {
-                    break 'search;
-                }
-                let gid_c = game_ids[c];
-                if gid_c == gid_a || gid_c == gid_b {
-                    continue;
-                }
-                for d in c + 1..len - 1 {
-                    if deadline.expired_sampled() {
-                        break 'search;
-                    }
-                    let gid_d = game_ids[d];
-                    if gid_d == gid_a || gid_d == gid_b || gid_d == gid_c {
-                        continue;
-                    }
-                    for e in d + 1..len {
-                        if deadline.expired_sampled() {
-                            break 'search;
-                        }
-                        let gid_e = game_ids[e];
-                        if gid_e == gid_a || gid_e == gid_b || gid_e == gid_c || gid_e == gid_d {
-                            continue;
-                        }
-                        let deck = [
-                            candidates[a],
-                            candidates[b],
-                            candidates[c],
-                            candidates[d],
-                            candidates[e],
-                        ];
-                        stats.leaf_nodes += 1;
-                        stats.visited_nodes += 1;
-                        if let Some(candidate) = leaf_evaluate_challenge(pool, ctx, &deck) {
-                            tracker.insert(pool, ctx, candidate);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    (tracker.into_vec(), stats)
-}
-
 #[inline(always)]
 fn leaf_evaluate_challenge(
     pool: &CardPool,
@@ -398,6 +323,7 @@ fn leaf_evaluate_challenge(
     if crate::search::problem::DeckProblem::from_context(ctx).needs_placement_search() {
         return crate::search::placement::evaluate_candidate(pool, ctx, deck);
     }
+    let deck = &crate::search::placement::exchangeable_order(pool, ctx, deck);
     let score = if matches!(
         ctx.effective_live_type(),
         LiveType::Challenge | LiveType::ChallengeAuto

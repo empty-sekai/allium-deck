@@ -33,9 +33,7 @@ pub(super) fn evaluate_candidate(
         return best;
     }
     if !problem.needs_placement_search() {
-        let mut work = *deck;
-        let fixed = problem.fixed_prefix.max(usize::from(ctx.is_final_chapter));
-        sort_exchangeable(pool, &mut work, fixed);
+        let work = exchangeable_order(pool, ctx, deck);
         return leaf_evaluate_checked(pool, ctx, &work).map(|score| DeckResult::new(work, score));
     }
     let mut work = *deck;
@@ -166,6 +164,22 @@ fn visit_bonus_permutations(
         visit_bonus_permutations(pool, ctx, deck, slot + 1, visit);
         deck.swap(slot, other);
     }
+}
+
+/// Canonical arrangement of a deck whose free slots are exchangeable: fixed
+/// roles stay in place and the free cards follow in `(game id, dense index)`
+/// order. Only meaningful when no free role is observable.
+pub(super) fn exchangeable_order(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    deck: &[CardIdx; DECK_SIZE],
+) -> [CardIdx; DECK_SIZE] {
+    let fixed = DeckProblem::from_context(ctx)
+        .fixed_prefix
+        .max(usize::from(ctx.is_final_chapter));
+    let mut work = *deck;
+    sort_exchangeable(pool, &mut work, fixed);
+    work
 }
 
 fn sort_exchangeable(pool: &CardPool, deck: &mut [CardIdx; DECK_SIZE], fixed: usize) {
