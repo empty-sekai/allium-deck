@@ -26,6 +26,10 @@
 //! complete for that regime. Decks of other regimes may also be visited and are
 //! then evaluated exactly; they are never required to be found there.
 //!
+//! A same-character search, which takes five distinct public cards instead
+//! of five characters, uses the same regimes; its plan ceiling sums the five
+//! largest card values rather than the five largest character values.
+//!
 //! All regimes feed one canonical tracker in original pool indices. Incumbent
 //! seeds are generated once on the whole pool and enter that tracker first. A
 //! regime is searched with the K-th objective already reached as an external
@@ -145,6 +149,9 @@ impl RegimePlan {
         let mut characters = 0u32;
         let mut attrs = 0u8;
         let mut leader_bonus = 0u32;
+        // A same-character deck takes five distinct public cards instead.
+        let unique = ctx.enforce_char_uniqueness;
+        let mut cards = Vec::new();
         for card in pool.indices() {
             if !regime.admits(pool, card) {
                 continue;
@@ -158,11 +165,48 @@ impl RegimePlan {
             best_bonus[character] = best_bonus[character].max(pool.event_bonus(card).total_ceil());
             characters |= 1 << character;
             attrs |= 1 << pool.attr(card);
+            if !unique {
+                cards.push((
+                    pool.game_id(card),
+                    power,
+                    u32::from(pool.skill_max(card)),
+                    pool.event_bonus(card).total_ceil(),
+                ));
+            }
             if ctx.is_final_chapter {
                 leader_bonus = leader_bonus.max(ctx.leader_bonus_upper_at(card.raw()));
             }
         }
-        if characters.count_ones() < DECK_SIZE as u32 || !admits_constraints(pool, ctx, &keep) {
+        let (power_sum, bonus_sum, skill_sum, skill_peak) = if unique {
+            if characters.count_ones() < DECK_SIZE as u32 {
+                return None;
+            }
+            (
+                top_sum(best_power),
+                top_sum(best_bonus),
+                top_sum(best_skill),
+                best_skill.into_iter().max().unwrap_or(0),
+            )
+        } else {
+            let mut ids = cards.iter().map(|card| card.0).collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids.dedup();
+            if ids.len() < DECK_SIZE {
+                return None;
+            }
+            let top = |value: fn(&(u16, u32, u32, u32)) -> u32| {
+                let mut values = cards.iter().map(value).collect::<Vec<_>>();
+                values.sort_unstable_by(|left, right| right.cmp(left));
+                values[..DECK_SIZE].iter().sum::<u32>()
+            };
+            (
+                top(|card| card.1),
+                top(|card| card.3),
+                top(|card| card.2),
+                cards.iter().map(|card| card.2).max().unwrap_or(0),
+            )
+        };
+        if !admits_constraints(pool, ctx, &keep) {
             return None;
         }
 
@@ -181,10 +225,10 @@ impl RegimePlan {
             ctx.extra_bonus_ub
         };
         let ceiling = objective.ceiling(
-            top_sum(best_power),
-            top_sum(best_bonus) + extra_bonus + leader_bonus,
-            top_sum(best_skill),
-            best_skill.into_iter().max().unwrap_or(0),
+            power_sum,
+            bonus_sum + extra_bonus + leader_bonus,
+            skill_sum,
+            skill_peak,
         );
         Some(Self {
             order,

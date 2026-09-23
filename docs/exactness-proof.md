@@ -433,7 +433,10 @@ card/character constraints.
 ## 8. Challenge Live
 
 Challenge search restricts the feasible set to five cards of one character.
-The specialized search uses admissible suffix bounds and exact leaf evaluation.
+Each character is searched per area-item composition regime (pruning-proof
+Section 13), whose per-card power bounds hold for every deck of the regime,
+and all regimes share one canonical tracker. The specialized search uses
+admissible suffix bounds and exact leaf evaluation.
 Challenge-all runs the exact per-character solver independently and merges the
 per-character Top-K lists.  A global Top-K member must occur in its own
 character's Top-K list, so this merge is exact.

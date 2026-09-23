@@ -630,9 +630,12 @@ the context's extra-bonus bound; and for Final Chapter the largest leader
 bonus. A deck uses five distinct characters, so each sum of five per-character
 maxima bounds the corresponding deck sum, and the objective relaxation is
 monotone in every argument (Sections 10 and 12). The resulting ceiling is admissible
-for every deck of $R$. A plan is dropped when the regime admits fewer than five
-characters or cannot satisfy a fixed card, fixed character or forced leader;
-it then has no feasible deck.
+for every deck of $R$. A same-character search (Section 22) instead takes five
+distinct public cards, so its plan sums the five largest values over the
+admitted cards themselves, and each such sum again bounds the deck sum. A plan
+is dropped when the regime admits fewer than five characters (five public
+cards for a same-character search) or cannot satisfy a fixed card, fixed
+character or forced leader; it then has no feasible deck.
 
 **Shared tracker and external floor.** All regimes feed one canonical tracker
 in original pool indices. `restrict` preserves the relative order of dense
@@ -1494,6 +1497,9 @@ are the three bounds above and the feasibility checks.
 Implementation: src/search/solver/challenge.rs.
 
 Challenge search fixes one character and chooses five distinct public card ids.
+Each character's cards are searched per composition regime of Section 13, so
+every bound below reads the regime's per-card power bound in place of
+`power_max`.
 
 ChallengeBounds builds, for every suffix and remaining cardinality, a frontier
 of triples
@@ -1520,6 +1526,20 @@ set; it can never produce a larger ceiling than its dominator.
 The branch ceiling is the maximum SuffixBound::ceiling over the surviving
 frontier, so it upper-bounds every exact suffix choice. The branch is pruned
 only when this maximum is strictly below threshold.
+
+For the Score target of a Solo, Auto or Challenge live, a second ceiling reads
+the chosen members' score-up maxima and, for the remaining $r$ slots, the $r$
+largest powers and the $r$ largest score-up maxima among the candidates from
+the current position. The remaining members' score-ups, largest first, are at
+most those largest values rank by rank, and merging with the chosen values
+keeps this, so the five members' score-ups sorted as $m_1\ge\dots\ge m_5$ are
+at most the merged values $v_1\ge\dots\ge v_5$. The leader repeats one member,
+at most $m_1$, so the six slot values sorted are at most
+$(v_1,v_1,v_2,v_3,v_4,v_5)$ rank by rank. Every skill order pairs the slots
+with the rates by some permutation, which is at most the sorted pairing, and
+the sorted pairing is non-decreasing in each rank; together with the power
+bound, Section 12 makes the result admissible. By Lemma 1 the branch is pruned
+when either ceiling is strictly below the threshold.
 
 Minimizing Power, event Score, Bonus, and MySekai disable this frontier rather
 than reuse a bound whose monotonic assumptions do not apply.

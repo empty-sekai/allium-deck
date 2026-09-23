@@ -262,6 +262,9 @@ pub(crate) fn search_all_characters_with_budget(
     (merged, stats)
 }
 
+/// One character's decks, or those of the whole pool, searched per area-item
+/// composition regime so that each regime reads power bounds valid for its
+/// decks; see [`crate::search::composition`].
 fn search_with_character_filter(
     pool: &CardPool,
     ctx: &SearchContext,
@@ -273,11 +276,51 @@ fn search_with_character_filter(
     if params.top_k == 0 || pool.count() < DECK_SIZE || deadline.expired_sampled() {
         return (Vec::new(), crate::search::SearchStats::default());
     }
+    let keep = pool
+        .indices()
+        .map(|card| character_id.is_none_or(|character_id| pool.char_id(card) == character_id))
+        .collect::<Vec<_>>();
+    let original = pool
+        .indices()
+        .filter(|card| keep[card.raw()])
+        .collect::<Vec<_>>();
+    let character_pool = pool.compact(&keep);
+    let character_ctx = ctx.remap(&keep);
+    let (mut results, stats) = crate::search::composition::search_regimes(
+        &character_pool,
+        &character_ctx,
+        params,
+        deadline,
+        crate::search::tuning::SearchTuning::load().bounds,
+        |_, _| Vec::new(),
+        |pool, ctx, floor, _, deadline| search_regime(pool, ctx, suffix, params, floor, deadline),
+    );
+    for result in &mut results {
+        for card in &mut result.cards {
+            *card = original[card.raw()];
+        }
+    }
+    (results, stats)
+}
 
-    let mut tracker = TopKTracker::new(params.top_k);
+/// Exact Top-K of `pool`, whose power maxima are admissible for every deck
+/// the caller needs found; `floor` is an objective K known decks reach.
+fn search_regime(
+    pool: &CardPool,
+    ctx: &SearchContext,
+    suffix: &SuffixBound,
+    params: &SearchParams,
+    floor: u64,
+    deadline: &mut ChallengeDeadline,
+) -> (Vec<DeckResult>, crate::search::SearchStats) {
+    if pool.count() < DECK_SIZE || deadline.expired_sampled() {
+        return (Vec::new(), crate::search::SearchStats::default());
+    }
+
+    let mut tracker = TopKTracker::with_floor(params.top_k, floor);
     let mut deck = [CardIdx::new(0); DECK_SIZE];
     let mut stats = crate::search::SearchStats::default();
-    let candidates = ordered_candidates(pool, ctx, character_id);
+    let candidates = ordered_candidates(pool, ctx);
     if candidates.len() < DECK_SIZE {
         return (Vec::new(), crate::search::SearchStats::default());
     }
@@ -368,7 +411,15 @@ fn challenge_recurse(
     let threshold = tracker.cutoff();
     // Equal-score branches can still improve the tracker's card-order tie-break.
     if let (Some(bounds), Some(threshold)) = (bounds, threshold)
-        && bounds.ceiling(suffix, start, &partial, remaining) < threshold
+        && bounds.below(
+            suffix,
+            ctx,
+            pool,
+            &deck[..depth],
+            start,
+            &partial,
+            threshold,
+        )
     {
         stats.ub_prunes += 1;
         return;
@@ -401,14 +452,22 @@ fn challenge_recurse(
             bonus: partial.bonus,
             max_skill: partial.max_skill.max(pool.skill_max(card)),
         };
+        deck[depth] = card;
         if let (Some(bounds), Some(threshold)) = (bounds, threshold)
-            && bounds.ceiling(suffix, dense, &next_partial, remaining - 1) < threshold
+            && bounds.below(
+                suffix,
+                ctx,
+                pool,
+                &deck[..=depth],
+                dense,
+                &next_partial,
+                threshold,
+            )
         {
             stats.ep_continue_prunes += 1;
             continue;
         }
 
-        deck[depth] = card;
         challenge_recurse(
             pool,
             ctx,
@@ -426,15 +485,8 @@ fn challenge_recurse(
     }
 }
 
-fn ordered_candidates(
-    pool: &CardPool,
-    ctx: &SearchContext,
-    character_id: Option<u8>,
-) -> Vec<CardIdx> {
-    let mut all = pool
-        .indices()
-        .filter(|card| character_id.is_none_or(|character_id| pool.char_id(*card) == character_id))
-        .collect::<Vec<_>>();
+fn ordered_candidates(pool: &CardPool, ctx: &SearchContext) -> Vec<CardIdx> {
+    let mut all = pool.indices().collect::<Vec<_>>();
     if ctx.fixed_card_ids.is_empty() {
         sort_candidates(pool, &mut all);
         return all;
@@ -478,6 +530,10 @@ fn slot_matches(ctx: &SearchContext, pool: &CardPool, depth: usize, card: CardId
 
 struct ChallengeBounds {
     frontiers: Vec<Vec<Vec<BoundState>>>,
+    /// The largest powers and score-ups among the candidates from each
+    /// position, largest first.
+    top_power: Vec<[u32; DECK_SIZE]>,
+    top_skill: Vec<[u32; DECK_SIZE]>,
 }
 
 impl ChallengeBounds {
@@ -534,7 +590,79 @@ impl ChallengeBounds {
             }
         }
 
-        Some(Self { frontiers })
+        let mut top_power = vec![[0u32; DECK_SIZE]; count + 1];
+        let mut top_skill = vec![[0u32; DECK_SIZE]; count + 1];
+        for dense in (0..count).rev() {
+            let card = candidates[dense];
+            top_power[dense] = top_power[dense + 1];
+            insert_descending(&mut top_power[dense], pool.power_max(card));
+            top_skill[dense] = top_skill[dense + 1];
+            insert_descending(&mut top_skill[dense], u32::from(pool.skill_max(card)));
+        }
+        Some(Self {
+            frontiers,
+            top_power,
+            top_skill,
+        })
+    }
+
+    /// Whether every completion of the `chosen` members with the rest drawn
+    /// from the candidates from `start` stays below `threshold`.
+    #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
+    fn below(
+        &self,
+        suffix: &SuffixBound,
+        ctx: &SearchContext,
+        pool: &CardPool,
+        chosen: &[CardIdx],
+        start: usize,
+        partial: &PartialDeck,
+        threshold: u64,
+    ) -> bool {
+        let slots = DECK_SIZE - chosen.len();
+        (matches!(ctx.target, ScoreTarget::Score)
+            && !matches!(
+                ctx.effective_live_type(),
+                LiveType::Multi | LiveType::Cheerful | LiveType::Mysekai
+            )
+            && self.ranked_score_ceiling(suffix, pool, chosen, start, partial.power) < threshold)
+            || self.ceiling(suffix, start, partial, slots) < threshold
+    }
+
+    /// Score ceiling from the chosen members' score-ups and, rank by rank,
+    /// the largest powers and score-ups among the candidates from `start`.
+    /// The members' score-ups, largest first, are at most these values rank
+    /// by rank, and the leader, one of them, fills the sixth slot, so the
+    /// six slots are at most the largest value twice followed by the rest.
+    #[inline(always)]
+    fn ranked_score_ceiling(
+        &self,
+        suffix: &SuffixBound,
+        pool: &CardPool,
+        chosen: &[CardIdx],
+        start: usize,
+        chosen_power: u32,
+    ) -> u64 {
+        let slots = DECK_SIZE - chosen.len();
+        let (Some(top_power), Some(top_skill)) =
+            (self.top_power.get(start), self.top_skill.get(start))
+        else {
+            return 0;
+        };
+        let power = chosen_power + top_power[..slots].iter().sum::<u32>();
+        let mut values = [0u32; DECK_SIZE];
+        for (value, &card) in values.iter_mut().zip(chosen) {
+            *value = u32::from(pool.skill_max(card));
+        }
+        values[chosen.len()..].copy_from_slice(&top_skill[..slots]);
+        values.sort_unstable_by(|left, right| right.cmp(left));
+        let slot_values = [
+            values[0], values[0], values[1], values[2], values[3], values[4],
+        ];
+        suffix
+            .objective()
+            .score_ceiling_from_slots(power, 0, &slot_values)
     }
 
     #[inline(always)]
@@ -563,6 +691,17 @@ impl ChallengeBounds {
             best = best.max(ceiling);
         }
         best
+    }
+}
+
+fn insert_descending(values: &mut [u32; DECK_SIZE], value: u32) {
+    let mut at = DECK_SIZE;
+    while at > 0 && values[at - 1] < value {
+        at -= 1;
+    }
+    if at < DECK_SIZE {
+        values[at..].rotate_right(1);
+        values[at] = value;
     }
 }
 

@@ -168,11 +168,44 @@ impl ObjectiveBound {
             }
             ScoreTarget::Score => {
                 let live = self.calc_live_score_bound(power_ub, skill_ub, leader_ub);
-                let ep = self.calc_event_point_bound(live, bonus_total);
-                ((ep as u64) << 32) | (live as u32 as u64)
+                self.pack_score(live, bonus_total)
             }
             ScoreTarget::Mysekai => calc_mysekai_internal(power_ub, bonus_total as f64) as u64,
         }
+    }
+
+    /// Score-target ceiling of a Solo, Auto or Challenge deck whose power is
+    /// at most `power_ub` and whose six slot score-ups, largest first, are at
+    /// most `slots`: every order of the slots over the rates is at most the
+    /// sorted pairing.
+    #[inline(always)]
+    pub(crate) fn score_ceiling_from_slots(
+        &self,
+        power_ub: u32,
+        bonus_total: u32,
+        slots: &[u32; DECK_SIZE + 1],
+    ) -> u64 {
+        debug_assert!(matches!(self.target, ScoreTarget::Score));
+        debug_assert!(!matches!(
+            self.effective_live_type,
+            LiveType::Multi | LiveType::Cheerful | LiveType::Mysekai
+        ));
+        let power_ub = self.clamp_power_total(power_ub + self.honor_bonus);
+        let rate_1m = self.base_rate_1m
+            + slots
+                .iter()
+                .zip(&self.sorted_rates_1m)
+                .map(|(&score_up, &rate)| i64::from(score_up) * rate)
+                .sum::<i64>();
+        let live = (self.live_numerator(power_ub, rate_1m) / LIVE_SCORE_BOUND_SCALE) as i32;
+        self.pack_score(live, bonus_total)
+    }
+
+    /// Event point in the high 32 bits and live score in the low 32 bits.
+    #[inline(always)]
+    fn pack_score(&self, live: i32, bonus_total: u32) -> u64 {
+        let ep = self.calc_event_point_bound(live, bonus_total);
+        ((ep as u64) << 32) | (live as u32 as u64)
     }
 
     #[inline(always)]
@@ -246,6 +279,11 @@ impl ObjectiveBound {
                 rate
             }
         };
+        self.live_numerator(power_total, rate_1m)
+    }
+
+    #[inline(always)]
+    fn live_numerator(&self, power_total: u32, rate_1m: i64) -> i64 {
         let power_sum: i64 = if let Some(tp) = self.multi_teammate_power {
             power_total as i64 + tp as i64 * (DECK_SIZE as i64 - 1)
         } else {
