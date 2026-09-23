@@ -375,12 +375,28 @@ fn build_card_group_plan(
 /// `next` of every union after that card.
 #[inline(always)]
 fn attr_step(next: &[u16; 32], attr_mask: u8, best: &mut [u16; 32]) {
-    let mut attrs = attr_mask;
+    if attr_mask & !31 != 0 {
+        // An attribute outside the five-bit union leaves every union as is.
+        for (best, &next) in best.iter_mut().zip(next) {
+            *best = (*best).max(next);
+        }
+    }
+    let mut attrs = attr_mask & 31;
     while attrs != 0 {
         let bit = 1usize << attrs.trailing_zeros();
         attrs &= attrs - 1;
-        for (set, value) in best.iter_mut().enumerate() {
-            *value = (*value).max(next[(set | bit) & 31]);
+        // In every block of 2*bit unions the lower half lacks `bit` and joins
+        // the upper half, which already holds it.
+        for (best, next) in best
+            .chunks_exact_mut(2 * bit)
+            .zip(next.chunks_exact(2 * bit))
+        {
+            let (best_lo, best_hi) = best.split_at_mut(bit);
+            let next_hi = &next[bit..];
+            for ((lo, hi), &joined) in best_lo.iter_mut().zip(best_hi).zip(next_hi) {
+                *lo = (*lo).max(joined);
+                *hi = (*hi).max(joined);
+            }
         }
     }
 }
