@@ -108,7 +108,7 @@ struct CardPartial {
     attr_set: u8,
     selected: [u16; DECK_SIZE],
     selected_len: usize,
-    support_bonus_sum: f64,
+    /// End of the support entries summed into `support_bonus_ceil`.
     support_next_scan: usize,
     support_bonus_ceil: u32,
 }
@@ -180,10 +180,13 @@ impl CardPartial {
         limited_values[0] = leader.limited_bonus;
         let mut selected = [0u16; DECK_SIZE];
         selected[0] = pool.game_id(leader.leader);
-        let leader_char = pool.char_id(leader.leader);
-        let (support_bonus_sum, support_next_scan) =
-            initial_final_chapter_support_state(ctx, leader_char, &selected, 1);
-        let support_bonus_ceil = support_bonus_sum.ceil() as u32;
+        let (support_bonus_ceil, support_next_scan) = if ctx.is_world_bloom {
+            let support = ctx.support_deck_for_leader(pool.char_id(leader.leader));
+            let (sum, next_scan) = remaining_support(support, &selected, 1);
+            (sum.ceil() as u32, next_scan)
+        } else {
+            (0, 0)
+        };
         Self {
             power: leader.power,
             skill: leader.skill,
@@ -194,7 +197,6 @@ impl CardPartial {
             attr_set: 1u8 << pool.attr(leader.leader),
             selected,
             selected_len: 1,
-            support_bonus_sum,
             support_next_scan,
             support_bonus_ceil,
         }
@@ -218,20 +220,19 @@ impl CardPartial {
         next.limited_sum += eb.limited_ceil();
         next.attr_set |= 1u8 << pool.attr(card);
         let game_id = pool.game_id(card);
-        let (support_bonus_sum, support_next_scan) = advance_final_chapter_support_state(
-            is_world_bloom,
-            support,
-            self.support_bonus_sum,
-            self.support_next_scan,
-            &self.selected,
-            self.selected_len,
-            game_id,
-        );
         next.selected[next.selected_len] = game_id;
         next.selected_len += 1;
-        next.support_bonus_sum = support_bonus_sum;
-        next.support_next_scan = support_next_scan;
-        next.support_bonus_ceil = support_bonus_sum.ceil() as u32;
+        // A card outside the summed entries leaves the evaluator-order sum
+        // unchanged; otherwise it is summed again, never updated in place.
+        if is_world_bloom
+            && support.cards[..self.support_next_scan]
+                .iter()
+                .any(|&(id, _)| id == game_id)
+        {
+            let (sum, next_scan) = remaining_support(support, &next.selected, next.selected_len);
+            next.support_bonus_ceil = sum.ceil() as u32;
+            next.support_next_scan = next_scan;
+        }
         next
     }
 }
@@ -1236,21 +1237,10 @@ fn final_chapter_support_bonus_bound_for_leader(
     if !ctx.is_world_bloom {
         return 0;
     }
-    let leader_id = pool.game_id(leader);
+    let mut selected = [0u16; DECK_SIZE];
+    selected[0] = pool.game_id(leader);
     let support = ctx.support_deck_for_leader(pool.char_id(leader));
-    let mut support_sum = 0.0_f64;
-    let mut picked = 0usize;
-    for &(game_id, bonus) in &support.cards {
-        if picked >= support.count as usize {
-            break;
-        }
-        if game_id == leader_id {
-            continue;
-        }
-        support_sum += bonus;
-        picked += 1;
-    }
-    support_sum.ceil() as u32
+    remaining_support(support, &selected, 1).0.ceil() as u32
 }
 
 fn final_chapter_extra_bonus_bound(
@@ -1283,22 +1273,8 @@ fn final_chapter_extra_bonus_bound(
         count += 1;
     }
 
-    let leader_char = pool.char_id(leader);
-    let support = ctx.support_deck_for_leader(leader_char);
-    let mut support_sum = 0.0_f64;
-    let mut picked = 0usize;
-    for &(game_id, bonus) in &support.cards {
-        if picked >= support.count as usize {
-            break;
-        }
-        if selected_contains(&selected, selected_len, game_id) {
-            continue;
-        }
-        support_sum += bonus;
-        picked += 1;
-    }
-
-    diff_ub + support_sum.ceil() as u32
+    let support = ctx.support_deck_for_leader(pool.char_id(leader));
+    diff_ub + remaining_support(support, &selected, selected_len).0.ceil() as u32
 }
 
 /// Exact attribute-state DP over the already chosen character groups.  Each
@@ -1340,77 +1316,28 @@ fn final_chapter_diff_attr_bound(
     best
 }
 
-fn initial_final_chapter_support_state(
-    ctx: &SearchContext,
-    leader_char: u8,
+/// Sum of the first `count` support entries whose game ids are not selected,
+/// accumulated left to right in the evaluator's order, and the index after the
+/// last scanned entry. The selected prefix excludes a subset of the final deck,
+/// so the sum dominates the evaluator's (pruning-proof Lemma N5).
+fn remaining_support(
+    support: &SupportDeck,
     selected: &[u16; DECK_SIZE],
     selected_len: usize,
 ) -> (f64, usize) {
-    if !ctx.is_world_bloom {
-        return (0.0, 0);
-    }
-
-    let support = ctx.support_deck_for_leader(leader_char);
-    let mut support_sum = 0.0_f64;
+    let mut sum = 0.0_f64;
     let mut picked = 0usize;
-    let mut idx = 0usize;
-    while idx < support.cards.len() {
-        if picked >= support.count as usize {
-            break;
-        }
-        let (game_id, bonus) = support.cards[idx];
-        idx += 1;
+    let mut next_scan = 0usize;
+    while next_scan < support.cards.len() && picked < support.count as usize {
+        let (game_id, bonus) = support.cards[next_scan];
+        next_scan += 1;
         if selected_contains(selected, selected_len, game_id) {
             continue;
         }
-        support_sum += bonus;
+        sum += bonus;
         picked += 1;
     }
-
-    (support_sum, idx)
-}
-
-fn advance_final_chapter_support_state(
-    is_world_bloom: bool,
-    support: &SupportDeck,
-    current_sum: f64,
-    current_next_scan: usize,
-    selected: &[u16; DECK_SIZE],
-    selected_len: usize,
-    new_game_id: u16,
-) -> (f64, usize) {
-    if !is_world_bloom {
-        return (0.0, 0);
-    }
-
-    let mut support_sum = current_sum;
-    let mut next_scan = current_next_scan;
-    let scan_end = next_scan.min(support.cards.len());
-    let mut replaced = false;
-    let mut idx = 0usize;
-    while idx < scan_end {
-        let (game_id, bonus) = support.cards[idx];
-        if game_id == new_game_id && !selected_contains(selected, selected_len, game_id) {
-            support_sum -= bonus;
-            replaced = true;
-            break;
-        }
-        idx += 1;
-    }
-
-    if replaced {
-        while next_scan < support.cards.len() {
-            let (game_id, bonus) = support.cards[next_scan];
-            next_scan += 1;
-            if game_id == new_game_id || selected_contains(selected, selected_len, game_id) {
-                continue;
-            }
-            support_sum += bonus;
-            break;
-        }
-    }
-
-    (support_sum, next_scan)
+    (sum, next_scan)
 }
 
 #[inline(always)]

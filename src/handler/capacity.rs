@@ -19,9 +19,6 @@ pub(crate) const NUMERIC_BONUS_MAX: u64 = 1 << 20;
 pub(crate) const NUMERIC_EVENT_INNER_MAX: u64 = 1 << 27;
 /// Largest a priori event point; every integer event step stays inside `i32`.
 pub(crate) const NUMERIC_EVENT_POINT_MAX: u64 = 1 << 30;
-/// Largest admitted floating-point excess of an event-point first stage over
-/// its `1/10^4` rational grid. The event-point floor lemma needs `< 10^-4`.
-const NUMERIC_EVENT_SLACK_MAX: f64 = 1e-5;
 
 /// Rejects inputs outside the numeric domain on which every integer or
 /// fixed-point search ceiling provably dominates the floating-point leaf
@@ -98,21 +95,16 @@ pub(crate) fn numeric_domain(pool: &CardPool, ctx: &SearchContext) -> Result<(),
         .max()
         .unwrap_or(0) as f64;
 
-    let profile_sum = |profile: &crate::search::SupportDeck, extra: usize| {
+    let profile_sum = |profile: &crate::search::SupportDeck| {
         let mut values: Vec<f64> = profile.cards.iter().map(|&(_, bonus)| bonus).collect();
         values.sort_unstable_by(|left, right| right.total_cmp(left));
-        values
-            .iter()
-            .take(profile.count as usize + extra)
-            .sum::<f64>()
+        values.iter().take(profile.count as usize).sum::<f64>()
     };
     let leader_bonus = (0..pool.count())
         .map(|dense| ctx.leader_bonus_upper_at(dense))
         .max()
         .unwrap_or(0) as f64;
-    let support_bonus = profiles()
-        .map(|profile| profile_sum(profile, 0))
-        .sum::<f64>();
+    let support_bonus = profiles().map(profile_sum).sum::<f64>();
     let bonus = bonuses.iter().take(DECK_SIZE).sum::<u64>() as f64
         + leader_bonus
         + f64::from(ctx.diff_attr_bonus.iter().copied().max().unwrap_or(0))
@@ -167,26 +159,7 @@ pub(crate) fn numeric_domain(pool: &CardPool, ctx: &SearchContext) -> Result<(),
         1.0
     };
     let event_point = inner * life * f64::from(ctx.boost_rate_pct) / 100.0;
-    at_most("event point ceiling", event_point, NUMERIC_EVENT_POINT_MAX)?;
-
-    // A support sum maintained incrementally may exceed the evaluator's direct
-    // sum by at most (2 * count + 2 * DECK_SIZE) roundings of its magnitude.
-    let unit = f64::EPSILON / 2.0;
-    let count = profiles()
-        .map(|profile| profile.count as usize)
-        .max()
-        .unwrap_or(0);
-    let magnitude = profiles()
-        .map(|profile| profile_sum(profile, DECK_SIZE))
-        .fold(0.0, f64::max);
-    let bonus_excess = (2 * count + 2 * DECK_SIZE) as f64 * unit * magnitude + unit * bonus;
-    let slack = 5.1 * unit * inner + 1.01 * event_base * music / 10_000.0 * bonus_excess;
-    if slack > NUMERIC_EVENT_SLACK_MAX {
-        return Err(BuildError::InvalidConfig(format!(
-            "event point rounding slack {slack:e} exceeds {NUMERIC_EVENT_SLACK_MAX:e}"
-        )));
-    }
-    Ok(())
+    at_most("event point ceiling", event_point, NUMERIC_EVENT_POINT_MAX)
 }
 
 pub(super) fn ensure(field: &'static str, value: u64, max: u64) -> Result<(), BuildError> {

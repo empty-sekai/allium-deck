@@ -497,7 +497,7 @@ These are exactly the two branches of **quadratic** in
 src/search/correlated.rs. Coefficient preparation uses ceilings, the final
 division is rounded upward, and the implementation adds one further integer
 safety unit for bounded floating-point preparation error.
-Section 29 (Lemma N8) shows that the prepared coefficients alone already
+Section 29 (Lemma N7) shows that the prepared coefficients alone already
 dominate the floating-point evaluator.
 
 Hence each correlated plane is admissible. By Lemma 1, taking the minimum of
@@ -1229,8 +1229,7 @@ skill base plus maximum at most the card's skill maximum) they establish:
   $m$ the music rate percent, $\beta$ the boost percent and $\lambda$ the
   Cheerful life factor (1 otherwise). Then
   $\hat I=\hat b\,m(\hat B+100)/10^4\le2^{27}$,
-  $\hat E=\hat I\lambda\beta/100\le2^{30}$, and the slack $\sigma$ of Lemma N6
-  is at most $10^{-5}$.
+  $\hat E=\hat I\lambda\beta/100\le2^{30}$.
 
 Every argument passed to an aggregate ceiling is a sum of at most five
 per-card maxima (power, skill, bonus ceilings) plus request constants, and the
@@ -1307,7 +1306,7 @@ component takes $\lfloor N/10^6\rfloor<2^{31}$ without wrapping.
 ### 29.6 Theorem N4 — event-point stages
 
 Write $b$ for the integer event base score, $t$ for the evaluator's `f64` bonus
-and $T$ for the integer bonus handed to the ceiling, with $t\le T+\varepsilon$.
+and $T$ for the integer bonus handed to the ceiling, with $t\le T$ (Lemma N5).
 
 1. *Base score.* $b$ is non-decreasing in the live score, and Theorem N3 makes
    the ceiling's live score at least the evaluator's. For Multi/Cheerful the
@@ -1319,16 +1318,10 @@ and $T$ for the integer bonus handed to the ceiling, with $t\le T+\varepsilon$.
 2. *First stage.* The evaluator computes
    $I_e=\lfloor\mathrm{fl}(\mathrm{fl}(b\cdot\mathrm{fl}(m/100))\cdot\mathrm{fl}(\mathrm{fl}(t/100)+1))\rfloor$
    and the ceiling $I_B=\lfloor V_B\rfloor$ with $V_B=b_Bm(T+100)/10^4$. The
-   float value is at most $V_B(1+5.1u)+1.01\,b_Bm\varepsilon/10^4$. $V_B$ is a
-   multiple of $10^{-4}$, so $V_B\le\lfloor V_B\rfloor+1-10^{-4}$ unless it is
-   an integer. Therefore $I_e\le I_B$ whenever
-
-   $$
-   \sigma=5.1u\,V_B+1.01\,\frac{b_Bm}{10^4}\,\varepsilon<10^{-4}.
-   $$
-
-   For $\varepsilon=0$ this needs only $V_B<1.7\cdot10^{11}$; (D4) gives
-   $V_B\le2^{27}$ and $\sigma\le10^{-5}$.
+   float value is at most $V_B(1+5.1u)$. $V_B$ is a multiple of $10^{-4}$, so
+   $V_B\le\lfloor V_B\rfloor+1-10^{-4}$ unless it is an integer. Therefore
+   $I_e\le I_B$ whenever $5.1u\,V_B<10^{-4}$, that is for
+   $V_B<1.7\cdot10^{11}$; (D4) gives $V_B\le2^{27}$.
 3. *Cheerful life stage.* The evaluator's life factor is
    $\mathrm{fl}(\mathrm{fl}(1.15)+q)$ where $q=\mathrm{fl}(\ell/5000)$ clamped to
    $[\mathrm{fl}(0.1),\mathrm{fl}(0.2)]$. Because $\mathrm{fl}(0.1)$ and
@@ -1354,8 +1347,8 @@ point and live score gives dominance of the packed key
 
 Let the ceiling's bonus be $T=C+D+\lceil S_B\rceil$, where $C$ is a sum of
 per-card and leader-only ceilings of tenth-percent values, $D$ an integer
-diversity bound, and $S_B$ a left-to-right `f64` sum over a support list. If the
-support sum is computed directly, then $t\le T$ exactly ($\varepsilon=0$):
+diversity bound, and $S_B$ a left-to-right `f64` sum over a support list. Every
+support sum is computed directly, never updated by subtraction, so $t\le T$:
 
 - $\mathrm{fl}(x_{10}/10)\le C$ by F2–F3, because $C\ge x_{10}/10$ is an
   exactly representable integer;
@@ -1373,36 +1366,15 @@ support sum is computed directly, then $t\le T$ exactly ($\varepsilon=0$):
   $\mathrm{fl}(\mathrm{fl}(\mathrm{fl}(x_{10}/10)+d)+s)\le C+D+\lceil S_B\rceil$
   by F2–F3.
 
-This covers the suffix support bounds, the Final Chapter leader helpers and the
-build-time extra bonus bound. Consequently the Bonus key satisfies
+This covers the suffix support bounds, the Final Chapter leader helpers, the
+Final Chapter card-level plan and the build-time extra bonus bound. The plan
+keeps the sum of its selected prefix; a new card whose game id is not among the
+entries summed so far leaves that sum's operation sequence, hence its value,
+unchanged, and any other card makes the plan sum the list again. Consequently the Bonus key satisfies
 $\mathrm{round}(2t)\le2T$, and the MySekai value, a monotone `f64` chain in its
 power and bonus inputs, is dominated by F2.
 
-### 29.8 Lemma N6 — incrementally maintained support sums
-
-The Final Chapter card-level plan maintains the remaining support sum with one
-subtraction and one addition per selected card instead of re-summing. In exact
-arithmetic it equals the direct sum of Lemma N5; in `f64` it may differ. For
-the profile $(2.2,2.2,0.6,0.2,0.2)$ with count 3, removing the second $2.2$ and
-the first $0.2$ updates the sum to exactly $3$, while the evaluator sums
-$2.2+0.6+0.2$ to $3.0000000000000004$; the ceiling then carries bonus $3$,
-below the evaluator's $t$.
-
-Each of the at most $c+8$ operations of the incremental sum, and each of the
-$c$ additions of the direct sum, errs by at most $uM$, where $c$ is the profile
-count and $M$ the largest sum of $c+5$ support values of a profile. Adding the
-evaluator's final rounding of the total gives $t\le T+\varepsilon$ with
-
-$$
-\varepsilon=(2c+10)\,uM+u\hat B.
-$$
-
-These plans serve the Score target only. (D4) bounds the resulting
-$\sigma\le10^{-5}$, so Theorem N4 still gives $I_e\le I_B$, and the later
-stages consume integers. The event point, and hence the packed key, remain
-dominated.
-
-### 29.9 Lemma N7 — Skill key
+### 29.8 Lemma N6 — Skill key
 
 The Skill key is $\lfloor\mathrm{fl}(\mathrm{fl}(10v)+10^{-6})\rfloor$, where
 $v$ is the left-to-right sum of the leader's score-up and $0.2$ times each
@@ -1412,7 +1384,7 @@ float error is below $10^{-9}$, so the float value lies in
 $(\lfloor10v^*\rfloor,\lfloor10v^*\rfloor+1)$ and the key is at most
 $\lfloor10v^*\rfloor\le2S+8L$.
 
-### 29.10 Lemma N8 — correlated bound
+### 29.9 Lemma N7 — correlated bound
 
 The coefficients of Section 11 are
 $C=\lceil\mathrm{fl}(\mathrm{base}\cdot Q)\rceil+1$ and likewise $B$, $D$, with
@@ -1427,12 +1399,12 @@ second for all $S,L\ge0$, so every plane dominates the floating-point value
 before its outward integer steps. The final `+1` in **quadratic** is not
 required by this argument.
 
-### 29.11 Scope
+### 29.10 Scope
 
 Everything else in the search is integer arithmetic on exact discrete state.
 Floating-point values enter a ceiling only through the aggregate objective
-coefficients (N1–N4, N7), the correlated coefficients (N8), support sums
-(N5–N6) and the MySekai value (N5). A MySekai live type has no live-score
+coefficients (N1–N4, N6), the correlated coefficients (N7), support sums
+(N5) and the MySekai value (N5). A MySekai live type has no live-score
 formula of its own: the evaluator scores it with the solo constants and the
 Bonus and Score keys keep that live score, so the aggregate ceiling uses the
 same formula.
@@ -1442,5 +1414,6 @@ generated pools under decimal constants and asserts packed and component-wise
 dominance for every live type, skill order and target; targets exact-integer
 and near-integer grid points of the live numerator and of the event stages;
 checks the correlated bound and the support ceilings at every prefix; and
-compares complete searches, including the incremental-support example above,
+compares complete searches, including a Final Chapter support profile whose
+remaining sum rounds above an integer,
 with the exhaustive oracle.

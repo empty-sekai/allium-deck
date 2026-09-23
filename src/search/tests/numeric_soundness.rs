@@ -426,7 +426,7 @@ fn features(pool: &CardPool, context: &SearchContext, deck: &[CardIdx; DECK_SIZE
 struct Tally {
     leaves: usize,
     tight: usize,
-    sub_integer_bonus: usize,
+    near_integer_bonus: usize,
     multi_event: usize,
     noevent: usize,
 }
@@ -471,24 +471,11 @@ fn check_context(pool: &CardPool, context: &SearchContext, label: &str, tally: &
         assert_dominates(&label, upper, leaf, context.target);
         tally.tight += usize::from(upper == leaf);
 
-        // A bonus ceiling maintained incrementally may sit one rounding below
-        // an evaluator sum that exceeds an integer by less than 1e-9.
+        // Decimal support lists can land the evaluator's bonus a few ulps
+        // above an integer; the directly summed ceiling rounds past it.
         let floor = features.bonus_exact.floor();
-        if features.bonus_exact > floor && features.bonus_exact - floor < 1e-9 {
-            tally.sub_integer_bonus += 1;
-            let upper = bound.ceiling(
-                features.power,
-                floor as u32,
-                features.skill,
-                features.leader,
-            );
-            assert_dominates(
-                &format!("{label} sub-integer bonus"),
-                upper,
-                leaf,
-                context.target,
-            );
-        }
+        tally.near_integer_bonus +=
+            usize::from(features.bonus_exact > floor && features.bonus_exact - floor < 1e-9);
 
         let multi_score_event = matches!(context.target, ScoreTarget::Score)
             && context.has_event()
@@ -546,11 +533,10 @@ fn aggregate_ceiling_dominates_float_leaf_for_decimal_constants() {
 }
 
 /// Support lists whose decimal sums are integers make the evaluator's bonus
-/// land a few ulps above that integer. A ceiling handed the integer itself
-/// (as an incrementally maintained support sum may be) must still dominate
-/// every consumer: event point, Bonus key and MySekai score.
+/// land a few ulps above that integer. The ceiling's own support sum rounds up
+/// past it for every consumer: event point, Bonus key and MySekai score.
 #[test]
-fn sub_integer_bonus_excess_is_absorbed_by_every_consumer() {
+fn near_integer_support_sums_are_dominated_by_every_consumer() {
     let mut rng = Rng(0x051b_1e55);
     let mut tally = Tally::default();
     for x10 in 0..60u16 {
@@ -603,9 +589,9 @@ fn sub_integer_bonus_excess_is_absorbed_by_every_consumer() {
         }
     }
     assert!(
-        tally.sub_integer_bonus > 100,
-        "sub-integer={}",
-        tally.sub_integer_bonus
+        tally.near_integer_bonus > 100,
+        "near-integer={}",
+        tally.near_integer_bonus
     );
 }
 
@@ -1170,14 +1156,12 @@ fn mysekai_live_bonus_ceiling_keeps_the_live_tiebreak() {
     assert_dominates("mysekai bonus", upper, leaf, ScoreTarget::Bonus);
 }
 
-/// Final Chapter keeps the remaining support sum incrementally. For the
-/// profile below, removing the second 2.2 and the first 0.2 leaves
-/// `2.2 + 0.6 + 0.2`, which the evaluator sums to 3.0000000000000004 while a
-/// subtract-then-add update yields exactly 3. The event-point floor absorbs the
-/// difference, so the grouped Final Chapter solvers still return the oracle
-/// Top-K.
+/// For the profile below, a deck holding the second 2.2 and the first 0.2
+/// leaves `2.2 + 0.6 + 0.2`, which the evaluator sums to 3.0000000000000004.
+/// The grouped Final Chapter solvers sum the remaining entries in the same
+/// order and return the oracle Top-K.
 #[test]
-fn final_chapter_incremental_support_rounding_keeps_oracle_top_k() {
+fn final_chapter_support_sum_rounding_keeps_oracle_top_k() {
     let profile = SupportDeck {
         cards: vec![(401, 2.2), (402, 2.2), (403, 0.6), (404, 0.2), (405, 0.2)],
         count: 3,
