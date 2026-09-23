@@ -417,18 +417,9 @@ character's Top-K list, so this merge is exact.
 ## 9. Exact bonus tiers
 
 Tier identity and leaf evaluation use exact tenths (`x10`), not the rounded
-half-percent ranking key. In the additive bonus model (non-WL, non-Final, and
-all limited bonuses unconditionally counted), `BonusReach` computes by
-subset-sum DP the exact set of raw `x10` sums achievable by choosing each
-remaining cardinality from the dense suffix. It intentionally relaxes character
-uniqueness and other deck constraints, so its reachable set is a superset of
-legal completions. Consequently, if the needed exact sum is absent from that
-relaxed set, no legal completion can hit the tier.
-
-When limited-count or support semantics make raw per-card totals non-additive,
-production disables both the additive lower bound and `BonusReach`; those modes
-fall back to the ordinary admissible upper-bound checks and exact leaf tier
-membership rather than applying an invalid subset-sum proof.
+half-percent ranking key. Each requested tier keeps its own canonical Top-K;
+the grouped branch and bound and its reachability and live-score pruning are
+proved in pruning-proof Section 17.
 
 The candidate-pool over-target removal described in section 1 is independently
 safe by non-negativity and its unavoidable per-card lower bound. Each per-tier

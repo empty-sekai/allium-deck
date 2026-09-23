@@ -103,16 +103,6 @@ fn exact_tier_enumerates_limited_bonus_role_assignments() {
 }
 
 #[test]
-fn exact_reachability_does_not_clamp_an_empty_interval_to_a_reachable_sum() {
-    let pool = tier_pool(&[(10, 0); 5]);
-    let reach = bonus_reach::BonusReach::build(&pool);
-    assert!(reach.any_in_range(0, 5, 50, 50));
-    assert!(!reach.any_in_range(0, 5, 51, 60));
-    assert!(!reach.any_in_range(0, 5, 51, 50));
-    assert!(!reach.any_in_range(0, 5, u32::MAX, u32::MAX));
-}
-
-#[test]
 fn exact_tier_challenge_rejects_mixed_character_decks() {
     let pool = tier_pool(&[(0, 0); 5]);
     let mut ctx = ready_ctx(&pool, ScoreTarget::Bonus);

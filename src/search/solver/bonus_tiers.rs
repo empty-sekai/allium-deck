@@ -40,8 +40,9 @@ use std::collections::HashMap;
 use crate::pool::{CardIdx, CardPool};
 use crate::search::SearchStats;
 use crate::search::budget::SearchBudget;
+use crate::search::composition::{Regime, power_over_keys};
 use crate::search::context::{SearchContext, SupportDeck};
-use crate::search::evaluate::{decode_u18, resolve_total_bonus};
+use crate::search::evaluate::resolve_total_bonus;
 use crate::search::objective::ObjectiveBound;
 use crate::search::placement::visit_bonus_candidates;
 use crate::search::tracker::TopKTracker;
@@ -49,12 +50,6 @@ use crate::search::tuning::SearchTuning;
 use crate::search::types::{DeckResult, SearchParams};
 use crate::types::{DECK_SIZE, LiveType};
 
-const UNIT_COUNT: u8 = 6;
-const ATTR_COUNT: u8 = 6;
-const KEY_NEITHER: u8 = 1 << 0;
-const KEY_SHARED_ATTR: u8 = 1 << 1;
-const KEY_SHARED_UNIT: u8 = 1 << 2;
-const KEY_BOTH: u8 = 1 << 3;
 /// Card counts `0..=DECK_SIZE` of a suffix selection.
 const COUNTS: usize = DECK_SIZE + 1;
 /// Unreachable table entry. Adding five card values keeps it negative.
@@ -124,74 +119,6 @@ pub(crate) fn search(
         .flat_map(TopKTracker::into_vec)
         .collect();
     (results, stats)
-}
-
-/// Area-item composition regime; identical to `composition::Regime`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Regime {
-    Mixed,
-    SharedAttr(u8),
-    SharedUnit(u8),
-    SharedUnitAttr(u8, u8),
-}
-
-impl Regime {
-    fn all() -> impl Iterator<Item = Self> {
-        let attrs = (0..ATTR_COUNT).map(Self::SharedAttr);
-        let units = (0..UNIT_COUNT).map(Self::SharedUnit);
-        let both = (0..UNIT_COUNT)
-            .flat_map(|unit| (0..ATTR_COUNT).map(move |attr| Self::SharedUnitAttr(unit, attr)));
-        std::iter::once(Self::Mixed)
-            .chain(attrs)
-            .chain(units)
-            .chain(both)
-    }
-
-    fn admits(self, pool: &CardPool, card: CardIdx) -> bool {
-        let has_unit = |unit: u8| pool.unit_mask_raw(card) & (1 << unit) != 0;
-        match self {
-            Self::Mixed => true,
-            Self::SharedAttr(attr) => pool.attr(card) == attr,
-            Self::SharedUnit(unit) => has_unit(unit),
-            Self::SharedUnitAttr(unit, attr) => has_unit(unit) && pool.attr(card) == attr,
-        }
-    }
-
-    fn member_keys(self) -> u8 {
-        match self {
-            Self::Mixed => KEY_NEITHER,
-            Self::SharedAttr(_) => KEY_SHARED_ATTR,
-            Self::SharedUnit(_) => KEY_NEITHER | KEY_SHARED_UNIT,
-            Self::SharedUnitAttr(..) => KEY_SHARED_ATTR | KEY_BOTH,
-        }
-    }
-
-    /// A deck needed from this regime has one attribute (shared) or at least
-    /// two (not shared).
-    fn shares_attr(self) -> bool {
-        matches!(self, Self::SharedAttr(_) | Self::SharedUnitAttr(..))
-    }
-}
-
-/// Largest resolved power of `card` over the member keys in `keys` and over
-/// every unit profile of the card.
-fn power_over_keys(pool: &CardPool, card: CardIdx, keys: u8) -> u32 {
-    let values = pool.power_values(card);
-    let lut = pool.power_lut(card);
-    let units = pool.unit_mask_raw(card);
-    let mut best = 0;
-    for unit in 0..UNIT_COUNT {
-        if units & (1 << unit) == 0 {
-            continue;
-        }
-        let profile = ((lut >> (16 + unit)) & 1) as usize;
-        for key in 0..4 {
-            if keys & (1 << key) != 0 {
-                best = best.max(decode_u18(values, lut, profile * 4 + key));
-            }
-        }
-    }
-    best
 }
 
 /// How the event counts limited card bonuses.

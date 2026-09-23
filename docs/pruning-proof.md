@@ -1318,7 +1318,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | SIMD threshold mask | simd.rs | vectorized scalar upper >= threshold |
 | WL attribute matching | search/suffix.rs | every legal novel-attribute set induces a matching |
 | WL support upper bound | search/suffix.rs, Final helpers | support can only stay or decrease as main deck grows |
-| Bonus tier interval / BonusReach | search/bonus_reach.rs, search/dfs.rs | selected lower bound + suffix upper bound + relaxed subset-sum superset |
+| Exact bonus tiers | search/solver/bonus_tiers.rs | per-card key and slack, exact reachable-sum suffix table per regime, per-tier live ceiling |
 | Final member dominance | search/dominance.rs, search/alternatives.rs | member-role substitution + legal leader rotations |
 | Final leader/job bound | solver/final_chapter.rs | admissible character ceiling |
 | Final attribute DP | solver/final_chapter.rs | exact isolated OR-union DP |
@@ -1349,7 +1349,7 @@ independent checks designed to expose a violated premise.
 | No-event numerator | exact_score.rs numerator threshold identities |
 | Dominance | exact_dominance.rs, dominance_contract.rs, exact_world_bloom.rs |
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
-| BonusReach / exact tiers | exact_bonus.rs, fractional_bonus.rs |
+| Exact bonus tiers | bonus_tiers.rs, exact_bonus.rs, fractional_bonus.rs |
 | Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |
 | Power | exact_power.rs and all-scene oracle matrix |

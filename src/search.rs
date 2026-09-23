@@ -11,7 +11,6 @@
 //! not necessarily a complete one.
 
 /// 精确档位搜索的可达加成集合。
-pub mod bonus_reach;
 /// 穷举参考实现，用于在测试中校验剪枝搜索的结果。
 pub mod bruteforce;
 /// 挑战 live 搜索：五张同角色，逐角色搜索后归并。
@@ -267,8 +266,6 @@ fn search_unique_characters(
                     &suffix,
                     params,
                     seeds,
-                    None,
-                    None,
                     floor,
                     budget,
                 )
@@ -297,8 +294,6 @@ fn search_unique_characters(
         &suffix,
         params,
         seeds,
-        None,
-        None,
         floor,
         budget,
     );

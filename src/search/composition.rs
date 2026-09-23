@@ -53,7 +53,7 @@ const KEY_SHARED_UNIT: u8 = 1 << 2;
 const KEY_BOTH: u8 = 1 << 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Regime {
+pub(super) enum Regime {
     Mixed,
     SharedAttr(u8),
     SharedUnit(u8),
@@ -61,7 +61,7 @@ enum Regime {
 }
 
 impl Regime {
-    fn all() -> impl Iterator<Item = Self> {
+    pub(super) fn all() -> impl Iterator<Item = Self> {
         let attrs = (0..ATTR_COUNT).map(Self::SharedAttr);
         let units = (0..UNIT_COUNT).map(Self::SharedUnit);
         let both = (0..UNIT_COUNT)
@@ -72,7 +72,7 @@ impl Regime {
             .chain(both)
     }
 
-    fn admits(self, pool: &CardPool, card: CardIdx) -> bool {
+    pub(super) fn admits(self, pool: &CardPool, card: CardIdx) -> bool {
         let has_unit = |unit: u8| pool.unit_mask_raw(card) & (1 << unit) != 0;
         match self {
             Self::Mixed => true,
@@ -82,7 +82,7 @@ impl Regime {
         }
     }
 
-    fn member_keys(self) -> u8 {
+    pub(super) fn member_keys(self) -> u8 {
         match self {
             Self::Mixed => KEY_NEITHER,
             Self::SharedAttr(_) => KEY_SHARED_ATTR,
@@ -91,7 +91,8 @@ impl Regime {
         }
     }
 
-    fn shares_attr(self) -> bool {
+    /// Whether every deck of the regime shares one attribute.
+    pub(super) fn shares_attr(self) -> bool {
         matches!(self, Self::SharedAttr(_) | Self::SharedUnitAttr(..))
     }
 }
@@ -99,7 +100,7 @@ impl Regime {
 /// Largest resolved power of `card` over the member keys selected by `keys`
 /// (bit `k` = member key `k`, i.e. `shared_unit * 2 + shared_attr`) and over
 /// every unit profile of the card.
-fn power_over_keys(pool: &CardPool, card: CardIdx, keys: u8) -> u32 {
+pub(super) fn power_over_keys(pool: &CardPool, card: CardIdx, keys: u8) -> u32 {
     let values = pool.power_values(card);
     let lut = pool.power_lut(card);
     let units = pool.unit_mask_raw(card);

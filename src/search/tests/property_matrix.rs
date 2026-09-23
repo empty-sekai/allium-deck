@@ -322,9 +322,9 @@ fn long_exact_all_scene_property_matrix() {
                 !stats.deadline_hit,
                 "case {case} bonus-tiers: unexpected timeout"
             );
-            // BonusBucketTracker returns target buckets in descending target
-            // order. targets is sampled from brute-force Bonus results, which
-            // are already ranked by the encoded bonus descending.
+            // Tier results come in descending target order. targets is
+            // sampled from brute-force Bonus results, which are already
+            // ranked by the encoded bonus descending.
             let (expected, _) =
                 ExactOracle::new(&pool, &bonus).search_bonus_targets(&params, &targets);
             if got.iter().map(|r| r.score).collect::<Vec<_>>()
