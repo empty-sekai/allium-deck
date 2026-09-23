@@ -536,6 +536,23 @@ result.
 Therefore evaluating the event formula at independently relaxed component
 maxima cannot underestimate a legal completion.
 
+For Solo, Auto and Challenge lives under the Best, Worst and Specific skill
+orders, the rate adds six slot score-ups, the five members in placement order
+and the leader again, each multiplied by one of six slot rates. Let $S$ bound
+the members' score-up sum and $L$ each member's score-up, and let
+$M=\min(L,S)$, which bounds every single slot. Every order pairs the slots
+with the rates by some permutation, and for rates $R_1\ge\dots\ge R_6$ any
+such sum is at most
+
+$$
+M R_1+\sum_{j=2}^{6} v_j R_j,\qquad v_j=\min\Bigl(M,\;S-\sum_{i<j,\,i\ge2}v_i\Bigr),
+$$
+
+the leader slot taken on its own at most $M$ on the largest rate and the
+member sum spread over the others, largest rates first, at most $M$ each (a
+fractional knapsack with unit weights). The value is non-decreasing in $S$
+and $L$, and it is at most the uniform relaxation $L\sum_j R_j$.
+
 Free-role traversal does not prematurely enforce a limited-bonus count cap.
 For pruning, partial_bonus_add counts every selected limited amount; the exact
 evaluator applies the event cap only at a leaf. Because limited contributions
@@ -1735,7 +1752,8 @@ $$
 \ge10^6\,\frac{\sum_k r_k}{500}\,(1-u)^7,
 $$
 
-and likewise for the Average five-slot sum and leader rate. The integer steps
+and likewise for the Average five-slot sum and leader rate and for each
+sorted slot rate $\lceil\mathrm{fl}(\mathrm{fl}(r/100)\cdot10^6)\rceil$. The integer steps
 that follow (products and `ceil_div_positive`) are exact or round up, and the
 base rate is the same `f64` value on both sides. Hence the live numerator
 satisfies

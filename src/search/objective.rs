@@ -44,6 +44,8 @@ pub(crate) struct ObjectiveBound {
     pub(super) avg_sum5_1m: i64,
     /// Solo/Auto + Average：leader 追加 slot 的 rate × 1_000_000, ceil。
     pub(super) avg_leader_rate_1m: i64,
+    /// The six slot rates, largest first, each (rate / 100) × 1_000_000, ceil.
+    pub(super) sorted_rates_1m: [i64; DECK_SIZE + 1],
     /// 5 × multi_teammate_score_up（Multi/Cheerful 专用）。
     pub(super) teammate_su_5x: i64,
     /// Multi/Cheerful: 75_000 (= 0.075 × 1M), 其他: 0。
@@ -78,6 +80,8 @@ impl ObjectiveBound {
         }];
         let avg_sum5 = active_skill_rates[..DECK_SIZE].iter().sum::<f64>();
         let avg_leader_rate = active_skill_rates[DECK_SIZE];
+        let mut sorted_rates = active_skill_rates;
+        sorted_rates.sort_unstable_by(|left, right| right.total_cmp(left));
         Self {
             target: ctx.target,
             effective_live_type: ctx.effective_live_type(),
@@ -88,6 +92,7 @@ impl ObjectiveBound {
             srs_div500_1m: (skill_rate_sum / 500.0 * 1_000_000.0).ceil() as i64,
             avg_sum5_1m: (avg_sum5 * 1_000_000.0).ceil() as i64,
             avg_leader_rate_1m: (avg_leader_rate * 1_000_000.0).ceil() as i64,
+            sorted_rates_1m: sorted_rates.map(|rate| (rate / 100.0 * 1_000_000.0).ceil() as i64),
             teammate_su_5x: ctx
                 .multi_teammate_score_up
                 .map(|v| v as i64 * 5)
@@ -224,10 +229,21 @@ impl ObjectiveBound {
                     + ceil_div_positive(leader_ub as i64 * self.avg_leader_rate_1m, 100)
             }
             _ => {
-                // 每个技能槽的 score_up 不超过全队最大技能 L（含 leader 复发槽），
-                // 因此 Σ su_i·r_i ≤ L·Σr_i = L·srs。旧值 5*skill_total(=S·srs/100)
-                // 对 Solo/Auto 高估约 5 倍。
-                self.base_rate_1m + 5 * (leader_ub as i64) * self.srs_div500_1m
+                // The six slots hold the five members and the leader again.
+                // Each is at most `leader_ub` and at most `skill_total`, and
+                // the five members sum to at most `skill_total`. Every pairing
+                // of slots with rates is at most the one that puts the leader
+                // slot on the largest rate and spreads the member sum over the
+                // others, largest rates first, at most the peak each.
+                let peak = i64::from(leader_ub.min(skill_total));
+                let mut rest = i64::from(skill_total);
+                let mut rate = self.base_rate_1m + peak * self.sorted_rates_1m[0];
+                for &coefficient in &self.sorted_rates_1m[1..] {
+                    let value = rest.min(peak);
+                    rate += value * coefficient;
+                    rest -= value;
+                }
+                rate
             }
         };
         let power_sum: i64 = if let Some(tp) = self.multi_teammate_power {
