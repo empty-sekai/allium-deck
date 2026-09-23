@@ -1275,7 +1275,8 @@ before truncation. Then $X_e\le X^*(1+u)^{20}$:
 
 - integral and quarter-integral slot score-ups are exact (F3); the Multi self
   score-up $L+\sum_i o_i/5$ costs at most 5 roundings, and a further Average
-  division at most 5 more;
+  division at most 5 more. These sums add their terms in ascending order, so
+  the value is the same for every order of the deck's free members;
 - the rate $\mathrm{base}+\sum_k\mathrm{fl}(\mathrm{fl}(su_k r_k)/100)$ costs 2
   roundings per term and 6 additions;
 - the product with power costs 1 (the factor 4 is exact), the co-op term
@@ -1377,8 +1378,8 @@ power and bonus inputs, is dominated by F2.
 ### 29.8 Lemma N6 — Skill key
 
 The Skill key is $\lfloor\mathrm{fl}(\mathrm{fl}(10v)+10^{-6})\rfloor$, where
-$v$ is the left-to-right sum of the leader's score-up and $0.2$ times each
-other score-up. With integral or quarter-integral score-ups, the exact $10v^*$
+$v$ is the leader's score-up plus $0.2$ times each other score-up, added in
+ascending order. With integral or quarter-integral score-ups, the exact $10v^*$
 is a multiple of $1/2$ and at most the ceiling $2S+8L$. For $10v^*<10^5$ the
 float error is below $10^{-9}$, so the float value lies in
 $(\lfloor10v^*\rfloor,\lfloor10v^*\rfloor+1)$ and the key is at most

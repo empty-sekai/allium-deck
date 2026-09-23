@@ -811,16 +811,17 @@ fn materialize_permutation(
         }
     }
 
-    let mut multi_live_score_up = unsafe { skills.get_unchecked(*order.get_unchecked(0)).score_up };
-    let mut score_index = 1usize;
-    while score_index < DECK_SIZE {
-        multi_live_score_up += unsafe {
-            skills
-                .get_unchecked(*order.get_unchecked(score_index))
-                .score_up
-        } * 0.2;
-        score_index += 1;
-    }
+    let score_up =
+        |slot: usize| unsafe { skills.get_unchecked(*order.get_unchecked(slot)).score_up };
+    let multi_live_score_up = add_ascending(
+        score_up(0),
+        [
+            score_up(1) * 0.2,
+            score_up(2) * 0.2,
+            score_up(3) * 0.2,
+            score_up(4) * 0.2,
+        ],
+    );
 
     EvaluatedPermutation {
         order,
@@ -839,22 +840,22 @@ fn sorted_live_skills(
         ctx.effective_live_type(),
         LiveType::Multi | LiveType::Cheerful
     ) {
-        let mut self_score_up = unsafe {
+        let score_up = |slot: usize| unsafe {
             permutation
                 .skills
-                .get_unchecked(*permutation.order.get_unchecked(0))
+                .get_unchecked(*permutation.order.get_unchecked(slot))
                 .score_up
         };
-        let mut index = 1usize;
-        while index < DECK_SIZE {
-            self_score_up += unsafe {
-                permutation
-                    .skills
-                    .get_unchecked(*permutation.order.get_unchecked(index))
-                    .score_up
-            } / DECK_SIZE as f64;
-            index += 1;
-        }
+        let member = DECK_SIZE as f64;
+        let self_score_up = add_ascending(
+            score_up(0),
+            [
+                score_up(1) / member,
+                score_up(2) / member,
+                score_up(3) / member,
+                score_up(4) / member,
+            ],
+        );
         let self_skill = LiveSkillValue {
             score_up: self_score_up,
             ..LiveSkillValue::default()
@@ -898,6 +899,26 @@ fn sorted_live_skills(
     buffer
 }
 
+/// Adds `terms` to `init` from the smallest to the largest, so members that
+/// exchange positions produce the same floating-point value.
+#[inline(always)]
+fn add_ascending<const N: usize>(init: f64, mut terms: [f64; N]) -> f64 {
+    let mut index = 1usize;
+    while index < N {
+        let mut cursor = index;
+        while cursor > 0 && terms[cursor - 1] > terms[cursor] {
+            terms.swap(cursor - 1, cursor);
+            cursor -= 1;
+        }
+        index += 1;
+    }
+    let mut sum = init;
+    for term in terms {
+        sum += term;
+    }
+    sum
+}
+
 #[inline(always)]
 fn apply_live_skill_order(
     slots: &mut [LiveSkillValue; DECK_SIZE + 1],
@@ -915,12 +936,16 @@ fn apply_live_skill_order(
             sort_rates_ascending(skill_rates);
         }
         LiveSkillOrder::Average => {
-            let mut total = 0.0;
-            let mut index = 0usize;
-            while index < DECK_SIZE {
-                total += unsafe { slots.get_unchecked(index).score_up };
-                index += 1;
-            }
+            let total = add_ascending(
+                0.0,
+                [
+                    slots[0].score_up,
+                    slots[1].score_up,
+                    slots[2].score_up,
+                    slots[3].score_up,
+                    slots[4].score_up,
+                ],
+            );
             let average = total / DECK_SIZE as f64;
             let mut slot = 0usize;
             while slot < DECK_SIZE {
