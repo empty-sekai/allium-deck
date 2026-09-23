@@ -801,7 +801,11 @@ fn materialize_permutation(
         if let Some(leader_slot) = ctx.forced_leader_slot(pool, deck) {
             order.swap(0, leader_slot);
         }
-        sort_tail_by_card_raw(pool, &mut order, deck);
+        // A fully fixed lineup defines every skill slot, not just its leader.
+        // Keep those positions when automatic leader selection is disabled.
+        if ctx.fixed_card_ids.len() != DECK_SIZE {
+            sort_tail_by_card_raw(pool, &mut order, deck);
+        }
     }
 
     let mut multi_live_score_up = unsafe { skills.get_unchecked(*order.get_unchecked(0)).score_up };

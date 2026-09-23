@@ -381,3 +381,37 @@ fn simple_target_search_preserves_large_fixed_character_prefixes() {
         }
     }
 }
+
+#[test]
+fn fully_fixed_lineup_keeps_summary_slots_and_metrics() {
+    for live_type in [LiveType::Solo, LiveType::Challenge] {
+        let mut cards = five_unique_cards();
+        if live_type == LiveType::Challenge {
+            for card in &mut cards {
+                card.char_id = 1;
+            }
+        }
+        let pool = build_pool(&cards);
+        let mut context = ready_ctx(&pool, ScoreTarget::Power);
+        context.live_type = live_type;
+        context.enforce_char_uniqueness = live_type != LiveType::Challenge;
+        context.best_skill_as_leader = false;
+        context.fixed_card_ids = vec![104, 103, 102, 101, 100];
+        let result = search_exact(
+            &pool,
+            &context,
+            &SearchParams {
+                top_k: 1,
+                timeout_ms: 0,
+            },
+        );
+        assert_eq!(result.len(), 1);
+        let summary = summarize_deck(&pool, &context, &result[0].cards).unwrap();
+        assert_eq!(
+            summary.ordered_cards.map(|c| pool.game_id(c)),
+            [104, 103, 102, 101, 100]
+        );
+        assert_eq!(summary.card_skill_score_up, [50.0, 40.0, 30.0, 20.0, 10.0]);
+        assert_eq!(summary.card_power_total, [500, 400, 300, 200, 100]);
+    }
+}
