@@ -1002,26 +1002,34 @@ A leader job is skipped only if character_ceiling(...) < threshold. Auto-leader
 jobs run in non-increasing ceiling order, so the first job whose ceiling falls
 below the threshold also bounds every later one.
 
-### 18.2 Exact attribute-union DP
+### 18.2 Character-attribute groups and the attribute-union DP
 
-For each character group, attr_mask records every attribute available from that
-character.
+A member group holds one character's cards of one attribute. Every member card
+lies in exactly one group, and a deck takes at most one group of each
+character, so enumerating strictly increasing group indices that skip
+characters already taken lists every member set of distinct characters once.
+Because a group fixes its attribute, the attribute union of the selected
+prefix is exact, and the group's power, skill and bonus maxima are those of
+cards with that attribute.
 
 attr_bonus[k][s] stores the maximum `diff_attr_bonus` obtainable by selecting
 exactly $k$ groups from a suffix, starting from attribute union `s`. Its
 transition keeps the skip-current-group value and, for every attribute in the
 current group's mask, takes the value for `s | attribute` in the `k-1` row.
-This is the OR-product DP with the final bonus lookup memoized. Induction on
-suffix length proves that the table is the exact maximum for the isolated
-attribute dimension, including nonmonotone `diff_attr_bonus` tables.
+This is the OR-product DP with the final bonus lookup memoized, and it holds
+for nonmonotone `diff_attr_bonus` tables. The DP may select two groups of one
+character; the legal selections are a subset of the ones it maximizes over,
+so the table bounds the attribute bonus of every legal completion.
 
 Combining the selected-prefix union and leader attribute into `s`, then looking
-up `attr_bonus[remaining][s]`, is therefore an exact maximum for that dimension.
+up `attr_bonus[remaining][s]`, therefore bounds that dimension.
 
 ### 18.3 Character-level numeric ceiling
 
-For the remaining character groups, the suffix independently takes the largest
-possible per-group power, skill, base bonus, and limited bonus.
+For the remaining slots, the suffix independently takes the largest values
+of power, skill, base bonus, and limited bonus over distinct characters: each
+character contributes its best value over its groups in the suffix, since a
+deck takes at most one of them.
 
 For limited bonus, only the largest values up to the remaining
 card_bonus_count_limit are admitted. Any legal completion can contribute no
@@ -1035,15 +1043,19 @@ therefore yields an admissible character_ceiling.
 
 ### 18.4 Character-loop break
 
-Character groups are sorted by a descending group key, but the correctness of
-the break does not depend on that heuristic key. character_ceiling at position
-i reads GroupCeilingTail[i], which was built from the exact suffix
-groups[i..]. Moving to i+1 removes a group from that suffix. Every per-component
-top list and every reachable attribute-union set can therefore only stay equal
-or shrink.
+Groups are sorted by a descending group key, but the correctness of the break
+does not depend on that heuristic key. character_ceiling at position i reads
+GroupCeilingTail[i], which was built from the exact suffix groups[i..]. Moving
+to i+1 removes a group from that suffix. Every per-character maximum, every
+per-component top list and every reachable attribute-union set can therefore
+only stay equal or shrink.
 
 Thus character_ceiling is non-increasing with the start index. Once it is below
-the threshold, the rest of the group loop can safely break.
+the threshold, the rest of the group loop can safely break. Groups of a
+character already taken are skipped without a ceiling. Within one loop the
+prefix is fixed, so the ceiling is a function of the suffix table alone; each
+table carries a version that changes exactly when its contents change, and an
+unchanged version reuses the previous ceiling.
 
 ### 18.5 Card-level plan
 
@@ -1067,16 +1079,15 @@ total as an optimistic bound. A surviving candidate then updates its exact
 support displacement before a second bound is checked. The updated support
 value still bounds all later extensions by Section 16.
 
-Each group scans its cards in attribute runs: cards of one attribute are
-consecutive, and every scan position stores the maxima of power, skill, base
-bonus and rounded limited bonus from that card to the end of its run. The
-candidate ceiling reads only these four terms and the attribute, and it is
-non-decreasing in each term: the power, skill and base sums grow, the merged
-top limited values cannot shrink when one value grows, and the attribute
-table is read at the same union. The ceiling of the run maxima therefore
-bounds every later card of the run. When it is below $\tau$, the scan resumes
-after the run (Theorem 1). A skip that passes the end of the ranked buffer
-also holds for the cards after it, since the threshold never decreases.
+Every scan position of a group stores the maxima of power, skill, base
+bonus and rounded limited bonus from that card to the end of the group, whose
+cards share one attribute. The candidate ceiling reads only these four terms
+and the attribute, and it is non-decreasing in each term: the power, skill and
+base sums grow, the merged top limited values cannot shrink when one value
+grows, and the attribute table is read at the same union. The ceiling of the
+rest maxima therefore bounds every later card of the group. When it is below
+$\tau$, the scan of the group ends (Theorem 1), including the cards after the
+ranked buffer, since the threshold never decreases.
 
 ### 18.6 Ranked card buffer and its monotone break
 
@@ -1552,7 +1563,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Final attribute DP | solver/final_chapter.rs | exact isolated OR-union DP |
 | Final character-loop break | solver/final_chapter.rs | nested group suffixes imply non-increasing character ceiling |
 | Final card-group bound | solver/final_chapter.rs | independent per-group maxima + limited top-cap + support UB |
-| Final attribute runs | solver/final_chapter.rs | same attribute, run maxima and a non-decreasing candidate ceiling bound the rest of a run |
+| Final group rest maxima | solver/final_chapter.rs | same attribute, rest maxima and a non-decreasing candidate ceiling bound the rest of a group |
 | Final ranked-buffer break | solver/final_chapter.rs | candidates sorted by admissible UB; overflow candidates still visited |
 | Numeric Power max/min | solver/numeric.rs | global max UB / global min LB |
 | Numeric Skill | solver/numeric.rs | Section 20: composition-aware per-card ceilings, per-character frontier, candidate break, public-set equality rule |

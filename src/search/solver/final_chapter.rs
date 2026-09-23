@@ -16,12 +16,11 @@ const RANKED_CAP: usize = 32;
 
 /// `recurse_cards` 排序候选缓冲的单槽：(上界, 卡, 落子后的局部状态)。
 type RankedSlot = (u64, CardIdx, CardPartial);
+/// The member cards of one character and one attribute.
 #[derive(Clone)]
 struct CharGroup {
     char_id: u8,
-    /// Best first by the member key.
-    cards: Vec<CardIdx>,
-    /// The same cards grouped into attribute runs; see [`ScanCard`].
+    /// Best first by the member key; see [`ScanCard`].
     scan: Vec<ScanCard>,
     best_power: u32,
     best_skill: u32,
@@ -68,52 +67,30 @@ impl MemberTerms {
     }
 }
 
-/// A group card in scan order. Cards of one attribute are consecutive; `run`
-/// holds the maxima of the terms from this card to the end of its attribute
-/// run, which ends before `run_end`.
+/// A group card in scan order. `rest` holds the maxima of the terms from
+/// this card to the end of its group.
 #[derive(Clone, Copy, Debug)]
 struct ScanCard {
     card: CardIdx,
     terms: MemberTerms,
-    run: MemberTerms,
-    run_end: u16,
+    rest: MemberTerms,
 }
 
-/// Attribute runs ordered by their best card, each best first; `cards` is
-/// best first by the member key.
+/// `cards` share one attribute and are best first by the member key.
 fn build_scan(pool: &CardPool, cards: &[CardIdx]) -> Vec<ScanCard> {
-    let mut order = cards.to_vec();
-    // A stable sort by each attribute's first appearance keeps the key order
-    // inside a run and puts the run of the best card first.
-    let mut first_seen = [usize::MAX; 8];
-    for (rank, &card) in cards.iter().enumerate() {
-        let attr = usize::from(pool.attr(card));
-        first_seen[attr] = first_seen[attr].min(rank);
-    }
-    order.sort_by_key(|&card| first_seen[usize::from(pool.attr(card))]);
-    let mut scan: Vec<ScanCard> = order
+    let mut scan: Vec<ScanCard> = cards
         .iter()
         .map(|&card| {
             let terms = MemberTerms::of(pool, card);
             ScanCard {
                 card,
                 terms,
-                run: terms,
-                run_end: 0,
+                rest: terms,
             }
         })
         .collect();
-    let mut idx = scan.len();
-    while idx > 0 {
-        idx -= 1;
-        let (run, run_end) = match scan.get(idx + 1) {
-            Some(next) if next.terms.attr == scan[idx].terms.attr => {
-                (scan[idx].terms.max(next.run), next.run_end)
-            }
-            _ => (scan[idx].terms, (idx + 1) as u16),
-        };
-        scan[idx].run = run;
-        scan[idx].run_end = run_end;
+    for idx in (1..scan.len()).rev() {
+        scan[idx - 1].rest = scan[idx - 1].terms.max(scan[idx].rest);
     }
     scan
 }
@@ -217,8 +194,10 @@ struct CardGroupPlan {
     attr_bonus: [[u16; 32]; MEMBER_COUNT + 1],
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct GroupCeilingTail {
+    /// Equal for two suffixes exactly when every other field is equal.
+    version: u32,
     top_power: [u32; MEMBER_COUNT + 1],
     top_skill: [u32; MEMBER_COUNT + 1],
     top_base_bonus: [u32; MEMBER_COUNT + 1],
@@ -407,16 +386,31 @@ fn build_group_ceiling_suffix(
 ) -> Vec<GroupCeilingTail> {
     let mut suffix = vec![GroupCeilingTail::default(); groups.len() + 1];
     suffix[groups.len()].attr_bonus[0] = diversity_bonus(diff_attr_bonus);
+    // A deck takes at most one group of each character, so the top lists
+    // rank each character's best value over its groups in the suffix.
+    let mut tops = [CharacterTop::default(); 4];
     let mut idx = groups.len();
     while idx > 0 {
         idx -= 1;
         let group = &groups[idx];
+        let values = [
+            group.best_power,
+            group.best_skill,
+            group.best_base_bonus,
+            group.best_limited_bonus,
+        ];
+        for (top, value) in tops.iter_mut().zip(values) {
+            top.raise(group.char_id, value);
+        }
         let next = suffix[idx + 1];
-        let mut tail = next;
-        insert_topk_u32(&mut tail.top_power, group.best_power);
-        insert_topk_u32(&mut tail.top_skill, group.best_skill);
-        insert_topk_u32(&mut tail.top_base_bonus, group.best_base_bonus);
-        insert_topk_u32(&mut tail.top_limited_bonus, group.best_limited_bonus);
+        let mut tail = GroupCeilingTail {
+            version: next.version,
+            top_power: tops[0].values(),
+            top_skill: tops[1].values(),
+            top_base_bonus: tops[2].values(),
+            top_limited_bonus: tops[3].values(),
+            attr_bonus: next.attr_bonus,
+        };
         for picked in 1..=MEMBER_COUNT {
             attr_step(
                 &next.attr_bonus[picked - 1],
@@ -424,9 +418,54 @@ fn build_group_ceiling_suffix(
                 &mut tail.attr_bonus[picked],
             );
         }
+        if tail != next {
+            tail.version += 1;
+        }
         suffix[idx] = tail;
     }
     suffix
+}
+
+/// The largest per-character maxima seen so far, best first, each
+/// character at most once. Maxima only grow, so a character that falls off
+/// the list re-enters with its current maximum.
+#[derive(Clone, Copy, Default)]
+struct CharacterTop {
+    entries: [(u32, u8); MEMBER_COUNT + 1],
+    len: usize,
+}
+
+impl CharacterTop {
+    fn raise(&mut self, char_id: u8, value: u32) {
+        let mut at = match self.entries[..self.len]
+            .iter()
+            .position(|&(_, owner)| owner == char_id)
+        {
+            Some(at) if value > self.entries[at].0 => at,
+            Some(_) => return,
+            None if self.len < self.entries.len() => {
+                self.len += 1;
+                self.len - 1
+            }
+            None if value > self.entries[self.len - 1].0 => self.len - 1,
+            None => return,
+        };
+        self.entries[at] = (value, char_id);
+        while at > 0 && self.entries[at - 1].0 < self.entries[at].0 {
+            self.entries.swap(at - 1, at);
+            at -= 1;
+        }
+    }
+
+    fn values(&self) -> [u32; MEMBER_COUNT + 1] {
+        core::array::from_fn(|slot| {
+            if slot < self.len {
+                self.entries[slot].0
+            } else {
+                0
+            }
+        })
+    }
 }
 
 #[inline]
@@ -512,11 +551,13 @@ fn search_leaders(
         }
     }
 
+    let buckets = attribute_buckets(pool);
     for leader_char in leader_chars {
         if guard.expired() {
             break;
         }
-        let groups = build_char_groups(pool, ctx, leader_char, &member_keep, params.top_k);
+        let groups =
+            build_char_groups(pool, ctx, &buckets, leader_char, &member_keep, params.top_k);
         if groups.len() < MEMBER_COUNT {
             continue;
         }
@@ -602,13 +643,14 @@ fn search_auto_leaders_two_phase(
     mut tracker: TopKTracker,
     mut stats: SearchStats,
 ) -> (Vec<DeckResult>, SearchStats) {
+    let buckets = attribute_buckets(pool);
     let mut jobs = Vec::new();
     let mut group_sets = Vec::new();
     for leader_char in 0..=26 {
         if guard.expired() {
             break;
         }
-        let groups = build_char_groups(pool, ctx, leader_char, member_keep, params.top_k);
+        let groups = build_char_groups(pool, ctx, &buckets, leader_char, member_keep, params.top_k);
         if groups.len() < MEMBER_COUNT {
             continue;
         }
@@ -729,12 +771,17 @@ fn seed_leader_groups(
                     if guard.expired_sampled() {
                         return;
                     }
-                    stats.diagnostics.seed_states += 1;
                     let indices = [a, b, c, d];
+                    let chars = indices.map(|index| groups[index].char_id);
+                    if (1..MEMBER_COUNT).any(|slot| chars[..slot].contains(&chars[slot])) {
+                        d += 1;
+                        continue;
+                    }
+                    stats.diagnostics.seed_states += 1;
                     let mut deck = [leader.leader; DECK_SIZE];
                     let mut slot = 0usize;
                     while slot < MEMBER_COUNT {
-                        deck[slot + 1] = groups[indices[slot]].cards[0];
+                        deck[slot + 1] = groups[indices[slot]].scan[0].card;
                         slot += 1;
                     }
                     stats.leaf_nodes += 1;
@@ -745,9 +792,9 @@ fn seed_leader_groups(
                     let mut variant = 0usize;
                     while variant < MEMBER_COUNT {
                         let group = &groups[indices[variant]];
-                        if group.cards.len() > 1 {
+                        if group.scan.len() > 1 {
                             let mut alt = deck;
-                            alt[variant + 1] = group.cards[1];
+                            alt[variant + 1] = group.scan[1].card;
                             stats.leaf_nodes += 1;
                             stats.diagnostics.seed_leaves += 1;
                             if let Some(candidate) = placement::evaluate_candidate(pool, ctx, &alt)
@@ -767,9 +814,29 @@ fn seed_leader_groups(
     }
 }
 
+/// Pool cards grouped by (character, attribute), built once per search.
+type AttributeBuckets = Vec<((u8, u8), Vec<CardIdx>)>;
+
+fn attribute_buckets(pool: &CardPool) -> AttributeBuckets {
+    let mut cards = pool.indices().collect::<Vec<_>>();
+    cards.sort_unstable_by_key(|&card| (pool.char_id(card), pool.attr(card), card.raw()));
+    cards
+        .chunk_by(|&left, &right| {
+            (pool.char_id(left), pool.attr(left)) == (pool.char_id(right), pool.attr(right))
+        })
+        .map(|bucket| {
+            (
+                (pool.char_id(bucket[0]), pool.attr(bucket[0])),
+                bucket.to_vec(),
+            )
+        })
+        .collect()
+}
+
 fn build_char_groups(
     pool: &CardPool,
     ctx: &SearchContext,
+    buckets: &AttributeBuckets,
     leader_char: u8,
     member_keep: &[bool],
     top_k: usize,
@@ -777,66 +844,54 @@ fn build_char_groups(
     let leader_member_keep = (top_k == 1).then(|| {
         crate::search::dominance::compute_member_dominance_for_leader(pool, ctx, leader_char).keep
     });
-    let mut by_char = vec![Vec::<CardIdx>::new(); 27];
-    for card in pool.indices() {
-        let char_id = pool.char_id(card);
+    // One group per character and attribute: a deck takes at most one group
+    // of each character, and a group fixes the attribute its card adds.
+    let mut groups = Vec::new();
+    let mut keyed = Vec::new();
+    for &((char_id, _), ref cards) in buckets {
         if char_id == leader_char {
             continue;
         }
-        if !member_keep.get(card.raw()).copied().unwrap_or(true)
-            || leader_member_keep
-                .as_ref()
-                .is_some_and(|keep| !keep[card.raw()])
-        {
+        keyed.clear();
+        keyed.extend(
+            cards
+                .iter()
+                .copied()
+                .filter(|&card| {
+                    member_keep.get(card.raw()).copied().unwrap_or(true)
+                        && leader_member_keep
+                            .as_ref()
+                            .is_none_or(|keep| keep[card.raw()])
+                })
+                .map(|card| (final_chapter_member_key(pool, ctx, leader_char, card), card)),
+        );
+        if keyed.is_empty() {
             continue;
         }
-        by_char[char_id as usize].push(card);
-    }
-
-    let mut groups = Vec::new();
-    for (char_id, cards) in by_char.into_iter().enumerate() {
-        if cards.is_empty() {
-            continue;
-        }
-        let mut best_power = 0u32;
-        let mut best_skill = 0u32;
-        let mut best_base_bonus = 0u32;
-        let mut best_limited_bonus = 0u32;
-        let mut attr_mask = 0u8;
-        let mut keyed_cards = cards
-            .into_iter()
-            .map(|card| (final_chapter_member_key(pool, ctx, leader_char, card), card))
-            .collect::<Vec<_>>();
-        keyed_cards.sort_unstable_by(|left, right| {
+        // Best first by the member key.
+        keyed.sort_unstable_by(|left, right| {
             right
                 .0
                 .cmp(&left.0)
                 .then_with(|| left.1.raw().cmp(&right.1.raw()))
         });
-        let sorted_cards = keyed_cards
-            .into_iter()
-            .map(|(_, card)| card)
-            .collect::<Vec<_>>();
-        for card in &sorted_cards {
-            let eb = pool.event_bonus_exact(*card);
-            best_power = best_power.max(pool.power_max(*card));
-            best_skill = best_skill.max(pool.skill_max(*card) as u32);
-            best_base_bonus = best_base_bonus.max(eb.base_ceil());
-            best_limited_bonus = best_limited_bonus.max(eb.limited_ceil());
-            attr_mask |= 1u8 << pool.attr(*card);
-        }
-        let sort_key =
-            final_chapter_group_key(best_power, best_skill, best_base_bonus, best_limited_bonus);
+        let sorted_cards = keyed.iter().map(|&(_, card)| card).collect::<Vec<_>>();
+        let scan = build_scan(pool, &sorted_cards);
+        let best = scan[0].rest;
         groups.push(CharGroup {
-            char_id: char_id as u8,
-            scan: build_scan(pool, &sorted_cards),
-            cards: sorted_cards,
-            best_power,
-            best_skill,
-            best_base_bonus,
-            best_limited_bonus,
-            attr_mask,
-            sort_key,
+            char_id,
+            scan,
+            best_power: best.power,
+            best_skill: best.skill,
+            best_base_bonus: best.base_bonus,
+            best_limited_bonus: best.limited_bonus,
+            attr_mask: 1u8 << best.attr,
+            sort_key: final_chapter_group_key(
+                best.power,
+                best.skill,
+                best.base_bonus,
+                best.limited_bonus,
+            ),
         });
     }
 
@@ -845,6 +900,7 @@ fn build_char_groups(
             .sort_key
             .cmp(&left.sort_key)
             .then_with(|| left.char_id.cmp(&right.char_id))
+            .then_with(|| left.attr_mask.cmp(&right.attr_mask))
     });
     groups
 }
@@ -893,6 +949,7 @@ impl CharacterSearchState<'_> {
         self.recurse_chars(
             0,
             0,
+            0,
             &mut selected,
             CharacterPrefix::for_leader(&self.leader),
             &initial_partial,
@@ -900,10 +957,12 @@ impl CharacterSearchState<'_> {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn recurse_chars(
         &mut self,
         depth: usize,
         start: usize,
+        used_chars: u32,
         selected: &mut [usize; MEMBER_COUNT],
         prefix: CharacterPrefix,
         initial_partial: &CardPartial,
@@ -914,6 +973,23 @@ impl CharacterSearchState<'_> {
         }
         self.stats.visited_nodes += 1;
         if depth == MEMBER_COUNT {
+            let threshold = self.tracker.threshold();
+            // The four groups fix every member attribute, so this ceiling
+            // reads the exact union before the card plan is built.
+            if threshold != 0
+                && character_ceiling(
+                    self.suffix,
+                    self.ctx,
+                    self.group_suffix,
+                    self.groups.len(),
+                    MEMBER_COUNT,
+                    &prefix,
+                    &self.leader,
+                ) < threshold
+            {
+                self.stats.ub_prunes += 1;
+                return;
+            }
             let mut ordered = *selected;
             order_card_groups(self.groups, &mut ordered);
             let mut deck = [self.leader.leader; DECK_SIZE];
@@ -928,37 +1004,39 @@ impl CharacterSearchState<'_> {
         }
 
         let mut threshold = self.tracker.threshold();
-        if threshold != 0 {
-            let ub = character_ceiling(
-                self.suffix,
-                self.ctx,
-                self.group_suffix,
-                start,
-                depth,
-                &prefix,
-                &self.leader,
-            );
-            if ub < threshold {
-                self.stats.ub_prunes += 1;
-                return;
-            }
-        }
-
+        // The ceiling reads the prefix, which is fixed here, and the suffix
+        // table, so an unchanged table keeps the last ceiling.
+        let mut last_ceiling: Option<(u32, u64)> = None;
         let mut idx = start;
         while idx < self.groups.len() {
             if self.deadline.expired_sampled() {
                 return;
             }
+            let group = &self.groups[idx];
+            let char_bit = 1u32 << group.char_id;
+            if used_chars & char_bit != 0 {
+                idx += 1;
+                continue;
+            }
+            // The first ceiling read is that of this node itself.
             if threshold != 0 {
-                let ub = character_ceiling(
-                    self.suffix,
-                    self.ctx,
-                    self.group_suffix,
-                    idx,
-                    depth,
-                    &prefix,
-                    &self.leader,
-                );
+                let version = self.group_suffix[idx].version;
+                let ub = match last_ceiling {
+                    Some((seen, ub)) if seen == version => ub,
+                    _ => {
+                        let ub = character_ceiling(
+                            self.suffix,
+                            self.ctx,
+                            self.group_suffix,
+                            idx,
+                            depth,
+                            &prefix,
+                            &self.leader,
+                        );
+                        last_ceiling = Some((version, ub));
+                        ub
+                    }
+                };
                 if ub < threshold {
                     self.stats.ub_prunes += 1;
                     break;
@@ -966,17 +1044,12 @@ impl CharacterSearchState<'_> {
             }
             selected[depth] = idx;
             self.stats.ep_candidates += 1;
-            // Complete group selections enter card search without querying a
-            // character ceiling, so they do not need another prefix reduction.
-            let next_prefix = if depth + 1 < MEMBER_COUNT {
-                prefix.with_group(&self.groups[idx])
-            } else {
-                prefix
-            };
+            let next_prefix = prefix.with_group(group);
             idx += 1;
             self.recurse_chars(
                 depth + 1,
                 idx,
+                used_chars | char_bit,
                 selected,
                 next_prefix,
                 initial_partial,
@@ -1030,24 +1103,17 @@ impl CharacterSearchState<'_> {
             };
             let head = group.scan.len().min(ranked.len());
             let mut ranked_len = 0usize;
-            // A run skip may pass the end of the ranked head; the tail scan
-            // resumes after it, since the threshold never decreases.
+            // A rest ceiling below the threshold also rules out the tail scan,
+            // since the threshold never decreases.
             let mut tail_start = head;
-            let mut idx = 0usize;
-            while idx < head {
-                let entry = group.scan[idx];
+            for entry in &group.scan[..head] {
                 let Some(optimistic_ub) =
-                    self.candidate_ceiling(plan, depth, &partial, &entry, threshold)
+                    self.candidate_ceiling(plan, depth, &partial, entry, threshold)
                 else {
                     self.stats.ep_continue_prunes += 1;
-                    let next = usize::from(entry.run_end);
-                    if next > head {
-                        tail_start = next;
-                    }
-                    idx = next;
-                    continue;
+                    tail_start = group.scan.len();
+                    break;
                 };
-                idx += 1;
                 if optimistic_ub < threshold {
                     continue;
                 }
@@ -1087,26 +1153,21 @@ impl CharacterSearchState<'_> {
             // 不是候选集。组更大时余下的卡仍要逐张过同一个上界——只有被上界
             // 拒绝才能不展开，按缓冲容量截断会把没被任何界否定过的卡静默丢掉。
             // 这一段在组不超过 RANKED_CAP 时不产生任何迭代。
-            let mut idx = tail_start;
-            while idx < group.scan.len() {
-                let entry = group.scan[idx];
+            for entry in &group.scan[tail_start..] {
                 threshold = self.tracker.threshold();
                 let mut optimistic_ub = 0;
                 if threshold != 0 {
-                    let Some(ub) = self.candidate_ceiling(plan, depth, &partial, &entry, threshold)
+                    let Some(ub) = self.candidate_ceiling(plan, depth, &partial, entry, threshold)
                     else {
                         self.stats.ep_continue_prunes += 1;
-                        idx = usize::from(entry.run_end);
-                        continue;
+                        break;
                     };
                     if ub < threshold {
                         self.stats.ep_continue_prunes += 1;
-                        idx += 1;
                         continue;
                     }
                     optimistic_ub = ub;
                 }
-                idx += 1;
                 let card = entry.card;
                 let next_partial =
                     partial.with_card(self.pool, self.ctx.is_world_bloom, self.support, card);
@@ -1142,8 +1203,8 @@ impl CharacterSearchState<'_> {
 
 impl CharacterSearchState<'_> {
     /// Candidate ceiling of `entry`, or `None` when the ceiling over the rest
-    /// of its attribute run is already below `threshold`: every later card of
-    /// the run has the same attribute and no larger term, and the ceiling is
+    /// of its group is already below `threshold`: every later card of the
+    /// group has the same attribute and no larger term, and the ceiling is
     /// non-decreasing in every term.
     #[inline(always)]
     fn candidate_ceiling(
@@ -1165,12 +1226,12 @@ impl CharacterSearchState<'_> {
                 self.leader.skill,
             )
         };
-        let run_ub = ceiling(&entry.run);
-        if run_ub < threshold {
+        let rest_ub = ceiling(&entry.rest);
+        if rest_ub < threshold {
             return None;
         }
-        Some(if entry.run == entry.terms {
-            run_ub
+        Some(if entry.rest == entry.terms {
+            rest_ub
         } else {
             ceiling(&entry.terms)
         })
@@ -1221,8 +1282,7 @@ fn order_card_groups(groups: &[CharGroup], selected: &mut [usize; MEMBER_COUNT])
 fn group_card_order_before(groups: &[CharGroup], left: usize, right: usize) -> bool {
     let lhs = &groups[left];
     let rhs = &groups[right];
-    lhs.sort_key > rhs.sort_key
-        || (lhs.sort_key == rhs.sort_key && lhs.cards.len() < rhs.cards.len())
+    lhs.sort_key > rhs.sort_key || (lhs.sort_key == rhs.sort_key && lhs.scan.len() < rhs.scan.len())
 }
 
 fn character_ceiling(
@@ -1635,7 +1695,8 @@ mod limited_sum_tests {
                 }));
                 for cap in 0..=DECK_SIZE {
                     ctx.card_bonus_count_limit = cap;
-                    let groups = build_char_groups(&pool, &ctx, 0, &[], 1);
+                    let groups =
+                        build_char_groups(&pool, &ctx, &attribute_buckets(&pool), 0, &[], 1);
                     let plan = build_card_group_plan(
                         &groups,
                         &[0, 1, 2, 3],
@@ -1653,7 +1714,7 @@ mod limited_sum_tests {
                     let expected: u32 = values.iter().take(cap).sum();
                     for (chosen, group) in groups.iter().enumerate() {
                         assert_eq!(plan.limited_sum(&partial, chosen, cap, 0), expected);
-                        let card = group.cards[0];
+                        let card = group.scan[0].card;
                         let candidate = pool.event_bonus_exact(card).limited_ceil();
                         assert_eq!(
                             plan.limited_sum(&partial, chosen + 1, cap, candidate),
@@ -1811,7 +1872,7 @@ mod skill_ceiling_tests {
                         "old argument underestimates the legal leaf"
                     );
                 }
-                let groups = build_char_groups(&pool, &ctx, 0, &[], 100);
+                let groups = build_char_groups(&pool, &ctx, &attribute_buckets(&pool), 0, &[], 100);
                 let selected = [0, 1, 2, 3];
                 let group_suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
                 let plan = build_card_group_plan(
@@ -1860,7 +1921,7 @@ mod skill_ceiling_tests {
                     if chosen == MEMBER_COUNT {
                         break;
                     }
-                    let card = groups[chosen].cards[0];
+                    let card = groups[chosen].scan[0].card;
                     let upper = selected_card_ceiling_with_candidate_support_ub(
                         &suffix,
                         &ctx,
@@ -1895,7 +1956,6 @@ mod attribute_bound_tests {
                 .enumerate()
                 .map(|(index, &attr_mask)| CharGroup {
                     char_id: index as u8,
-                    cards: Vec::new(),
                     scan: Vec::new(),
                     best_power: (index as u32 + 1) * 10_003,
                     best_skill: (index as u32 * 7) % 31,
@@ -1996,7 +2056,6 @@ mod attribute_bound_tests {
                 .iter()
                 .map(|&attr_mask| CharGroup {
                     char_id: 0,
-                    cards: Vec::new(),
                     scan: Vec::new(),
                     best_power: 0,
                     best_skill: 0,
@@ -2052,7 +2111,6 @@ mod attribute_bound_tests {
                 .iter()
                 .map(|&attr_mask| CharGroup {
                     char_id: 0,
-                    cards: Vec::new(),
                     scan: Vec::new(),
                     best_power: 0,
                     best_skill: 0,
@@ -2087,21 +2145,21 @@ mod scan_tests {
     use crate::pool::{EventBonusExact, PoolBuilder};
 
     #[test]
-    fn attribute_runs_follow_the_best_card_and_carry_run_maxima() {
-        // (attr, power, skill, base_x10, limited_x10), best first.
+    fn scan_keeps_the_member_order_and_carries_rest_maxima() {
+        // (power, skill, base_x10, limited_x10), best first.
         let cards = [
-            (2u8, 50u32, 10u8, 100u16, 0u16),
-            (0, 40, 30, 50, 100),
-            (2, 45, 20, 200, 0),
-            (0, 60, 5, 50, 0),
-            (2, 10, 40, 0, 50),
+            (50u32, 10u8, 100u16, 0u16),
+            (40, 30, 50, 100),
+            (45, 20, 200, 0),
+            (60, 5, 50, 0),
+            (10, 40, 0, 50),
         ];
         let mut builder = PoolBuilder::new(cards.len() as u16);
-        for (dense, &(attr, power, skill, base_x10, limited_x10)) in cards.iter().enumerate() {
+        for (dense, &(power, skill, base_x10, limited_x10)) in cards.iter().enumerate() {
             let dense = dense as u16;
             builder.set_game_id(dense, 10 + dense);
             builder.set_char_id(dense, 1);
-            builder.set_attr(dense, attr);
+            builder.set_attr(dense, 2);
             builder.set_power_max(dense, power);
             builder.set_skill_max(dense, skill);
             builder.set_event_bonus(
@@ -2113,29 +2171,51 @@ mod scan_tests {
             );
         }
         let pool = builder.freeze();
-        let order: Vec<_> = pool.indices().collect();
+        let order = [4, 0, 3, 1, 2].map(CardIdx::new);
         let summary: Vec<_> = build_scan(&pool, &order)
             .iter()
             .map(|entry| {
                 (
                     entry.card.raw(),
-                    entry.run_end,
-                    entry.run.power,
-                    entry.run.skill,
-                    entry.run.base_bonus,
-                    entry.run.limited_bonus,
+                    entry.rest.power,
+                    entry.rest.skill,
+                    entry.rest.base_bonus,
+                    entry.rest.limited_bonus,
                 )
             })
             .collect();
         assert_eq!(
             summary,
             [
-                (0, 3, 50, 40, 20, 5),
-                (2, 3, 45, 40, 20, 5),
-                (4, 3, 10, 40, 0, 5),
-                (1, 5, 60, 30, 5, 10),
-                (3, 5, 60, 5, 5, 0),
+                (4, 60, 40, 20, 10),
+                (0, 60, 30, 20, 10),
+                (3, 60, 30, 20, 10),
+                (1, 45, 30, 20, 10),
+                (2, 45, 20, 20, 0),
             ]
         );
+    }
+
+    #[test]
+    fn character_top_ranks_each_character_once_by_its_maximum() {
+        let mut state = 0x2545_f491_u32;
+        let mut next = move |bound: u32| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state % bound
+        };
+        for _ in 0..200 {
+            let mut top = CharacterTop::default();
+            let mut best = [0u32; 27];
+            for _ in 0..40 {
+                let (char_id, value) = (next(9) as u8, next(50));
+                top.raise(char_id, value);
+                best[usize::from(char_id)] = best[usize::from(char_id)].max(value);
+                let mut expected = best;
+                expected.sort_unstable_by(|left, right| right.cmp(left));
+                assert_eq!(top.values()[..], expected[..MEMBER_COUNT + 1]);
+            }
+        }
     }
 }

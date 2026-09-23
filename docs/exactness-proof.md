@@ -285,16 +285,17 @@ leader/job ceiling.
 
 ### 5.2 Character-group attribute DP
 
-A Final Chapter member position is first represented by a character group.
-Each group records the bitmask of attributes available to that character.
+A Final Chapter member position is first represented by a group of one
+character's cards of one attribute; a deck takes at most one group of each
+character, so the selected prefix fixes its attribute union exactly.
 
-For a suffix of character groups, the implementation stores `attr_bonus[k][s]`:
-the maximum `diff_attr_bonus` reachable after selecting exactly `k` groups,
+For a suffix of groups, the implementation stores `attr_bonus[k][s]`: the
+maximum `diff_attr_bonus` reachable after selecting exactly `k` groups,
 starting from an already selected 5-bit attribute set `s`.  The transition
 keeps both skipping the current group and OR-ing each attribute available from
-it into the starting set.  This is an equivalent memoized form of the complete
-OR-product and remains exact for the isolated character-group/attribute
-dimension, including nonmonotone bonus tables.
+it into the starting set.  This is a memoized form of the complete OR-product,
+including nonmonotone bonus tables; it may pick two groups of one character,
+which only enlarges the maximized set.
 
 At a character-search prefix, production combines:
 
@@ -309,8 +310,8 @@ ceiling is thus admissible.
 At the card-within-group level, the analogous DP over the remaining selected
 group masks is used.
 
-The character-level ceiling independently takes the best remaining per-group
-power, skill and base bonus values. Limited bonuses are not blindly summed: the
+The character-level ceiling independently takes the best remaining power,
+skill and base bonus values over distinct characters. Limited bonuses are not blindly summed: the
 selected and suffix limited values are merged and only the largest values up to
 the remaining `card_bonus_count_limit` are admitted. These maxima may come from
 different concrete cards inside a character group, which only enlarges the
