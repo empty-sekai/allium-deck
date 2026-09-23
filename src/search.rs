@@ -252,14 +252,19 @@ fn search_unique_characters(
                 final_chapter::search_auto_leader(&search_pool, &search_ctx, params, floor, budget)
             } else {
                 let suffix = SuffixBound::build(&search_pool, &search_ctx);
-                let seeds = warm_start::warm_start_best_with_budget(
-                    &search_pool,
-                    &search_ctx,
-                    budget,
-                    &mut phase_stats,
-                )
-                .into_iter()
-                .collect();
+                // A single incumbent raises the cutoff only once it fills the Top-K.
+                let seeds = if params.top_k == 1 {
+                    warm_start::warm_start_best_with_budget(
+                        &search_pool,
+                        &search_ctx,
+                        budget,
+                        &mut phase_stats,
+                    )
+                    .into_iter()
+                    .collect()
+                } else {
+                    Vec::new()
+                };
                 dfs::dfs_search_with_budget(
                     &search_pool,
                     &search_ctx,
