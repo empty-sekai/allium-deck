@@ -405,7 +405,7 @@ impl SearchState<'_> {
     #[inline(always)]
     fn threshold(&self) -> u64 {
         if self.bounds_enabled {
-            self.tracker.threshold()
+            self.tracker.rank_threshold(self.ctx.target)
         } else {
             0
         }

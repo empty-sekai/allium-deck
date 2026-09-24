@@ -243,14 +243,15 @@ fn search_unique_characters(
         // Grouped Final search currently models only an optional leader role.
         // Multiple fixed slots use the complete slot-aware DFS, never a grouped
         // solver that silently omits their constraints.
-        let grouped_constraints = matches!(search_ctx.target, ScoreTarget::Score)
-            && search_ctx.fixed_card_ids.is_empty()
-            && search_ctx.fixed_character_ids.len() <= 1
-            && !placement::bonus_order_observable(
-                &search_pool,
-                &search_ctx,
-                &search_pool.indices().collect::<Vec<_>>(),
-            );
+        let grouped_constraints =
+            matches!(search_ctx.target, ScoreTarget::Score | ScoreTarget::Mysekai)
+                && search_ctx.fixed_card_ids.is_empty()
+                && search_ctx.fixed_character_ids.len() <= 1
+                && !placement::bonus_order_observable(
+                    &search_pool,
+                    &search_ctx,
+                    &search_pool.indices().collect::<Vec<_>>(),
+                );
         let (compacted_results, mut stats) =
             if grouped_constraints && search_ctx.final_chapter_leader_character().is_some() {
                 final_chapter::search_fixed_leader(&search_pool, &search_ctx, params, floor, budget)

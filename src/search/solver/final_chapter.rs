@@ -795,7 +795,7 @@ fn search_leaders(
                 &CharacterPrefix::for_leader(&leader_const),
                 &leader_const,
             );
-            let threshold = tracker.threshold();
+            let threshold = tracker.rank_threshold(ctx.target);
             if threshold != 0 && leader_ceiling < threshold {
                 stats.leader_prunes += 1;
                 continue;
@@ -811,7 +811,8 @@ fn search_leaders(
                 &mut stats,
                 guard,
             );
-            if tracker.threshold() != 0 && leader_ceiling < tracker.threshold() {
+            let threshold = tracker.rank_threshold(ctx.target);
+            if threshold != 0 && leader_ceiling < threshold {
                 stats.leader_prunes += 1;
                 continue;
             }
@@ -903,7 +904,8 @@ fn search_auto_leaders_two_phase(
         if guard.expired() {
             break;
         }
-        if tracker.threshold() != 0 && job.ceiling < tracker.threshold() {
+        let threshold = tracker.rank_threshold(ctx.target);
+        if threshold != 0 && job.ceiling < threshold {
             stats.leader_prunes += 1;
             continue;
         }
@@ -933,7 +935,8 @@ fn search_auto_leaders_two_phase(
             &CharacterPrefix::for_leader(&job.leader),
             &job.leader,
         );
-        if tracker.threshold() != 0 && ceiling < tracker.threshold() {
+        let threshold = tracker.rank_threshold(ctx.target);
+        if threshold != 0 && ceiling < threshold {
             stats.leader_prunes += 1;
             continue;
         }
@@ -946,7 +949,8 @@ fn search_auto_leaders_two_phase(
             &mut stats,
             guard,
         );
-        if tracker.threshold() != 0 && ceiling < tracker.threshold() {
+        let threshold = tracker.rank_threshold(ctx.target);
+        if threshold != 0 && ceiling < threshold {
             stats.leader_prunes += 1;
             continue;
         }
@@ -979,7 +983,7 @@ fn seed_leader_groups(
 ) {
     // Seeds only fill a tracker that has no threshold yet; once it holds K
     // decks, later leaders start from that threshold.
-    if !seeds_enabled() || guard.expired() || tracker.threshold() != 0 {
+    if !seeds_enabled() || guard.expired() || tracker.rank_threshold(ctx.target) != 0 {
         return;
     }
     let prefix_len = groups.len().min(FINAL_CHAPTER_SEED_GROUP_PREFIX);
@@ -1238,7 +1242,7 @@ impl CharacterSearchState<'_> {
         }
         self.stats.visited_nodes += 1;
         if depth == MEMBER_COUNT {
-            let threshold = self.tracker.threshold();
+            let threshold = self.tracker.rank_threshold(self.ctx.target);
             // The four groups fix every member attribute, so this ceiling
             // reads the exact union before the card plan is built.
             if threshold != 0
@@ -1276,7 +1280,7 @@ impl CharacterSearchState<'_> {
             return;
         }
 
-        let mut threshold = self.tracker.threshold();
+        let mut threshold = self.tracker.rank_threshold(self.ctx.target);
         // The ceiling reads the prefix, which is fixed here, and the suffix
         // table, so an unchanged table keeps the last ceiling.
         let mut last_ceiling: Option<(u32, u64)> = None;
@@ -1333,7 +1337,7 @@ impl CharacterSearchState<'_> {
                 initial_partial,
                 scratch,
             );
-            threshold = self.tracker.threshold();
+            threshold = self.tracker.rank_threshold(self.ctx.target);
         }
     }
 
@@ -1358,7 +1362,7 @@ impl CharacterSearchState<'_> {
             return;
         }
 
-        let mut threshold = self.tracker.threshold();
+        let mut threshold = self.tracker.rank_threshold(self.ctx.target);
         if threshold != 0 {
             let ub = selected_card_ceiling_from_partial(
                 self.suffix,
@@ -1428,7 +1432,7 @@ impl CharacterSearchState<'_> {
                 }
                 deck[depth + 1] = card;
                 self.recurse_cards(selected, plan, depth + 1, deck, next_partial, scratch_tail);
-                threshold = self.tracker.threshold();
+                threshold = self.tracker.rank_threshold(self.ctx.target);
                 ranked_idx += 1;
             }
 
@@ -1437,7 +1441,7 @@ impl CharacterSearchState<'_> {
             // 拒绝才能不展开，按缓冲容量截断会把没被任何界否定过的卡静默丢掉。
             // 这一段在组不超过 RANKED_CAP 时不产生任何迭代。
             for entry in &group.scan[tail_start..] {
-                threshold = self.tracker.threshold();
+                threshold = self.tracker.rank_threshold(self.ctx.target);
                 let mut optimistic_ub = 0;
                 if threshold != 0 {
                     let Some(ub) =

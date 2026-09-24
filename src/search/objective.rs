@@ -149,7 +149,9 @@ impl ObjectiveBound {
             / LIVE_SCORE_BOUND_SCALE) as u32
     }
 
-    /// Generic target-aware ceiling from admissible aggregate inputs.
+    /// Generic target-aware ceiling from admissible aggregate inputs. A
+    /// MySekai ceiling is a [`mysekai_rank`], to be compared only with
+    /// `TopKTracker::rank_threshold`.
     #[inline(always)]
     pub(crate) fn ceiling(
         &self,
@@ -170,7 +172,7 @@ impl ObjectiveBound {
                 let live = self.calc_live_score_bound(power_ub, skill_ub, leader_ub);
                 self.pack_score(live, bonus_total)
             }
-            ScoreTarget::Mysekai => calc_mysekai_internal(power_ub, bonus_total as f64) as u64,
+            ScoreTarget::Mysekai => mysekai_rank(power_ub, bonus_total),
         }
     }
 
@@ -354,6 +356,17 @@ impl ObjectiveBound {
     pub(crate) const fn score_noevent_threshold_numerator(live: u32) -> i64 {
         live as i64 * LIVE_SCORE_BOUND_SCALE
     }
+}
+
+/// Ceiling of the rank key `(objective, resolved power)` that orders a
+/// MySekai Top-K, whose objective ties break by resolved power: the MySekai
+/// value of `power_total` and `total_bonus` in the high 32 bits and
+/// `power_total` itself in the low 32 bits, so the numeric order is the
+/// lexicographic one.
+#[inline(always)]
+pub(crate) fn mysekai_rank(power_total: u32, total_bonus: u32) -> u64 {
+    (u64::from(calc_mysekai_internal(power_total, f64::from(total_bonus))) << 32)
+        | u64::from(power_total)
 }
 
 /// Round outward for a positive denominator without an unstable signed API.

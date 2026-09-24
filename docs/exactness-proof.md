@@ -55,9 +55,10 @@ Fixed cards, fixed characters, leader constraints, character uniqueness and
 ordered / slot-sensitive roles are feasibility constraints, not ranking hints.
 A solver specialization is used only when its state represents those
 constraints completely. In particular, grouped Final Chapter search is entered
-only when there are no fixed cards, at most one fixed character, and bonus
-ordering is not observable; multiple fixed slots or position-sensitive bonus
-semantics fall back to the slot-aware DFS.
+only for the Score and MySekai targets, when there are no fixed cards, at most
+one fixed character, and bonus ordering is not observable; other targets,
+multiple fixed slots or position-sensitive bonus semantics fall back to the
+slot-aware DFS.
 
 A leaf's placement assigns every observable role of its card set. The Final
 Chapter leader occupies slot 0. The grouped Final Chapter search and the

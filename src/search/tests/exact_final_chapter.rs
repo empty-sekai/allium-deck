@@ -397,6 +397,50 @@ fn final_seed_traversal_never_changes_unlimited_canonical_results() {
 }
 
 #[test]
+fn final_chapter_mysekai_matches_exhaustive_oracle_on_power_ties() {
+    // Deck powers straddle several 45k steps of the MySekai value, so many
+    // decks tie on it and resolved power decides, with and without a forced
+    // leader character.
+    for case in 0..16u64 {
+        let mut cards = randomized_exact_cards(0x3E5C_0000 + case, 12, 6);
+        for card in &mut cards {
+            card.power = 40_000 + card.power * 10;
+            card.power_max = card.power;
+        }
+        let pool = build_pool(&cards);
+        let mut ctx = ready_ctx(&pool, ScoreTarget::Mysekai);
+        ctx.is_final_chapter = true;
+        ctx.live_type = LiveType::Mysekai;
+        ctx.best_skill_as_leader = false;
+        ctx.is_world_bloom = true;
+        ctx.event_type = Some(EventType::WorldBloom);
+        ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
+        for character in 1usize..=6 {
+            ctx.support_decks_by_character[character] =
+                support_deck_for_property(&pool, character + case as usize);
+        }
+        for dense in 0..pool.count() {
+            ctx.leader_honor_bonus_x10[dense] = (((dense * 3 + case as usize) % 9) as u16) * 10;
+            ctx.leader_limit_bonus_x10[dense] = (((dense * 5 + case as usize) % 7) as u16) * 10;
+        }
+        if case % 2 == 1 {
+            ctx.forced_leader_character_id = Some((case % 6) as u8 + 1);
+        }
+        for top_k in [1, 3, 30] {
+            let params = SearchParams {
+                top_k,
+                timeout_ms: 0,
+            };
+            let got = search_exact(&pool, &ctx, &params);
+            let expected = final_chapter_auto_oracle(&pool, &ctx, top_k);
+            let label = format!("case {case} K={top_k}");
+            assert_property_results(&pool, &got, &expected, &label);
+            assert_property_scores(&pool, &ctx, &got, &expected, &label);
+        }
+    }
+}
+
+#[test]
 fn final_chapter_specific_order_keeps_members_seated_by_public_id() {
     // Twins of one character, attribute and skill: the first has more power,
     // the second a larger public id. Members are seated by public id, so the

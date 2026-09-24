@@ -23,7 +23,9 @@ the current search:
 
 - the packed event-point/live-score key for event Score;
 - live score for no-event Score;
-- MySekai score;
+- the MySekai rank key: MySekai score times $2^{32}$ plus resolved power
+  (clamped, honor bonus included), the first two fields of the MySekai result
+  order;
 - total Power;
 - encoded Skill value;
 - the per-tier live-score key for exact Bonus tiers.
@@ -33,7 +35,16 @@ Therefore equal values of $v$ are **not interchangeable**.
 
 For a maximizing Top-K search whose tracker already contains K distinct public
 card sets, let $\tau$ be the K-th primary objective value. For minimizing
-Power, $\tau$ is the K-th value in the reversed numeric order.
+Power, $\tau$ is the K-th value in the reversed numeric order. An external
+floor $f$ (Section 13) is a MySekai score for MySekai and enters as the rank
+key $f\cdot2^{32}$: a deck below it has a score below $f$.
+
+Every MySekai ceiling bounds the rank key: it packs the MySekai value of its
+power and bonus bounds with the power bound itself, and since both bound the
+deck's score and resolved power, the packed pair bounds the deck's pair in
+lexicographic order. On the numeric domain (Section 29, D2 and D3) resolved
+power is at most $2^{24}$ and the MySekai value below $2^{28}$, so the numeric
+order of the packed keys is the lexicographic one.
 
 ### Definition 1 — admissible upper bound
 

@@ -322,7 +322,8 @@ pub(super) fn search_regimes(
         if budget.expired() {
             break;
         }
-        if tracker.cutoff().is_some_and(|cutoff| plan.ceiling < cutoff) {
+        let cutoff = tracker.rank_threshold(ctx.target);
+        if cutoff != 0 && plan.ceiling < cutoff {
             stats.diagnostics.regimes_pruned += 1;
             continue;
         }

@@ -4,8 +4,7 @@ use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, ScoreTarget};
 
 use super::context::SearchContext;
-use super::evaluate::calc_mysekai_internal;
-use super::objective::{LIVE_SCORE_BOUND_SCALE, ObjectiveBound};
+use super::objective::{LIVE_SCORE_BOUND_SCALE, ObjectiveBound, mysekai_rank};
 
 /// 已选角色集合。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -546,7 +545,7 @@ impl SuffixBound {
                         slots_left,
                     )
                     + self.extra_bonus_ub;
-                calc_mysekai_internal(total_power, total_bonus as f64) as u64
+                mysekai_rank(total_power, total_bonus)
             }
         }
     }

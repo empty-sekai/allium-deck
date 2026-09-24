@@ -101,6 +101,28 @@ impl TopKTracker {
         self.cutoff().unwrap_or(0)
     }
 
+    /// The cutoff that ceilings are compared with. A MySekai deck enters the
+    /// Top-K only if its objective and resolved power are lexicographically
+    /// at least those of the K-th result, and its objective at least the
+    /// floor, so its cutoff is that pair in the encoding of
+    /// `objective::mysekai_rank`. Every other target ranks objective ties by
+    /// public set alone and gets [`Self::threshold`].
+    pub(super) fn rank_threshold(&self, target: ScoreTarget) -> u64 {
+        if target != ScoreTarget::Mysekai {
+            return self.threshold();
+        }
+        if !self.bounds_enabled {
+            return 0;
+        }
+        let floor = self.floor << 32;
+        match (self.results.last(), self.keys.last()) {
+            (Some(result), Some(key)) if self.results.len() >= self.top_k => {
+                ((result.score << 32) | u64::from(!key.resolved_power)).max(floor)
+            }
+            _ => floor,
+        }
+    }
+
     /// Sorted public set of the K-th retained result once K are held. For a
     /// target without a resolved-power tie-break (anything but MySekai), a
     /// completion whose objective equals the cutoff enters the Top-K only if
