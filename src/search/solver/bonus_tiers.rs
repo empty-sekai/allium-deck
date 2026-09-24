@@ -31,6 +31,10 @@
 //!   the componentwise maxima of power bound, skill sum and maximum skill over
 //!   all selections of the suffix groups. A missing entry proves the key sum
 //!   unreachable.
+//! * When the live score is a product of power and a rate affine in skill,
+//!   the table also keeps each entry's largest weighted sum of power and
+//!   skill, and the product is bounded over the box of the separate maxima
+//!   cut by that half-plane.
 //! * A depth-first branch and bound per regime, tier and diversity class takes
 //!   or skips one group at a time. A branch survives only while some
 //!   completion can still hit the tier and the live-score ceiling of those
@@ -47,7 +51,7 @@ use crate::search::budget::SearchBudget;
 use crate::search::composition::{Regime, power_over_keys};
 use crate::search::context::{SearchContext, SupportDeck};
 use crate::search::evaluate::resolve_total_bonus;
-use crate::search::objective::ObjectiveBound;
+use crate::search::objective::{LiveProduct, ObjectiveBound};
 use crate::search::placement::visit_bonus_candidates;
 use crate::search::skill_ceiling::{CeilingSet, Composition, SkillCeiling};
 use crate::search::tracker::TopKTracker;
@@ -57,9 +61,17 @@ use crate::types::{DECK_SIZE, LiveType};
 
 /// Card counts `0..=DECK_SIZE` of a suffix selection.
 const COUNTS: usize = DECK_SIZE + 1;
+/// Visited nodes of one regime between tests whether its table is rebuilt
+/// with the joint column, so that the table pass stays small next to the
+/// search.
+const JOIN_AFTER: u64 = 1 << 16;
+/// A regime gains the joint column once its bound tests prune at least once
+/// per this many feasibility prunes; the column tightens only bound tests.
+const JOIN_RATIO: u64 = 4;
 /// Unreachable table entry. Adding five card values keeps it negative.
 const NO_POWER: i32 = i32::MIN / 4;
 const NO_SKILL: i16 = i16::MIN / 4;
+const NO_JOINT: i32 = i32::MIN / 4;
 /// Deck-level terms without a finite bound.
 const UNBOUNDED: (i64, i64) = (i64::MIN / 4, i64::MAX / 4);
 /// Tolerance for real-valued support sums converted to ticks. Every bound
@@ -214,6 +226,9 @@ struct Class {
     power: u32,
     skill: u32,
     leader: u32,
+    /// Largest joint value of a card of the class; zero without a joint
+    /// ceiling.
+    joint: i32,
     start: u32,
     end: u32,
 }
@@ -435,6 +450,8 @@ struct Problem<'a> {
     extras: Option<Extras>,
     /// Composition-aware skill ceiling of every card, by pool index.
     ceilings: Vec<SkillCeiling>,
+    /// The live score as a product of power and rate, when it is one.
+    product: Option<LiveProduct>,
 }
 
 impl<'a> Problem<'a> {
@@ -557,10 +574,12 @@ impl<'a> Problem<'a> {
         };
         let max_units = (cap.max(0) / unit_i) as usize;
 
+        let objective = ObjectiveBound::from_context(ctx);
         Some(Self {
             pool,
             ctx,
-            objective: ObjectiveBound::from_context(ctx),
+            product: objective.live_product(),
+            objective,
             targets,
             counting,
             unique_characters: !matches!(scope, Scope::Character(_)),
@@ -817,6 +836,7 @@ impl<'a> Problem<'a> {
                         power: card_power,
                         skill,
                         leader: skill,
+                        joint: 0,
                         start: index as u32,
                         end: index as u32 + 1,
                     }),
@@ -846,8 +866,6 @@ impl<'a> Problem<'a> {
         let best = |group: &RegimeGroup, field: fn(&Class) -> u32| {
             group.classes.iter().map(field).max().unwrap_or(0)
         };
-        // Strong groups first: skipping one then lowers the ceiling at once.
-        free.sort_by_key(|group| std::cmp::Reverse(best(group, |class| class.power)));
         // Admissible regime ceiling: every deck takes each role and at most
         // `DECK_SIZE - roles` further groups.
         let free_slots = DECK_SIZE - roles.len();
@@ -867,25 +885,73 @@ impl<'a> Problem<'a> {
             .max()
             .unwrap_or(0);
         let ceiling = self.live_upper(top(|class| class.power), top(|class| class.skill), leader);
+        let joint = self.product.and_then(|product| {
+            JointCeiling::new(
+                product,
+                top(|class| class.power),
+                top(|class| class.skill),
+                leader,
+            )
+        });
+        // The class maxima bound every card's joint value; below
+        // `JointCeiling::LIMIT` five of them fit the table and keep an
+        // unreachable entry negative.
+        let joint = joint.filter(|joint| {
+            roles.iter().chain(&free).all(|group| {
+                group
+                    .classes
+                    .iter()
+                    .all(|class| joint.value(class.power, class.skill) < JointCeiling::LIMIT)
+            })
+        });
+        // Strong groups first: skipping one then lowers the ceiling at once.
+        free.sort_by_key(|group| std::cmp::Reverse(best(group, |class| class.power)));
+        let fixed_roles = roles.len();
         roles.extend(free);
-        // Largest slack and displaced support entries any `r` groups from
-        // each position on can add.
-        let suffix_slack = suffix_largest(&roles, |class| class.slack_ticks);
-        let suffix_support = suffix_largest(&roles, |class| class.support);
-        let mut dynamic_from = vec![false; roles.len() + 1];
-        for position in (0..roles.len()).rev() {
-            dynamic_from[position] =
-                dynamic_from[position + 1] || !roles[position].ceilings.is_fixed();
-        }
-        Some(RegimeView {
+        let mut view = RegimeView {
             diversity: self.diversity_classes(regime.shares_attr()),
             power,
             groups: roles,
-            suffix_slack,
-            suffix_support,
-            dynamic_from,
+            fixed_roles,
+            suffix_slack: Vec::new(),
+            suffix_support: Vec::new(),
+            dynamic_from: Vec::new(),
             ceiling,
-        })
+            joint,
+            joined: false,
+        };
+        view.order_groups();
+        Some(view)
+    }
+
+    /// Prepares `view` for the joint column: every class's largest per-card
+    /// joint value, and the free groups ordered by their largest joint
+    /// value, which weighs skill against power as the joint ceiling does.
+    fn join(&self, view: &mut RegimeView) {
+        let Some(joint) = view.joint else {
+            return;
+        };
+        if view.joined {
+            return;
+        }
+        for group in &mut view.groups {
+            let cards = &group.cards;
+            for class in &mut group.classes {
+                class.joint = cards[class.start as usize..class.end as usize]
+                    .iter()
+                    .map(|&card| {
+                        joint.value(view.power[card.raw()], u32::from(self.pool.skill_max(card)))
+                            as i32
+                    })
+                    .max()
+                    .unwrap_or(0);
+            }
+        }
+        view.groups[view.fixed_roles..].sort_by_key(|group| {
+            std::cmp::Reverse(group.classes.iter().map(|class| class.joint).max())
+        });
+        view.order_groups();
+        view.joined = true;
     }
 
     /// Diversity classes of the decks a regime must find: its attribute
@@ -921,46 +987,76 @@ impl<'a> Problem<'a> {
             .collect::<Vec<_>>();
         views.sort_by_key(|view| std::cmp::Reverse(view.ceiling));
         let mut table = SuffixTable::new(self);
-        for view in &views {
+        // The joint column costs a table pass and tightens only bound tests;
+        // it is kept from the first regime whose search passes a multiple of
+        // `JOIN_AFTER` visited nodes with at least one bound prune per
+        // `JOIN_RATIO` feasibility prunes, and that regime is searched again
+        // with it.
+        let mut joined = false;
+        for view in &mut views {
             if budget.expired() {
                 return;
             }
+            let ceiling = view.ceiling;
             let open = |tracker: &TopKTracker| {
                 tracker
                     .cutoff()
-                    .is_none_or(|cutoff| view.ceiling >= cutoff as u32)
+                    .is_none_or(|cutoff| ceiling >= cutoff as u32)
             };
             if !trackers.iter().any(open) {
                 stats.diagnostics.regimes_pruned += 1;
                 continue;
             }
             stats.diagnostics.regimes_searched += 1;
-            table.build(self, view);
-            for tier in 0..self.targets.len() {
-                for &(extra_ticks, counts) in &view.diversity {
-                    if budget.expired() {
-                        return;
-                    }
-                    if !open(&trackers[tier]) {
-                        stats.ub_prunes += 1;
-                        continue;
-                    }
-                    let mut search = TierSearch {
-                        problem: self,
-                        view,
-                        table: &table,
-                        target_ticks: i64::from(self.targets[tier]) * 10 * self.scale,
-                        extra_ticks,
-                        counts,
-                        tier,
-                        trackers: &mut *trackers,
-                        stats: &mut *stats,
-                        budget: &mut *budget,
-                        deck: [CardIdx::new(0); DECK_SIZE],
-                        scratch: vec![Vec::new(); view.groups.len()],
-                    };
-                    search.run();
+            loop {
+                if joined {
+                    self.join(view);
                 }
+                let view = &*view;
+                table.build(self, view, joined);
+                let mut join = (!joined && view.joint.is_some()).then(|| Join {
+                    after: stats.visited_nodes + JOIN_AFTER,
+                    bound_prunes: stats.ub_prunes,
+                    feasibility_prunes: stats.feasibility_prunes,
+                });
+                let mut stopped = false;
+                'searches: for tier in 0..self.targets.len() {
+                    for &(extra_ticks, counts) in &view.diversity {
+                        if budget.expired() {
+                            return;
+                        }
+                        if !open(&trackers[tier]) {
+                            stats.ub_prunes += 1;
+                            continue;
+                        }
+                        let mut search = TierSearch {
+                            problem: self,
+                            view,
+                            table: &table,
+                            target_ticks: i64::from(self.targets[tier]) * 10 * self.scale,
+                            extra_ticks,
+                            counts,
+                            tier,
+                            trackers: &mut *trackers,
+                            stats: &mut *stats,
+                            budget: &mut *budget,
+                            join,
+                            stopped: false,
+                            deck: [CardIdx::new(0); DECK_SIZE],
+                            scratch: vec![Vec::new(); view.groups.len()],
+                        };
+                        search.run();
+                        if search.stopped {
+                            stopped = true;
+                            break 'searches;
+                        }
+                        join = search.join;
+                    }
+                }
+                if !stopped {
+                    break;
+                }
+                joined = true;
             }
         }
     }
@@ -985,6 +1081,113 @@ struct RegimeView {
     /// improve on the suffix table, which already sums skill maxima.
     dynamic_from: Vec<bool>,
     ceiling: u32,
+    joint: Option<JointCeiling>,
+    /// Number of fixed roles leading `groups`.
+    fixed_roles: usize,
+    /// Whether the classes hold their joint values and the free groups are
+    /// in joint order.
+    joined: bool,
+}
+
+impl RegimeView {
+    /// Sets the terms that depend on the group order.
+    fn order_groups(&mut self) {
+        // Largest slack and displaced support entries any `r` groups from
+        // each position on can add.
+        self.suffix_slack = suffix_largest(&self.groups, |class| class.slack_ticks);
+        self.suffix_support = suffix_largest(&self.groups, |class| class.support);
+        self.dynamic_from = vec![false; self.groups.len() + 1];
+        for position in (0..self.groups.len()).rev() {
+            self.dynamic_from[position] =
+                self.dynamic_from[position + 1] || !self.groups[position].ceilings.is_fixed();
+        }
+    }
+}
+
+/// Joint power-skill ceiling of a regime. For a [`LiveProduct`] the live
+/// score is increasing in `u = P + honor` and in the rate `w`, and every
+/// completion's suffix satisfies `power * P + skill * S <= joint` besides
+/// the separate maxima; the product `u * w` then peaks, over that box cut by
+/// the half-plane, at a corner or at the half-plane's tangent point.
+#[derive(Clone, Copy, Debug)]
+struct JointCeiling {
+    product: LiveProduct,
+    /// Weights of the joint value, normal to the level curve of the product
+    /// at the regime ceiling.
+    power: i64,
+    skill: i64,
+}
+
+impl JointCeiling {
+    /// Power weight; the skill weight is rounded to a quarter of it.
+    const POWER_WEIGHT: i64 = 4;
+    const MAX_SKILL_WEIGHT: i128 = 1 << 12;
+    /// Bound on one card's joint value.
+    const LIMIT: i64 = 1 << 26;
+
+    /// The ceiling whose half-plane is tangent to the product at a deck of
+    /// `power`, `skill` and leader skill `leader`; `None` when the rate does
+    /// not read skill.
+    fn new(product: LiveProduct, power: u32, skill: u32, leader: u32) -> Option<Self> {
+        let u = i128::from(power) + i128::from(product.honor);
+        let w = product.rate(skill, leader);
+        if product.skill <= 0 || u <= 0 || w <= 0 {
+            return None;
+        }
+        // On `power * slope * u + skill * w = c` the product peaks where the
+        // two terms are equal.
+        let weight = (i128::from(Self::POWER_WEIGHT) * i128::from(product.skill) * u + w / 2) / w;
+        Some(Self {
+            product,
+            power: Self::POWER_WEIGHT,
+            skill: weight.clamp(1, Self::MAX_SKILL_WEIGHT) as i64,
+        })
+    }
+
+    #[inline]
+    fn value(&self, power: u32, skill: u32) -> i64 {
+        self.power * i64::from(power) + self.skill * i64::from(skill)
+    }
+
+    /// Live-score ceiling of every completion of selected cards with power
+    /// `power`, skill at most `skill` and leader skill at most `leader`
+    /// whose further members stay within `rest`.
+    #[inline]
+    fn live(&self, power: u32, skill: u32, leader: u32, rest: &Maxima) -> u32 {
+        let slope = i128::from(self.product.skill);
+        let base_u = i128::from(power) + i128::from(self.product.honor);
+        let base_w = self.product.rate(skill, leader);
+        let u = base_u + i128::from(rest.power);
+        let w = base_w + slope * i128::from(rest.skill);
+        // `power * P + skill * S <= joint` as `alpha * u + beta * w <= c`.
+        let alpha = i128::from(self.power) * slope;
+        let beta = i128::from(self.skill);
+        let c = slope * i128::from(rest.joint) + alpha * base_u + beta * base_w;
+        // The peak as `numerator / denominator`.
+        let (numerator, denominator) = if alpha * u + beta * w <= c {
+            (u * w, 1)
+        } else if c >= 2 * alpha * u {
+            (u * (c - alpha * u), beta)
+        } else if c >= 2 * beta * w {
+            (w * (c - beta * w), alpha)
+        } else {
+            match c.checked_mul(c) {
+                Some(square) => (square, 4 * alpha * beta),
+                None => return u32::MAX,
+            }
+        };
+        self.product.live(numerator, denominator)
+    }
+}
+
+/// Componentwise maxima over suffix selections.
+#[derive(Clone, Copy, Debug)]
+struct Maxima {
+    power: u32,
+    skill: u32,
+    leader: u32,
+    /// Largest joint value; zero without a joint ceiling.
+    joint: i32,
 }
 
 /// Suffix maxima indexed by position, remaining card count, counting state
@@ -1010,6 +1213,9 @@ struct SuffixTable {
     power: Vec<i32>,
     skill: Vec<i16>,
     leader: Vec<i16>,
+    /// Largest joint value; kept only for a regime with a joint ceiling.
+    joint: Vec<i32>,
+    joined: bool,
     /// Raw layers of the counting states while a table is built.
     current: Layer,
     next: Layer,
@@ -1021,37 +1227,42 @@ struct Layer {
     power: Vec<i32>,
     skill: Vec<i16>,
     leader: Vec<i16>,
+    joint: Vec<i32>,
 }
 
 impl Layer {
-    fn clear(&mut self, len: usize) {
+    fn clear(&mut self, len: usize, joined: bool) {
         self.power.clear();
         self.power.resize(len, NO_POWER);
         self.skill.clear();
         self.skill.resize(len, NO_SKILL);
         self.leader.clear();
         self.leader.resize(len, NO_SKILL);
+        self.joint.clear();
+        self.joint.resize(if joined { len } else { 0 }, NO_JOINT);
     }
 
     fn copy_from(&mut self, other: &Self) {
         self.power.copy_from_slice(&other.power);
         self.skill.copy_from_slice(&other.skill);
         self.leader.copy_from_slice(&other.leader);
+        self.joint.copy_from_slice(&other.joint);
     }
 }
 
 /// `destination[b] = max(destination[b], source[b - shift] + class)` over
 /// one key row, componentwise and only from reachable source entries. The
-/// rows may differ in width; sums past the destination row are dropped.
+/// rows may differ in width; sums past the destination row are dropped. An
+/// empty joint row is a column the table does not keep.
 #[inline]
 fn relax(
-    destination: (&mut [i32], &mut [i16], &mut [i16]),
-    source: (&[i32], &[i16], &[i16]),
+    destination: (&mut [i32], &mut [i16], &mut [i16], &mut [i32]),
+    source: (&[i32], &[i16], &[i16], &[i32]),
     shift: usize,
     class: &Class,
 ) {
-    let (out_power, out_skill, out_leader) = destination;
-    let (in_power, in_skill, in_leader) = source;
+    let (out_power, out_skill, out_leader, out_joint) = destination;
+    let (in_power, in_skill, in_leader, in_joint) = source;
     if shift >= out_power.len() {
         return;
     }
@@ -1075,6 +1286,33 @@ fn relax(
     {
         // A negative (unreachable) source stays negative.
         *out = (*out).max(value.max(leader | (value >> 15)));
+    }
+    if !out_joint.is_empty() {
+        for (out, &value) in out_joint[shift..shift + len]
+            .iter_mut()
+            .zip(&in_joint[..len])
+        {
+            *out = (*out).max(value + class.joint);
+        }
+    }
+}
+
+/// `column[range]`, or the empty row of a column the table does not keep.
+#[inline]
+fn row_of<T>(column: &[T], range: std::ops::Range<usize>) -> &[T] {
+    if column.is_empty() {
+        &[]
+    } else {
+        &column[range]
+    }
+}
+
+#[inline]
+fn row_of_mut<T>(column: &mut [T], range: std::ops::Range<usize>) -> &mut [T] {
+    if column.is_empty() {
+        &mut []
+    } else {
+        &mut column[range]
     }
 }
 
@@ -1108,6 +1346,8 @@ impl SuffixTable {
             power: Vec::new(),
             skill: Vec::new(),
             leader: Vec::new(),
+            joint: Vec::new(),
+            joined: false,
             current: Layer::default(),
             next: Layer::default(),
         }
@@ -1119,14 +1359,21 @@ impl SuffixTable {
         self.starts[count] + (capacity * self.modes + mode) * self.widths[count]
     }
 
-    /// Rebuilds the table for one regime.
-    fn build(&mut self, problem: &Problem<'_>, view: &RegimeView) {
+    /// Rebuilds the table for one regime, with the joint column when
+    /// `joined` and the regime has a joint ceiling.
+    fn build(&mut self, problem: &Problem<'_>, view: &RegimeView, joined: bool) {
         // Every entry of the regime's positions is written below.
         let len = (view.groups.len() + 1) * self.block;
         if self.power.len() < len {
             self.power.resize(len, NO_POWER);
             self.skill.resize(len, NO_SKILL);
             self.leader.resize(len, NO_SKILL);
+        }
+        self.joined = joined && view.joint.is_some();
+        if !self.joined {
+            self.joint.clear();
+        } else if self.joint.len() < len {
+            self.joint.resize(len, NO_JOINT);
         }
         if self.capacities == 1 && self.modes == 1 {
             self.build_in_place(problem, view);
@@ -1143,34 +1390,48 @@ impl SuffixTable {
         let tail = last * block..(last + 1) * block;
         self.power[tail.clone()].fill(NO_POWER);
         self.skill[tail.clone()].fill(NO_SKILL);
-        self.leader[tail].fill(NO_SKILL);
+        self.leader[tail.clone()].fill(NO_SKILL);
+        row_of_mut(&mut self.joint, tail).fill(NO_JOINT);
         self.power[last * block] = 0;
         self.skill[last * block] = 0;
         self.leader[last * block] = 0;
+        if self.joined {
+            self.joint[last * block] = 0;
+        }
         let unit = i64::from(problem.unit);
+        let joined = self.joined;
+        let joint_split = |split: usize| if joined { split } else { 0 };
         for (position, group) in view.groups.iter().enumerate().rev() {
             let split = (position + 1) * block;
             let (head_power, tail_power) = self.power.split_at_mut(split);
             let (head_skill, tail_skill) = self.skill.split_at_mut(split);
             let (head_leader, tail_leader) = self.leader.split_at_mut(split);
+            let (head_joint, tail_joint) = self.joint.split_at_mut(joint_split(split));
             let current = (
                 &mut head_power[position * block..],
                 &mut head_skill[position * block..],
                 &mut head_leader[position * block..],
+                row_of_mut(
+                    head_joint,
+                    joint_split(position * block)..joint_split(split),
+                ),
             );
             let next = (
                 &tail_power[..block],
                 &tail_skill[..block],
                 &tail_leader[..block],
+                row_of(tail_joint, 0..block),
             );
             if group.mandatory {
                 current.0.fill(NO_POWER);
                 current.1.fill(NO_SKILL);
                 current.2.fill(NO_SKILL);
+                current.3.fill(NO_JOINT);
             } else {
                 current.0.copy_from_slice(next.0);
                 current.1.copy_from_slice(next.1);
                 current.2.copy_from_slice(next.2);
+                current.3.copy_from_slice(next.3);
             }
             for class in &group.classes {
                 let shift = ((i64::from(class.key_ticks) + problem.offset_ticks) / unit) as usize;
@@ -1182,12 +1443,14 @@ impl SuffixTable {
                         (
                             &mut current.0[target.clone()],
                             &mut current.1[target.clone()],
-                            &mut current.2[target],
+                            &mut current.2[target.clone()],
+                            row_of_mut(&mut *current.3, target),
                         ),
                         (
                             &next.0[origin.clone()],
                             &next.1[origin.clone()],
-                            &next.2[origin],
+                            &next.2[origin.clone()],
+                            row_of(next.3, origin),
                         ),
                         shift,
                         class,
@@ -1202,17 +1465,20 @@ impl SuffixTable {
     fn build_counted(&mut self, problem: &Problem<'_>, view: &RegimeView) {
         let mut current = std::mem::take(&mut self.current);
         let mut next = std::mem::take(&mut self.next);
-        current.clear(self.block);
-        next.clear(self.block);
+        current.clear(self.block, self.joined);
+        next.clear(self.block, self.joined);
         let zero = self.row(0, 0, 0);
         next.power[zero] = 0;
         next.skill[zero] = 0;
         next.leader[zero] = 0;
+        if self.joined {
+            next.joint[zero] = 0;
+        }
         self.aggregate(view.groups.len(), &next);
         let unit = i64::from(problem.unit);
         for (position, group) in view.groups.iter().enumerate().rev() {
             if group.mandatory {
-                current.clear(self.block);
+                current.clear(self.block, self.joined);
             } else {
                 current.copy_from(&next);
             }
@@ -1230,12 +1496,14 @@ impl SuffixTable {
                                     (
                                         &mut current.power[target.clone()],
                                         &mut current.skill[target.clone()],
-                                        &mut current.leader[target],
+                                        &mut current.leader[target.clone()],
+                                        row_of_mut(&mut current.joint, target),
                                     ),
                                     (
                                         &next.power[origin.clone()],
                                         &next.skill[origin.clone()],
-                                        &next.leader[origin],
+                                        &next.leader[origin.clone()],
+                                        row_of(&next.joint, origin),
                                     ),
                                     shift,
                                     class,
@@ -1291,6 +1559,8 @@ impl SuffixTable {
                         .copy_from_slice(&layer.skill[*first..*first + width]);
                     self.leader[out..out + width]
                         .copy_from_slice(&layer.leader[*first..*first + width]);
+                    row_of_mut(&mut self.joint, out..out + width)
+                        .copy_from_slice(row_of(&layer.joint, *first..*first + width));
                     for &source in rest {
                         max_into(
                             &mut self.power[out..out + width],
@@ -1303,6 +1573,10 @@ impl SuffixTable {
                         max_into(
                             &mut self.leader[out..out + width],
                             &layer.leader[source..source + width],
+                        );
+                        max_into(
+                            row_of_mut(&mut self.joint, out..out + width),
+                            row_of(&layer.joint, source..source + width),
                         );
                     }
                 }
@@ -1321,26 +1595,36 @@ impl SuffixTable {
         mode: usize,
         low: usize,
         high: usize,
-    ) -> Option<(u32, u32, u32)> {
+    ) -> Option<Maxima> {
         let high = high.min(self.widths[count] - 1);
         if low > high {
             return None;
         }
         let base = self.index(position, count, capacity, mode);
-        let mut best: Option<(u32, u32, u32)> = None;
+        let mut best: Option<Maxima> = None;
         for sum in low..=high {
             let power = self.power[base + sum];
             if power < 0 {
                 continue;
             }
-            let found = (
-                power as u32,
-                self.skill[base + sum] as u32,
-                self.leader[base + sum] as u32,
-            );
+            let found = Maxima {
+                power: power as u32,
+                skill: self.skill[base + sum] as u32,
+                leader: self.leader[base + sum] as u32,
+                joint: if self.joined {
+                    self.joint[base + sum]
+                } else {
+                    0
+                },
+            };
             best = Some(match best {
                 None => found,
-                Some(old) => (old.0.max(found.0), old.1.max(found.1), old.2.max(found.2)),
+                Some(old) => Maxima {
+                    power: old.power.max(found.power),
+                    skill: old.skill.max(found.skill),
+                    leader: old.leader.max(found.leader),
+                    joint: old.joint.max(found.joint),
+                },
             });
         }
         best
@@ -1378,11 +1662,31 @@ struct State {
     dynamic_len: u8,
 }
 
+/// Search counters when a regime's search began, and the visited-node count
+/// of the next test whether it gains the joint column.
+#[derive(Clone, Copy, Debug)]
+struct Join {
+    after: u64,
+    bound_prunes: u64,
+    feasibility_prunes: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Child {
+    /// Live-score ceiling of the child's completions.
     upper: u32,
+    /// Ceiling from the separate suffix maxima, at least `upper`; siblings
+    /// are explored in its order.
+    order: u32,
     card: Option<CardIdx>,
     state: State,
+}
+
+/// A branch's [`Child::upper`] and [`Child::order`].
+#[derive(Clone, Copy, Debug)]
+struct Ceiling {
+    upper: u32,
+    order: u32,
 }
 
 struct TierSearch<'s, 'a> {
@@ -1398,6 +1702,11 @@ struct TierSearch<'s, 'a> {
     trackers: &'s mut [TopKTracker],
     stats: &'s mut SearchStats,
     budget: &'s mut SearchBudget,
+    /// When the regime may still gain the joint column: the search stops
+    /// at the next test that finds enough bound prunes since the regime
+    /// began, and the caller searches the regime again.
+    join: Option<Join>,
+    stopped: bool,
     /// Slot assignment of the current prefix: roles, then free picks.
     deck: [CardIdx; DECK_SIZE],
     /// One child buffer per position; a path visits each position once.
@@ -1426,7 +1735,7 @@ impl TierSearch<'_, '_> {
         };
         match self.bound(&root) {
             None => self.stats.feasibility_prunes += 1,
-            Some(upper) if upper < self.threshold() => self.stats.ub_prunes += 1,
+            Some(bound) if bound.upper < self.threshold() => self.stats.ub_prunes += 1,
             Some(_) => self.expand(root),
         }
     }
@@ -1496,7 +1805,7 @@ impl TierSearch<'_, '_> {
 
     /// Suffix maxima over every completion of `state` that can hit the tier.
     #[inline]
-    fn suffix(&self, state: &State) -> Option<(u32, u32, u32)> {
+    fn suffix(&self, state: &State) -> Option<Maxima> {
         let (low, high) = self.needed(state)?;
         let capacity = self.problem.counting.capacity() - state.counted;
         self.table.best(
@@ -1571,27 +1880,56 @@ impl TierSearch<'_, '_> {
         (skill.min(sum), leader.min(largest))
     }
 
-    /// Live-score ceiling of every completion of `state` that can hit the
+    /// Live-score ceiling of every completion of selected cards with power
+    /// `power`, skill at most `skill` and leader skill at most `leader`
+    /// whose further members stay within `rest`, from the separate maxima
+    /// and, when the regime has one, the joint ceiling: `(order, upper)`.
+    #[inline]
+    fn ceiling(&self, power: u32, skill: u32, leader: u32, rest: &Maxima) -> Ceiling {
+        let order = self.problem.live_upper(
+            power + rest.power,
+            skill + rest.skill,
+            leader.max(rest.leader),
+        );
+        let upper = match &self.view.joint {
+            Some(joint) if self.table.joined => {
+                order.min(joint.live(power, skill, leader.max(rest.leader), rest))
+            }
+            _ => order,
+        };
+        Ceiling { upper, order }
+    }
+
+    /// Live-score ceilings of every completion of `state` that can hit the
     /// tier. The composition-aware skill terms are computed only when the
     /// ceiling from skill maxima does not already fall below the cutoff.
     #[inline]
-    fn bound(&self, state: &State) -> Option<u32> {
-        let (power, skill, leader) = self.suffix(state)?;
+    fn bound(&self, state: &State) -> Option<Ceiling> {
+        let rest = self.suffix(state)?;
         let coarse = self.problem.live_upper(
-            state.power + power,
-            state.skill + skill,
-            state.leader.max(leader),
+            state.power + rest.power,
+            state.skill + rest.skill,
+            state.leader.max(rest.leader),
         );
         if coarse < self.threshold() {
-            return Some(coarse);
+            return Some(Ceiling {
+                upper: coarse,
+                order: coarse,
+            });
         }
-        let (skill, leader) = self.suffix_skill(state, skill, leader);
+        let (skill, leader) = self.suffix_skill(state, rest.skill, rest.leader);
         let remaining = DECK_SIZE - usize::from(state.picked);
         let (selected, largest) = self.selected_skill(state, remaining);
-        Some(
-            self.problem
-                .live_upper(state.power + power, selected + skill, largest.max(leader)),
-        )
+        Some(self.ceiling(
+            state.power,
+            selected,
+            largest,
+            &Maxima {
+                skill,
+                leader,
+                ..rest
+            },
+        ))
     }
 
     /// Some attribute count of the diversity class stays reachable.
@@ -1608,22 +1946,38 @@ impl TierSearch<'_, '_> {
     }
 
     fn expand(&mut self, state: State) {
-        if self.budget.expired_sampled() {
+        if self.budget.expired_sampled() || self.stopped {
             return;
+        }
+        if let Some(join) = &mut self.join
+            && self.stats.visited_nodes >= join.after
+        {
+            if JOIN_RATIO * (self.stats.ub_prunes - join.bound_prunes)
+                >= self.stats.feasibility_prunes - join.feasibility_prunes
+            {
+                self.stopped = true;
+                return;
+            }
+            join.after += JOIN_AFTER;
         }
         self.stats.visited_nodes += 1;
         let position = usize::from(state.position);
         let mut children = std::mem::take(&mut self.scratch[position]);
         children.clear();
         self.collect_children(&state, &mut children);
-        children.sort_unstable_by_key(|child| std::cmp::Reverse(child.upper));
+        children.sort_unstable_by_key(|child| std::cmp::Reverse(child.order));
         for child in &children {
             if self.budget.hit {
                 break;
             }
-            if child.upper < self.threshold() {
+            let threshold = self.threshold();
+            if child.order < threshold {
                 self.stats.ub_prunes += 1;
                 break;
+            }
+            if child.upper < threshold {
+                self.stats.ub_prunes += 1;
+                continue;
             }
             if let Some(card) = child.card {
                 self.deck[usize::from(state.picked)] = card;
@@ -1698,9 +2052,9 @@ impl TierSearch<'_, '_> {
                     // The class maxima bound every card of the class, which
                     // is still one of the unknown members here.
                     let coarse = problem.live_upper(
-                        state.power + class.power + suffix.0,
-                        state.skill + class.skill + suffix.1,
-                        state.leader.max(class.leader).max(suffix.2),
+                        state.power + class.power + suffix.power,
+                        state.skill + class.skill + suffix.skill,
+                        state.leader.max(class.leader).max(suffix.leader),
                     );
                     if coarse < threshold {
                         self.stats.ub_prunes += 1;
@@ -1714,12 +2068,18 @@ impl TierSearch<'_, '_> {
                         remaining,
                         remaining - 1,
                     );
-                    let upper = problem.live_upper(
-                        state.power + class.power + suffix.0,
-                        selected + class.skill + suffix.1.min(rest),
-                        largest.max(class.leader).max(suffix.2.min(rest_largest)),
+                    let bound = self.ceiling(
+                        state.power,
+                        selected,
+                        largest,
+                        &Maxima {
+                            power: class.power + suffix.power,
+                            skill: class.skill + suffix.skill.min(rest),
+                            leader: class.leader.max(suffix.leader.min(rest_largest)),
+                            joint: class.joint + suffix.joint,
+                        },
                     );
-                    if upper < threshold {
+                    if bound.upper < threshold {
                         self.stats.ub_prunes += 1;
                         continue;
                     }
@@ -1757,12 +2117,12 @@ impl TierSearch<'_, '_> {
                         self.stats.feasibility_prunes += 1;
                         continue;
                     }
-                    let upper = match shared {
-                        Some((power, skill, leader)) => {
+                    let bound = match shared {
+                        Some(suffix) => {
                             let coarse = problem.live_upper(
-                                child.power + power,
-                                child.skill + skill,
-                                child.leader.max(leader),
+                                child.power + suffix.power,
+                                child.skill + suffix.skill,
+                                child.leader.max(suffix.leader),
                             );
                             if coarse < threshold {
                                 self.stats.ub_prunes += 1;
@@ -1773,7 +2133,8 @@ impl TierSearch<'_, '_> {
                                 match frontiers[..cached].iter().find(|entry| entry.0 == key) {
                                     Some(entry) => entry.1,
                                     None => {
-                                        let value = self.suffix_skill(&child, skill, leader);
+                                        let value =
+                                            self.suffix_skill(&child, suffix.skill, suffix.leader);
                                         if cached < frontiers.len() {
                                             frontiers[cached] = (key, value);
                                             cached += 1;
@@ -1783,27 +2144,33 @@ impl TierSearch<'_, '_> {
                                 };
                             let remaining = DECK_SIZE - usize::from(child.picked);
                             let (selected, largest) = self.selected_skill(&child, remaining);
-                            problem.live_upper(
-                                child.power + power,
-                                selected + skill,
-                                largest.max(leader),
+                            self.ceiling(
+                                child.power,
+                                selected,
+                                largest,
+                                &Maxima {
+                                    skill,
+                                    leader,
+                                    ..suffix
+                                },
                             )
                         }
                         None => {
                             self.deck[slot] = card;
-                            let Some(upper) = self.bound(&child) else {
+                            let Some(bound) = self.bound(&child) else {
                                 self.stats.feasibility_prunes += 1;
                                 continue;
                             };
-                            upper
+                            bound
                         }
                     };
-                    if upper < threshold {
+                    if bound.upper < threshold {
                         self.stats.ub_prunes += 1;
                         continue;
                     }
                     children.push(Child {
-                        upper,
+                        upper: bound.upper,
+                        order: bound.order,
                         card: Some(card),
                         state: child,
                     });
@@ -1817,9 +2184,10 @@ impl TierSearch<'_, '_> {
             };
             match self.bound(&skip) {
                 None => self.stats.feasibility_prunes += 1,
-                Some(upper) if upper < threshold => self.stats.ub_prunes += 1,
-                Some(upper) => children.push(Child {
-                    upper,
+                Some(bound) if bound.upper < threshold => self.stats.ub_prunes += 1,
+                Some(bound) => children.push(Child {
+                    upper: bound.upper,
+                    order: bound.order,
                     card: None,
                     state: skip,
                 }),
@@ -1981,5 +2349,99 @@ mod tests {
         for deck in [unordered, negative, infinite] {
             assert!(SupportTerms::new(&deck).is_none(), "{deck:?}");
         }
+    }
+
+    /// The joint ceiling bounds the product of every suffix selection within
+    /// the box and the half-plane, and never exceeds the box corner.
+    #[test]
+    fn joint_ceiling_dominates_every_selection() {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |bound: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % bound
+        };
+        let mut checked = 0usize;
+        for round in 0..300 {
+            let product = LiveProduct {
+                honor: next(5_000) as i64,
+                intercept: 1_000_000 + next(8_000_000) as i64,
+                leader: next(200_000) as i64,
+                skill: 1 + next(50_000) as i64,
+                constant: if round % 3 == 0 {
+                    next(100_000_000_000) as i64
+                } else {
+                    0
+                },
+                divisor: if round % 2 == 0 { 1 } else { 500 },
+                floor: if round % 4 == 0 {
+                    next(1_000) as i64
+                } else {
+                    0
+                },
+            };
+            let Some(joint) = JointCeiling::new(
+                product,
+                next(300_000) as u32,
+                next(800) as u32,
+                next(160) as u32,
+            ) else {
+                continue;
+            };
+            let selections = (0..1 + next(40))
+                .map(|_| (next(250_000) as u32, next(750) as u32))
+                .collect::<Vec<_>>();
+            let cap = if round % 5 == 0 {
+                next(750) as u32
+            } else {
+                u32::MAX
+            };
+            let rest = Maxima {
+                power: selections.iter().map(|&(power, _)| power).max().unwrap(),
+                skill: selections
+                    .iter()
+                    .map(|&(_, skill)| skill)
+                    .max()
+                    .unwrap()
+                    .min(cap),
+                leader: next(160) as u32,
+                joint: selections
+                    .iter()
+                    .map(|&(power, skill)| joint.value(power, skill) as i32)
+                    .max()
+                    .unwrap(),
+            };
+            for _ in 0..20 {
+                let power = next(100_000) as u32;
+                let skill = next(300) as u32;
+                let leader = rest.leader.max(next(160) as u32);
+                let bound = joint.live(power, skill, leader, &rest);
+                let base_u = i128::from(power) + i128::from(product.honor);
+                let base_w = product.rate(skill, leader);
+                let slope = i128::from(product.skill);
+                let corner = product.live(
+                    (base_u + i128::from(rest.power)) * (base_w + slope * i128::from(rest.skill)),
+                    1,
+                );
+                assert!(bound <= corner, "round={round}");
+                for &(extra_power, extra_skill) in &selections {
+                    if extra_skill > rest.skill {
+                        continue;
+                    }
+                    let exact = product.live(
+                        (base_u + i128::from(extra_power))
+                            * (base_w + slope * i128::from(extra_skill)),
+                        1,
+                    );
+                    assert!(
+                        bound >= exact,
+                        "round={round} power={power} skill={skill} leader={leader}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 50_000, "{checked}");
     }
 }

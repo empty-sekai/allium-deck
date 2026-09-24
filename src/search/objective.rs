@@ -28,6 +28,48 @@ use super::evaluate::calc_mysekai_internal;
 /// Fixed-point scale of the live-score numerators.
 pub(crate) const LIVE_SCORE_BOUND_SCALE: i64 = 1_000_000;
 
+/// The live-score numerator `N` of a deck as a product of its power and an
+/// affine rate. For power `P` (honor bonus excluded), skill sum `S` and
+/// leader skill at most `L`,
+///
+/// `divisor * N <= (P + honor) * rate + constant`, with
+/// `rate = intercept + leader * L + skill * (S + max(0, floor - 4L - S))`
+///
+/// and non-negative coefficients; `floor` is where a Multi rate reads the
+/// teammates' score-up instead of the deck's skills. "Joint power-skill
+/// ceiling" in `docs/pruning-proof.md` derives it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LiveProduct {
+    pub(crate) honor: i64,
+    pub(crate) intercept: i64,
+    pub(crate) leader: i64,
+    pub(crate) skill: i64,
+    pub(crate) constant: i64,
+    pub(crate) divisor: i64,
+    pub(crate) floor: i64,
+}
+
+impl LiveProduct {
+    /// Rate of a deck whose skill sum is `skill` plus any non-negative
+    /// further skill, taken at the further skill's zero.
+    #[inline]
+    pub(crate) fn rate(&self, skill: u32, leader: u32) -> i128 {
+        let excess = (self.floor - 4 * i64::from(leader) - i64::from(skill)).max(0);
+        i128::from(self.intercept)
+            + i128::from(self.leader) * i128::from(leader)
+            + i128::from(self.skill) * (i128::from(skill) + i128::from(excess))
+    }
+
+    /// Live-score ceiling of a deck whose `(P + honor) * rate` is at most
+    /// `numerator / denominator`, for a positive denominator.
+    #[inline]
+    pub(crate) fn live(&self, numerator: i128, denominator: i128) -> u32 {
+        let live = (numerator + i128::from(self.constant) * denominator)
+            / (denominator * i128::from(self.divisor) * i128::from(LIVE_SCORE_BOUND_SCALE));
+        live.clamp(0, i128::from(u32::MAX)) as u32
+    }
+}
+
 /// Objective constants and the outward-rounded aggregate ceiling.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ObjectiveBound {
@@ -351,6 +393,59 @@ impl ObjectiveBound {
     ) -> i32 {
         (self.calc_live_score_bound_numerator(power_total, skill_total, leader_ub)
             / LIVE_SCORE_BOUND_SCALE) as i32
+    }
+
+    /// The live-score numerator as a [`LiveProduct`] when the rate is
+    /// affine in the skill terms: Multi and Cheerful, and Solo and Auto
+    /// under the average skill order.
+    pub(crate) fn live_product(&self) -> Option<LiveProduct> {
+        let non_negative = self.base_rate_1m >= 0
+            && self.srs_div500_1m >= 0
+            && self.avg_sum5_1m >= 0
+            && self.avg_leader_rate_1m >= 0
+            && self.multi_teammate_power.is_none_or(|power| power >= 0);
+        if !non_negative {
+            return None;
+        }
+        let honor = i64::from(self.honor_bonus);
+        match self.effective_live_type {
+            LiveType::Multi | LiveType::Cheerful => {
+                // N = 4 * rate * P + active * power_sum, rate = base +
+                // max(4L + S, t) * srs, power_sum = 5P or P plus the four
+                // teammates' power.
+                let active = self.active_1m_coeff;
+                let (per_power, constant) = match self.multi_teammate_power {
+                    Some(power) => (active, 4 * active * i64::from(power)),
+                    None => (DECK_SIZE as i64 * active, 0),
+                };
+                Some(LiveProduct {
+                    honor,
+                    intercept: 4 * self.base_rate_1m + per_power,
+                    leader: 16 * self.srs_div500_1m,
+                    skill: 4 * self.srs_div500_1m,
+                    constant,
+                    divisor: 1,
+                    floor: self.teammate_su_5x,
+                })
+            }
+            LiveType::Solo | LiveType::Auto
+                if matches!(self.live_skill_order, LiveSkillOrder::Average) =>
+            {
+                // N = 4 * rate * P; each rounded-up rate term adds less than
+                // one, so 500 * rate <= 500 * base + 1000 + 5 * L * leader
+                // rate + S * sum5.
+                Some(LiveProduct {
+                    honor,
+                    intercept: 4 * (500 * self.base_rate_1m + 1000),
+                    leader: 20 * self.avg_leader_rate_1m,
+                    skill: 4 * self.avg_sum5_1m,
+                    constant: 0,
+                    divisor: 500,
+                    floor: 0,
+                })
+            }
+            _ => None,
+        }
     }
 
     #[inline(always)]

@@ -984,7 +984,9 @@ Let $u$ be the greatest common divisor of every card's counted bonus parts
 (base, limited, and on the leader role base plus the leader-only bonus). Keys
 are multiples of $u$, and a common offset $O$ (a multiple of $u$) makes every
 $\kappa_c+O\ge 0$. For a regime, order the groups: fixed roles first, then
-the free groups by decreasing best power bound. Define for position $p$,
+the free groups by decreasing best power bound, or, once the regime keeps
+the joint component of §17.5, by decreasing best joint value. The order
+only decides which branches are explored first. Define for position $p$,
 remaining count $r$, counting state and shifted key sum $x$ the table entry
 
 $$
@@ -995,7 +997,9 @@ over all selections of exactly $r$ admitted cards from distinct groups at
 positions $\ge p$, containing one card of every mandatory group there, with
 that counting state and $\sum(\kappa+O)=x\,u$. $P$ is the regime power bound,
 $S$ and $L$ the per-card skill maximum; each component is maximized
-independently and an empty set is marked unreachable. The recurrence over
+independently and an empty set is marked unreachable. A regime with a joint
+ceiling (§17.5) may add a fourth component, $\max\sum(\omega_P P+\omega_S S)$,
+maximized the same way. The recurrence over
 $p$ from the end — skip the group (unless mandatory) or take one card of it,
 in either counting state for a limited card (§17.4) — is the standard
 exact selection DP, so by induction every entry is exact for its definition.
@@ -1080,15 +1084,79 @@ positions $\ge p$. A completion takes at most one card from each of those
 groups, and each resolved skill is at most its candidate ceiling, so both
 caps are upper bounds, and so is the smaller of two upper bounds. A class
 test, which has not yet placed its card, takes every ceiling with the $r$
-unknown members that include it. The branch
-is discarded only when this ceiling is strictly below $\tau_T$ (Theorem 1,
-Corollary 1). A class of cards with a common key, slack, displaced count and
-counting choice is first tested with its componentwise maxima, which dominate each card of
-the class. Children are explored in non-increasing ceiling order and the
-loop stops at the first child below the current $\tau_T$; $\tau_T$ only
-increases, so every later child is also below it. A regime is skipped for a
-tier when its unconditioned regime ceiling — roles' best power, skill and
-the top remaining groups — is below $\tau_T$.
+unknown members that include it.
+
+**Joint power-skill ceiling.** For a Multi or Cheerful live, and for Solo or
+Auto under the average skill order, `ObjectiveBound::live_product` writes the
+live-score numerator $N$ of a deck with power $P$, skill sum $S\ge S_0$ and
+leader skill at most $L$ as a product: non-negative integers $a,\ell,b,c_0$,
+a divisor $d\ge 1$ and a floor $t$ with
+
+$$
+d\,N\le(P+h)\,w+c_0,\qquad
+w=a+\ell L+b\bigl(S+\max(0,\,t-4L-S_0)\bigr),
+$$
+
+$h$ the honor bonus. The numerator is $4\rho P'+\gamma\Pi$ with $P'\le P+h$
+the clamped power, $\gamma$ the active coefficient and $\Pi$ either $5P'$ or
+$P'$ plus four teammates' power. For Multi and Cheerful
+$\rho=r_0+\max(4L+S,t)\,\sigma$ with $r_0$ the base rate and $\sigma$ the
+summed skill rate over 500, and $\max(4L+S,t)\le 4L+S+\max(0,t-4L-S_0)$ for
+$S\ge S_0$; so $a=4r_0+5\gamma$ (or $4r_0+\gamma$ with $c_0$ four times
+$\gamma$ times the teammate power), $\ell=16\sigma$, $b=4\sigma$, $d=1$.
+Under the average order $\gamma=0$ and each of the two rounded-up rate terms
+adds less than one, so $500\rho\le 500r_0+1000+5\lambda L+\mu S$ ($\lambda$
+the leader slot's rate, $\mu$ the five slots' summed rate) and
+$a=4(500r_0+1000)$, $\ell=20\lambda$, $b=4\mu$, $d=500$, $c_0=0$, $t=0$.
+The live ceiling $\lfloor N/10^6\rfloor$ is then at most
+$\lfloor((P+h)w+c_0)/(d\,10^6)\rfloor$.
+
+A regime fixes positive integer weights $\omega_P,\omega_S$ and may keep the
+table component $J$ above, a class contributing its largest per-card value.
+Consider a branch with selected power $P_0$, selected skill bound $S_0$ and
+leader bound $L$, and a completion whose suffix has power bounds summing to
+$p$ and skill maxima summing to $s$, with a resolved suffix skill $s'\le s$.
+Then $p\le P^*$, $s'\le S^*$ (the capped separate maxima) and
+$\omega_Pp+\omega_Ss'\le\omega_Pp+\omega_Ss\le J^*$, the largest joint value over
+the admitted sums. With $u=P_0+h+p$ and $w=w_0+bs'$, $w_0$ the rate at $S_0$,
+the completion's $(P+h)\,w$ is at most $uw$, and $(u,w)$ lies in the box
+$u\le U=P_0+h+P^*$, $w\le W=w_0+bS^*$ cut by the half-plane
+$\alpha u+\beta w\le C$ with $\alpha=\omega_Pb$, $\beta=\omega_S$ and
+$C=bJ^*+\alpha(P_0+h)+\beta w_0$. The product $uw$ increases in both
+coordinates. If the corner $(U,W)$ satisfies the half-plane, the maximum over
+the region is $UW$. Otherwise it lies on the half-plane's segment inside the
+box, where $uw$ is a concave quadratic peaking at $u=C/(2\alpha)$: the peak
+is $U(C-\alpha U)/\beta$ when $C\ge 2\alpha U$, $W(C-\beta W)/\alpha$ when
+$C\ge 2\beta W$, and $C^2/(4\alpha\beta)$ otherwise. The search keeps that peak
+as an exact rational, adds $c_0$ times its denominator, divides by the
+denominator times $d\,10^6$ with floor, and takes the smaller of this and
+the separate-maxima ceiling as the branch ceiling. The weights only decide
+which of the two is smaller. A regime takes the normal of the level curve of
+$uw$ at its unconditioned ceiling, $\omega_S/\omega_P\approx bU/W$, and keeps the
+component only when every card's joint value is below $2^{26}$, so five of
+them fit the table and an unreachable entry stays negative. A class test
+counts its card among the suffix, with the class maxima and the class's
+largest joint value.
+
+The component costs a table pass and tightens only bound tests, so regimes
+build it only from the first regime whose search, at a multiple of $2^{16}$
+visited nodes, has pruned at least one branch by a bound test per four
+pruned by a feasibility test. That search stops, and its regime is searched
+again with the component and its free groups in joint order. The stopped
+search inserted only exactly evaluated decks and the repeated search is
+complete, so the result is the same.
+
+The branch is discarded only when its ceiling is strictly below $\tau_T$
+(Theorem 1, Corollary 1). A class of cards with a common key, slack,
+displaced count and counting choice is first tested with its componentwise
+maxima, which dominate each card of the class. Children are explored in
+non-increasing order of their separate-maxima ceiling, which is at least
+their branch ceiling. The loop stops at the first child whose separate-maxima
+ceiling is below the current $\tau_T$ — $\tau_T$ only increases, so every
+later child's ceilings are below it too — and skips a child whose branch
+ceiling alone is below it. A regime is skipped for a tier when its
+unconditioned regime ceiling — roles' best power, skill and the top
+remaining groups — is below $\tau_T$.
 
 When the live type has no admissible live-score relaxation (MySekai), the
 trackers disable numeric cutoffs and only the feasibility proofs above
@@ -1875,6 +1943,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | WL attribute matching | search/suffix.rs | every legal novel-attribute set induces a matching |
 | WL support upper bound | search/suffix.rs, Final helpers | support can only stay or decrease as main deck grows |
 | Exact bonus tiers | search/solver/bonus_tiers.rs, search/skill_ceiling.rs | per-card key and slack, exact reachable-sum suffix table per regime, per-tier live ceiling with composition-aware selected skills and suffix skill frontier |
+| Joint power-skill ceiling | search/solver/bonus_tiers.rs, search/objective.rs | the live-score product peaks on the box of separate maxima cut by the joint half-plane |
 | Final member dominance | search/dominance.rs, search/alternatives.rs | member-role substitution + legal leader rotations |
 | Final leader/job bound | solver/final_chapter.rs | admissible character ceiling |
 | Final attribute DP | solver/final_chapter.rs | exact isolated OR-union DP |
@@ -1909,6 +1978,7 @@ independent checks designed to expose a violated premise.
 | Dominance | exact_dominance.rs, dominance_contract.rs, exact_world_bloom.rs |
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
 | Exact bonus tiers | bonus_tiers.rs, exact_bonus.rs, fractional_bonus.rs |
+| Joint power-skill ceiling | exact_score.rs — the live product dominates the live ceiling for every live type and skill order that has one; solver/bonus_tiers.rs unit test — the joint peak dominates every selection in the box and half-plane and never exceeds the box corner |
 | Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |
 | Power | exact_power.rs, power_scenarios.rs (Top-K against the exhaustive oracle with unit, attribute and two-unit sharing, cultivation variants, honor power and uniform-bonus MySekai; a deck that shares two units; a shared unit set that is no card mask) and the all-scene oracle matrix |

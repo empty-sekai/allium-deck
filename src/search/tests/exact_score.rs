@@ -619,3 +619,67 @@ fn event_score_cutoff_matches_the_packed_ceiling() {
     }
     assert_eq!(checked, 40 * 400 * 6);
 }
+
+/// The live product dominates the live-score ceiling wherever it exists,
+/// and exists exactly for the live types whose rate is affine in skill.
+#[test]
+fn live_product_dominates_the_live_ceiling() {
+    let mut rng = ExactLcg(0x11fe_9a0d);
+    let lives = [
+        LiveType::Solo,
+        LiveType::Auto,
+        LiveType::Multi,
+        LiveType::Cheerful,
+        LiveType::Challenge,
+    ];
+    let orders = [
+        LiveSkillOrder::Best,
+        LiveSkillOrder::Worst,
+        LiveSkillOrder::Average,
+    ];
+    let mut checked = 0usize;
+    for round in 0..120 {
+        let mut context = ctx(ScoreTarget::Bonus);
+        context.live_type = lives[round % lives.len()];
+        context.live_skill_order = orders[(round / lives.len()) % orders.len()];
+        context.base_score = 0.9 + f64::from(rng.range(0, 60)) / 100.0;
+        context.base_score_auto = 0.5 + f64::from(rng.range(0, 60)) / 100.0;
+        context.fever_score = f64::from(rng.range(0, 40)) / 100.0;
+        context.skill_scores =
+            [[0.0; 6]; 3].map(|_| [0; 6].map(|_| f64::from(rng.range(0, 300)) / 100.0));
+        context.multi_teammate_score_up = (rng.range(0, 3) == 0).then(|| rng.range(0, 200) as i32);
+        context.multi_teammate_power = (rng.range(0, 3) == 0).then(|| rng.range(0, 400_000) as i32);
+        context.honor_bonus = rng.range(0, 3_000);
+        context.power_total_cap = (rng.range(0, 4) == 0).then(|| rng.range(100_000, 400_000));
+        let objective = ObjectiveBound::from_context(&context);
+        let affine = match context.effective_live_type() {
+            LiveType::Multi | LiveType::Cheerful => true,
+            LiveType::Solo | LiveType::Auto => {
+                matches!(context.live_skill_order, LiveSkillOrder::Average)
+            }
+            _ => false,
+        };
+        let Some(product) = objective.live_product() else {
+            assert!(!affine, "round={round} live={:?}", context.live_type);
+            continue;
+        };
+        assert!(affine, "round={round} live={:?}", context.live_type);
+        for _ in 0..500 {
+            let power = rng.range(0, 450_000);
+            let skill = rng.range(0, 900);
+            let leader = rng.range(0, 160);
+            let ceiling = (objective.ceiling(power, 0, skill, leader) & u64::from(u32::MAX)) as u32;
+            let bound = product.live(
+                (i128::from(power) + i128::from(product.honor)) * product.rate(skill, leader),
+                1,
+            );
+            assert!(
+                bound >= ceiling,
+                "round={round} live={:?} power={power} skill={skill} leader={leader}",
+                context.live_type
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 20_000, "{checked}");
+}
