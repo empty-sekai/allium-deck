@@ -1160,6 +1160,35 @@ again with the component and its free groups in joint order. The stopped
 search inserted only exactly evaluated decks and the repeated search is
 complete, so the result is the same.
 
+**Tier certificate.** When a scope uses one support profile whose losses
+are whole ticks (exact slack, §17.2), every legal deck's total is exact.
+With $e_c=\kappa_c+\sigma_c$ plus the card's counted limited bonus,
+
+$$
+10\cdot\operatorname{total}(D)=\sum_{c\in D}e_c+10\,d(k)+10B-10X(D),
+$$
+
+and $X(D)=\sum_{j=1}^{a}(s_{W+1}-s_{w_j})$ depends only on the count $a$ of
+counted entries the deck removes and the set $S$ of positions in
+$(W,W+M]$ it holds: the $w_j$ are the first $a$ positions after $W$
+outside $S$, all within $W+M$ (§17.2). Only the cards of the public ids at
+those positions hold any; call them holding cards. A reachability table over
+the other cards records, per card count, removed count $a'$, counting state
+(the counted limited bonuses and whether one was left uncounted) and sum of
+$e_c$, whether one card from each of some groups reaches it. For every
+subset of holding cards from distinct groups, of size $k\le 5$, and every
+counting choice of its cards, the certificate asks whether the table
+reaches $10T-10d-10B+10X(a_S+a',S)-\sum_{c\in S}e_c$ with $5-k$ cards and
+some $a'$, in a counting state that with the subset's is realized by some
+slot order (a limited bonus stays uncounted only once the capacity is used,
+§17.4). The table ignores attributes and mandatory groups and lets a holding
+card share a group with a table card, which only adds sums; so a tier and
+diversity bonus $d$ it never reaches has no hitting deck in the scope. A
+search of that pair ends, and later ones are skipped, which removes no deck
+of any other pair. A search builds the certificate after $2^{12}$ visited
+nodes; there is none when more than 16 cards hold positions, when $M>64$,
+or when a refill is not a whole number of ticks.
+
 The branch is discarded only when its ceiling is strictly below $\tau_T$
 (Theorem 1, Corollary 1). A class of cards with a common key, slack,
 displaced count and counting choice is first tested with its componentwise
@@ -1958,6 +1987,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | WL support upper bound | search/suffix.rs, Final helpers | support can only stay or decrease as main deck grows |
 | Exact bonus tiers | search/solver/bonus_tiers.rs, search/skill_ceiling.rs | per-card key and slack, exact reachable-sum suffix table per regime, per-tier live ceiling with composition-aware selected skills and suffix skill frontier; at a diversity class's largest attribute count, the regime restricted to the attributes held |
 | Joint power-skill ceiling | search/solver/bonus_tiers.rs, search/objective.rs | the live-score product peaks on the box of separate maxima cut by the joint half-plane |
+| Tier certificate | search/solver/bonus_tiers.rs | exact totals under one whole-tick support profile: reachability over card count, removed entries, counting state and sum, completed by every subset of the cards holding refill positions |
 | Final member dominance | search/dominance.rs, search/alternatives.rs | member-role substitution + legal leader rotations |
 | Final leader/job bound | solver/final_chapter.rs | admissible character ceiling |
 | Final attribute DP | solver/final_chapter.rs | exact isolated OR-union DP |
@@ -1991,7 +2021,7 @@ independent checks designed to expose a violated premise.
 | Event Score cutoff | exact_score.rs cutoff against the packed comparison over every event live type |
 | Dominance | exact_dominance.rs, dominance_contract.rs, exact_world_bloom.rs |
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
-| Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views from the first node), exact_bonus.rs, fractional_bonus.rs |
+| Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views and tier certificates from the first node), exact_bonus.rs, fractional_bonus.rs; solver/bonus_tiers.rs unit test — the refill of the removed and held entries is the evaluator's support loss beyond the card losses |
 | Joint power-skill ceiling | exact_score.rs — the live product dominates the live ceiling for every live type and skill order that has one; solver/bonus_tiers.rs unit test — the joint peak dominates every selection in the box and half-plane and never exceeds the box corner |
 | Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |

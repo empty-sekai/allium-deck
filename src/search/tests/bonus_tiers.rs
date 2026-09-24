@@ -375,17 +375,17 @@ fn check_tiers(pool: &CardPool, ctx: &SearchContext, targets: &[i32], top_k: usi
         timeout_ms: 0,
     };
     let (expected, _) = ExactOracle::new(pool, ctx).search_bonus_targets(&params, targets);
-    // Attribute-limited views from the first node exercise the narrowed
-    // completions that production searches reach only in large requests.
-    for eager_attr_views in [false, true] {
+    // Attribute-limited views and tier certificates from the first node
+    // exercise what production searches build only in large requests.
+    for eager_bonus_tiers in [false, true] {
         let configuration = tuning::SearchTuning {
-            eager_attr_views,
+            eager_bonus_tiers,
             ..Default::default()
         };
         let (actual, stats) = tuning::with_tuning(configuration, || {
             search_bonus_targets(pool, ctx, &params, targets)
         });
-        let label = format!("{label} eager_attr_views={eager_attr_views}");
+        let label = format!("{label} eager_bonus_tiers={eager_bonus_tiers}");
         assert!(!stats.deadline_hit, "{label}: unexpected timeout");
         if actual != expected {
             for (name, rows) in [("solver", &actual), ("oracle", &expected)] {

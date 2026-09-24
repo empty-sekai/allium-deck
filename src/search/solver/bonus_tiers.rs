@@ -47,6 +47,10 @@
 //!   count, every completion keeps to their attributes; a large enough search
 //!   continues in the regime restricted to the cards of those attributes,
 //!   with its own suffix table.
+//! * With one support profile of whole ticks every deck's total is exact in
+//!   its cards, its count of removed counted entries and the positions past
+//!   them it holds; a large enough search builds the scope's certificate of
+//!   the tiers no deck reaches and ends when its tier is one of them.
 use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 
@@ -77,6 +81,12 @@ const JOIN_RATIO: u64 = 4;
 /// largest attribute count of a diversity class before the completions get
 /// the view and table of that set, so that small searches build none.
 const RESTRICT_AFTER: u64 = 1 << 11;
+/// Nodes of one tier search before it builds and consults the scope's tier
+/// certificate, so that small searches build none.
+const CERTIFY_AFTER: u64 = 1 << 12;
+/// Cards holding support entries past the counted ones that a certificate
+/// enumerates as subsets; more leave the scope without one.
+const CERTIFY_HELD_CARDS: usize = 16;
 /// Unreachable table entry. Adding five card values keeps it negative.
 const NO_POWER: i32 = i32::MIN / 4;
 const NO_SKILL: i16 = i16::MIN / 4;
@@ -364,10 +374,14 @@ impl<'a> SupportProfiles<'a> {
 /// entries with `i ≤ W + M`.
 struct SupportTerms {
     base: f64,
-    /// `(ℓ_c, entries with i ≤ W + M)` per public id.
-    loss: HashMap<u16, (f64, u32)>,
+    /// Per public id: `ℓ_c`, its entries with `i ≤ W`, its entries with
+    /// `W < i ≤ W + M`, and those positions as bits from `W + 1` (positions
+    /// past the 64th are left out).
+    loss: HashMap<u16, (f64, u32, u32, u64)>,
     /// `excess[q]` for `q = 0..=M`.
     excess: Vec<f64>,
+    /// `s_{W+1} - s_{W+k}` for `k = 1..=2M`.
+    steps: Vec<f64>,
 }
 
 impl SupportTerms {
@@ -396,7 +410,7 @@ impl SupportTerms {
         let removable = multiplicities.iter().take(DECK_SIZE).sum::<usize>();
         let value = |index: usize| entries.get(index).map_or(0.0, |entry| entry.1);
         let reference = value(counted);
-        let mut loss: HashMap<u16, (f64, u32)> = HashMap::new();
+        let mut loss: HashMap<u16, (f64, u32, u32, u64)> = HashMap::new();
         for (index, &(game_id, bonus)) in entries.iter().enumerate() {
             if index >= counted + removable {
                 break;
@@ -404,22 +418,47 @@ impl SupportTerms {
             let entry = loss.entry(game_id).or_default();
             if index < counted {
                 entry.0 += bonus - reference;
+                entry.1 += 1;
+            } else {
+                entry.2 += 1;
+                if index - counted < 64 {
+                    entry.3 |= 1 << (index - counted);
+                }
             }
-            entry.1 += 1;
         }
+        let steps = (0..2 * removable)
+            .map(|index| reference - value(counted + index))
+            .collect::<Vec<_>>();
         let mut excess = vec![0.0; removable + 1];
         for displaced in 1..=removable {
-            excess[displaced] = excess[displaced - 1] + reference - value(counted + displaced - 1);
+            excess[displaced] = excess[displaced - 1] + steps[displaced - 1];
         }
         Some(Self {
             base: entries.iter().take(counted).map(|entry| entry.1).sum(),
             loss,
             excess,
+            steps,
         })
     }
 
     fn loss_of(&self, game_id: u16) -> (f64, u32) {
+        let (loss, counted, past, _) = self.entries(game_id);
+        (loss, counted + past)
+    }
+
+    fn entries(&self, game_id: u16) -> (f64, u32, u32, u64) {
         self.loss.get(&game_id).copied().unwrap_or_default()
+    }
+
+    /// `X` of a deck that removes `removed` counted entries and holds the
+    /// positions `held` past them: the refill takes the first `removed`
+    /// positions after `W` that the deck does not hold.
+    fn refill(&self, removed: usize, held: u64) -> f64 {
+        (0..self.steps.len())
+            .filter(|&index| index >= 64 || held & (1 << index) == 0)
+            .take(removed)
+            .map(|index| self.steps[index])
+            .sum()
     }
 
     /// Excess bound for `displaced` entries; monotone in `displaced`.
@@ -485,6 +524,12 @@ struct Problem<'a> {
     /// Nodes visited with one attribute set before its completions are
     /// searched in the view of that set: `RESTRICT_AFTER`.
     restrict_after: u64,
+    /// The scope's single support profile, when its losses are whole ticks.
+    terms: Option<SupportTerms>,
+    /// The scope's tier certificate, built by the first tier search that
+    /// visits `certify_after` nodes; `None` inside when the scope has none.
+    certificate: OnceCell<Option<TierCertificate>>,
+    certify_after: u64,
 }
 
 impl<'a> Problem<'a> {
@@ -560,8 +605,14 @@ impl<'a> Problem<'a> {
         }
         let unit = unit.max(1);
 
-        let extras =
-            support.map(|support| Self::fold_support(pool, ctx, &support, scale, unit, &mut bonus));
+        let (extras, terms) = match support {
+            Some(support) => {
+                let (extras, terms) =
+                    Self::fold_support(pool, ctx, &support, scale, unit, &mut bonus);
+                (Some(extras), terms.filter(|_| exact_slack))
+            }
+            None => (None, None),
+        };
         let mut lowest_key = 0i64;
         let mut group_max = Vec::with_capacity(groups.len());
         for group in &groups {
@@ -608,6 +659,7 @@ impl<'a> Problem<'a> {
         let max_units = (cap.max(0) / unit_i) as usize;
 
         let objective = ObjectiveBound::from_context(ctx);
+        let eager = SearchTuning::load().eager_bonus_tiers;
         Some(Self {
             pool,
             ctx,
@@ -629,11 +681,10 @@ impl<'a> Problem<'a> {
                 .indices()
                 .map(|card| SkillCeiling::new(pool, card, ctx.skill_reference_strategy))
                 .collect(),
-            restrict_after: if SearchTuning::load().eager_attr_views {
-                1
-            } else {
-                RESTRICT_AFTER
-            },
+            restrict_after: if eager { 1 } else { RESTRICT_AFTER },
+            terms,
+            certificate: OnceCell::new(),
+            certify_after: if eager { 0 } else { CERTIFY_AFTER },
         })
     }
 
@@ -724,10 +775,11 @@ impl<'a> Problem<'a> {
     }
 
     /// Folds the support deck into each card's key, slack and displaced
-    /// entry count and returns the deck-level World Bloom terms. A Final
-    /// Chapter scope of one leader character folds that character's profile;
-    /// otherwise every leader profile is covered: card losses take their
-    /// extremes over the profiles, counts and excess bounds their maxima.
+    /// entry count and returns the deck-level World Bloom terms, with the
+    /// terms of the profile when there is one. A Final Chapter scope of one
+    /// leader character folds that character's profile; otherwise every
+    /// leader profile is covered: card losses take their extremes over the
+    /// profiles, counts and excess bounds their maxima.
     fn fold_support(
         pool: &CardPool,
         ctx: &SearchContext,
@@ -735,7 +787,7 @@ impl<'a> Problem<'a> {
         scale: i64,
         unit: u32,
         bonus: &mut [CardBonus],
-    ) -> Extras {
+    ) -> (Extras, Option<SupportTerms>) {
         let profiles = support
             .decks
             .iter()
@@ -751,9 +803,9 @@ impl<'a> Problem<'a> {
             bounded,
         };
         if !bounded {
-            return extras(UNBOUNDED, None, vec![0]);
+            return (extras(UNBOUNDED, None, vec![0]), None);
         }
-        let profiles = profiles.into_iter().flatten().collect::<Vec<_>>();
+        let mut profiles = profiles.into_iter().flatten().collect::<Vec<_>>();
         let unit = i64::from(unit);
         for card in pool.indices() {
             let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -800,7 +852,38 @@ impl<'a> Problem<'a> {
         let by_leader = ctx
             .is_final_chapter
             .then(|| leader_profile.iter().map(|&index| ranges[index]).collect());
-        extras(base, by_leader, excess)
+        let single = if profiles.len() == 1 {
+            profiles.pop()
+        } else {
+            None
+        };
+        (extras(base, by_leader, excess), single)
+    }
+
+    /// Whether the scope's certificate, once built, shows that no deck hits
+    /// `tier` with the diversity bonus `extra_ticks`.
+    fn excluded(&self, tier: usize, extra_ticks: i64) -> bool {
+        self.certificate
+            .get()
+            .and_then(Option::as_ref)
+            .is_some_and(|certificate| certificate.excludes(tier, extra_ticks))
+    }
+
+    /// The visited-node count at which a search starting at `visited`
+    /// builds the certificate, while the scope can have one not yet built.
+    fn certify_at(&self, visited: u64) -> Option<u64> {
+        (self.terms.is_some() && self.certificate.get().is_none())
+            .then(|| visited + self.certify_after)
+    }
+
+    fn certificate(&self) -> Option<&TierCertificate> {
+        self.certificate
+            .get_or_init(|| {
+                self.terms
+                    .as_ref()
+                    .and_then(|terms| TierCertificate::new(self, terms))
+            })
+            .as_ref()
     }
 
     fn leader_extra_ticks(&self, card: CardIdx) -> u32 {
@@ -1158,6 +1241,11 @@ impl<'a> Problem<'a> {
                         stats.ub_prunes += 1;
                         continue;
                     }
+                    if self.excluded(tier, extra_ticks) {
+                        stats.feasibility_prunes += 1;
+                        continue;
+                    }
+                    let certify_at = self.certify_at(stats.visited_nodes);
                     let mut search = TierSearch {
                         problem: self,
                         view,
@@ -1171,6 +1259,8 @@ impl<'a> Problem<'a> {
                         budget: &mut *budget,
                         join,
                         stopped: false,
+                        certify_at,
+                        settled: false,
                         restrictions: &restrictions,
                         deck: [CardIdx::new(0); DECK_SIZE],
                         scratch: vec![Vec::new(); view.groups.len()],
@@ -1747,6 +1837,287 @@ impl SuffixTable {
     }
 }
 
+/// The `(tier, diversity bonus)` pairs no deck of a scope hits, for a scope
+/// with one support profile of whole ticks.
+///
+/// A deck's total in ticks is exactly `Σ e_c + E - X(a, S)`: `e_c` is card
+/// `c`'s key plus slack plus its counted limited bonus, `E` the diversity
+/// bonus plus the support base, and the refill excess `X` depends only on
+/// the count `a` of counted entries the deck removes and the set `S` of
+/// positions past them it holds. Only the cards of at most `M` public ids
+/// hold such positions; the others enter a reachability table over the card
+/// count, the counting state, `a` and the sum, and every subset of the
+/// holding cards from distinct groups completes it. The table ignores
+/// attributes and mandatory groups and lets a holding card share a group
+/// with a table card, which only adds sums.
+struct TierCertificate {
+    excluded: Vec<(usize, i64)>,
+}
+
+impl TierCertificate {
+    /// `None` when the positions past the counted entries do not fit the
+    /// masks, too many cards hold them, or a refill is not whole ticks.
+    fn new(problem: &Problem<'_>, terms: &SupportTerms) -> Option<Self> {
+        let extras = problem.extras.as_ref()?;
+        if extras.base.0 != extras.base.1 || terms.excess.len() > 65 {
+            return None;
+        }
+        let pool = problem.pool;
+        let capacity = usize::from(problem.counting.capacity());
+        // (contribution without the limited bonus, limited bonus, counted
+        // entries, held positions, group)
+        let mut cards = Vec::new();
+        for (index, group) in problem.groups.iter().enumerate() {
+            for &card in &group.cards {
+                let parts = problem.bonus[card.raw()];
+                let leader = if group.leader_role {
+                    problem.leader_extra_ticks(card)
+                } else {
+                    0
+                };
+                let (_, removed, _, held) = terms.entries(pool.game_id(card));
+                cards.push((
+                    i64::from(parts.fixed)
+                        + i64::from(parts.adjust)
+                        + i64::from(parts.slack)
+                        + i64::from(leader),
+                    i64::from(parts.limited),
+                    removed as usize,
+                    held,
+                    index,
+                ));
+            }
+        }
+        cards.sort_unstable();
+        cards.dedup();
+        let lowest = cards.iter().map(|card| card.0).min()?;
+        let step = cards
+            .iter()
+            .fold(0, |step, card| gcd64(gcd64(step, card.0 - lowest), card.1));
+        let step = step.max(1);
+        let widest = cards.iter().map(|card| card.0 + card.1 - lowest).max()?;
+        let mut removals = cards.iter().map(|card| card.2).collect::<Vec<_>>();
+        removals.sort_unstable_by(|left, right| right.cmp(left));
+        let most = removals.iter().take(DECK_SIZE).sum::<usize>();
+        let (holding, plain): (Vec<_>, Vec<_>) = cards.into_iter().partition(|card| card.3 != 0);
+        if holding.len() > CERTIFY_HELD_CARDS {
+            return None;
+        }
+        let table = Reachable::new(
+            &plain,
+            problem.groups.len(),
+            lowest,
+            step,
+            (widest / step) as usize * DECK_SIZE + 1,
+            capacity,
+            most,
+        );
+        let scale = problem.scale;
+        let diversity = (1..=DECK_SIZE)
+            .map(|count| i64::from(extras.diversity[count]) * 10 * scale)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut reached = std::collections::BTreeSet::new();
+        let mut subsets = vec![(Vec::new(), 0usize)];
+        while let Some((chosen, from)) = subsets.pop() {
+            for next in from..holding.len() {
+                if chosen.len() < DECK_SIZE
+                    && chosen
+                        .iter()
+                        .all(|&index: &usize| holding[index].4 != holding[next].4)
+                {
+                    let mut wider = chosen.clone();
+                    wider.push(next);
+                    subsets.push((wider, next + 1));
+                }
+            }
+            let held = chosen
+                .iter()
+                .fold(0, |held, &index| held | holding[index].3);
+            let removed = chosen.iter().map(|&index| holding[index].2).sum::<usize>();
+            // Counting choices of the chosen cards: (sum, counted, some
+            // limited bonus left uncounted).
+            let mut choices = vec![(0i64, 0usize, false)];
+            for &index in &chosen {
+                let (exact, limited, ..) = holding[index];
+                choices = choices
+                    .into_iter()
+                    .flat_map(|(sum, counted, uncounted)| {
+                        let whole = (sum + exact + limited, counted + 1, uncounted);
+                        let base = (sum + exact, counted, uncounted || limited > 0);
+                        [Some(base), (limited > 0).then_some(whole)]
+                    })
+                    .flatten()
+                    .filter(|choice| choice.1 <= capacity)
+                    .collect();
+            }
+            for (tier, &target) in problem.targets.iter().enumerate() {
+                let target_ticks = i64::from(target) * 10 * scale;
+                for &extra in &diversity {
+                    if reached.contains(&(tier, extra)) {
+                        continue;
+                    }
+                    for rest in 0..=most.saturating_sub(removed) {
+                        let (low, high) = ticks(terms.refill(removed + rest, held), scale);
+                        if low != high {
+                            return None;
+                        }
+                        let hit = choices.iter().any(|&(sum, counted, uncounted)| {
+                            let need = target_ticks - extra - extras.base.0 + low - sum;
+                            table.reaches(DECK_SIZE - chosen.len(), rest, counted, uncounted, need)
+                        });
+                        if hit {
+                            reached.insert((tier, extra));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        let excluded = (0..problem.targets.len())
+            .flat_map(|tier| diversity.iter().map(move |&extra| (tier, extra)))
+            .filter(|pair| !reached.contains(pair))
+            .collect();
+        Some(Self { excluded })
+    }
+
+    fn excludes(&self, tier: usize, extra_ticks: i64) -> bool {
+        self.excluded.contains(&(tier, extra_ticks))
+    }
+}
+
+/// Sums reachable with one card from each of some groups, by card count,
+/// counted entries removed, limited bonuses counted and whether one was
+/// left uncounted; a sum is stored as `(Σ e_c - count·lowest) / step`.
+struct Reachable {
+    lowest: i64,
+    step: i64,
+    width: usize,
+    words: usize,
+    capacity: usize,
+    most: usize,
+    bits: Vec<u64>,
+}
+
+impl Reachable {
+    fn new(
+        cards: &[(i64, i64, usize, u64, usize)],
+        groups: usize,
+        lowest: i64,
+        step: i64,
+        width: usize,
+        capacity: usize,
+        most: usize,
+    ) -> Self {
+        let words = width.div_ceil(64);
+        let mut table = Self {
+            lowest,
+            step,
+            width,
+            words,
+            capacity,
+            most,
+            bits: Vec::new(),
+        };
+        let row =
+            |count, removed, counted, uncounted| table.row(count, removed, counted, uncounted);
+        let mut bits = vec![0; row(COUNTS, 0, 0, false)];
+        bits[0] = 1;
+        for group in 0..groups {
+            let members = cards.iter().filter(|card| card.4 == group);
+            let previous = bits.clone();
+            for &(exact, limited, removed, _, _) in members {
+                let shift = ((exact - lowest) / step) as usize;
+                let extra = (limited / step) as usize;
+                for count in 1..COUNTS {
+                    for prior in 0..=most.saturating_sub(removed) {
+                        for counted in 0..=capacity {
+                            for uncounted in [false, true] {
+                                let from = row(count - 1, prior, counted, uncounted);
+                                let mut apply = |counted, uncounted, shift| {
+                                    let to = row(count, prior + removed, counted, uncounted);
+                                    or_shifted(
+                                        &mut bits[to..to + words],
+                                        &previous[from..from + words],
+                                        shift,
+                                        width,
+                                    );
+                                };
+                                if limited == 0 {
+                                    apply(counted, uncounted, shift);
+                                    continue;
+                                }
+                                if counted < capacity {
+                                    apply(counted + 1, uncounted, shift + extra);
+                                }
+                                apply(counted, true, shift);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        table.bits = bits;
+        table
+    }
+
+    #[inline]
+    fn row(&self, count: usize, removed: usize, counted: usize, uncounted: bool) -> usize {
+        (((count * (self.most + 1) + removed) * (self.capacity + 1) + counted) * 2
+            + usize::from(uncounted))
+            * self.words
+    }
+
+    /// Whether `count` cards removing `removed` counted entries reach the
+    /// sum `need` with a counting state that, together with `counted` and
+    /// `uncounted` of the other cards, some slot order realizes: a limited
+    /// bonus is left uncounted only once the capacity is used.
+    fn reaches(
+        &self,
+        count: usize,
+        removed: usize,
+        counted: usize,
+        uncounted: bool,
+        need: i64,
+    ) -> bool {
+        let shifted = need - count as i64 * self.lowest;
+        if removed > self.most || shifted < 0 || shifted % self.step != 0 {
+            return false;
+        }
+        let index = (shifted / self.step) as usize;
+        if index >= self.width {
+            return false;
+        }
+        (0..=self.capacity - counted).any(|own| {
+            [false, true].into_iter().any(|left| {
+                ((!uncounted && !left) || counted + own == self.capacity)
+                    && self.bits[self.row(count, removed, own, left) + index / 64] >> (index % 64)
+                        & 1
+                        != 0
+            })
+        })
+    }
+}
+
+/// `destination |= source << shift`, keeping the first `width` bits.
+fn or_shifted(destination: &mut [u64], source: &[u64], shift: usize, width: usize) {
+    if shift >= width {
+        return;
+    }
+    let (words, bits) = (shift / 64, shift % 64);
+    let used = width.div_ceil(64);
+    for index in (words..used).rev() {
+        let from = index - words;
+        let mut value = source[from] << bits;
+        if bits > 0 && from > 0 {
+            value |= source[from - 1] >> (64 - bits);
+        }
+        destination[index] |= value;
+    }
+    if !width.is_multiple_of(64) {
+        destination[used - 1] &= u64::MAX >> (64 - width % 64);
+    }
+}
+
 /// The completions of one attribute set in a regime: nodes visited with
 /// that set at the largest attribute count of a diversity class, and the
 /// view and table of the set's cards, built once that count reaches
@@ -1833,6 +2204,12 @@ struct TierSearch<'s, 'a> {
     /// began, and the caller searches the regime again.
     join: Option<Join>,
     stopped: bool,
+    /// The visited-node count at which the search builds the scope's tier
+    /// certificate; `None` once it is built or when the scope has none.
+    certify_at: Option<u64>,
+    /// The certificate shows that no deck of the search hits its tier; the
+    /// search ends and its regime is not searched again.
+    settled: bool,
     /// Per attribute set, the completions limited to its cards; empty when
     /// no diversity class limits the attributes.
     restrictions: &'s [Restriction],
@@ -2075,8 +2452,21 @@ impl<'s> TierSearch<'s, '_> {
     }
 
     fn expand(&mut self, state: State) {
-        if self.budget.expired_sampled() || self.stopped {
+        if self.budget.expired_sampled() || self.stopped || self.settled {
             return;
+        }
+        if let Some(at) = self.certify_at
+            && self.stats.visited_nodes >= at
+        {
+            self.certify_at = None;
+            if self
+                .problem
+                .certificate()
+                .is_some_and(|certificate| certificate.excludes(self.tier, self.extra_ticks))
+            {
+                self.settled = true;
+                return;
+            }
         }
         if let Some(join) = &mut self.join
             && self.stats.visited_nodes >= join.after
@@ -2170,6 +2560,8 @@ impl<'s> TierSearch<'s, '_> {
             budget: &mut *self.budget,
             join: self.join,
             stopped: false,
+            certify_at: self.certify_at,
+            settled: false,
             restrictions: &[],
             deck: self.deck,
             scratch: std::mem::take(&mut self.scratch),
@@ -2177,6 +2569,8 @@ impl<'s> TierSearch<'s, '_> {
         within.expand(state);
         self.join = within.join;
         self.stopped = within.stopped;
+        self.certify_at = within.certify_at;
+        self.settled = within.settled;
         self.scratch = within.scratch;
     }
 
@@ -2445,6 +2839,14 @@ fn suffix_largest(groups: &[RegimeGroup], field: fn(&Class) -> u32) -> Vec<[u32;
     result
 }
 
+fn gcd64(mut left: i64, mut right: i64) -> i64 {
+    (left, right) = (left.abs(), right.abs());
+    while right != 0 {
+        (left, right) = (right, left % right);
+    }
+    left
+}
+
 fn gcd(mut left: u32, mut right: u32) -> u32 {
     while right != 0 {
         (left, right) = (right, left % right);
@@ -2515,6 +2917,17 @@ mod tests {
                 });
                 let excess = loss - cards;
                 let bound = terms.excess_of(displaced);
+                let (removed, held) = main.iter().fold((0usize, 0u64), |sum, &id| {
+                    let (_, removed, _, held) = terms.entries(id);
+                    (sum.0 + removed as usize, sum.1 | held)
+                });
+                if terms.excess.len() <= 65 {
+                    let refill = terms.refill(removed, held);
+                    assert!(
+                        (excess - refill).abs() < 1e-9,
+                        "deck={deck:?} main={main:?} excess={excess} refill={refill}"
+                    );
+                }
                 assert!(
                     displaced < terms.excess.len() && -1e-9 <= excess && excess <= bound + 1e-9,
                     "deck={deck:?} main={main:?} loss={loss} cards={cards} excess bound={bound}"
