@@ -347,8 +347,9 @@ fn scene_context(
 }
 
 fn tier_support_deck(pool: &CardPool, rng: &mut ExactLcg) -> SupportDeck {
-    // Half-percent steps, and non-binary fractions for outward rounding.
-    let step = if rng.range(0, 2) == 0 { 0.5 } else { 0.35 };
+    // Half-percent steps; steps that need finer ticks (0.35, 0.125); and a
+    // step no tick scale represents, which keeps the outward rounding.
+    let step = [0.5, 0.35, 0.125, 1.0 / 3.0][rng.range(0, 4) as usize];
     let mut cards = Vec::new();
     for card in pool.indices() {
         if rng.range(0, 3) == 0 {

@@ -10,8 +10,10 @@
 //!   Final Chapter, the leader slot. Free groups follow: one per character when
 //!   characters are unique, one per public card inside a Challenge character.
 //!   Fixed roles and a forced leader's character are mandatory groups.
-//! * Every card has an integer *key* `κ`, a *slack* `σ ≥ 0` (tenths of a
-//!   percent) and a count `q` of support entries it can displace, such that
+//! * Every card has an integer *key* `κ`, a *slack* `σ ≥ 0` (in ticks: a
+//!   tick is a tenth of a percent divided by the request's tick scale, the
+//!   smallest step at which every support entry is whole) and a count `q` of
+//!   support entries it can displace, such that
 //!   every deck `D` of a diversity class `v` satisfies
 //!   `Σκ + E_lo - X(Σq) ≤ 10·total(D) ≤ Σκ + Σσ + E_hi`, where
 //!   `[E_lo, E_hi]` bounds the deck-level terms and `X` is a monotone excess
@@ -60,10 +62,12 @@ const NO_POWER: i32 = i32::MIN / 4;
 const NO_SKILL: i16 = i16::MIN / 4;
 /// Deck-level terms without a finite bound.
 const UNBOUNDED: (i64, i64) = (i64::MIN / 4, i64::MAX / 4);
-/// Tolerance for real-valued support sums converted to tenths. Every bound
-/// is compared with the integer `10·T`, so an accumulated error below one
-/// tenth cannot change a comparison.
+/// Tolerance for real-valued support sums converted to ticks. Every bound
+/// is compared with the integer tier in ticks, so an accumulated error below
+/// one tick cannot change a comparison.
 const ROUNDING: f64 = 1e-6;
+/// Candidate numbers of ticks per tenth of a percent, smallest first.
+const TICK_SCALES: [i64; 6] = [1, 2, 4, 5, 10, 20];
 
 /// Searches every requested tier exactly; results are grouped per tier in
 /// descending tier order, each group in canonical order.
@@ -198,13 +202,13 @@ struct Group {
 /// Cards of one group sharing their bonus parts, with componentwise maxima.
 #[derive(Clone, Copy, Debug)]
 struct Class {
-    /// Key `κ` without the limited bonus, in tenths, including the support
+    /// Key `κ` without the limited bonus, in ticks, including the support
     /// adjustment and, on the Final leader role, the leader-only bonus.
-    key_x10: i32,
-    /// Limited bonus of the class, in tenths; zero under `Counting::All`.
-    limited_x10: u32,
-    /// Slack `σ` of the class, in tenths.
-    slack_x10: u32,
+    key_ticks: i32,
+    /// Limited bonus of the class, in ticks; zero under `Counting::All`.
+    limited_ticks: u32,
+    /// Slack `σ` of the class, in ticks.
+    slack_ticks: u32,
     /// Displaceable support entries of the class's public ids.
     support: u32,
     power: u32,
@@ -216,7 +220,12 @@ struct Class {
 
 impl Class {
     fn parts(&self) -> (i32, u32, u32, u32) {
-        (self.key_x10, self.limited_x10, self.slack_x10, self.support)
+        (
+            self.key_ticks,
+            self.limited_ticks,
+            self.slack_ticks,
+            self.support,
+        )
     }
 }
 
@@ -232,7 +241,7 @@ struct RegimeGroup {
     ceilings: CeilingSet,
 }
 
-/// Bonus parts of one card, in tenths.
+/// Bonus parts of one card, in ticks.
 #[derive(Clone, Copy, Debug, Default)]
 struct CardBonus {
     /// Always counted: base bonus, or the whole card bonus under `All`.
@@ -247,7 +256,7 @@ struct CardBonus {
     support: u32,
 }
 
-/// Deck-level World Bloom terms, in tenths.
+/// Deck-level World Bloom terms, in ticks.
 struct Extras {
     diversity: [u16; 6],
     /// Outward range of ten times the support base, for any leader.
@@ -260,6 +269,44 @@ struct Extras {
     /// Support entries are finite, non-negative and non-increasing; otherwise
     /// the deck-level terms are left unbounded.
     bounded: bool,
+}
+
+/// The support decks a scope can use and, in the Final Chapter, the deck of
+/// each leader character.
+struct SupportProfiles<'a> {
+    decks: Vec<&'a SupportDeck>,
+    /// Final Chapter: index into `decks` by leader character.
+    leader_profile: Vec<usize>,
+}
+
+impl<'a> SupportProfiles<'a> {
+    /// A Final Chapter scope of one leader character uses that character's
+    /// deck alone; any other Final Chapter scope uses every leader's deck.
+    fn new(ctx: &'a SearchContext, scope: Scope) -> Self {
+        if let (true, Scope::Leader(character)) = (ctx.is_final_chapter, scope) {
+            return Self {
+                decks: vec![ctx.support_deck_for_leader(character)],
+                leader_profile: vec![0; usize::from(u8::MAX) + 1],
+            };
+        }
+        let mut decks = vec![&ctx.support_deck];
+        let mut leader_profile = Vec::new();
+        if ctx.is_final_chapter {
+            for character in 0..=u8::MAX {
+                let deck = ctx.support_deck_for_leader(character);
+                if std::ptr::eq(deck, &ctx.support_deck) {
+                    leader_profile.push(0);
+                } else {
+                    decks.push(deck);
+                    leader_profile.push(decks.len() - 1);
+                }
+            }
+        }
+        Self {
+            decks,
+            leader_profile,
+        }
+    }
 }
 
 /// Support base, per-public-card loss and excess bounds of one profile.
@@ -336,13 +383,28 @@ impl SupportTerms {
     }
 }
 
-/// Integer range of `10 × value`, exact for values within `ROUNDING` of a
-/// whole tenth.
-fn tenths(value: f64) -> (i64, i64) {
+/// Integer range of `value` percent in ticks, exact for values within
+/// `ROUNDING` of a whole tick.
+fn ticks(value: f64, scale: i64) -> (i64, i64) {
+    let scaled = value * 10.0 * scale as f64;
     (
-        (value * 10.0 + ROUNDING).floor() as i64,
-        (value * 10.0 - ROUNDING).ceil() as i64,
+        (scaled + ROUNDING).floor() as i64,
+        (scaled - ROUNDING).ceil() as i64,
     )
+}
+
+/// Ticks per tenth of a percent: the smallest candidate at which every entry
+/// of `decks` is a whole number of ticks. Bases, losses and excess bounds
+/// are sums and differences of entries and are then whole as well.
+fn tick_scale(decks: &[&SupportDeck]) -> Option<i64> {
+    TICK_SCALES.into_iter().find(|&scale| {
+        decks.iter().all(|deck| {
+            deck.cards.iter().all(|&(_, bonus)| {
+                let (low, high) = ticks(bonus, scale);
+                low == high
+            })
+        })
+    })
 }
 
 /// Exact search of one scope: the whole pool under character uniqueness, or
@@ -354,10 +416,16 @@ struct Problem<'a> {
     targets: &'a [i32],
     counting: Counting,
     unique_characters: bool,
-    /// Common divisor of every key contribution, in tenths.
+    /// Ticks per tenth of a percent.
+    scale: i64,
+    /// Every card's key plus slack is its exact contribution: the support
+    /// entries are whole ticks and one profile is in use, or there is no
+    /// support deck. The slack of the selected cards is then known exactly.
+    exact_slack: bool,
+    /// Common divisor of every key contribution, in ticks.
     unit: u32,
     /// Per-card shift that makes every key non-negative; a unit multiple.
-    offset_x10: i64,
+    offset_ticks: i64,
     /// Largest shifted key sum the table represents, in units.
     max_units: usize,
     bonus: Vec<CardBonus>,
@@ -394,21 +462,32 @@ impl<'a> Problem<'a> {
         };
 
         let groups = Self::groups(pool, ctx, scope)?;
+        let support = ctx.is_world_bloom.then(|| SupportProfiles::new(ctx, scope));
+        let found_scale = support
+            .as_ref()
+            .map_or(Some(1), |support| tick_scale(&support.decks));
+        let scale = found_scale.unwrap_or(1);
+        let exact_slack = found_scale.is_some()
+            && support
+                .as_ref()
+                .is_none_or(|support| support.decks.len() == 1);
+        let per_tenth = scale as u32;
         let leader_extra = |card: CardIdx| {
-            ctx.leader_honor_bonus_x10_at(card.raw()) + ctx.leader_limit_bonus_x10_at(card.raw())
+            (ctx.leader_honor_bonus_x10_at(card.raw()) + ctx.leader_limit_bonus_x10_at(card.raw()))
+                * per_tenth
         };
         let mut bonus = vec![CardBonus::default(); pool.count()];
         for card in pool.indices() {
             let exact = pool.event_bonus_exact(card);
             bonus[card.raw()] = if counting == Counting::All {
                 CardBonus {
-                    fixed: exact.total_x10(),
+                    fixed: exact.total_x10() * per_tenth,
                     ..CardBonus::default()
                 }
             } else {
                 CardBonus {
-                    fixed: exact.base_x10(),
-                    limited: exact.limited_x10(),
+                    fixed: exact.base_x10() * per_tenth,
+                    limited: exact.limited_x10() * per_tenth,
                     ..CardBonus::default()
                 }
             };
@@ -429,9 +508,8 @@ impl<'a> Problem<'a> {
         }
         let unit = unit.max(1);
 
-        let extras = ctx
-            .is_world_bloom
-            .then(|| Self::fold_support(pool, ctx, scope, unit, &mut bonus));
+        let extras =
+            support.map(|support| Self::fold_support(pool, ctx, &support, scale, unit, &mut bonus));
         let mut lowest_key = 0i64;
         let mut group_max = Vec::with_capacity(groups.len());
         for group in &groups {
@@ -451,26 +529,26 @@ impl<'a> Problem<'a> {
             group_max.push(best);
         }
         let unit_i = i64::from(unit);
-        let offset_x10 = (-lowest_key + unit_i - 1) / unit_i * unit_i;
+        let offset_ticks = (-lowest_key + unit_i - 1) / unit_i * unit_i;
         group_max.sort_unstable_by(|left, right| right.cmp(left));
         let reachable = group_max
             .iter()
             .take(DECK_SIZE)
-            .map(|best| best + offset_x10)
+            .map(|best| best + offset_ticks)
             .sum::<i64>();
         // Deck-level terms are at least -1 tenth minus the support excess
         // unless they are unbounded, so a hitting key sum never exceeds the
         // highest tier by more than that.
-        let highest = i64::from(targets.iter().copied().max().unwrap_or(0).max(0)) * 10;
+        let highest = i64::from(targets.iter().copied().max().unwrap_or(0).max(0)) * 10 * scale;
         let cap = match &extras {
             Some(extras) if !extras.bounded => reachable,
             Some(extras) => reachable.min(
                 highest
-                    + 1
+                    + scale
                     + extras.excess.last().copied().unwrap_or(0)
-                    + DECK_SIZE as i64 * offset_x10,
+                    + DECK_SIZE as i64 * offset_ticks,
             ),
-            None => reachable.min(highest + 1 + DECK_SIZE as i64 * offset_x10),
+            None => reachable.min(highest + scale + DECK_SIZE as i64 * offset_ticks),
         };
         let max_units = (cap.max(0) / unit_i) as usize;
 
@@ -481,8 +559,10 @@ impl<'a> Problem<'a> {
             targets,
             counting,
             unique_characters: !matches!(scope, Scope::Character(_)),
+            scale,
+            exact_slack,
             unit,
-            offset_x10,
+            offset_ticks,
             max_units,
             bonus,
             groups,
@@ -588,26 +668,17 @@ impl<'a> Problem<'a> {
     fn fold_support(
         pool: &CardPool,
         ctx: &SearchContext,
-        scope: Scope,
+        support: &SupportProfiles<'_>,
+        scale: i64,
         unit: u32,
         bonus: &mut [CardBonus],
     ) -> Extras {
-        let mut profiles = vec![SupportTerms::new(&ctx.support_deck)];
-        let mut leader_profile = Vec::new();
-        if let (true, Scope::Leader(character)) = (ctx.is_final_chapter, scope) {
-            profiles = vec![SupportTerms::new(ctx.support_deck_for_leader(character))];
-            leader_profile = vec![0; usize::from(u8::MAX) + 1];
-        } else if ctx.is_final_chapter {
-            for character in 0..=u8::MAX {
-                let deck = ctx.support_deck_for_leader(character);
-                if std::ptr::eq(deck, &ctx.support_deck) {
-                    leader_profile.push(0);
-                } else {
-                    profiles.push(SupportTerms::new(deck));
-                    leader_profile.push(profiles.len() - 1);
-                }
-            }
-        }
+        let profiles = support
+            .decks
+            .iter()
+            .map(|deck| SupportTerms::new(deck))
+            .collect::<Vec<_>>();
+        let leader_profile = &support.leader_profile;
         let bounded = profiles.iter().all(Option::is_some);
         let extras = |base: (i64, i64), by_leader, excess| Extras {
             diversity: ctx.diff_attr_bonus,
@@ -630,9 +701,9 @@ impl<'a> Problem<'a> {
                 high = high.max(loss);
                 support = support.max(displaced);
             }
-            // The card adds −10·ℓ_c, which lies in [−10·high, −10·low].
-            let floor = tenths(-high).0;
-            let ceil = tenths(-low).1;
+            // The card adds −ℓ_c, which lies in [−high, −low].
+            let floor = ticks(-high, scale).0;
+            let ceil = ticks(-low, scale).1;
             let adjust = floor.div_euclid(unit) * unit;
             let parts = &mut bonus[card.raw()];
             parts.adjust = adjust as i32;
@@ -651,14 +722,14 @@ impl<'a> Problem<'a> {
             .map(|displaced| {
                 profiles
                     .iter()
-                    .map(|profile| tenths(profile.excess_of(displaced)).1.max(0))
+                    .map(|profile| ticks(profile.excess_of(displaced), scale).1.max(0))
                     .max()
                     .unwrap_or(0)
             })
             .collect::<Vec<_>>();
         let ranges = profiles
             .iter()
-            .map(|profile| tenths(profile.base))
+            .map(|profile| ticks(profile.base, scale))
             .collect::<Vec<_>>();
         let base = ranges.iter().fold((i64::MAX, i64::MIN), |acc, range| {
             (acc.0.min(range.0), acc.1.max(range.1))
@@ -669,9 +740,10 @@ impl<'a> Problem<'a> {
         extras(base, by_leader, excess)
     }
 
-    fn leader_extra_x10(&self, card: CardIdx) -> u32 {
-        self.ctx.leader_honor_bonus_x10_at(card.raw())
-            + self.ctx.leader_limit_bonus_x10_at(card.raw())
+    fn leader_extra_ticks(&self, card: CardIdx) -> u32 {
+        (self.ctx.leader_honor_bonus_x10_at(card.raw())
+            + self.ctx.leader_limit_bonus_x10_at(card.raw()))
+            * self.scale as u32
     }
 
     /// Admitted groups of one regime in search order, or `None` when the
@@ -701,7 +773,7 @@ impl<'a> Problem<'a> {
             let class_key = |card: &CardIdx| {
                 let parts = self.bonus[card.raw()];
                 let leader = if group.leader_role {
-                    self.leader_extra_x10(*card)
+                    self.leader_extra_ticks(*card)
                 } else {
                     0
                 };
@@ -721,7 +793,7 @@ impl<'a> Problem<'a> {
             let mut classes: Vec<Class> = Vec::new();
             for (index, card) in cards.iter().enumerate() {
                 let parts = class_key(card);
-                let (key_x10, limited_x10, slack_x10, support) = parts;
+                let (key_ticks, limited_ticks, slack_ticks, support) = parts;
                 let card_power = power[card.raw()];
                 let skill = u32::from(pool.skill_max(*card));
                 match classes.last_mut() {
@@ -732,9 +804,9 @@ impl<'a> Problem<'a> {
                         class.end = index as u32 + 1;
                     }
                     _ => classes.push(Class {
-                        key_x10,
-                        limited_x10,
-                        slack_x10,
+                        key_ticks,
+                        limited_ticks,
+                        slack_ticks,
                         support,
                         power: card_power,
                         skill,
@@ -792,7 +864,7 @@ impl<'a> Problem<'a> {
         roles.extend(free);
         // Largest slack and displaced support entries any `r` groups from
         // each position on can add.
-        let suffix_slack = suffix_largest(&roles, |class| class.slack_x10);
+        let suffix_slack = suffix_largest(&roles, |class| class.slack_ticks);
         let suffix_support = suffix_largest(&roles, |class| class.support);
         let mut dynamic_from = vec![false; roles.len() + 1];
         for position in (0..roles.len()).rev() {
@@ -819,7 +891,7 @@ impl<'a> Problem<'a> {
         let counts = if shares_attr { 1..=1 } else { 2..=DECK_SIZE };
         let mut classes: Vec<(i64, u8)> = Vec::new();
         for count in counts {
-            let value = i64::from(extras.diversity[count]) * 10;
+            let value = i64::from(extras.diversity[count]) * 10 * self.scale;
             match classes.iter_mut().find(|class| class.0 == value) {
                 Some(class) => class.1 |= 1 << count,
                 None => classes.push((value, 1 << count)),
@@ -858,7 +930,7 @@ impl<'a> Problem<'a> {
             stats.diagnostics.regimes_searched += 1;
             let table = SuffixTable::build(self, view);
             for tier in 0..self.targets.len() {
-                for &(extra_x10, counts) in &view.diversity {
+                for &(extra_ticks, counts) in &view.diversity {
                     if budget.expired() {
                         return;
                     }
@@ -870,8 +942,8 @@ impl<'a> Problem<'a> {
                         problem: self,
                         view,
                         table: &table,
-                        target_x10: i64::from(self.targets[tier]) * 10,
-                        extra_x10,
+                        target_ticks: i64::from(self.targets[tier]) * 10 * self.scale,
+                        extra_ticks,
                         counts,
                         tier,
                         trackers: &mut *trackers,
@@ -1036,8 +1108,8 @@ impl SuffixTable {
                 current.copy_from(&next);
             }
             for class in &group.classes {
-                let fixed = ((i64::from(class.key_x10) + problem.offset_x10) / unit) as usize;
-                let limited = (i64::from(class.limited_x10) / unit) as usize;
+                let fixed = ((i64::from(class.key_ticks) + problem.offset_ticks) / unit) as usize;
+                let limited = (i64::from(class.limited_ticks) / unit) as usize;
                 for count in 1..COUNTS {
                     for counted in 0..capacities {
                         for uncounted in 0..modes {
@@ -1163,10 +1235,10 @@ struct State {
     uncounted: bool,
     attrs: u8,
     characters: CharacterSet,
-    /// Key sum `Σκ` so far, counted limited bonuses included, in tenths.
-    key_x10: i32,
-    /// Slack sum `Σσ` so far, in tenths.
-    slack_x10: u32,
+    /// Key sum `Σκ` so far, counted limited bonuses included, in ticks.
+    key_ticks: i32,
+    /// Slack sum `Σσ` so far, in ticks.
+    slack_ticks: u32,
     /// Support entries displaced so far.
     support: u32,
     power: u32,
@@ -1194,9 +1266,9 @@ struct TierSearch<'s, 'a> {
     problem: &'s Problem<'a>,
     view: &'s RegimeView,
     table: &'s SuffixTable,
-    target_x10: i64,
-    /// Diversity bonus of the class, in tenths.
-    extra_x10: i64,
+    target_ticks: i64,
+    /// Diversity bonus of the class, in ticks.
+    extra_ticks: i64,
     /// Attribute counts of the class; zero when diversity does not apply.
     counts: u8,
     tier: usize,
@@ -1218,8 +1290,8 @@ impl TierSearch<'_, '_> {
             uncounted: false,
             attrs: 0,
             characters: CharacterSet::default(),
-            key_x10: 0,
-            slack_x10: 0,
+            key_ticks: 0,
+            slack_ticks: 0,
             support: 0,
             power: 0,
             skill: 0,
@@ -1244,7 +1316,7 @@ impl TierSearch<'_, '_> {
             .map_or(0, |cutoff| cutoff as u32)
     }
 
-    /// Deck-level terms of every completion of `state`, in tenths: the
+    /// Deck-level terms of every completion of `state`, in ticks: the
     /// support excess is subtracted from the lower end.
     #[inline]
     fn extra_range(&self, state: &State) -> (i64, i64) {
@@ -1264,7 +1336,10 @@ impl TierSearch<'_, '_> {
         let displaced =
             state.support + self.view.suffix_support[usize::from(state.position)][remaining];
         let excess = extras.excess[(displaced as usize).min(extras.excess.len() - 1)];
-        (self.extra_x10 + base.0 - excess, self.extra_x10 + base.1)
+        (
+            self.extra_ticks + base.0 - excess,
+            self.extra_ticks + base.1,
+        )
     }
 
     /// Inclusive range of the suffix's shifted key sum (in units) that can
@@ -1275,14 +1350,21 @@ impl TierSearch<'_, '_> {
         let unit = i64::from(problem.unit);
         let remaining = DECK_SIZE - usize::from(state.picked);
         let (extra_low, extra_high) = self.extra_range(state);
-        let rest = self.target_x10 - i64::from(state.key_x10);
-        let shift = remaining as i64 * problem.offset_x10;
+        // With exact slack the selected cards contribute exactly their key
+        // plus slack sum; otherwise their slack only widens the interval.
+        let (known, uncertain) = if problem.exact_slack {
+            (i64::from(state.slack_ticks), 0)
+        } else {
+            (0, i64::from(state.slack_ticks))
+        };
+        let rest = self.target_ticks - i64::from(state.key_ticks) - known;
+        let shift = remaining as i64 * problem.offset_ticks;
         let high = rest - extra_low + shift;
         if high < 0 {
             return None;
         }
-        let slack = i64::from(state.slack_x10)
-            + i64::from(self.view.suffix_slack[usize::from(state.position)][remaining]);
+        let slack =
+            uncertain + i64::from(self.view.suffix_slack[usize::from(state.position)][remaining]);
         let low = rest - extra_high - slack + shift;
         let high_units = (high / unit).min(problem.max_units as i64);
         let low_units = if low <= 0 { 0 } else { (low + unit - 1) / unit };
@@ -1456,9 +1538,9 @@ impl TierSearch<'_, '_> {
             // counts exactly when capacity remains; a free card may count it
             // or leave it uncounted.
             let mut options = [None; 2];
-            let key = class.key_x10;
-            let limited = class.limited_x10 as i32;
-            if class.limited_x10 == 0 {
+            let key = class.key_ticks;
+            let limited = class.limited_ticks as i32;
+            if class.limited_ticks == 0 {
                 options[0] = Some((key, 0u8, false));
             } else if group.fixed_role {
                 options[0] = Some(if state.counted < capacity {
@@ -1472,14 +1554,14 @@ impl TierSearch<'_, '_> {
                 }
                 options[1] = Some((key, 0, true));
             }
-            for (key_x10, counted, uncounted) in options.into_iter().flatten() {
+            for (key_ticks, counted, uncounted) in options.into_iter().flatten() {
                 let next = State {
                     position: state.position + 1,
                     picked: state.picked + 1,
                     counted: state.counted + counted,
                     uncounted: state.uncounted || uncounted,
-                    key_x10: state.key_x10 + key_x10,
-                    slack_x10: state.slack_x10 + class.slack_x10,
+                    key_ticks: state.key_ticks + key_ticks,
+                    slack_ticks: state.slack_ticks + class.slack_ticks,
                     support: state.support + class.support,
                     ..*state
                 };

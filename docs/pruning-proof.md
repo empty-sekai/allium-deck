@@ -815,6 +815,13 @@ Top-K.
 
 ### 17.2 Keys, slack and support excess
 
+Bonus quantities are integers in *ticks*: a tick is $1/(10s)$ percent, where
+the tick scale $s$ is the smallest of $1, 2, 4, 5, 10, 20$ at which every
+support entry in use is within $\varepsilon$ (below) of a whole number of
+ticks, and $s=1$ when there is no support deck or no candidate fits. Card
+bonuses are whole tenths and hence whole ticks. Wherever this section writes
+$10x$ for a percentage $x$, including $10T$ for a tier, read $10s\cdot x$.
+
 Every card $c$ in its group has an integer **key** $\kappa_c$, a **slack**
 $\sigma_c \ge 0$ (tenths of a percent) and a **displaced count**
 $q_c\ge 0$. There is a non-decreasing integer **excess** function $\xi$
@@ -903,9 +910,16 @@ rounded lower bound exceeds the exact one by less than $8\varepsilon$ plus
 the binary rounding of the support sums (below $10^{-9}$), and symmetrically
 for upper bounds. The bounds are compared only with the integer $10T$: an
 integer that exceeds a quantity that is at most $10T$ by less than one is
-itself at most $10T$. Values within $\varepsilon$ of a whole tenth are thus
+itself at most $10T$. Values within $\varepsilon$ of a whole tick are thus
 taken exactly, and the integer inequalities hold for every deck whose
 evaluated total is $T$.
+
+*Exact slack.* When the tick scale was found and a single profile is in use
+(or there is no support deck), every loss is a whole number of ticks, so
+$\ell_c^{\min}=\ell_c^{\max}$ rounds to one integer and $\kappa_c+\sigma_c$
+is the card's exact contribution $b_c-10\ell_c$; $\sigma_c$ is then the
+remainder of that contribution above the unit multiple $\kappa_c$, not an
+uncertainty.
 
 If some profile is unsorted, negative or non-finite, the fold is not used:
 $\kappa_c=b_c$, $\sigma_c=q_c=0$ and $E(D)$ is treated as unbounded, which
@@ -990,6 +1004,19 @@ $$
 \;\le\; \sum_{c\in Q}\kappa_c \;\le\;
 10T - E_{lo} + \xi\bigl(q_{pre}+q^{\max}_p(r)\bigr) - K .
 $$
+
+With exact slack (§17.2) the prefix contributes exactly $K+\Sigma$, so the
+same argument gives the narrower interval
+
+$$
+10T - E_{hi} - \sigma^{\max}_p(r) - K - \Sigma
+\;\le\; \sum_{c\in Q}\kappa_c \;\le\;
+10T - E_{lo} + \xi\bigl(q_{pre}+q^{\max}_p(r)\bigr) - K - \Sigma ,
+$$
+
+which the search uses instead. On a complete deck ($r=0$) with a single
+profile it admits only decks whose support terms, key sum and slack sum give
+exactly $10T$ up to the excess term.
 
 The branch is discarded when this interval contains no shifted multiple of
 $u$ below the table cap, or when every such entry $G_p(r,\cdot,\cdot)$
