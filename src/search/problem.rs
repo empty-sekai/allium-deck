@@ -32,6 +32,9 @@ pub(super) struct DeckProblem {
     pub leader_slot_fixed: bool,
     /// The leaf's forced Final Chapter leader card is moved to slot 0.
     pub move_forced_leader: bool,
+    /// A single-player live under a specific skill order weights every skill
+    /// slot differently, so the objective reads which member sits where.
+    pub weighted_slots: bool,
 }
 
 impl DeckProblem {
@@ -57,11 +60,12 @@ impl DeckProblem {
             ctx.effective_live_type(),
             LiveType::Multi | LiveType::Cheerful | LiveType::Mysekai
         );
-        let placement = if !ctx.is_final_chapter
-            && single_player
+        let weighted_slots = single_player
             && ctx.live_skill_order == LiveSkillOrder::Specific
-            && matches!(ctx.target, ScoreTarget::Score | ScoreTarget::Bonus)
-        {
+            && matches!(ctx.target, ScoreTarget::Score | ScoreTarget::Bonus);
+        // The Final Chapter evaluator seats the members after the leader by
+        // public id, so no placement is left to choose there.
+        let placement = if !ctx.is_final_chapter && weighted_slots {
             PlacementModel::OrderedFreeSlots
         } else if !solver_leader
             && !move_forced_leader
@@ -83,10 +87,19 @@ impl DeckProblem {
             fixed_prefix,
             leader_slot_fixed: solver_leader || move_forced_leader,
             move_forced_leader,
+            weighted_slots,
         }
     }
 
     pub fn needs_placement_search(self) -> bool {
         self.placement != PlacementModel::Exchangeable
+    }
+
+    /// Whether replacing a member by one that is at least as strong in every
+    /// dimension can lower the objective: the placement is searched, or the
+    /// members' seats are weighted and fixed by public id, which the
+    /// replacement can reorder.
+    pub fn position_sensitive(self) -> bool {
+        self.needs_placement_search() || self.weighted_slots
     }
 }

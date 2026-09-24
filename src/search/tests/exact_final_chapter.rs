@@ -397,23 +397,117 @@ fn final_seed_traversal_never_changes_unlimited_canonical_results() {
 }
 
 #[test]
+fn final_chapter_specific_order_keeps_members_seated_by_public_id() {
+    // Twins of one character, attribute and skill: the first has more power,
+    // the second a larger public id. Members are seated by public id, so the
+    // weaker twin can take a better-weighted seat under a specific order.
+    let card = |char_id: u8, game_id: u16, power: u32, skill: u8| TestCard {
+        char_id,
+        attr: char_id % 3,
+        unit_mask: 1,
+        game_id,
+        power,
+        skill: SkillSlot {
+            skill_type: 0,
+            value: skill,
+        },
+        base_bonus: 0,
+        limited_bonus: 0,
+        power_max: power,
+        skill_max: skill,
+    };
+    let cards = [
+        card(1, 100, 1_200, 30),
+        card(2, 40, 3_000, 40),
+        card(3, 60, 1_100, 30),
+        card(4, 70, 1_100, 30),
+        card(5, 50, 6_510, 80),
+        card(5, 90, 6_500, 80),
+    ];
+    let pool = build_pool(&cards);
+    let mut observed = false;
+    for live_type in [LiveType::Solo, LiveType::Auto] {
+        for specific in [
+            [0, 1, 3, 4, 2],
+            [2, 0, 1, 3, 4],
+            [0, 1, 2, 3, 4],
+            [4, 2, 0, 3, 1],
+        ] {
+            let mut ctx = final_chapter_ctx(&pool);
+            ctx.is_world_bloom = true;
+            ctx.event_type = Some(EventType::WorldBloom);
+            ctx.live_type = live_type;
+            ctx.live_skill_order = LiveSkillOrder::Specific;
+            ctx.specific_skill_order = Some(specific);
+            ctx.skill_scores = [
+                [0.3, 0.05, 0.2, 0.1, 0.9, 0.4],
+                [0.19, 0.17, 0.13, 0.11, 0.07, 0.23],
+                [0.25, 0.05, 0.15, 0.1, 0.8, 0.35],
+            ];
+            ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
+            let strong = [0, 1, 2, 3, 4].map(CardIdx::new);
+            let weak = [0, 1, 2, 3, 5].map(CardIdx::new);
+            observed |= evaluate::leaf_evaluate_checked(&pool, &ctx, &weak)
+                > evaluate::leaf_evaluate_checked(&pool, &ctx, &strong);
+            for top_k in [1, 2, 8] {
+                let params = SearchParams {
+                    top_k,
+                    timeout_ms: 0,
+                };
+                let got = search_exact(&pool, &ctx, &params);
+                let expected = final_chapter_auto_oracle(&pool, &ctx, top_k);
+                assert_property_results(
+                    &pool,
+                    &got,
+                    &expected,
+                    &format!("live {live_type:?} order {specific:?} K={top_k}"),
+                );
+            }
+        }
+    }
+    assert!(
+        observed,
+        "a weaker twin must outscore the stronger one somewhere"
+    );
+}
+
+#[test]
 fn final_chapter_all_skill_orders_match_explicit_oracle() {
     for case in 0..12u64 {
         let cards = randomized_exact_cards(0xF0AD_1000 + case, 11, 6);
         let pool = build_pool(&cards);
-        for order in [
-            LiveSkillOrder::Best,
-            LiveSkillOrder::Worst,
-            LiveSkillOrder::Average,
-            LiveSkillOrder::Specific,
-        ] {
+        for (live_type, order, specific, best_as_leader) in
+            [LiveType::Multi, LiveType::Solo, LiveType::Auto]
+                .into_iter()
+                .flat_map(|live_type| {
+                    [
+                        (LiveSkillOrder::Best, None),
+                        (LiveSkillOrder::Worst, None),
+                        (LiveSkillOrder::Average, None),
+                        (LiveSkillOrder::Specific, Some([4, 2, 0, 3, 1])),
+                        (LiveSkillOrder::Specific, Some([0, 1, 3, 4, 2])),
+                        (LiveSkillOrder::Specific, Some([2, 0, 1, 3, 4])),
+                    ]
+                    .into_iter()
+                    .flat_map(move |(order, specific)| {
+                        [false, true].map(|best| (live_type, order, specific, best))
+                    })
+                })
+        {
             let mut search_ctx = final_chapter_ctx(&pool);
             search_ctx.is_world_bloom = true;
             search_ctx.event_type = Some(EventType::WorldBloom);
+            search_ctx.live_type = live_type;
             search_ctx.live_skill_order = order;
-            search_ctx.specific_skill_order =
-                (order == LiveSkillOrder::Specific).then_some([4, 2, 0, 3, 1]);
-            search_ctx.skill_scores[1] = [0.19, 0.17, 0.13, 0.11, 0.07, 0.23];
+            search_ctx.specific_skill_order = specific;
+            search_ctx.best_skill_as_leader = best_as_leader;
+            // Distinct slot rates make the member order observable under a
+            // specific order.
+            search_ctx.skill_scores = [
+                [0.21, 0.09, 0.17, 0.05, 0.13, 0.25],
+                [0.19, 0.17, 0.13, 0.11, 0.07, 0.23],
+                [0.12, 0.2, 0.06, 0.16, 0.1, 0.22],
+            ];
             search_ctx.diff_attr_bonus = [0, 0, 11, 29, 59, 101];
             search_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
             for character in 1usize..=6 {
@@ -432,7 +526,9 @@ fn final_chapter_all_skill_orders_match_explicit_oracle() {
                 &search_ctx,
                 &got,
                 &expected,
-                &format!("final-auto case {case} order {order:?}"),
+                &format!(
+                    "final-auto case {case} live {live_type:?} order {order:?} {specific:?} best-as-leader {best_as_leader}"
+                ),
             );
 
             let mut fixed = search_ctx.clone();
@@ -444,7 +540,9 @@ fn final_chapter_all_skill_orders_match_explicit_oracle() {
                 &fixed,
                 &got,
                 &expected,
-                &format!("final-fixed case {case} order {order:?}"),
+                &format!(
+                    "final-fixed case {case} live {live_type:?} order {order:?} {specific:?} best-as-leader {best_as_leader}"
+                ),
             );
         }
     }

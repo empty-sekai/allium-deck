@@ -30,8 +30,7 @@ pub fn eliminate_dominated(pool: &CardPool, ctx: &SearchContext) -> DominanceRes
     // 差额不再一票否决，而是允许用支配者多出的活动加成抵扣（见 support_deficit_affordable）。
     // Position-sensitive objectives do not inherit the exchangeable-slot
     // dominance proof. Preserve their complete candidate frontier.
-    let position_sensitive = super::problem::DeckProblem::from_context(ctx)
-        .needs_placement_search()
+    let position_sensitive = super::problem::DeckProblem::from_context(ctx).position_sensitive()
         || !super::tuning::SearchTuning::load().dominance;
     let support = (!position_sensitive)
         .then(|| support_dimension(pool, ctx.is_world_bloom, &support_profiles(ctx)))
@@ -229,6 +228,13 @@ fn member_dominance(
     ctx: &SearchContext,
     support: Option<SupportDimension>,
 ) -> MemberDominance {
+    // Member substitution shares the exchangeable-slot proof.
+    if super::problem::DeckProblem::from_context(ctx).position_sensitive() {
+        return MemberDominance {
+            keep: vec![true; pool.count()],
+            alternatives: vec![Vec::new(); pool.count()],
+        };
+    }
     let (keep, dominated_by) = compute_keep_mask_with_winners(pool, ctx, false, support.as_ref());
     let alternatives = chain_compress_alternatives(&keep, &dominated_by);
     MemberDominance { keep, alternatives }
