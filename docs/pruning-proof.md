@@ -449,6 +449,27 @@ score_noevent_live_numerator_ceiling,
 score_noevent_threshold_numerator,
 recurse_score_noevent_monotonic.
 
+### 10.1 Event Score cutoff
+
+With an event the packed Score ceiling is $(E(\ell,b),\ \ell)$ for the
+live-score ceiling $\ell\ge 0$ and bonus total $b$, where $E$ is the
+event-point bound. At a fixed $b$, $E$ is non-decreasing in $\ell$: it is a
+non-decreasing base score multiplied by non-negative rates and floored, and
+the Cheerful life rate is positive. The packed value is therefore
+non-decreasing in $\ell$, and for a threshold $\tau$ with
+$\ell^*(b,\tau)$ the smallest live score whose packed value reaches $\tau$,
+
+$$
+(E(\ell,b),\ \ell)\ge\tau \iff \ell\ge\ell^*(b,\tau).
+$$
+
+The search caches $\ell^*$ per bonus total. The threshold of a search only
+rises, so $\ell^*$ does too and is found by galloping upward from the cached
+value; a lower threshold restarts from zero. No pruning decision changes.
+
+Implementation: `ScoreCutoff`, `ObjectiveBound::needed_live`
+(search/objective.rs), used by `recurse_ep` (search/dfs.rs).
+
 ## 11. Correlated no-event Score bound
 
 Implementation: src/search/correlated.rs.
@@ -1830,6 +1851,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Candidate runs | search/dfs.rs, search/suffix.rs | equal bonus terms, run maxima and nested tails bound the rest of a run |
 | Sorted Power / Skill break | search/dfs.rs | descending candidate component + fixed relaxed tail |
 | No-event numerator | search/dfs.rs, search/suffix.rs | exact floor/division equivalence |
+| Event Score cutoff | search/objective.rs, search/dfs.rs | exact inversion of a key non-decreasing in the live score |
 | Correlated Score bound | search/correlated.rs | linear relaxation + concave quadratic envelope |
 | Event independent bound | search/suffix.rs | monotonic formula over componentwise maxima |
 | Composition regimes | search/composition.rs, pool/card_pool.rs | per-regime member-key power bound, regime ceiling, shared tracker floor |
@@ -1867,6 +1889,7 @@ independent checks designed to expose a violated premise.
 | Generic bounds / mode dispatch | property_matrix::long_exact_all_scene_property_matrix — 256 cases × 15 comparisons = 3840 checks |
 | Correlated bound | search/correlated_audit.rs, property_bounds.rs, A/B with bound disabled |
 | No-event numerator | exact_score.rs numerator threshold identities |
+| Event Score cutoff | exact_score.rs cutoff against the packed comparison over every event live type |
 | Dominance | exact_dominance.rs, dominance_contract.rs, exact_world_bloom.rs |
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
 | Exact bonus tiers | bonus_tiers.rs, exact_bonus.rs, fractional_bonus.rs |

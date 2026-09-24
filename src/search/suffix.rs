@@ -4,7 +4,7 @@ use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, ScoreTarget};
 
 use super::context::SearchContext;
-use super::objective::{LIVE_SCORE_BOUND_SCALE, ObjectiveBound, mysekai_rank};
+use super::objective::{CeilingInputs, LIVE_SCORE_BOUND_SCALE, ObjectiveBound, mysekai_rank};
 
 /// 已选角色集合。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -707,6 +707,23 @@ impl SuffixBound {
         slots: usize,
         extra_bonus_ub: u32,
     ) -> u64 {
+        self.objective.ceiling_of(self.dense_suffix_inputs(
+            dense_start,
+            partial,
+            slots,
+            extra_bonus_ub,
+        ))
+    }
+
+    /// Ceiling inputs of [`Self::dense_suffix_ceiling`].
+    #[inline(always)]
+    pub(crate) fn dense_suffix_inputs(
+        &self,
+        dense_start: usize,
+        partial: &PartialDeck,
+        slots: usize,
+        extra_bonus_ub: u32,
+    ) -> CeilingInputs {
         let tail_bonus = self.dense_bonus_from_start(dense_start, slots, 0);
         let tail_power = self
             .dense_power_tail
@@ -723,12 +740,12 @@ impl SuffixBound {
             .get(dense_start)
             .copied()
             .unwrap_or(0) as u32;
-        self.objective.ceiling(
-            partial.power + tail_power,
-            partial.bonus + tail_bonus + extra_bonus_ub,
-            partial.skill + tail_skill,
-            (partial.max_skill as u32).max(tail_leader),
-        )
+        CeilingInputs {
+            power: partial.power + tail_power,
+            bonus: partial.bonus + tail_bonus + extra_bonus_ub,
+            skill: partial.skill + tail_skill,
+            leader: (partial.max_skill as u32).max(tail_leader),
+        }
     }
 
     /// The candidate run starting at `dense`.
@@ -778,10 +795,11 @@ impl SuffixBound {
         )
     }
 
-    /// Ceiling of the candidate plus any completion from the dense suffix
-    /// after it, given an admissible bound on the non-card extra bonus.
+    /// Ceiling inputs of the candidate plus any completion from the dense
+    /// suffix after it, given an admissible bound on the non-card extra bonus.
+    #[allow(clippy::too_many_arguments)]
     #[inline(always)]
-    pub(crate) fn dense_candidate_ceiling(
+    pub(crate) fn dense_candidate_inputs(
         &self,
         next_start: usize,
         partial: &PartialDeck,
@@ -792,7 +810,7 @@ impl SuffixBound {
         card_skill: u32,
         slots: usize,
         extra_bonus_ub: u32,
-    ) -> u64 {
+    ) -> CeilingInputs {
         let rest = slots.saturating_sub(1);
         // The partial bonus already counts every selected limited amount, so
         // the whole limited cap remains for the candidate and the tail.
@@ -817,12 +835,12 @@ impl SuffixBound {
             .map(|tail| tail[rest])
             .unwrap_or(0);
         let tail_leader = self.dense_leader_tail.get(next_start).copied().unwrap_or(0) as u32;
-        self.objective.ceiling(
-            partial.power + card_power + tail_power,
-            partial.bonus + card_bonus + tail_bonus + extra_bonus_ub,
-            partial.skill + card_skill + tail_skill,
-            (partial.max_skill as u32).max(card_skill).max(tail_leader),
-        )
+        CeilingInputs {
+            power: partial.power + card_power + tail_power,
+            bonus: partial.bonus + card_bonus + tail_bonus + extra_bonus_ub,
+            skill: partial.skill + card_skill + tail_skill,
+            leader: (partial.max_skill as u32).max(card_skill).max(tail_leader),
+        }
     }
 
     #[inline(always)]

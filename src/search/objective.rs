@@ -211,6 +211,53 @@ impl ObjectiveBound {
     }
 
     #[inline(always)]
+    pub(crate) fn ceiling_of(&self, inputs: CeilingInputs) -> u64 {
+        self.ceiling(inputs.power, inputs.bonus, inputs.skill, inputs.leader)
+    }
+
+    /// Smallest live score from `start` on whose Score key at `bonus_total`
+    /// reaches `threshold`, or `i32::MAX + 1` when none does. Every live
+    /// score below `start` is known not to reach it.
+    ///
+    /// The key is non-decreasing in a non-negative live score: the event
+    /// point bound is a non-decreasing base score times non-negative rates
+    /// (the Cheerful life rate is positive), floored, and the low 32 bits
+    /// hold the live score itself.
+    fn needed_live(&self, bonus_total: u32, threshold: u64, start: i64) -> i64 {
+        const LIMIT: i64 = i32::MAX as i64;
+        if start > LIMIT {
+            return start;
+        }
+        let reaches = |live: i64| self.pack_score(live as i32, bonus_total) >= threshold;
+        if reaches(start) {
+            return start;
+        }
+        // Gallop from `start`, then bisect the last step.
+        let mut below = start;
+        let mut step = 1;
+        let mut above = loop {
+            let probe = (below + step).min(LIMIT);
+            if reaches(probe) {
+                break probe;
+            }
+            if probe == LIMIT {
+                return LIMIT + 1;
+            }
+            below = probe;
+            step *= 2;
+        };
+        while above - below > 1 {
+            let middle = below + (above - below) / 2;
+            if reaches(middle) {
+                above = middle;
+            } else {
+                below = middle;
+            }
+        }
+        above
+    }
+
+    #[inline(always)]
     pub(crate) fn ceiling_multi_score_event(
         &self,
         power_ub: u32,
@@ -355,6 +402,68 @@ impl ObjectiveBound {
     #[inline(always)]
     pub(crate) const fn score_noevent_threshold_numerator(live: u32) -> i64 {
         live as i64 * LIVE_SCORE_BOUND_SCALE
+    }
+}
+
+/// Admissible aggregate inputs of a ceiling: power, bonus total, skill sum
+/// and leader skill bounds.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CeilingInputs {
+    pub(crate) power: u32,
+    pub(crate) bonus: u32,
+    pub(crate) skill: u32,
+    pub(crate) leader: u32,
+}
+
+/// Bonus totals whose Score cutoff is cached.
+const CUTOFF_BONUSES: usize = 2048;
+
+/// Decides whether a ceiling reaches a pruning threshold. A Score key at a
+/// fixed bonus total is non-decreasing in the live score, so a ceiling
+/// reaches a threshold exactly when its live score reaches the smallest one
+/// whose key does. That live score is cached per bonus total and, as the
+/// threshold of a search only rises, advanced from its previous value.
+pub(crate) struct ScoreCutoff {
+    /// `(threshold, needed live score)` per bonus total.
+    needed: Vec<(u64, i64)>,
+}
+
+impl ScoreCutoff {
+    pub(crate) fn new(objective: &ObjectiveBound) -> Self {
+        let len = if matches!(objective.target, ScoreTarget::Score) {
+            CUTOFF_BONUSES
+        } else {
+            0
+        };
+        Self {
+            needed: vec![(0, 0); len],
+        }
+    }
+
+    /// Whether `objective.ceiling_of(inputs) >= threshold`.
+    #[inline(always)]
+    pub(crate) fn reaches(
+        &mut self,
+        objective: &ObjectiveBound,
+        inputs: CeilingInputs,
+        threshold: u64,
+    ) -> bool {
+        let Some(entry) = self.needed.get_mut(inputs.bonus as usize) else {
+            return objective.ceiling_of(inputs) >= threshold;
+        };
+        if entry.0 != threshold {
+            let start = if entry.0 < threshold { entry.1 } else { 0 };
+            *entry = (
+                threshold,
+                objective.needed_live(inputs.bonus, threshold, start),
+            );
+        }
+        let power = objective.clamp_power_total(inputs.power + objective.honor_bonus);
+        let live = objective.calc_live_score_bound(power, inputs.skill, inputs.leader);
+        if live < 0 {
+            return objective.ceiling_of(inputs) >= threshold;
+        }
+        i64::from(live) >= entry.1
     }
 }
 

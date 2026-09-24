@@ -1,6 +1,6 @@
 //! exact score contracts.
 use super::*;
-use crate::search::objective::ObjectiveBound;
+use crate::search::objective::{CeilingInputs, ObjectiveBound, ScoreCutoff};
 
 #[test]
 fn search_leaf_evaluate_encodes_targets() {
@@ -559,4 +559,63 @@ fn search_dfs_core_matches_bruteforce_for_three_cards_choose_two() {
 fn search_warm_start_returns_non_zero_incumbent() {
     let pool = build_pool(&five_unique_cards());
     assert!(warm_start(&pool, &ctx(ScoreTarget::Power)) > 0);
+}
+
+/// The cached live-score cutoff decides every event Score ceiling exactly as
+/// the packed comparison does, while thresholds rise, fall back and bonus
+/// totals leave the cached range.
+#[test]
+fn event_score_cutoff_matches_the_packed_ceiling() {
+    let mut rng = ExactLcg(0x5c0e_c07f);
+    let lives = [
+        LiveType::Solo,
+        LiveType::Auto,
+        LiveType::Multi,
+        LiveType::Cheerful,
+        LiveType::Challenge,
+    ];
+    let mut checked = 0usize;
+    for round in 0..40 {
+        let mut context = ctx(ScoreTarget::Score);
+        context.live_type = lives[round % lives.len()];
+        context.event_type = Some(EventType::Marathon);
+        context.music_rate_pct = 100 + rng.range(0, 60);
+        context.boost_rate_pct = [100, 500, 1000, 1500][rng.range(0, 4) as usize];
+        context.other_score = [0, 900_000, 3_400_000][rng.range(0, 3) as usize];
+        context.life = 500 + rng.range(0, 700) as i32;
+        context.base_score = 0.9 + f64::from(rng.range(0, 40)) / 100.0;
+        context.skill_scores = [[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]; 3];
+        let objective = ObjectiveBound::from_context(&context);
+        let mut cutoff = ScoreCutoff::new(&objective);
+        let random_inputs = |rng: &mut ExactLcg| CeilingInputs {
+            power: rng.range(0, 350_000),
+            bonus: if rng.range(0, 10) == 0 {
+                2_000 + rng.range(0, 200)
+            } else {
+                rng.range(0, 700)
+            },
+            skill: rng.range(0, 800),
+            leader: rng.range(0, 160),
+        };
+        let mut threshold = objective.ceiling_of(random_inputs(&mut rng)) / 2;
+        for step in 0..400 {
+            if step % 50 == 49 {
+                // A search with a lower incumbent reuses nothing stale.
+                threshold /= 3;
+            } else if step % 7 == 0 {
+                threshold = threshold.max(objective.ceiling_of(random_inputs(&mut rng)));
+            }
+            for _ in 0..6 {
+                let inputs = random_inputs(&mut rng);
+                assert_eq!(
+                    cutoff.reaches(&objective, inputs, threshold),
+                    objective.ceiling_of(inputs) >= threshold,
+                    "round={round} live={:?} inputs={inputs:?} threshold={threshold}",
+                    context.live_type
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 40 * 400 * 6);
 }

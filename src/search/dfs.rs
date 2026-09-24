@@ -4,7 +4,7 @@ use crate::pool::{CardIdx, CardPool};
 use crate::types::{DECK_SIZE, LiveType, ScoreTarget};
 
 use super::context::SearchContext;
-use super::objective::ObjectiveBound;
+use super::objective::{CeilingInputs, ObjectiveBound, ScoreCutoff};
 use super::placement::evaluate_candidate;
 use super::suffix::{PartialDeck, SuffixBound, UsedSet};
 use super::tracker::TopKTracker;
@@ -242,6 +242,7 @@ pub(crate) fn dfs_search_with_budget(
         suffix,
         budget,
         tracker: &mut tracker,
+        cutoff: ScoreCutoff::new(suffix.objective()),
         node_count: 0,
         stats: seed_stats,
         avx512_candidate_mask: crate::simd::avx512_available(),
@@ -395,6 +396,8 @@ struct SearchState<'a> {
     suffix: &'a SuffixBound,
     budget: &'a mut SearchBudget,
     tracker: &'a mut TopKTracker,
+    /// Decides ceilings against the tracker threshold.
+    cutoff: ScoreCutoff,
     node_count: u64,
     stats: SearchStats,
     avx512_candidate_mask: bool,
@@ -803,14 +806,22 @@ impl SearchState<'_> {
                 && dense >= next_break_check
             {
                 next_break_check = dense + EP_DENSE_BREAK_STRIDE;
-                let ceil = if use_multi_score_event_fast_path {
+                let below = if use_multi_score_event_fast_path {
                     self.suffix
                         .dense_suffix_ceiling_multi_score_event(dense, &partial, slots)
+                        < threshold
                 } else {
-                    self.suffix
-                        .dense_suffix_ceiling(dense, &partial, slots, node_extra_bonus_ub)
+                    let inputs = self.suffix.dense_suffix_inputs(
+                        dense,
+                        &partial,
+                        slots,
+                        node_extra_bonus_ub,
+                    );
+                    !self
+                        .cutoff
+                        .reaches(self.suffix.objective(), inputs, threshold)
                 };
-                if ceil < threshold {
+                if below {
                     self.stats.mono_break_prunes += 1;
                     break;
                 }
@@ -880,13 +891,14 @@ impl SearchState<'_> {
             self.stats.ep_candidates += 1;
 
             let suffix = self.suffix;
-            let candidate_ceiling = |power: u32, skill: u32| {
+            let cutoff = &mut self.cutoff;
+            let mut candidate_reaches = |power: u32, skill: u32| {
                 if use_multi_score_event_fast_path {
                     suffix.dense_candidate_ceiling_multi_score_event(
                         dense, &partial, power, card_bonus, skill, slots,
-                    )
+                    ) >= threshold
                 } else {
-                    suffix.dense_candidate_ceiling(
+                    let inputs = suffix.dense_candidate_inputs(
                         dense,
                         &partial,
                         power,
@@ -896,25 +908,26 @@ impl SearchState<'_> {
                         skill,
                         slots,
                         node_extra_bonus_ub,
-                    )
+                    );
+                    cutoff.reaches(suffix.objective(), inputs, threshold)
                 }
             };
             // Every later card of this run has the same bonus terms, no more
             // power or skill, and dense tails no larger than this card's, so
             // the ceiling over the run maxima bounds the rest of the run.
             let run = suffix.candidate_run(dense - 1);
-            let run_ub = candidate_ceiling(run.power_max, run.skill_max as u32);
-            if run_ub < threshold {
+            let run_reaches = candidate_reaches(run.power_max, run.skill_max as u32);
+            if !run_reaches {
                 self.stats.ep_continue_prunes += 1;
                 dense = run.end as usize;
                 continue;
             }
-            let dense_ub_global = if run.power_max == card_power && run.skill_max == card_skill {
-                run_ub
+            let card_reaches = if run.power_max == card_power && run.skill_max == card_skill {
+                run_reaches
             } else {
-                candidate_ceiling(card_power, card_skill_u32)
+                candidate_reaches(card_power, card_skill_u32)
             };
-            if dense_ub_global < threshold {
+            if !card_reaches {
                 self.stats.ep_continue_prunes += 1;
                 continue;
             }
@@ -937,13 +950,16 @@ impl SearchState<'_> {
                     .max(card_skill_u32)
                     .max(remaining_best_skill as u32);
 
-                let global_ub = self.suffix.objective().ceiling(
-                    tight_power,
-                    bonus_total_global,
-                    tight_skill,
-                    tight_leader,
-                );
-                if global_ub < threshold {
+                let global = CeilingInputs {
+                    power: tight_power,
+                    bonus: bonus_total_global,
+                    skill: tight_skill,
+                    leader: tight_leader,
+                };
+                if !self
+                    .cutoff
+                    .reaches(self.suffix.objective(), global, threshold)
+                {
                     self.stats.ep_continue_prunes += 1;
                     continue;
                 }
@@ -960,22 +976,25 @@ impl SearchState<'_> {
                     let bonus_total = partial.bonus + card_bonus + pre.suffix_bonus
                         - pre.bonus_delta(char_id)
                         + extra_bonus_ub;
-                    let refined = self
-                        .suffix
-                        .objective()
-                        .ceiling(tight_power, bonus_total, tight_skill, tight_leader)
-                        .min(self.suffix.dense_candidate_ceiling(
-                            dense,
-                            &partial,
-                            card_power,
-                            card_bonus,
-                            card_base_bonus,
-                            card_limited_bonus,
-                            card_skill_u32,
-                            slots,
-                            extra_bonus_ub,
-                        ));
-                    if refined < threshold {
+                    let objective = self.suffix.objective();
+                    let tight = CeilingInputs {
+                        bonus: bonus_total,
+                        ..global
+                    };
+                    let dense_inputs = self.suffix.dense_candidate_inputs(
+                        dense,
+                        &partial,
+                        card_power,
+                        card_bonus,
+                        card_base_bonus,
+                        card_limited_bonus,
+                        card_skill_u32,
+                        slots,
+                        extra_bonus_ub,
+                    );
+                    if !self.cutoff.reaches(objective, tight, threshold)
+                        || !self.cutoff.reaches(objective, dense_inputs, threshold)
+                    {
                         self.stats.ep_continue_prunes += 1;
                         continue;
                     }
