@@ -1,3 +1,5 @@
+use core::cell::Cell;
+
 use crate::search::budget::SearchBudget as DeadlineGuard;
 
 use crate::pool::{CardIdx, CardPool};
@@ -6,6 +8,7 @@ use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType};
 use crate::search::context::{SearchContext, SupportDeck};
 use crate::search::dfs::SearchStats;
 use crate::search::log_linear::{FeatureBox, LogLinearBound};
+use crate::search::objective::{CeilingInputs, ScoreCutoff};
 use crate::search::suffix::SuffixBound;
 use crate::search::types::{DeckResult, SearchParams};
 use crate::search::{placement, tracker::TopKTracker};
@@ -777,6 +780,7 @@ fn search_leaders(
         LeaderRange::of(ctx, &leaders),
     );
     if group_set.groups.len() >= MEMBER_COUNT {
+        let mut cutoff = ScoreCutoff::new(suffix.objective());
         // Exact path: every leader variant must remain reachable.  Heuristic
         // per-character caps are unsound under Final Chapter support occupancy,
         // leader-only bonuses and Top-K set identity.  Job/character ceilings
@@ -825,6 +829,7 @@ fn search_leaders(
                 &mut tracker,
                 &mut stats,
                 guard,
+                &mut cutoff,
             )
             .run();
         }
@@ -900,6 +905,7 @@ fn search_auto_leaders_two_phase(
     });
     // A leader character's group set is built when its first job runs.
     let mut group_sets: [Option<GroupSet>; 27] = Default::default();
+    let mut cutoff = ScoreCutoff::new(suffix.objective());
     for job in jobs {
         if guard.expired() {
             break;
@@ -963,6 +969,7 @@ fn search_auto_leaders_two_phase(
             &mut tracker,
             &mut stats,
             guard,
+            &mut cutoff,
         )
         .run();
     }
@@ -1169,6 +1176,12 @@ struct CharacterSearchState<'a> {
     stats: &'a mut SearchStats,
     deadline: &'a mut DeadlineGuard,
     leader: LeaderConst,
+    /// Decides the Score ceilings against the threshold; shared by the
+    /// leaders of one search, whose objective is the same.
+    cutoff: &'a mut ScoreCutoff,
+    /// The event-point threshold of the last log-linear test and its
+    /// [`LogLinearBound::log_cutoff`].
+    log_cutoff: Cell<(u64, f64)>,
 }
 
 impl<'a> CharacterSearchState<'a> {
@@ -1182,6 +1195,7 @@ impl<'a> CharacterSearchState<'a> {
         tracker: &'a mut TopKTracker,
         stats: &'a mut SearchStats,
         deadline: &'a mut DeadlineGuard,
+        cutoff: &'a mut ScoreCutoff,
     ) -> Self {
         let leader_weight = group_set
             .weights
@@ -1203,6 +1217,8 @@ impl<'a> CharacterSearchState<'a> {
             stats,
             deadline,
             leader,
+            cutoff,
+            log_cutoff: Cell::new((0, f64::NEG_INFINITY)),
         }
     }
 }
@@ -1246,15 +1262,17 @@ impl CharacterSearchState<'_> {
             // The four groups fix every member attribute, so this ceiling
             // reads the exact union before the card plan is built.
             if threshold != 0
-                && character_ceiling(
-                    self.suffix,
-                    self.ctx,
-                    self.group_suffix,
-                    self.groups.len(),
-                    MEMBER_COUNT,
-                    &prefix,
-                    &self.leader,
-                ) < threshold
+                && !self.reaches(
+                    character_ceiling_inputs(
+                        self.ctx,
+                        self.group_suffix,
+                        self.groups.len(),
+                        MEMBER_COUNT,
+                        &prefix,
+                        &self.leader,
+                    ),
+                    threshold,
+                )
             {
                 self.stats.ub_prunes += 1;
                 return;
@@ -1282,8 +1300,8 @@ impl CharacterSearchState<'_> {
 
         let mut threshold = self.tracker.rank_threshold(self.ctx.target);
         // The ceiling reads the prefix, which is fixed here, and the suffix
-        // table, so an unchanged table keeps the last ceiling.
-        let mut last_ceiling: Option<(u32, u64)> = None;
+        // table, so an unchanged table that reached a threshold still does.
+        let mut reached: Option<(u32, u64)> = None;
         let mut idx = start;
         while idx < self.groups.len() {
             if self.deadline.expired_sampled() {
@@ -1298,25 +1316,20 @@ impl CharacterSearchState<'_> {
             // The first ceiling read is that of this node itself.
             if threshold != 0 {
                 let version = self.group_suffix[idx].versions[MEMBER_COUNT - depth];
-                let ub = match last_ceiling {
-                    Some((seen, ub)) if seen == version => ub,
-                    _ => {
-                        let ub = character_ceiling(
-                            self.suffix,
-                            self.ctx,
-                            self.group_suffix,
-                            idx,
-                            depth,
-                            &prefix,
-                            &self.leader,
-                        );
-                        last_ceiling = Some((version, ub));
-                        ub
+                if reached != Some((version, threshold)) {
+                    let inputs = character_ceiling_inputs(
+                        self.ctx,
+                        self.group_suffix,
+                        idx,
+                        depth,
+                        &prefix,
+                        &self.leader,
+                    );
+                    if !self.reaches(inputs, threshold) {
+                        self.stats.ub_prunes += 1;
+                        break;
                     }
-                };
-                if ub < threshold {
-                    self.stats.ub_prunes += 1;
-                    break;
+                    reached = Some((version, threshold));
                 }
                 self.refresh_weights(threshold);
                 if self.groups_excluded(idx, &selected[..depth], &prefix, threshold) {
@@ -1364,15 +1377,9 @@ impl CharacterSearchState<'_> {
 
         let mut threshold = self.tracker.rank_threshold(self.ctx.target);
         if threshold != 0 {
-            let ub = selected_card_ceiling_from_partial(
-                self.suffix,
-                self.ctx,
-                plan,
-                depth,
-                &partial,
-                self.leader.skill,
-            );
-            if ub < threshold {
+            let inputs =
+                selected_card_inputs(self.ctx, plan, depth, &partial, None, self.leader.skill);
+            if !self.reaches(inputs, threshold) {
                 self.stats.ep_continue_prunes += 1;
                 return;
             }
@@ -1490,6 +1497,13 @@ impl CharacterSearchState<'_> {
 }
 
 impl CharacterSearchState<'_> {
+    /// Whether the ceiling with `inputs` reaches `threshold`.
+    #[inline(always)]
+    fn reaches(&mut self, inputs: CeilingInputs, threshold: u64) -> bool {
+        self.cutoff
+            .reaches(self.suffix.objective(), inputs, threshold)
+    }
+
     /// Candidate ceiling of `entry`, or `None` when a bound over the rest of
     /// its group is already below `threshold`: every later card of the group
     /// has the same attribute and no larger term, and both the ceiling and
@@ -1497,7 +1511,7 @@ impl CharacterSearchState<'_> {
     /// the weight rules out has ceiling zero.
     #[inline(always)]
     fn candidate_ceiling(
-        &self,
+        &mut self,
         selected: &[usize; MEMBER_COUNT],
         plan: &CardGroupPlan,
         depth: usize,
@@ -1505,32 +1519,50 @@ impl CharacterSearchState<'_> {
         entry: &ScanCard,
         threshold: u64,
     ) -> Option<u64> {
-        let ceiling = |terms: &MemberTerms| {
-            selected_card_ceiling_with_candidate_support_ub(
-                self.suffix,
-                self.ctx,
-                plan,
-                depth + 1,
-                partial,
-                terms,
-                self.leader.skill,
-            )
-        };
-        let excluded = |terms: &MemberTerms| {
-            self.cards_excluded(selected, plan, depth, partial, Some(terms), threshold)
-        };
-        let rest_ub = ceiling(&entry.rest);
-        if rest_ub < threshold || excluded(&entry.rest) {
+        let leader_skill = self.leader.skill;
+        let objective = self.suffix.objective();
+        let rest = selected_card_inputs(
+            self.ctx,
+            plan,
+            depth + 1,
+            partial,
+            Some(&entry.rest),
+            leader_skill,
+        );
+        // The ranked buffer orders by the ceiling itself, so a card whose
+        // own terms are the rest maxima computes it once for both tests.
+        if entry.rest == entry.terms {
+            let ceiling = objective.ceiling_of(rest);
+            if ceiling < threshold
+                || self.cards_excluded(selected, plan, depth, partial, Some(&entry.rest), threshold)
+            {
+                return None;
+            }
+            return Some(ceiling);
+        }
+        if !self.reaches(rest, threshold)
+            || self.cards_excluded(selected, plan, depth, partial, Some(&entry.rest), threshold)
+        {
             return None;
         }
-        if entry.rest == entry.terms {
-            return Some(rest_ub);
+        if self.cards_excluded(
+            selected,
+            plan,
+            depth,
+            partial,
+            Some(&entry.terms),
+            threshold,
+        ) {
+            return Some(0);
         }
-        Some(if excluded(&entry.terms) {
-            0
-        } else {
-            ceiling(&entry.terms)
-        })
+        Some(objective.ceiling_of(selected_card_inputs(
+            self.ctx,
+            plan,
+            depth + 1,
+            partial,
+            Some(&entry.terms),
+            leader_skill,
+        )))
     }
 
     /// Rebuilds the group weights for a risen threshold and the leader's
@@ -1571,7 +1603,10 @@ impl CharacterSearchState<'_> {
                 .map(|&group| weights.group[group])
                 .sum::<f64>()
             + weights.tail[start][..remaining].iter().sum::<f64>();
-        weights.bound.excludes(value, threshold >> 32)
+        let threshold_ep = threshold >> 32;
+        weights
+            .bound
+            .excludes(value, threshold_ep, self.log_cutoff(threshold_ep))
     }
 
     /// Whether the log-linear bound rules out every completion of the card
@@ -1609,7 +1644,21 @@ impl CharacterSearchState<'_> {
                 .iter()
                 .map(|&group| weights.group[group])
                 .sum::<f64>();
-        bound.excludes(value, threshold >> 32)
+        let threshold_ep = threshold >> 32;
+        bound.excludes(value, threshold_ep, self.log_cutoff(threshold_ep))
+    }
+
+    /// [`LogLinearBound::log_cutoff`] of `threshold_ep`, kept while the
+    /// threshold holds.
+    #[inline(always)]
+    fn log_cutoff(&self, threshold_ep: u64) -> f64 {
+        let (seen, cutoff) = self.log_cutoff.get();
+        if seen == threshold_ep {
+            return cutoff;
+        }
+        let cutoff = LogLinearBound::log_cutoff(threshold_ep);
+        self.log_cutoff.set((threshold_ep, cutoff));
+        cutoff
     }
 
     /// Ceiling of `next`, the child of `partial` that adds one card, given the
@@ -1669,6 +1718,26 @@ fn character_ceiling(
     prefix: &CharacterPrefix,
     leader: &LeaderConst,
 ) -> u64 {
+    suffix.objective().ceiling_of(character_ceiling_inputs(
+        ctx,
+        group_suffix,
+        start,
+        chosen,
+        prefix,
+        leader,
+    ))
+}
+
+/// The inputs of [`character_ceiling`].
+#[inline(always)]
+fn character_ceiling_inputs(
+    ctx: &SearchContext,
+    group_suffix: &[GroupCeilingTail],
+    start: usize,
+    chosen: usize,
+    prefix: &CharacterPrefix,
+    leader: &LeaderConst,
+) -> CeilingInputs {
     let tail = &group_suffix[start];
 
     let remaining = MEMBER_COUNT - chosen;
@@ -1692,18 +1761,18 @@ fn character_ceiling(
         &tail.top_limited_bonus[..remaining],
         limited_limit.min(MEMBER_COUNT),
     );
-    suffix.objective().ceiling(
-        power_sum,
-        bonus_sum + limited_sum + extra_bonus_ceiling(tail, remaining, prefix, leader),
-        skill_sum,
-        final_chapter_ceiling_skill(
+    CeilingInputs {
+        power: power_sum,
+        bonus: bonus_sum + limited_sum + extra_bonus_ceiling(tail, remaining, prefix, leader),
+        skill: skill_sum,
+        leader: final_chapter_ceiling_skill(
             ctx,
             leader.skill,
             prefix
                 .max_skill
                 .max(if remaining == 0 { 0 } else { tail.top_skill[0] }),
         ),
-    )
+    }
 }
 
 /// Attribute and support bonus of every completion of `prefix` that takes
@@ -1744,66 +1813,56 @@ fn selected_card_ceiling_from_partial(
     partial: &CardPartial,
     leader_skill: u32,
 ) -> u64 {
-    let power_sum = partial.power + plan.rem_power[chosen];
-    let skill_sum = partial.skill + plan.rem_skill[chosen];
-    let bonus_sum = partial.base_bonus + plan.rem_base_bonus[chosen];
-    let limited_sum = plan.limited_sum(partial, chosen, ctx.card_bonus_count_limit, 0);
-    let extra_bonus_ub = if ctx.is_world_bloom {
-        plan.diversity_bonus + partial.support_bonus_ceil
-    } else {
-        ctx.extra_bonus_ub
-    };
-    suffix.objective().ceiling(
-        power_sum,
-        bonus_sum + limited_sum + extra_bonus_ub,
-        skill_sum,
-        final_chapter_ceiling_skill(
-            ctx,
-            leader_skill,
-            partial.max_skill.max(plan.rem_max_skill[chosen]),
-        ),
-    )
+    suffix.objective().ceiling_of(selected_card_inputs(
+        ctx,
+        plan,
+        chosen,
+        partial,
+        None,
+        leader_skill,
+    ))
 }
 
-/// Ceiling of every child of `partial` that adds a member with at most
-/// `terms`, before that member's support exclusion. The ceiling is
-/// non-decreasing in every numeric term.
-fn selected_card_ceiling_with_candidate_support_ub(
-    suffix: &SuffixBound,
+/// The inputs of [`selected_card_ceiling_from_partial`]. With a
+/// `candidate`, the inputs of every child of `partial` that adds a member
+/// with at most its terms, before that member's support exclusion; the
+/// ceiling is non-decreasing in every numeric term.
+#[inline(always)]
+fn selected_card_inputs(
     ctx: &SearchContext,
     plan: &CardGroupPlan,
     chosen: usize,
     partial: &CardPartial,
-    terms: &MemberTerms,
+    candidate: Option<&MemberTerms>,
     leader_skill: u32,
-) -> u64 {
-    let power_sum = partial.power + terms.power + plan.rem_power[chosen];
-    let skill_sum = partial.skill + terms.skill + plan.rem_skill[chosen];
-    let bonus_sum = partial.base_bonus + terms.base_bonus + plan.rem_base_bonus[chosen];
-    let limited_sum = plan.limited_sum(
-        partial,
-        chosen,
-        ctx.card_bonus_count_limit,
-        terms.limited_bonus,
-    );
+) -> CeilingInputs {
+    let (power, skill, base_bonus, limited_bonus) = candidate.map_or((0, 0, 0, 0), |terms| {
+        (
+            terms.power,
+            terms.skill,
+            terms.base_bonus,
+            terms.limited_bonus,
+        )
+    });
+    let power_sum = partial.power + power + plan.rem_power[chosen];
+    let skill_sum = partial.skill + skill + plan.rem_skill[chosen];
+    let bonus_sum = partial.base_bonus + base_bonus + plan.rem_base_bonus[chosen];
+    let limited_sum = plan.limited_sum(partial, chosen, ctx.card_bonus_count_limit, limited_bonus);
     let extra_bonus_ub = if ctx.is_world_bloom {
         plan.diversity_bonus + partial.support_bonus_ceil
     } else {
         ctx.extra_bonus_ub
     };
-    suffix.objective().ceiling(
-        power_sum,
-        bonus_sum + limited_sum + extra_bonus_ub,
-        skill_sum,
-        final_chapter_ceiling_skill(
+    CeilingInputs {
+        power: power_sum,
+        bonus: bonus_sum + limited_sum + extra_bonus_ub,
+        skill: skill_sum,
+        leader: final_chapter_ceiling_skill(
             ctx,
             leader_skill,
-            partial
-                .max_skill
-                .max(terms.skill)
-                .max(plan.rem_max_skill[chosen]),
+            partial.max_skill.max(skill).max(plan.rem_max_skill[chosen]),
         ),
-    )
+    }
 }
 
 #[inline(always)]
@@ -2248,15 +2307,14 @@ mod skill_ceiling_tests {
                         break;
                     }
                     let card = groups[chosen].scan[0].card;
-                    let upper = selected_card_ceiling_with_candidate_support_ub(
-                        &suffix,
+                    let upper = suffix.objective().ceiling_of(selected_card_inputs(
                         &ctx,
                         &plan,
                         chosen + 1,
                         &partial,
-                        &MemberTerms::of(&pool, card),
+                        Some(&MemberTerms::of(&pool, card)),
                         leader.skill,
-                    );
+                    ));
                     assert!(
                         upper >= actual,
                         "candidate stage live={live:?} order={order:?} chosen={chosen}"

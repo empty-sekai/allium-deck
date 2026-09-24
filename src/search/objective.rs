@@ -80,14 +80,17 @@ pub(crate) struct ObjectiveBound {
     pub(super) boost_rate_pct: u32,
     /// base_rate × 1_000_000, ceil。
     pub(super) base_rate_1m: i64,
-    /// (skill_rate_sum / 500) × 1_000_000, ceil。
-    pub(super) srs_div500_1m: i64,
+    /// (skill_rate_sum / 500) × 1_000_000 × 2^[`RATE_FRACTION_BITS`], ceil.
+    /// The fraction bits keep the rounding of a Multi skill term below one
+    /// unit of the 1_000_000 scale; [`rate_units`] drops them.
+    pub(super) srs_div500_q: i64,
     /// Solo/Auto + Average：前 5 个 rate 的和 × 1_000_000, ceil。
     pub(super) avg_sum5_1m: i64,
     /// Solo/Auto + Average：leader 追加 slot 的 rate × 1_000_000, ceil。
     pub(super) avg_leader_rate_1m: i64,
-    /// The six slot rates, largest first, each (rate / 100) × 1_000_000, ceil.
-    pub(super) sorted_rates_1m: [i64; DECK_SIZE + 1],
+    /// The six slot rates, largest first, each (rate / 100) × 1_000_000 ×
+    /// 2^[`RATE_FRACTION_BITS`], ceil.
+    pub(super) sorted_rates_q: [i64; DECK_SIZE + 1],
     /// 5 × multi_teammate_score_up（Multi/Cheerful 专用）。
     pub(super) teammate_su_5x: i64,
     /// Multi/Cheerful: 75_000 (= 0.075 × 1M), 其他: 0。
@@ -131,10 +134,12 @@ impl ObjectiveBound {
             music_rate_pct: ctx.music_rate_pct,
             boost_rate_pct: ctx.boost_rate_pct,
             base_rate_1m: (base_rate * 1_000_000.0).ceil() as i64,
-            srs_div500_1m: (skill_rate_sum / 500.0 * 1_000_000.0).ceil() as i64,
+            srs_div500_q: (skill_rate_sum / 500.0 * 1_000_000.0 * RATE_FRACTION_SCALE).ceil()
+                as i64,
             avg_sum5_1m: (avg_sum5 * 1_000_000.0).ceil() as i64,
             avg_leader_rate_1m: (avg_leader_rate * 1_000_000.0).ceil() as i64,
-            sorted_rates_1m: sorted_rates.map(|rate| (rate / 100.0 * 1_000_000.0).ceil() as i64),
+            sorted_rates_q: sorted_rates
+                .map(|rate| (rate / 100.0 * 1_000_000.0 * RATE_FRACTION_SCALE).ceil() as i64),
             teammate_su_5x: ctx
                 .multi_teammate_score_up
                 .map(|v| v as i64 * 5)
@@ -236,11 +241,13 @@ impl ObjectiveBound {
         ));
         let power_ub = self.clamp_power_total(power_ub + self.honor_bonus);
         let rate_1m = self.base_rate_1m
-            + slots
-                .iter()
-                .zip(&self.sorted_rates_1m)
-                .map(|(&score_up, &rate)| i64::from(score_up) * rate)
-                .sum::<i64>();
+            + rate_units(
+                slots
+                    .iter()
+                    .zip(&self.sorted_rates_q)
+                    .map(|(&score_up, &rate)| i64::from(score_up) * rate)
+                    .sum::<i64>(),
+            );
         let live = (self.live_numerator(power_ub, rate_1m) / LIVE_SCORE_BOUND_SCALE) as i32;
         self.pack_score(live, bonus_total)
     }
@@ -309,7 +316,7 @@ impl ObjectiveBound {
     ) -> u64 {
         let power_total = self.clamp_power_total(power_ub + self.honor_bonus);
         let max_slot_5x = (4 * leader_ub as i64 + skill_ub as i64).max(self.teammate_su_5x);
-        let rate_1m = self.base_rate_1m + max_slot_5x * self.srs_div500_1m;
+        let rate_1m = self.base_rate_1m + rate_units(max_slot_5x * self.srs_div500_q);
         let power_sum = if let Some(teammate_power) = self.multi_teammate_power {
             power_total as i64 + teammate_power as i64 * (DECK_SIZE as i64 - 1)
         } else {
@@ -343,7 +350,7 @@ impl ObjectiveBound {
             LiveType::Multi | LiveType::Cheerful => {
                 let max_slot_5x =
                     (4 * leader_ub as i64 + skill_total as i64).max(self.teammate_su_5x);
-                self.base_rate_1m + max_slot_5x * self.srs_div500_1m
+                self.base_rate_1m + rate_units(max_slot_5x * self.srs_div500_q)
             }
             LiveType::Solo | LiveType::Auto
                 if matches!(self.live_skill_order, LiveSkillOrder::Average) =>
@@ -361,13 +368,13 @@ impl ObjectiveBound {
                 // others, largest rates first, at most the peak each.
                 let peak = i64::from(leader_ub.min(skill_total));
                 let mut rest = i64::from(skill_total);
-                let mut rate = self.base_rate_1m + peak * self.sorted_rates_1m[0];
-                for &coefficient in &self.sorted_rates_1m[1..] {
+                let mut rate = peak * self.sorted_rates_q[0];
+                for &coefficient in &self.sorted_rates_q[1..] {
                     let value = rest.min(peak);
                     rate += value * coefficient;
                     rest -= value;
                 }
-                rate
+                self.base_rate_1m + rate_units(rate)
             }
         };
         self.live_numerator(power_total, rate_1m)
@@ -400,7 +407,7 @@ impl ObjectiveBound {
     /// under the average skill order.
     pub(crate) fn live_product(&self) -> Option<LiveProduct> {
         let non_negative = self.base_rate_1m >= 0
-            && self.srs_div500_1m >= 0
+            && self.srs_div500_q >= 0
             && self.avg_sum5_1m >= 0
             && self.avg_leader_rate_1m >= 0
             && self.multi_teammate_power.is_none_or(|power| power >= 0);
@@ -411,8 +418,11 @@ impl ObjectiveBound {
         match self.effective_live_type {
             LiveType::Multi | LiveType::Cheerful => {
                 // N = 4 * rate * P + active * power_sum, rate = base +
-                // max(4L + S, t) * srs, power_sum = 5P or P plus the four
-                // teammates' power.
+                // ceil(max(4L + S, t) * srs / D) for D = 2^RATE_FRACTION_BITS,
+                // power_sum = 5P or P plus the four teammates' power; the
+                // ceiling adds less than one, so D * rate <= D * (base + 1) +
+                // max(4L + S, t) * srs.
+                const D: i64 = 1 << RATE_FRACTION_BITS;
                 let active = self.active_1m_coeff;
                 let (per_power, constant) = match self.multi_teammate_power {
                     Some(power) => (active, 4 * active * i64::from(power)),
@@ -420,11 +430,11 @@ impl ObjectiveBound {
                 };
                 Some(LiveProduct {
                     honor,
-                    intercept: 4 * self.base_rate_1m + per_power,
-                    leader: 16 * self.srs_div500_1m,
-                    skill: 4 * self.srs_div500_1m,
-                    constant,
-                    divisor: 1,
+                    intercept: 4 * D * (self.base_rate_1m + 1) + D * per_power,
+                    leader: 16 * self.srs_div500_q,
+                    skill: 4 * self.srs_div500_q,
+                    constant: D * constant,
+                    divisor: D,
                     floor: self.teammate_su_5x,
                 })
             }
@@ -519,19 +529,19 @@ const CUTOFF_BONUSES: usize = 2048;
 /// whose key does. That live score is cached per bonus total and, as the
 /// threshold of a search only rises, advanced from its previous value.
 pub(crate) struct ScoreCutoff {
-    /// `(threshold, needed live score)` per bonus total.
+    /// `(threshold, needed live score)` per bonus total, grown to the
+    /// largest bonus total asked; a zero threshold marks an entry not yet
+    /// computed.
     needed: Vec<(u64, i64)>,
+    /// Whether the target is Score, whose keys the cache inverts.
+    score: bool,
 }
 
 impl ScoreCutoff {
     pub(crate) fn new(objective: &ObjectiveBound) -> Self {
-        let len = if matches!(objective.target, ScoreTarget::Score) {
-            CUTOFF_BONUSES
-        } else {
-            0
-        };
         Self {
-            needed: vec![(0, 0); len],
+            needed: Vec::new(),
+            score: matches!(objective.target, ScoreTarget::Score),
         }
     }
 
@@ -543,9 +553,14 @@ impl ScoreCutoff {
         inputs: CeilingInputs,
         threshold: u64,
     ) -> bool {
-        let Some(entry) = self.needed.get_mut(inputs.bonus as usize) else {
+        let index = inputs.bonus as usize;
+        if !self.score || index >= CUTOFF_BONUSES {
             return objective.ceiling_of(inputs) >= threshold;
-        };
+        }
+        if index >= self.needed.len() {
+            self.needed.resize(index + 1, (0, 0));
+        }
+        let entry = &mut self.needed[index];
         if entry.0 != threshold {
             let start = if entry.0 < threshold { entry.1 } else { 0 };
             *entry = (
@@ -571,6 +586,17 @@ impl ScoreCutoff {
 pub(crate) fn mysekai_rank(power_total: u32, total_bonus: u32) -> u64 {
     (u64::from(calc_mysekai_internal(power_total, f64::from(total_bonus))) << 32)
         | u64::from(power_total)
+}
+
+/// Fraction bits of the skill-rate coefficients below the 1_000_000 scale.
+pub(crate) const RATE_FRACTION_BITS: u32 = 20;
+/// `2^RATE_FRACTION_BITS` as a float, for the coefficients and their relaxations.
+pub(crate) const RATE_FRACTION_SCALE: f64 = (1u64 << RATE_FRACTION_BITS) as f64;
+
+/// A sum of skill-rate terms on the 1_000_000 scale, rounded up.
+#[inline(always)]
+fn rate_units(fractional: i64) -> i64 {
+    (fractional + (1 << RATE_FRACTION_BITS) - 1) >> RATE_FRACTION_BITS
 }
 
 /// Round outward for a positive denominator without an unstable signed API.

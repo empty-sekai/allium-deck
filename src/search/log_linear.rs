@@ -18,7 +18,7 @@
 
 use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
 
-use super::objective::{LIVE_SCORE_BOUND_SCALE, ObjectiveBound};
+use super::objective::{LIVE_SCORE_BOUND_SCALE, ObjectiveBound, RATE_FRACTION_SCALE};
 
 /// Slack below `ln(threshold)` that absorbs the floating-point error of a
 /// bound and of the sums compared with it.
@@ -149,12 +149,22 @@ impl LogLinearBound {
             + self.bonus * f64::from(bonus)
     }
 
-    /// Whether a subtree whose features weigh at most `value` has no deck
-    /// with an event point of `threshold_ep` or more.
+    /// The weight below which [`Self::excludes`] rules a subtree out at
+    /// `threshold_ep`; a caller that tests many subtrees against one
+    /// threshold computes it once.
     #[inline(always)]
-    pub(crate) fn excludes(&self, value: f64, threshold_ep: u64) -> bool {
+    pub(crate) fn log_cutoff(threshold_ep: u64) -> f64 {
+        (threshold_ep as f64).ln() - LOG_MARGIN
+    }
+
+    /// Whether a subtree whose features weigh at most `value` has no deck
+    /// with an event point of `threshold_ep` or more, given the
+    /// [`Self::log_cutoff`] of `threshold_ep`.
+    #[inline(always)]
+    pub(crate) fn excludes(&self, value: f64, threshold_ep: u64, cutoff: f64) -> bool {
         debug_assert!(threshold_ep >= self.floor_ep);
-        value < (threshold_ep as f64).ln() - LOG_MARGIN
+        debug_assert_eq!(cutoff.to_bits(), Self::log_cutoff(threshold_ep).to_bits());
+        value < cutoff
     }
 }
 
@@ -210,10 +220,10 @@ impl EventModel {
         let kappa =
             f64::from(objective.music_rate_pct) * f64::from(objective.boost_rate_pct) / scale;
         let non_negative = objective.base_rate_1m >= 0
-            && objective.srs_div500_1m >= 0
+            && objective.srs_div500_q >= 0
             && objective.avg_sum5_1m >= 0
             && objective.avg_leader_rate_1m >= 0
-            && objective.sorted_rates_1m.iter().all(|&rate| rate >= 0)
+            && objective.sorted_rates_q.iter().all(|&rate| rate >= 0)
             && objective
                 .multi_teammate_power
                 .is_none_or(|power| power >= 0);
@@ -234,9 +244,10 @@ impl EventModel {
                 let excess = (objective.teammate_su_5x
                     - 4 * i64::from(feature_box.leader_skill_min))
                 .max(0) as f64;
-                let srs = objective.srs_div500_1m as f64;
+                // The skill term rounds up by less than one.
+                let srs = objective.srs_div500_q as f64 / RATE_FRACTION_SCALE;
                 RateModel::Affine(Tangent {
-                    intercept: base + excess * srs,
+                    intercept: base + 1.0 + excess * srs,
                     skill: srs,
                     leader_skill: 4.0 * srs,
                 })
@@ -252,10 +263,13 @@ impl EventModel {
             _ => {
                 // The peak slot is at most the largest card skill, and the
                 // rate is non-decreasing in the peak.
+                // The skill terms round up by less than one together.
                 let cap = f64::from(feature_box.card_skill);
-                let sorted = objective.sorted_rates_1m.map(|rate| rate as f64);
+                let sorted = objective
+                    .sorted_rates_q
+                    .map(|rate| rate as f64 / RATE_FRACTION_SCALE);
                 RateModel::Sorted {
-                    intercept: base + cap * sorted[0],
+                    intercept: base + 1.0 + cap * sorted[0],
                     cap,
                     rates: core::array::from_fn(|slot| sorted[slot + 1]),
                 }
@@ -441,7 +455,7 @@ mod tests {
                                 + bound.leader_skill * f64::from(leader)
                                 + bound.bonus * f64::from(bonus);
                             assert!(
-                                !bound.excludes(value, ep),
+                                !bound.excludes(value, ep, LogLinearBound::log_cutoff(ep)),
                                 "live={live_type:?} order={order:?} power={power} skill={skill} leader={leader} bonus={bonus} ep={ep} value={value}"
                             );
                             assert!(value >= (ep as f64).ln() - 1e-12);

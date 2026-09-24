@@ -483,7 +483,9 @@ rises, so $\ell^*$ does too and is found by galloping upward from the cached
 value; a lower threshold restarts from zero. No pruning decision changes.
 
 Implementation: `ScoreCutoff`, `ObjectiveBound::needed_live`
-(search/objective.rs), used by `recurse_ep` (search/dfs.rs).
+(search/objective.rs), used by `recurse_ep` (search/dfs.rs) and by the
+character and card searches of the final chapter
+(search/solver/final_chapter.rs).
 
 ## 11. Correlated no-event Score bound
 
@@ -1147,10 +1149,12 @@ $$
 $h$ the honor bonus. The numerator is $4\rho P'+\gamma\Pi$ with $P'\le P+h$
 the clamped power, $\gamma$ the active coefficient and $\Pi$ either $5P'$ or
 $P'$ plus four teammates' power. For Multi and Cheerful
-$\rho=r_0+\max(4L+S,t)\,\sigma$ with $r_0$ the base rate and $\sigma$ the
-summed skill rate over 500, and $\max(4L+S,t)\le 4L+S+\max(0,t-4L-S_0)$ for
-$S\ge S_0$; so $a=4r_0+5\gamma$ (or $4r_0+\gamma$ with $c_0$ four times
-$\gamma$ times the teammate power), $\ell=16\sigma$, $b=4\sigma$, $d=1$.
+$\rho=r_0+\lceil\max(4L+S,t)\,\sigma/D\rceil$ with $r_0$ the base rate,
+$\sigma$ the summed skill rate over 500 on the $10^6\cdot2^{20}$ scale and $D=2^{20}$; the
+rounding adds less than one, so $D\rho\le D(r_0+1)+\max(4L+S,t)\,\sigma$, and
+$\max(4L+S,t)\le 4L+S+\max(0,t-4L-S_0)$ for $S\ge S_0$. Hence
+$a=D(4(r_0+1)+5\gamma)$ (or $D(4(r_0+1)+\gamma)$ with $c_0$ four times $D\gamma$
+times the teammate power), $\ell=16\sigma$, $b=4\sigma$, $d=D$.
 Under the average order $\gamma=0$ and each of the two rounded-up rate terms
 adds less than one, so $500\rho\le 500r_0+1000+5\lambda L+\mu S$ ($\lambda$
 the leader slot's rate, $\mu$ the five slots' summed rate) and
@@ -1322,8 +1326,8 @@ prefix is fixed, so the ceiling is a function of the suffix entries it reads:
 the first `remaining` values of each top list and the attribute row for
 `remaining`. Each table carries, for every count of open slots, a version that
 changes exactly when those entries change; they only grow with the suffix, so
-a version never returns to an earlier table, and an unchanged version reuses
-the previous ceiling.
+a version never returns to an earlier table, and an unchanged version keeps
+the previous decision while the threshold is unchanged.
 
 ### 18.5 Card-level plan
 
@@ -1343,7 +1347,7 @@ card plan detects this property over the complete pool and caches suffix
 sums. This replaces only the calculation of the same bound; mixed rounded
 amounts retain the sorted merge. The zero-only pool has $v=0$.
 
-selected_card_ceiling_with_candidate_support_ub keeps the current support
+The candidate ceiling keeps the current support
 total as an optimistic bound. A surviving candidate then updates its exact
 support displacement before a second bound is checked. The updated support
 value still bounds all later extensions by Section 16.
@@ -1429,12 +1433,14 @@ $\bar r$ bounds the fixed-point live rate of Section 12:
 
 - Multi: $\max(4L+S,T)\rho\le(4L+S)\rho+\max(0,T-4L_{\min})\rho$ over leaders
   with skill at least $L_{\min}$, where $T$ is five times the teammate
-  score-up and $\rho$ the rate per skill;
+  score-up and $\rho$ the rate per skill, plus one for the rounded skill
+  term;
 - Solo and Auto under the Average order: each outward-rounded division adds
   less than one, so $\bar r=r_0+2+S A_5/500+L A_L/100$;
 - Solo and Auto otherwise: the rate is non-decreasing in its peak slot, and
-  the peak is at most the largest card skill $M$, so
-  $\bar r=r_0+MR_1+\sum_{j=2}^{6}R_j\,\mathrm{clamp}(S-(j-2)M,0,M)$, which is
+  the peak is at most the largest card skill $M$, and the rounded sum of the
+  skill terms adds less than one, so
+  $\bar r=r_0+1+MR_1+\sum_{j=2}^{6}R_j\,\mathrm{clamp}(S-(j-2)M,0,M)$, which is
   concave and non-decreasing in $S$ because $R_2\ge\dots\ge R_6\ge0$.
 
 *Proof.* The live numerator is $4rP'+a'$ with $P'\le P+h$ after the optional
@@ -2170,23 +2176,28 @@ search API is expected to satisfy the same domain.
 
 ### 29.3 Lemma N1 — fixed-point coefficients
 
-For a non-negative `f64` constant $c$ the prepared coefficient
-$K=\lceil\mathrm{fl}(c\cdot10^6)\rceil$ satisfies $K\ge10^6c(1-u)$. The
-rate-sum coefficients carry at most seven roundings, e.g.
+For a non-negative `f64` constant $c$ and a scale $s$, a power of ten times
+a power of two, the prepared coefficient $K=\lceil\mathrm{fl}(c\cdot s)\rceil$
+satisfies $K\ge s\,c(1-u)$. The rate-sum coefficients carry at most eight
+roundings, e.g.
 
 $$
-\left\lceil\mathrm{fl}\!\left(\mathrm{fl}\Big(\sum_{k<6}r_k\Big)/500\cdot10^6\right)\right\rceil
-\ge10^6\,\frac{\sum_k r_k}{500}\,(1-u)^7,
+\left\lceil\mathrm{fl}\!\left(\mathrm{fl}\!\left(\mathrm{fl}\Big(\sum_{k<6}r_k\Big)/500\cdot10^6\right)\cdot2^{20}\right)\right\rceil
+\ge10^6\cdot2^{20}\,\frac{\sum_k r_k}{500}\,(1-u)^8,
 $$
 
-and likewise for the Average five-slot sum and leader rate and for each
-sorted slot rate $\lceil\mathrm{fl}(\mathrm{fl}(r/100)\cdot10^6)\rceil$. The integer steps
+and likewise for each sorted slot rate
+$\lceil\mathrm{fl}(\mathrm{fl}(\mathrm{fl}(r/100)\cdot10^6)\cdot2^{20})\rceil$ and, without the
+factor $2^{20}$, for the Average five-slot sum and leader rate. The Multi
+skill term is $\lceil mK/2^{20}\rceil$ for $m=\max(4L+S,t)$, and the sorted
+skill terms are summed before one $\lceil\cdot/2^{20}\rceil$, so the finer
+coefficients reach the $10^6$ scale of the rate by rounding up. The integer steps
 that follow (products and `ceil_div_positive`) are exact or round up, and the
 base rate is the same `f64` value on both sides. Hence the live numerator
 satisfies
 
 $$
-N\ge10^6X_B(1-u)^7,
+N\ge10^6X_B(1-u)^8,
 $$
 
 where $X_B$ is the real-valued ceiling evaluated at the exact `f64` constants.
@@ -2223,8 +2234,8 @@ Inside the domain, $\lfloor X_e\rfloor\le\lfloor N/10^6\rfloor$ for every legal
 completion.
 
 **Proof.** By N1 and N2,
-$X_e\le(N/10^6)(1+u)^{20}(1-u)^{-7}\le N/10^6+28u\,N/10^6$. By (D2),
-$N/10^6\le2^{27}(1+10^{-12})$, so $28u\,N/10^6<4.2\cdot10^{-7}<10^{-6}$. Since
+$X_e\le(N/10^6)(1+u)^{20}(1-u)^{-8}\le N/10^6+29u\,N/10^6$. By (D2),
+$N/10^6\le2^{27}(1+10^{-12})$, so $29u\,N/10^6<4.4\cdot10^{-7}<10^{-6}$. Since
 $N$ is an integer, $\lfloor N/10^6\rfloor+1\ge(N+1)/10^6>X_e$. ∎
 
 The argument needs no extra margin in the code: the $10^{-6}$ grid of the
