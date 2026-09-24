@@ -1017,8 +1017,10 @@ maximized the same way. The recurrence over
 $p$ from the end — skip the group (unless mandatory) or take one card of it,
 in either counting state for a limited card (§17.4) — is the standard
 exact selection DP, so by induction every entry is exact for its definition.
-Cards with equal key, slack, displaced count and limited bonus share one
-table item with their componentwise maxima, which can only raise entries.
+Cards with equal key, slack, displaced count and limited bonus (and, under a
+single support profile, equal removed entries and held positions, §17.5)
+share one table item with their componentwise maxima, which can only raise
+entries.
 Sums above the largest value any hitting deck can need are dropped: with
 bounded deck terms ($E_{lo}\ge -1$ tenth) a hitting deck has
 $\sum\kappa\le 10T_{\max}+1+\max_q\xi(q)$. A row of $r$ cards stores only
@@ -1087,6 +1089,23 @@ $$
 which the search uses instead. On a complete deck ($r=0$) with a single
 profile it admits only decks whose support terms, key sum and slack sum give
 exactly $10T$ up to the excess term.
+
+**Refill of the selected cards.** Under a single profile with exact slack,
+$X(D)=\sum_{j\le a}(s_{W+1}-s_{w_j})$ with $a$ the removed entries at
+positions $\le W$ and $w_1<\dots<w_a$ the first positions after $W$ the deck
+does not hold (§17.2). A further card can only raise $a$ and add held
+positions, which moves every $w_j$ later; the entries are non-increasing, so
+each term grows and new terms are non-negative. The removed count $a_{pre}$
+and held set $S_{pre}$ of the selected cards thus give
+$10X(D)\ge\lfloor 10X(a_{pre},S_{pre})\rfloor$ for every completion, and the
+lower end of the interval rises by that amount. Held positions past the
+64th after $W$ are left out; counting a held position as surviving can only
+move some $w_j$ earlier, which weakens the bound. On a complete deck whose
+profile has at most 64 such positions, $X(a,S)$ is the deck's refill, and
+$\lceil 10X(a,S)\rceil$ also caps $\xi(q)$ at the upper end. The cards of a
+class share the removed entries and held positions of their public id, so a
+class test already has the card's. Each bound still sums at most eight
+rounded terms.
 
 The branch is discarded when this interval contains no shifted multiple of
 $u$ below the table cap, or when every such entry $G_p(r,\cdot,\cdot)$
@@ -2001,6 +2020,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | WL support upper bound | search/suffix.rs, Final helpers | support can only stay or decrease as main deck grows |
 | Exact bonus tiers | search/solver/bonus_tiers.rs, search/skill_ceiling.rs | per-card key and slack, exact reachable-sum suffix table per regime, per-tier live ceiling with composition-aware selected skills and suffix skill frontier; at a diversity class's largest attribute count, the regime restricted to the attributes held |
 | Root sums | search/solver/bonus_tiers.rs | the table's reachable root entries from bit rows before the table; the all-card regime's root proves pairs for the whole scope |
+| Selected-card refill | search/solver/bonus_tiers.rs | under one whole-tick support profile the refill of the selected cards is at most every completion's, and exact on a complete deck |
 | Joint power-skill ceiling | search/solver/bonus_tiers.rs, search/objective.rs | the live-score product peaks on the box of separate maxima cut by the joint half-plane |
 | Tier certificate | search/solver/bonus_tiers.rs | exact totals under one whole-tick support profile: reachability over card count, removed entries, counting state and sum, completed by every subset of the cards holding refill positions |
 | Final member dominance | search/dominance.rs, search/alternatives.rs | member-role substitution + legal leader rotations |
@@ -2036,7 +2056,7 @@ independent checks designed to expose a violated premise.
 | Event Score cutoff | exact_score.rs cutoff against the packed comparison over every event live type |
 | Dominance | exact_dominance.rs, dominance_contract.rs, exact_world_bloom.rs |
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
-| Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views and tier certificates from the first node), exact_bonus.rs, fractional_bonus.rs; solver/bonus_tiers.rs unit test — the refill of the removed and held entries is the evaluator's support loss beyond the card losses; debug builds compare every regime's root sums with its table's root entries and each scope exclusion with the regime's root |
+| Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views and tier certificates from the first node), exact_bonus.rs, fractional_bonus.rs; solver/bonus_tiers.rs unit tests — the refill of the removed and held entries is the evaluator's support loss beyond the card losses, and the refill of any cards selected first is at most the deck's; debug builds compare every regime's root sums with its table's root entries and each scope exclusion with the regime's root |
 | Joint power-skill ceiling | exact_score.rs — the live product dominates the live ceiling for every live type and skill order that has one; solver/bonus_tiers.rs unit test — the joint peak dominates every selection in the box and half-plane and never exceeds the box corner |
 | Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |

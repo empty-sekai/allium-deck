@@ -53,8 +53,9 @@
 //!   with its own suffix table.
 //! * With one support profile of whole ticks every deck's total is exact in
 //!   its cards, its count of removed counted entries and the positions past
-//!   them it holds; a large enough search builds the scope's certificate of
-//!   the tiers no deck reaches and ends when its tier is one of them.
+//!   them it holds. The refill of the selected cards bounds every
+//!   completion's, and a large enough search builds the scope's certificate
+//!   of the tiers no deck reaches and ends when its tier is one of them.
 use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -282,6 +283,11 @@ struct Class {
     slack_ticks: u32,
     /// Displaceable support entries of the class's public ids.
     support: u32,
+    /// Under the scope's single support profile, the counted entries the
+    /// class's public id removes and the positions past them it holds; zero
+    /// without one.
+    removed: u8,
+    held: u64,
     /// Attributes of the class's cards, one bit each.
     attrs: u8,
     power: u32,
@@ -295,15 +301,21 @@ struct Class {
 }
 
 impl Class {
-    fn parts(&self) -> (i32, u32, u32, u32) {
+    fn parts(&self) -> ClassParts {
         (
             self.key_ticks,
             self.limited_ticks,
             self.slack_ticks,
             self.support,
+            self.removed,
+            self.held,
         )
     }
 }
+
+/// The parts a class shares: key, limited bonus, slack and displaceable
+/// entries in ticks, then the removed counted entries and held positions.
+type ClassParts = (i32, u32, u32, u32, u8, u64);
 
 /// A group restricted to one regime, with its cards ordered by class.
 #[derive(Clone, Debug)]
@@ -537,10 +549,9 @@ struct Problem<'a> {
     widest_units: usize,
     bonus: Vec<CardBonus>,
     groups: Vec<Group>,
-    /// Class parts `(κ, limited, σ, q)` of every group's cards, in the
-    /// group's card order; `κ` includes the leader-only bonus on the Final
-    /// leader role.
-    parts: Vec<Vec<(i32, u32, u32, u32)>>,
+    /// Class parts of every group's cards, in the group's card order; the
+    /// key includes the leader-only bonus on the Final leader role.
+    parts: Vec<Vec<ClassParts>>,
     extras: Option<Extras>,
     /// Composition-aware skill ceiling of every card, by pool index.
     ceilings: &'a [SkillCeiling],
@@ -551,6 +562,9 @@ struct Problem<'a> {
     restrict_after: u64,
     /// The scope's single support profile, when its losses are whole ticks.
     terms: Option<SupportTerms>,
+    /// Every position a deck can hold past the counted entries fits the
+    /// profile's held mask, so a complete deck's refill is exact.
+    refill_exact: bool,
     /// `(tier, diversity bonus)` pairs no deck of the scope reaches, from
     /// the root sums of the regime that admits every card.
     unreachable: Vec<(usize, i64)>,
@@ -660,6 +674,12 @@ impl<'a> Problem<'a> {
             }
             group_max.push(best);
         }
+        let refill_parts = |card: CardIdx| {
+            terms.as_ref().map_or((0, 0), |terms| {
+                let (_, removed, _, held) = terms.entries(pool.game_id(card));
+                (removed.min(u32::from(u8::MAX)) as u8, held)
+            })
+        };
         let parts = groups
             .iter()
             .map(|group| {
@@ -673,11 +693,14 @@ impl<'a> Problem<'a> {
                         } else {
                             0
                         };
+                        let (removed, held) = refill_parts(card);
                         (
                             parts.fixed as i32 + parts.adjust + leader as i32,
                             parts.limited,
                             parts.slack,
                             parts.support,
+                            removed,
+                            held,
                         )
                     })
                     .collect()
@@ -732,6 +755,7 @@ impl<'a> Problem<'a> {
             extras,
             ceilings,
             restrict_after: if eager { 1 } else { RESTRICT_AFTER },
+            refill_exact: terms.as_ref().is_some_and(|terms| terms.excess.len() <= 65),
             terms,
             unreachable: Vec::new(),
             certificate: OnceCell::new(),
@@ -1074,7 +1098,7 @@ impl<'a> Problem<'a> {
             });
             let mut classes: Vec<Class> = Vec::new();
             for (index, &(parts, card_power, card)) in members.iter().enumerate() {
-                let (key_ticks, limited_ticks, slack_ticks, support) = parts;
+                let (key_ticks, limited_ticks, slack_ticks, support, removed, held) = parts;
                 let skill = u32::from(pool.skill_max(card));
                 match classes.last_mut() {
                     Some(class) if class.parts() == parts => {
@@ -1089,6 +1113,8 @@ impl<'a> Problem<'a> {
                         limited_ticks,
                         slack_ticks,
                         support,
+                        removed,
+                        held,
                         attrs: 1 << pool.attr(card),
                         power: card_power,
                         skill,
@@ -1209,10 +1235,25 @@ impl<'a> Problem<'a> {
         self.objective.ceiling(power, 0, skill, leader) as u32
     }
 
+    /// Refill excess in ticks, rounded down and up, of a deck that removes
+    /// `removed` counted entries and holds the positions `held` past them
+    /// under the scope's single support profile; zero without one. The lower
+    /// end is at most the excess of every deck that removes more and holds
+    /// more.
+    fn refill_ticks(&self, removed: u8, held: u64) -> (i32, i32) {
+        self.terms.as_ref().map_or((0, 0), |terms| {
+            let (low, high) = ticks(terms.refill(usize::from(removed), held), self.scale);
+            (low.max(0) as i32, high.max(0) as i32)
+        })
+    }
+
     /// Deck-level terms of every completion of `state` in `view` with the
     /// diversity bonus `extra_ticks`, in ticks: the support excess is
-    /// subtracted from the lower end. `leader` is the card in the first slot
-    /// once `state` holds one.
+    /// subtracted from the lower end and the selected cards' refill excess
+    /// from the upper end. Once five cards are selected and the profile's
+    /// held positions all fit the mask, their refill excess is the deck's,
+    /// and it bounds the lower end too. `leader` is the card in the first
+    /// slot once `state` holds one.
     #[inline(always)]
     fn extra_range(
         &self,
@@ -1233,8 +1274,14 @@ impl<'a> Problem<'a> {
         };
         let remaining = DECK_SIZE - usize::from(state.picked);
         let displaced = state.support + view.suffix_support[usize::from(state.position)][remaining];
-        let excess = extras.excess[(displaced as usize).min(extras.excess.len() - 1)];
-        (extra_ticks + base.0 - excess, extra_ticks + base.1)
+        let mut excess = extras.excess[(displaced as usize).min(extras.excess.len() - 1)];
+        if remaining == 0 && self.refill_exact {
+            excess = excess.min(i64::from(state.refill_high));
+        }
+        (
+            extra_ticks + base.0 - excess,
+            extra_ticks + base.1 - i64::from(state.refill_low),
+        )
     }
 
     /// Inclusive range of the suffix's shifted key sum (in units) that can
@@ -2497,13 +2544,19 @@ struct State {
     /// Some positive limited card so far is not counted.
     uncounted: bool,
     attrs: u8,
-    characters: CharacterSet,
     /// Key sum `Σκ` so far, counted limited bonuses included, in ticks.
     key_ticks: i32,
     /// Slack sum `Σσ` so far, in ticks.
     slack_ticks: u32,
     /// Support entries displaced so far.
     support: u32,
+    /// Counted support entries removed and positions past them held so far,
+    /// with their refill excess in ticks rounded down and up, under a single
+    /// support profile.
+    removed: u8,
+    held: u64,
+    refill_low: i32,
+    refill_high: i32,
     power: u32,
     /// Skill-maximum sum and largest skill maximum of the selected cards.
     skill: u32,
@@ -2527,10 +2580,13 @@ impl State {
             counted: 0,
             uncounted: false,
             attrs: 0,
-            characters: CharacterSet::default(),
             key_ticks: 0,
             slack_ticks: 0,
             support: 0,
+            removed: 0,
+            held: 0,
+            refill_low: 0,
+            refill_high: 0,
             power: 0,
             skill: 0,
             leader: 0,
@@ -2907,9 +2963,16 @@ impl<'s> TierSearch<'s, '_> {
         let threshold = self.threshold();
         let capacity = problem.counting.capacity();
         let slot = usize::from(state.picked);
+        // Public ids and characters of the selected cards, in slot order.
         let mut taken_ids = [0u16; DECK_SIZE];
-        for (id, &card) in taken_ids.iter_mut().zip(&self.deck[..slot]) {
+        let mut taken_characters = [0u8; DECK_SIZE];
+        for ((id, character), &card) in taken_ids
+            .iter_mut()
+            .zip(&mut taken_characters)
+            .zip(&self.deck[..slot])
+        {
             *id = pool.game_id(card);
+            *character = pool.char_id(card);
         }
         // The Final leader fixes the support profile, so its need depends on
         // the concrete card rather than on its class alone.
@@ -2929,6 +2992,15 @@ impl<'s> TierSearch<'s, '_> {
             // Counting choices of a class: the limited bonus of a fixed role
             // counts exactly when capacity remains; a free card may count it
             // or leave it uncounted.
+            let (removed, held) = (
+                state.removed.saturating_add(class.removed),
+                state.held | class.held,
+            );
+            let (refill_low, refill_high) = if class.removed == 0 && class.held == 0 {
+                (state.refill_low, state.refill_high)
+            } else {
+                problem.refill_ticks(removed, held)
+            };
             let mut options = [None; 2];
             let key = class.key_ticks;
             let limited = class.limited_ticks as i32;
@@ -2955,6 +3027,10 @@ impl<'s> TierSearch<'s, '_> {
                     key_ticks: state.key_ticks + key_ticks,
                     slack_ticks: state.slack_ticks + class.slack_ticks,
                     support: state.support + class.support,
+                    removed,
+                    held,
+                    refill_low,
+                    refill_high,
                     ..*state
                 };
                 let shared = if per_card {
@@ -3006,7 +3082,7 @@ impl<'s> TierSearch<'s, '_> {
                 let mut cached = 0usize;
                 for &card in &group.cards[class.start as usize..class.end as usize] {
                     let character = pool.char_id(card);
-                    if (problem.unique_characters && state.characters.contains(character))
+                    if (problem.unique_characters && taken_characters[..slot].contains(&character))
                         || taken_ids[..slot].contains(&pool.game_id(card))
                     {
                         self.stats.feasibility_prunes += 1;
@@ -3015,7 +3091,6 @@ impl<'s> TierSearch<'s, '_> {
                     let skill = u32::from(pool.skill_max(card));
                     let mut child = State {
                         attrs: next.attrs | (1 << pool.attr(card)),
-                        characters: next.characters.with(character),
                         power: next.power + view.power[card.raw()],
                         skill: next.skill + skill,
                         leader: next.leader.max(skill),
@@ -3264,6 +3339,65 @@ mod tests {
             }
         }
         assert!(checked > 50_000, "checked {checked} decks");
+    }
+
+    #[test]
+    fn the_refill_of_cards_selected_first_bounds_the_deck_refill() {
+        let mut rng = Lcg(0x5EED_2027);
+        let mut checked = 0u64;
+        for _ in 0..120 {
+            let ids = 3 + rng.below(9) as u16;
+            let len = rng.below(13) as usize;
+            let mut cards = (0..len)
+                .map(|_| {
+                    (
+                        rng.below(u32::from(ids)) as u16,
+                        f64::from(rng.below(40)) * 0.35,
+                    )
+                })
+                .collect::<Vec<_>>();
+            cards.sort_by(|left, right| right.1.total_cmp(&left.1));
+            let deck = SupportDeck {
+                cards,
+                count: rng.below(7) as u8,
+            };
+            let terms = SupportTerms::new(&deck).expect("sorted non-negative profile");
+            let entries = |mask: u32| {
+                (0..ids)
+                    .filter(|id| mask & (1 << id) != 0)
+                    .fold((0usize, 0u64), |sum, id| {
+                        let (_, removed, _, held) = terms.entries(id);
+                        (sum.0 + removed as usize, sum.1 | held)
+                    })
+            };
+            for mask in 0u32..(1 << ids) {
+                if mask.count_ones() as usize > DECK_SIZE {
+                    continue;
+                }
+                let main = (0..ids)
+                    .filter(|id| mask & (1 << id) != 0)
+                    .collect::<Vec<_>>();
+                let cards = main.iter().map(|&id| terms.loss_of(id).0).sum::<f64>();
+                let excess = terms.base - support(&deck, &main) - cards;
+                // Every subset of a deck's cards is selected first in some
+                // slot order.
+                let mut prefix = mask;
+                loop {
+                    let (removed, held) = entries(prefix);
+                    let floor = terms.refill(removed, held);
+                    assert!(
+                        floor <= excess + 1e-9,
+                        "deck={deck:?} main={main:?} prefix={prefix:b} floor={floor} excess={excess}"
+                    );
+                    checked += 1;
+                    if prefix == 0 {
+                        break;
+                    }
+                    prefix = (prefix - 1) & mask;
+                }
+            }
+        }
+        assert!(checked > 100_000, "checked {checked} prefixes");
     }
 
     #[test]
