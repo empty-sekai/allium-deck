@@ -41,6 +41,7 @@ use solver::{final_chapter, numeric::search_simple_target};
 use tracker::{TopKTracker, deck_result_cmp};
 mod placement;
 mod problem;
+mod skill_ceiling;
 /// 角色感知的后缀上界，用于剪枝。
 pub mod suffix;
 mod tuning;

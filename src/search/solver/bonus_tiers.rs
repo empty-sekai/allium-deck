@@ -32,7 +32,9 @@
 //! * A depth-first branch and bound per regime, tier and diversity class takes
 //!   or skips one group at a time. A branch survives only while some
 //!   completion can still hit the tier and the live-score ceiling of those
-//!   completions is at least the tier's K-th live score. Leaves are evaluated
+//!   completions is at least the tier's K-th live score; a selected card whose
+//!   skill depends on the deck composition enters that ceiling with the
+//!   largest value the reachable compositions allow. Leaves are evaluated
 //!   with the shared placement semantics and inserted into every tier they
 //!   hit exactly.
 use std::collections::HashMap;
@@ -45,6 +47,7 @@ use crate::search::context::{SearchContext, SupportDeck};
 use crate::search::evaluate::resolve_total_bonus;
 use crate::search::objective::ObjectiveBound;
 use crate::search::placement::visit_bonus_candidates;
+use crate::search::skill_ceiling::{CeilingSet, Composition, SkillCeiling};
 use crate::search::tracker::TopKTracker;
 use crate::search::tuning::SearchTuning;
 use crate::search::types::{DeckResult, SearchParams};
@@ -225,6 +228,8 @@ struct RegimeGroup {
     mandatory: bool,
     cards: Vec<CardIdx>,
     classes: Vec<Class>,
+    /// Largest composition-aware skill ceiling of the group's cards.
+    ceilings: CeilingSet,
 }
 
 /// Bonus parts of one card, in tenths.
@@ -358,6 +363,8 @@ struct Problem<'a> {
     bonus: Vec<CardBonus>,
     groups: Vec<Group>,
     extras: Option<Extras>,
+    /// Composition-aware skill ceiling of every card, by pool index.
+    ceilings: Vec<SkillCeiling>,
 }
 
 impl<'a> Problem<'a> {
@@ -480,6 +487,10 @@ impl<'a> Problem<'a> {
             bonus,
             groups,
             extras,
+            ceilings: pool
+                .indices()
+                .map(|card| SkillCeiling::new(pool, card))
+                .collect(),
         })
     }
 
@@ -733,12 +744,17 @@ impl<'a> Problem<'a> {
                     }),
                 }
             }
+            let mut ceilings = CeilingSet::default();
+            for card in &cards {
+                ceilings.insert(self.ceilings[card.raw()]);
+            }
             let view = RegimeGroup {
                 fixed_role: group.fixed_role,
                 leader_role: group.leader_role,
                 mandatory: group.mandatory,
                 cards,
                 classes,
+                ceilings,
             };
             if group.fixed_role {
                 roles.push(view);
@@ -778,12 +794,18 @@ impl<'a> Problem<'a> {
         // each position on can add.
         let suffix_slack = suffix_largest(&roles, |class| class.slack_x10);
         let suffix_support = suffix_largest(&roles, |class| class.support);
+        let mut dynamic_from = vec![false; roles.len() + 1];
+        for position in (0..roles.len()).rev() {
+            dynamic_from[position] =
+                dynamic_from[position + 1] || !roles[position].ceilings.is_fixed();
+        }
         Some(RegimeView {
             diversity: self.diversity_classes(regime.shares_attr()),
             power,
             groups: roles,
             suffix_slack,
             suffix_support,
+            dynamic_from,
             ceiling,
         })
     }
@@ -879,6 +901,10 @@ struct RegimeView {
     /// `suffix_support[position][count]`: most support entries `count`
     /// groups from `position` on can displace.
     suffix_support: Vec<[u32; COUNTS]>,
+    /// `dynamic_from[position]`: some group from `position` on has a card
+    /// whose skill depends on the composition. Otherwise the frontier cannot
+    /// improve on the suffix table, which already sums skill maxima.
+    dynamic_from: Vec<bool>,
     ceiling: u32,
 }
 
@@ -1144,8 +1170,17 @@ struct State {
     /// Support entries displaced so far.
     support: u32,
     power: u32,
+    /// Skill-maximum sum and largest skill maximum of the selected cards.
     skill: u32,
     leader: u32,
+    /// Largest skill maximum of the selected cards whose skill is the same
+    /// in every deck.
+    fixed_leader: u32,
+    /// Units of the selected cards, read by composition-dependent skills.
+    composition: Composition,
+    /// Selected cards whose skill depends on the composition.
+    dynamic: [CardIdx; DECK_SIZE],
+    dynamic_len: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1189,6 +1224,10 @@ impl TierSearch<'_, '_> {
             power: 0,
             skill: 0,
             leader: 0,
+            fixed_leader: 0,
+            composition: Composition::default(),
+            dynamic: [CardIdx::new(0); DECK_SIZE],
+            dynamic_len: 0,
         };
         match self.bound(&root) {
             None => self.stats.feasibility_prunes += 1,
@@ -1265,15 +1304,89 @@ impl TierSearch<'_, '_> {
         )
     }
 
-    /// Live-score ceiling of every completion of `state` that can hit the tier.
+    /// Skill sum and largest skill of the selected cards in every completion
+    /// of `state` with `remaining` further members: the composition-aware
+    /// ceilings of Section 20.3 of the pruning proof.
+    #[inline]
+    fn selected_skill(&self, state: &State, remaining: usize) -> (u32, u32) {
+        let (pool, ceilings) = (self.problem.pool, &self.problem.ceilings);
+        state.dynamic[..usize::from(state.dynamic_len)].iter().fold(
+            (state.skill, state.fixed_leader),
+            |(sum, largest), &card| {
+                let value = ceilings[card.raw()].selected(&state.composition, remaining);
+                (
+                    sum - u32::from(pool.skill_max(card)) + value,
+                    largest.max(value),
+                )
+            },
+        )
+    }
+
+    /// Skill sum and largest skill of the `picks` further cards of every
+    /// completion that takes them from the groups at `position` on, among
+    /// `free` unselected members around `composition`: at most one card per
+    /// group, each within its group's largest candidate ceiling.
+    #[inline]
+    fn frontier(
+        &self,
+        position: usize,
+        composition: &Composition,
+        free: usize,
+        picks: usize,
+    ) -> (u32, u32) {
+        if picks == 0 {
+            return (0, 0);
+        }
+        if !self.view.dynamic_from[position] {
+            return (u32::MAX, u32::MAX);
+        }
+        let mut top = [0u32; DECK_SIZE];
+        for group in &self.view.groups[position..] {
+            let mut value = group.ceilings.candidate(composition, free);
+            for slot in &mut top[..picks] {
+                if value > *slot {
+                    std::mem::swap(&mut value, slot);
+                }
+            }
+        }
+        (top[..picks].iter().sum(), top[0])
+    }
+
+    /// The suffix skill terms of `state`'s completions, capped by the
+    /// frontier of the groups left.
+    #[inline]
+    fn suffix_skill(&self, state: &State, skill: u32, leader: u32) -> (u32, u32) {
+        let remaining = DECK_SIZE - usize::from(state.picked);
+        let (sum, largest) = self.frontier(
+            usize::from(state.position),
+            &state.composition,
+            remaining,
+            remaining,
+        );
+        (skill.min(sum), leader.min(largest))
+    }
+
+    /// Live-score ceiling of every completion of `state` that can hit the
+    /// tier. The composition-aware skill terms are computed only when the
+    /// ceiling from skill maxima does not already fall below the cutoff.
     #[inline]
     fn bound(&self, state: &State) -> Option<u32> {
         let (power, skill, leader) = self.suffix(state)?;
-        Some(self.problem.live_upper(
+        let coarse = self.problem.live_upper(
             state.power + power,
             state.skill + skill,
             state.leader.max(leader),
-        ))
+        );
+        if coarse < self.threshold() {
+            return Some(coarse);
+        }
+        let (skill, leader) = self.suffix_skill(state, skill, leader);
+        let remaining = DECK_SIZE - usize::from(state.picked);
+        let (selected, largest) = self.selected_skill(state, remaining);
+        Some(
+            self.problem
+                .live_upper(state.power + power, selected + skill, largest.max(leader)),
+        )
     }
 
     /// Some attribute count of the diversity class stays reachable.
@@ -1377,11 +1490,29 @@ impl TierSearch<'_, '_> {
                         self.stats.feasibility_prunes += 1;
                         continue;
                     };
-                    // The class maxima bound every card of the class.
-                    let upper = problem.live_upper(
+                    // The class maxima bound every card of the class, which
+                    // is still one of the unknown members here.
+                    let coarse = problem.live_upper(
                         state.power + class.power + suffix.0,
                         state.skill + class.skill + suffix.1,
                         state.leader.max(class.leader).max(suffix.2),
+                    );
+                    if coarse < threshold {
+                        self.stats.ub_prunes += 1;
+                        continue;
+                    }
+                    let remaining = DECK_SIZE - slot;
+                    let (selected, largest) = self.selected_skill(state, remaining);
+                    let (rest, rest_largest) = self.frontier(
+                        usize::from(next.position),
+                        &state.composition,
+                        remaining,
+                        remaining - 1,
+                    );
+                    let upper = problem.live_upper(
+                        state.power + class.power + suffix.0,
+                        selected + class.skill + suffix.1.min(rest),
+                        largest.max(class.leader).max(suffix.2.min(rest_largest)),
                     );
                     if upper < threshold {
                         self.stats.ub_prunes += 1;
@@ -1389,6 +1520,9 @@ impl TierSearch<'_, '_> {
                     }
                     Some(suffix)
                 };
+                // The frontier after a card depends on the card only through
+                // its unit mask.
+                let mut frontiers: [Option<(u32, u32)>; 64] = [None; 64];
                 for &card in &group.cards[class.start as usize..class.end as usize] {
                     let character = pool.char_id(card);
                     if (problem.unique_characters && state.characters.contains(character))
@@ -1398,24 +1532,47 @@ impl TierSearch<'_, '_> {
                         continue;
                     }
                     let skill = u32::from(pool.skill_max(card));
-                    let child = State {
+                    let mut child = State {
                         attrs: next.attrs | (1 << pool.attr(card)),
                         characters: next.characters.with(character),
                         power: next.power + view.power[card.raw()],
                         skill: next.skill + skill,
                         leader: next.leader.max(skill),
+                        composition: next.composition.with(pool, card),
                         ..next
                     };
+                    if problem.ceilings[card.raw()].is_fixed() {
+                        child.fixed_leader = child.fixed_leader.max(skill);
+                    } else {
+                        child.dynamic[usize::from(child.dynamic_len)] = card;
+                        child.dynamic_len += 1;
+                    }
                     if !self.attrs_feasible(&child) {
                         self.stats.feasibility_prunes += 1;
                         continue;
                     }
                     let upper = match shared {
-                        Some((power, skill, leader)) => problem.live_upper(
-                            child.power + power,
-                            child.skill + skill,
-                            child.leader.max(leader),
-                        ),
+                        Some((power, skill, leader)) => {
+                            let coarse = problem.live_upper(
+                                child.power + power,
+                                child.skill + skill,
+                                child.leader.max(leader),
+                            );
+                            if coarse < threshold {
+                                self.stats.ub_prunes += 1;
+                                continue;
+                            }
+                            let mask = usize::from(pool.unit_mask_raw(card));
+                            let (skill, leader) = *frontiers[mask]
+                                .get_or_insert_with(|| self.suffix_skill(&child, skill, leader));
+                            let remaining = DECK_SIZE - usize::from(child.picked);
+                            let (selected, largest) = self.selected_skill(&child, remaining);
+                            problem.live_upper(
+                                child.power + power,
+                                selected + skill,
+                                largest.max(leader),
+                            )
+                        }
                         None => {
                             self.deck[slot] = card;
                             let Some(upper) = self.bound(&child) else {

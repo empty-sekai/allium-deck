@@ -1004,8 +1004,18 @@ $$
 $$
 
 the `ObjectiveBound` live-score ceiling, which is monotone in non-negative
-power, skill-sum and leader-skill upper bounds (§12) and admissible because
-the per-card skill maximum bounds every resolved skill value (§20). The branch
+power, skill-sum and leader-skill upper bounds (§12). $S_{pre}$ and $L_{pre}$
+are the sum and the largest of the selected cards' composition-aware ceilings
+$\kappa_P(x)$ with $r$ remaining members (§20.3), each at least the card's
+resolved skill in every completion. The table's $S^*$ and $L^*$ use the
+per-card skill maximum, which bounds every resolved skill value (§20); they
+are further capped by the sum of the $r$ largest, and by the largest, of the
+per-group maxima of the candidate ceilings $\kappa'_P$ over the groups at
+positions $\ge p$. A completion takes at most one card from each of those
+groups, and each resolved skill is at most its candidate ceiling, so both
+caps are upper bounds, and so is the smaller of two upper bounds. A class
+test, which has not yet placed its card, takes every ceiling with the $r$
+unknown members that include it. The branch
 is discarded only when this ceiling is strictly below $\tau_T$ (Theorem 1,
 Corollary 1). A class of cards with a common key, slack, displaced count and
 counting choice is first tested with its componentwise maxima, which dominate each card of
@@ -1361,8 +1371,9 @@ lower bound is strictly worse than the K-th minimizing threshold.
 
 ## 20. Skill upper bound
 
-Implementation: src/search/solver/numeric.rs (`SkillCeiling`,
-`selected_value`, `skill_frontier`, `global_skill_upper`).
+Implementation: src/search/skill_ceiling.rs (`SkillCeiling`) and
+src/search/solver/numeric.rs (`selected_value`, `skill_frontier`,
+`global_skill_upper`).
 
 ### 20.1 Objective
 
@@ -1780,7 +1791,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | SIMD threshold mask | simd.rs | vectorized scalar upper >= threshold |
 | WL attribute matching | search/suffix.rs | every legal novel-attribute set induces a matching |
 | WL support upper bound | search/suffix.rs, Final helpers | support can only stay or decrease as main deck grows |
-| Exact bonus tiers | search/solver/bonus_tiers.rs | per-card key and slack, exact reachable-sum suffix table per regime, per-tier live ceiling |
+| Exact bonus tiers | search/solver/bonus_tiers.rs, search/skill_ceiling.rs | per-card key and slack, exact reachable-sum suffix table per regime, per-tier live ceiling with composition-aware selected skills and suffix skill frontier |
 | Final member dominance | search/dominance.rs, search/alternatives.rs | member-role substitution + legal leader rotations |
 | Final leader/job bound | solver/final_chapter.rs | admissible character ceiling |
 | Final attribute DP | solver/final_chapter.rs | exact isolated OR-union DP |
@@ -1790,7 +1801,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Final ranked-buffer break | solver/final_chapter.rs | candidates sorted by admissible UB; overflow candidates still visited |
 | Final log-linear bound | search/log_linear.rs, solver/final_chapter.rs | Section 18.8: product form, chord and tangents of the logarithm, per-group weights |
 | Numeric Power max/min | solver/numeric.rs | global max UB / global min LB |
-| Numeric Skill | solver/numeric.rs | Section 20: composition-aware per-card ceilings, per-character frontier, candidate break, public-set equality rule |
+| Numeric Skill | solver/numeric.rs, search/skill_ceiling.rs | Section 20: composition-aware per-card ceilings, per-character frontier, candidate break, public-set equality rule |
 | Power scenarios | solver/power.rs | Section 21: unit-set scenarios, Lemma 3 scenario ceiling, Lemma 4 completion, Theorem 4 |
 | Challenge bound frontier | solver/challenge.rs | exact skip/take relaxation + componentwise-dominated bound states |
 | Challenge-all Top-K merge | solver/challenge.rs | a global Top-K deck must lie in its character's own Top-K |
