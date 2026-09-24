@@ -3,7 +3,7 @@ use crate::pool::{CardPool, EventBonusExact, PoolBuilder, SkillSlot};
 use crate::types::{DefaultImage, LiveType, PowerDetail, ScoreTarget, SkillInfo};
 
 use super::power::PowerResult;
-use super::skill::{SkillResult, is_bfes_skill_pair};
+use super::skill::SkillResult;
 
 /// gather 前的卡级中间态。
 #[derive(Debug, Clone, PartialEq)]
@@ -221,6 +221,9 @@ fn compare_cards_with_fixed_slots(
     fixed_card_ids: &[u16],
     fixed_character_ids: &[u8],
 ) -> std::cmp::Ordering {
+    // Every branch compares per-card keys, so the order stays total: slot
+    // rank, then within a fixed card's slot the trained state first, then
+    // the unconstrained card order.
     match (
         fixed_slot_rank(left, fixed_card_ids, fixed_character_ids),
         fixed_slot_rank(right, fixed_card_ids, fixed_character_ids),
@@ -228,14 +231,13 @@ fn compare_cards_with_fixed_slots(
         (Some(left_rank), Some(right_rank)) if left_rank != right_rank => {
             return left_rank.cmp(&right_rank);
         }
-        (Some(_), Some(_))
-            if left.game_card_id == right.game_card_id
-                && is_bfes_skill_pair(&left.skill, &right.skill) =>
-        {
-            let left_trained = matches!(left.default_image, DefaultImage::SpecialTraining);
-            let right_trained = matches!(right.default_image, DefaultImage::SpecialTraining);
-            if left_trained != right_trained {
-                return right_trained.cmp(&left_trained);
+        (Some(rank), Some(_)) if rank < fixed_card_ids.len() => {
+            let trained = |card: &CardIntermediate| {
+                matches!(card.default_image, DefaultImage::SpecialTraining)
+            };
+            let order = trained(right).cmp(&trained(left));
+            if order.is_ne() {
+                return order;
             }
         }
         (Some(_), None) => return std::cmp::Ordering::Less,

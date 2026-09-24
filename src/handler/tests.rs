@@ -1372,6 +1372,49 @@ fn handler_sort_and_gather_moves_fixed_card_states_before_members() {
 }
 
 #[test]
+fn handler_sort_and_gather_orders_fixed_character_states_totally() {
+    // Two cards of the fixed character, each in both training states, with
+    // strengths that interleave across the cards. The fixed character's slot
+    // takes the unconstrained card order, which is a total order.
+    let state = |game_card_id: i32, skill_max: u8, trained: bool| {
+        let mut card = make_card(game_card_id, 3, 60_000, skill_max);
+        card.default_image = if trained {
+            crate::types::DefaultImage::SpecialTraining
+        } else {
+            crate::types::DefaultImage::Original
+        };
+        card.after_training = trained;
+        card.skill_state_controls_image = true;
+        card.skill.full.skill_id = if trained { 2 } else { 1 };
+        card.skill.full.has_ref = !trained;
+        card
+    };
+    let cards = vec![
+        state(5, 100, true),
+        state(5, 150, false),
+        state(7, 120, true),
+        state(7, 140, false),
+        make_card(9, 4, 90_000, 150),
+    ];
+    let (_, full, _) = sort_and_gather(
+        cards,
+        ScoreTarget::Score,
+        false,
+        LiveType::Multi,
+        &[],
+        &[3],
+        true,
+    )
+    .unwrap();
+
+    let order = full
+        .iter()
+        .map(|card| (card.game_card_id, card.skill_max_exact))
+        .collect::<Vec<_>>();
+    assert_eq!(order, [(5, 150), (7, 140), (7, 120), (5, 100), (9, 150)]);
+}
+
+#[test]
 fn handler_ordinary_trained_card_without_after_skill_uses_trained_art() {
     let mut user_card = sample_user_card(1);
     user_card.special_training_status = "done".to_string();
