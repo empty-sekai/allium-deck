@@ -835,7 +835,9 @@ In the World Bloom Final Chapter the search runs once per character $h$ of
 the cards that satisfy slot 0, with the leader role restricted to cards of
 $h$. Every legal deck has exactly one leader, so the runs partition the legal
 decks; they share the tier trackers, whose canonical Top-K does not depend on
-the order of insertion.
+the order of insertion. The regimes (§17.3) of all runs are searched in one
+sequence of non-increasing regime ceiling, so the runs interleave; each
+regime is searched against the shared cutoffs of that moment.
 
 A leaf is evaluated by the shared placement routine
 (`visit_bonus_candidates`). When first-N limited counting can distinguish

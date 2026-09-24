@@ -113,14 +113,33 @@ pub(crate) fn search(
             tracker
         })
         .collect::<Vec<_>>();
-    let scopes = scopes(pool, ctx);
-    for scope in scopes {
+    let problems = scopes(pool, ctx)
+        .into_iter()
+        .filter_map(|scope| Problem::new(pool, ctx, &targets, scope))
+        .collect::<Vec<_>>();
+    // The regimes of every scope, strongest first: the shared tier cutoffs
+    // then rise as early as the regime ceilings allow, whatever scope the
+    // strong regimes belong to.
+    let mut views = problems
+        .iter()
+        .enumerate()
+        .flat_map(|(scope, problem)| problem.views().into_iter().map(move |view| (scope, view)))
+        .collect::<Vec<_>>();
+    views.sort_by_key(|(_, view)| std::cmp::Reverse(view.ceiling));
+    let mut joined = vec![false; problems.len()];
+    let mut table = SuffixTable::default();
+    for (scope, mut view) in views {
         if budget.expired() {
             break;
         }
-        if let Some(problem) = Problem::new(pool, ctx, &targets, scope) {
-            problem.solve(&mut trackers, budget, &mut stats);
-        }
+        problems[scope].solve(
+            &mut view,
+            &mut joined[scope],
+            &mut table,
+            &mut trackers,
+            budget,
+            &mut stats,
+        );
     }
     stats.deadline_hit |= budget.hit;
     let results = trackers
@@ -976,88 +995,90 @@ impl<'a> Problem<'a> {
         self.objective.ceiling(power, 0, skill, leader) as u32
     }
 
+    /// The regime views of the scope that have a legal deck.
+    fn views(&self) -> Vec<RegimeView> {
+        Regime::all()
+            .filter_map(|regime| self.regime_view(regime))
+            .collect()
+    }
+
+    /// Searches every tier in one regime view of the scope.
+    ///
+    /// The joint column costs a table pass and tightens only bound tests;
+    /// the scope keeps it (`joined`) from its first regime whose search
+    /// passes a multiple of `JOIN_AFTER` visited nodes with at least one
+    /// bound prune per `JOIN_RATIO` feasibility prunes, and that regime is
+    /// searched again with it.
     fn solve(
         &self,
+        view: &mut RegimeView,
+        joined: &mut bool,
+        table: &mut SuffixTable,
         trackers: &mut [TopKTracker],
         budget: &mut SearchBudget,
         stats: &mut SearchStats,
     ) {
-        let mut views = Regime::all()
-            .filter_map(|regime| self.regime_view(regime))
-            .collect::<Vec<_>>();
-        views.sort_by_key(|view| std::cmp::Reverse(view.ceiling));
-        let mut table = SuffixTable::new(self);
-        // The joint column costs a table pass and tightens only bound tests;
-        // it is kept from the first regime whose search passes a multiple of
-        // `JOIN_AFTER` visited nodes with at least one bound prune per
-        // `JOIN_RATIO` feasibility prunes, and that regime is searched again
-        // with it.
-        let mut joined = false;
-        for view in &mut views {
-            if budget.expired() {
-                return;
+        let ceiling = view.ceiling;
+        let open = |tracker: &TopKTracker| {
+            tracker
+                .cutoff()
+                .is_none_or(|cutoff| ceiling >= cutoff as u32)
+        };
+        if !trackers.iter().any(open) {
+            stats.diagnostics.regimes_pruned += 1;
+            return;
+        }
+        stats.diagnostics.regimes_searched += 1;
+        table.fit(self);
+        loop {
+            if *joined {
+                self.join(view);
             }
-            let ceiling = view.ceiling;
-            let open = |tracker: &TopKTracker| {
-                tracker
-                    .cutoff()
-                    .is_none_or(|cutoff| ceiling >= cutoff as u32)
-            };
-            if !trackers.iter().any(open) {
-                stats.diagnostics.regimes_pruned += 1;
-                continue;
-            }
-            stats.diagnostics.regimes_searched += 1;
-            loop {
-                if joined {
-                    self.join(view);
-                }
-                let view = &*view;
-                table.build(self, view, joined);
-                let mut join = (!joined && view.joint.is_some()).then(|| Join {
-                    after: stats.visited_nodes + JOIN_AFTER,
-                    bound_prunes: stats.ub_prunes,
-                    feasibility_prunes: stats.feasibility_prunes,
-                });
-                let mut stopped = false;
-                'searches: for tier in 0..self.targets.len() {
-                    for &(extra_ticks, counts) in &view.diversity {
-                        if budget.expired() {
-                            return;
-                        }
-                        if !open(&trackers[tier]) {
-                            stats.ub_prunes += 1;
-                            continue;
-                        }
-                        let mut search = TierSearch {
-                            problem: self,
-                            view,
-                            table: &table,
-                            target_ticks: i64::from(self.targets[tier]) * 10 * self.scale,
-                            extra_ticks,
-                            counts,
-                            tier,
-                            trackers: &mut *trackers,
-                            stats: &mut *stats,
-                            budget: &mut *budget,
-                            join,
-                            stopped: false,
-                            deck: [CardIdx::new(0); DECK_SIZE],
-                            scratch: vec![Vec::new(); view.groups.len()],
-                        };
-                        search.run();
-                        if search.stopped {
-                            stopped = true;
-                            break 'searches;
-                        }
-                        join = search.join;
+            let view = &*view;
+            table.build(self, view, *joined);
+            let mut join = (!*joined && view.joint.is_some()).then(|| Join {
+                after: stats.visited_nodes + JOIN_AFTER,
+                bound_prunes: stats.ub_prunes,
+                feasibility_prunes: stats.feasibility_prunes,
+            });
+            let mut stopped = false;
+            'searches: for tier in 0..self.targets.len() {
+                for &(extra_ticks, counts) in &view.diversity {
+                    if budget.expired() {
+                        return;
                     }
+                    if !open(&trackers[tier]) {
+                        stats.ub_prunes += 1;
+                        continue;
+                    }
+                    let mut search = TierSearch {
+                        problem: self,
+                        view,
+                        table: &*table,
+                        target_ticks: i64::from(self.targets[tier]) * 10 * self.scale,
+                        extra_ticks,
+                        counts,
+                        tier,
+                        trackers: &mut *trackers,
+                        stats: &mut *stats,
+                        budget: &mut *budget,
+                        join,
+                        stopped: false,
+                        deck: [CardIdx::new(0); DECK_SIZE],
+                        scratch: vec![Vec::new(); view.groups.len()],
+                    };
+                    search.run();
+                    if search.stopped {
+                        stopped = true;
+                        break 'searches;
+                    }
+                    join = search.join;
                 }
-                if !stopped {
-                    break;
-                }
-                joined = true;
             }
+            if !stopped {
+                break;
+            }
+            *joined = true;
         }
     }
 }
@@ -1202,7 +1223,8 @@ struct Maxima {
 /// A row of `count` remaining cards holds the key sums below
 /// `widths[count]`: a card adds at most `widest_units`, and sums past the
 /// table width cannot hit a tier. One position's rows form a block; the
-/// storage is reused from regime to regime.
+/// storage is reused from regime to regime and from scope to scope.
+#[derive(Default)]
 struct SuffixTable {
     capacities: usize,
     modes: usize,
@@ -1323,34 +1345,20 @@ fn max_into<T: Copy + Ord>(out: &mut [T], values: &[T]) {
 }
 
 impl SuffixTable {
-    fn new(problem: &Problem<'_>) -> Self {
+    /// Adopts the row layout of `problem`, keeping the storage.
+    fn fit(&mut self, problem: &Problem<'_>) {
         let width = problem.max_units + 1;
-        let (capacities, modes) = match problem.counting {
+        (self.capacities, self.modes) = match problem.counting {
             Counting::All => (1, 1),
             Counting::FirstN(cap) => (usize::from(cap) + 1, 2),
         };
-        let mut widths = [0; COUNTS];
-        let mut starts = [0; COUNTS];
         let mut block = 0;
         for count in 0..COUNTS {
-            widths[count] = (count * problem.widest_units + 1).min(width);
-            starts[count] = block;
-            block += capacities * modes * widths[count];
+            self.widths[count] = (count * problem.widest_units + 1).min(width);
+            self.starts[count] = block;
+            block += self.capacities * self.modes * self.widths[count];
         }
-        Self {
-            capacities,
-            modes,
-            widths,
-            starts,
-            block,
-            power: Vec::new(),
-            skill: Vec::new(),
-            leader: Vec::new(),
-            joint: Vec::new(),
-            joined: false,
-            current: Layer::default(),
-            next: Layer::default(),
-        }
+        self.block = block;
     }
 
     /// Offset of a row inside a block.
