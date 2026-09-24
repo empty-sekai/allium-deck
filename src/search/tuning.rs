@@ -8,6 +8,9 @@ pub(super) struct SearchTuning {
     pub world_bloom_attr_matching: bool,
     pub final_attr_dp: bool,
     pub final_seeds: bool,
+    /// Exact bonus tiers narrow a diversity class's completions to the
+    /// attributes held from the first node instead of after a node count.
+    pub eager_attr_views: bool,
 }
 
 impl Default for SearchTuning {
@@ -18,6 +21,7 @@ impl Default for SearchTuning {
             world_bloom_attr_matching: true,
             final_attr_dp: true,
             final_seeds: true,
+            eager_attr_views: false,
         }
     }
 }

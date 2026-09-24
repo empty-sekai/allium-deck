@@ -43,6 +43,11 @@
 //!   largest value the reachable compositions allow. Leaves are evaluated
 //!   with the shared placement semantics and inserted into every tier they
 //!   hit exactly.
+//! * Once the selected cards hold a diversity class's largest attribute
+//!   count, every completion keeps to their attributes; a large enough search
+//!   continues in the regime restricted to the cards of those attributes,
+//!   with its own suffix table.
+use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 
 use crate::pool::{CardIdx, CardPool};
@@ -57,7 +62,7 @@ use crate::search::skill_ceiling::{CeilingSet, Composition, SkillCeiling};
 use crate::search::tracker::TopKTracker;
 use crate::search::tuning::SearchTuning;
 use crate::search::types::{DeckResult, SearchParams};
-use crate::types::{DECK_SIZE, LiveType};
+use crate::types::{ATTR_COUNT, DECK_SIZE, LiveType};
 
 /// Card counts `0..=DECK_SIZE` of a suffix selection.
 const COUNTS: usize = DECK_SIZE + 1;
@@ -68,6 +73,10 @@ const JOIN_AFTER: u64 = 1 << 16;
 /// A regime gains the joint column once its bound tests prune at least once
 /// per this many feasibility prunes; the column tightens only bound tests.
 const JOIN_RATIO: u64 = 4;
+/// Nodes of a regime's searches visited with one attribute set at the
+/// largest attribute count of a diversity class before the completions get
+/// the view and table of that set, so that small searches build none.
+const RESTRICT_AFTER: u64 = 1 << 11;
 /// Unreachable table entry. Adding five card values keeps it negative.
 const NO_POWER: i32 = i32::MIN / 4;
 const NO_SKILL: i16 = i16::MIN / 4;
@@ -242,6 +251,8 @@ struct Class {
     slack_ticks: u32,
     /// Displaceable support entries of the class's public ids.
     support: u32,
+    /// Attributes of the class's cards, one bit each.
+    attrs: u8,
     power: u32,
     skill: u32,
     leader: u32,
@@ -471,6 +482,9 @@ struct Problem<'a> {
     ceilings: Vec<SkillCeiling>,
     /// The live score as a product of power and rate, when it is one.
     product: Option<LiveProduct>,
+    /// Nodes visited with one attribute set before its completions are
+    /// searched in the view of that set: `RESTRICT_AFTER`.
+    restrict_after: u64,
 }
 
 impl<'a> Problem<'a> {
@@ -615,6 +629,11 @@ impl<'a> Problem<'a> {
                 .indices()
                 .map(|card| SkillCeiling::new(pool, card, ctx.skill_reference_strategy))
                 .collect(),
+            restrict_after: if SearchTuning::load().eager_attr_views {
+                1
+            } else {
+                RESTRICT_AFTER
+            },
         })
     }
 
@@ -842,6 +861,7 @@ impl<'a> Problem<'a> {
                 let skill = u32::from(pool.skill_max(*card));
                 match classes.last_mut() {
                     Some(class) if class.parts() == parts => {
+                        class.attrs |= 1 << pool.attr(*card);
                         class.power = class.power.max(card_power);
                         class.skill = class.skill.max(skill);
                         class.leader = class.leader.max(skill);
@@ -852,6 +872,7 @@ impl<'a> Problem<'a> {
                         limited_ticks,
                         slack_ticks,
                         support,
+                        attrs: 1 << pool.attr(*card),
                         power: card_power,
                         skill,
                         leader: skill,
@@ -995,6 +1016,79 @@ impl<'a> Problem<'a> {
         self.objective.ceiling(power, 0, skill, leader) as u32
     }
 
+    /// `view` limited to the cards with one of `attrs`, in the same group
+    /// order, with its suffix table: each class keeps those cards and their
+    /// maxima.
+    fn restrict(&self, view: &RegimeView, attrs: u8) -> (RegimeView, SuffixTable) {
+        let pool = self.pool;
+        let groups = view
+            .groups
+            .iter()
+            .map(|group| {
+                let mut cards: Vec<CardIdx> = Vec::new();
+                let mut classes = Vec::new();
+                for class in group
+                    .classes
+                    .iter()
+                    .filter(|class| class.attrs & attrs != 0)
+                {
+                    let start = cards.len();
+                    cards.extend(
+                        group.cards[class.start as usize..class.end as usize]
+                            .iter()
+                            .filter(|&&card| attrs & (1 << pool.attr(card)) != 0),
+                    );
+                    let mut kept = Class {
+                        attrs: class.attrs & attrs,
+                        power: 0,
+                        skill: 0,
+                        leader: 0,
+                        joint: 0,
+                        start: start as u32,
+                        end: cards.len() as u32,
+                        ..*class
+                    };
+                    for &card in &cards[start..] {
+                        let (power, skill) =
+                            (view.power[card.raw()], u32::from(pool.skill_max(card)));
+                        kept.power = kept.power.max(power);
+                        kept.skill = kept.skill.max(skill);
+                        kept.leader = kept.leader.max(skill);
+                        if let Some(joint) = view.joint.filter(|_| view.joined) {
+                            kept.joint = kept.joint.max(joint.value(power, skill) as i32);
+                        }
+                    }
+                    classes.push(kept);
+                }
+                RegimeGroup {
+                    fixed_role: group.fixed_role,
+                    leader_role: group.leader_role,
+                    mandatory: group.mandatory,
+                    cards,
+                    classes,
+                    ceilings: group.ceilings.clone(),
+                }
+            })
+            .collect();
+        let mut restricted = RegimeView {
+            diversity: view.diversity.clone(),
+            power: view.power.clone(),
+            groups,
+            suffix_slack: Vec::new(),
+            suffix_support: Vec::new(),
+            dynamic_from: Vec::new(),
+            ceiling: view.ceiling,
+            joint: view.joint,
+            fixed_roles: view.fixed_roles,
+            joined: view.joined,
+        };
+        restricted.order_groups();
+        let mut table = SuffixTable::default();
+        table.fit(self);
+        table.build(self, &restricted, restricted.joined);
+        (restricted, table)
+    }
+
     /// The regime views of the scope that have a legal deck.
     fn views(&self) -> Vec<RegimeView> {
         Regime::all()
@@ -1036,6 +1130,19 @@ impl<'a> Problem<'a> {
             }
             let view = &*view;
             table.build(self, view, *joined);
+            // Only a diversity class whose largest attribute count is below
+            // five limits the attributes of the completions.
+            let limits = view
+                .diversity
+                .iter()
+                .any(|&(_, counts)| counts != 0 && counts < 1 << DECK_SIZE);
+            let restrictions = if limits {
+                (0..1 << ATTR_COUNT)
+                    .map(|_| Restriction::default())
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let mut join = (!*joined && view.joint.is_some()).then(|| Join {
                 after: stats.visited_nodes + JOIN_AFTER,
                 bound_prunes: stats.ub_prunes,
@@ -1064,6 +1171,7 @@ impl<'a> Problem<'a> {
                         budget: &mut *budget,
                         join,
                         stopped: false,
+                        restrictions: &restrictions,
                         deck: [CardIdx::new(0); DECK_SIZE],
                         scratch: vec![Vec::new(); view.groups.len()],
                     };
@@ -1639,6 +1747,16 @@ impl SuffixTable {
     }
 }
 
+/// The completions of one attribute set in a regime: nodes visited with
+/// that set at the largest attribute count of a diversity class, and the
+/// view and table of the set's cards, built once that count reaches
+/// `RESTRICT_AFTER`.
+#[derive(Default)]
+struct Restriction {
+    nodes: Cell<u64>,
+    view: OnceCell<Box<(RegimeView, SuffixTable)>>,
+}
+
 /// Branch-and-bound state after deciding the groups before `position`.
 #[derive(Clone, Copy, Debug)]
 struct State {
@@ -1715,13 +1833,16 @@ struct TierSearch<'s, 'a> {
     /// began, and the caller searches the regime again.
     join: Option<Join>,
     stopped: bool,
+    /// Per attribute set, the completions limited to its cards; empty when
+    /// no diversity class limits the attributes.
+    restrictions: &'s [Restriction],
     /// Slot assignment of the current prefix: roles, then free picks.
     deck: [CardIdx; DECK_SIZE],
     /// One child buffer per position; a path visits each position once.
     scratch: Vec<Vec<Child>>,
 }
 
-impl TierSearch<'_, '_> {
+impl<'s> TierSearch<'s, '_> {
     fn run(&mut self) {
         let root = State {
             position: 0,
@@ -1968,6 +2089,10 @@ impl TierSearch<'_, '_> {
             }
             join.after += JOIN_AFTER;
         }
+        if let Some((view, table)) = self.restricted(&state) {
+            self.expand_within(view, table, state);
+            return;
+        }
         self.stats.visited_nodes += 1;
         let position = usize::from(state.position);
         let mut children = std::mem::take(&mut self.scratch[position]);
@@ -1999,6 +2124,62 @@ impl TierSearch<'_, '_> {
         self.scratch[position] = children;
     }
 
+    /// The view and table of the attributes `state` holds, once the class
+    /// allows no further attribute and the search has visited enough nodes
+    /// with them.
+    fn restricted(&self, state: &State) -> Option<&'s (RegimeView, SuffixTable)> {
+        if self.most() != Some(state.attrs.count_ones()) {
+            return None;
+        }
+        let restrictions: &'s [Restriction] = self.restrictions;
+        let restriction = restrictions.get(usize::from(state.attrs))?;
+        if restriction.view.get().is_none() {
+            let nodes = restriction.nodes.get() + 1;
+            restriction.nodes.set(nodes);
+            if nodes < self.problem.restrict_after {
+                return None;
+            }
+        }
+        let built = restriction
+            .view
+            .get_or_init(|| Box::new(self.problem.restrict(self.view, state.attrs)));
+        Some(&**built)
+    }
+
+    /// Largest attribute count of the class when the search may still
+    /// narrow its completions to the attributes they hold.
+    #[inline]
+    fn most(&self) -> Option<u32> {
+        (!self.restrictions.is_empty() && self.counts != 0)
+            .then(|| u8::BITS - 1 - self.counts.leading_zeros())
+    }
+
+    /// Searches the completions of `state` in `view`, the view of the
+    /// attributes it holds.
+    fn expand_within(&mut self, view: &RegimeView, table: &SuffixTable, state: State) {
+        let mut within = TierSearch {
+            problem: self.problem,
+            view,
+            table,
+            target_ticks: self.target_ticks,
+            extra_ticks: self.extra_ticks,
+            counts: self.counts,
+            tier: self.tier,
+            trackers: &mut *self.trackers,
+            stats: &mut *self.stats,
+            budget: &mut *self.budget,
+            join: self.join,
+            stopped: false,
+            restrictions: &[],
+            deck: self.deck,
+            scratch: std::mem::take(&mut self.scratch),
+        };
+        within.expand(state);
+        self.join = within.join;
+        self.stopped = within.stopped;
+        self.scratch = within.scratch;
+    }
+
     fn collect_children(&mut self, state: &State, children: &mut Vec<Child>) {
         let view = self.view;
         let problem = self.problem;
@@ -2018,7 +2199,14 @@ impl TierSearch<'_, '_> {
                 .extras
                 .as_ref()
                 .is_some_and(|extras| extras.by_leader.is_some());
+        // At the class's largest attribute count only the attributes held so
+        // far remain.
+        let full = self.most() == Some(state.attrs.count_ones());
         for class in &group.classes {
+            if full && class.attrs & state.attrs == 0 {
+                self.stats.feasibility_prunes += 1;
+                continue;
+            }
             // Counting choices of a class: the limited bonus of a fixed role
             // counts exactly when capacity remains; a free card may count it
             // or leave it uncounted.

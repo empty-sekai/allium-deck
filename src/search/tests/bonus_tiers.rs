@@ -375,23 +375,34 @@ fn check_tiers(pool: &CardPool, ctx: &SearchContext, targets: &[i32], top_k: usi
         timeout_ms: 0,
     };
     let (expected, _) = ExactOracle::new(pool, ctx).search_bonus_targets(&params, targets);
-    let (actual, stats) = search_bonus_targets(pool, ctx, &params, targets);
-    assert!(!stats.deadline_hit, "{label}: unexpected timeout");
-    if actual != expected {
-        for (name, rows) in [("solver", &actual), ("oracle", &expected)] {
-            eprintln!("{label} {name}:");
-            for row in rows.iter() {
-                eprintln!(
-                    "  bonus={} live={} ids={:?} dense={:?}",
-                    resolve_total_bonus(pool, ctx, &row.cards),
-                    row.score as u32,
-                    row.cards.map(|card| pool.game_id(card)),
-                    row.cards.map(|card| card.raw()),
-                );
+    // Attribute-limited views from the first node exercise the narrowed
+    // completions that production searches reach only in large requests.
+    for eager_attr_views in [false, true] {
+        let configuration = tuning::SearchTuning {
+            eager_attr_views,
+            ..Default::default()
+        };
+        let (actual, stats) = tuning::with_tuning(configuration, || {
+            search_bonus_targets(pool, ctx, &params, targets)
+        });
+        let label = format!("{label} eager_attr_views={eager_attr_views}");
+        assert!(!stats.deadline_hit, "{label}: unexpected timeout");
+        if actual != expected {
+            for (name, rows) in [("solver", &actual), ("oracle", &expected)] {
+                eprintln!("{label} {name}:");
+                for row in rows.iter() {
+                    eprintln!(
+                        "  bonus={} live={} ids={:?} dense={:?}",
+                        resolve_total_bonus(pool, ctx, &row.cards),
+                        row.score as u32,
+                        row.cards.map(|card| pool.game_id(card)),
+                        row.cards.map(|card| card.raw()),
+                    );
+                }
             }
         }
+        assert_eq!(actual, expected, "{label}");
     }
-    assert_eq!(actual, expected, "{label}");
 }
 
 fn run_matrix(seed: u64, cases: u64, count: usize) -> u64 {

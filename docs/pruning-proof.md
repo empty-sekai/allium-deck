@@ -969,6 +969,18 @@ count of the class is reachable: with $a$ distinct attributes selected and
 $r$ cards left, the final count lies in $[\max(a,1),\min(5,a+r)]$. Every deck
 lies in exactly one class, so the classes partition the feasible set.
 
+Once the selected attribute set $A$ has the class's largest count, every
+completion takes its further cards from $A$: a card of another attribute
+raises the count above the class. Such a branch skips the table items
+without a card of $A$. After $2^{11}$ visited nodes with one set $A$ at that
+count in a regime, the completions of those nodes are searched in the
+regime restricted to the cards with an attribute in $A$: the same groups in
+the same order, each item keeping those cards with their maxima (and joint
+values, §17.5), and its own suffix table (§17.3). Every card a completion
+can take is in the restricted view, so its entries are exact for those
+completions, its feasibility proofs remain proofs and its maxima bound them
+at most as loosely as the full table's.
+
 ### 17.3 Regimes and the suffix table
 
 The decks are covered by the area-item composition regimes documented in
@@ -1944,7 +1956,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | SIMD threshold mask | simd.rs | vectorized scalar upper >= threshold |
 | WL attribute matching | search/suffix.rs | every legal novel-attribute set induces a matching |
 | WL support upper bound | search/suffix.rs, Final helpers | support can only stay or decrease as main deck grows |
-| Exact bonus tiers | search/solver/bonus_tiers.rs, search/skill_ceiling.rs | per-card key and slack, exact reachable-sum suffix table per regime, per-tier live ceiling with composition-aware selected skills and suffix skill frontier |
+| Exact bonus tiers | search/solver/bonus_tiers.rs, search/skill_ceiling.rs | per-card key and slack, exact reachable-sum suffix table per regime, per-tier live ceiling with composition-aware selected skills and suffix skill frontier; at a diversity class's largest attribute count, the regime restricted to the attributes held |
 | Joint power-skill ceiling | search/solver/bonus_tiers.rs, search/objective.rs | the live-score product peaks on the box of separate maxima cut by the joint half-plane |
 | Final member dominance | search/dominance.rs, search/alternatives.rs | member-role substitution + legal leader rotations |
 | Final leader/job bound | solver/final_chapter.rs | admissible character ceiling |
@@ -1979,7 +1991,7 @@ independent checks designed to expose a violated premise.
 | Event Score cutoff | exact_score.rs cutoff against the packed comparison over every event live type |
 | Dominance | exact_dominance.rs, dominance_contract.rs, exact_world_bloom.rs |
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
-| Exact bonus tiers | bonus_tiers.rs, exact_bonus.rs, fractional_bonus.rs |
+| Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views from the first node), exact_bonus.rs, fractional_bonus.rs |
 | Joint power-skill ceiling | exact_score.rs — the live product dominates the live ceiling for every live type and skill order that has one; solver/bonus_tiers.rs unit test — the joint peak dominates every selection in the box and half-plane and never exceeds the box corner |
 | Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |
