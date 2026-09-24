@@ -292,6 +292,41 @@ fn skill_target_matches_oracle_for_composition_skills() {
     assert_eq!(compared, 288);
 }
 
+/// The depth-first Score search bounds complete decks with the same
+/// composition-aware ceilings.
+#[test]
+fn score_target_matches_oracle_for_composition_skills() {
+    let mut rng = ExactLcg(0x5c0_2e11);
+    let mut compared = 0usize;
+    for round in 0..48 {
+        let cards = random_cards(&mut rng, 11 + round % 3);
+        let pool = composition_pool(&cards);
+        let mut context = ready_ctx(&pool, ScoreTarget::Score);
+        context.live_type = LIVES[round % 3];
+        context.skill_reference_strategy = STRATEGIES[rng.range(0, 3) as usize];
+        context.base_score = 1.1;
+        context.skill_scores = [[0.12, 0.02, 0.04, 0.06, 0.09, 0.03]; 3];
+        if round % 2 == 1 {
+            context.event_type = Some(EventType::Marathon);
+        }
+        for top_k in [1, 5, 30] {
+            let params = SearchParams {
+                top_k,
+                timeout_ms: 0,
+            };
+            let actual = search_exact(&pool, &context, &params);
+            let (expected, _) = ExactOracle::new(&pool, &context).search(&params);
+            assert_eq!(
+                actual, expected,
+                "round={round} K={top_k} live={:?}",
+                context.live_type
+            );
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, 144);
+}
+
 #[test]
 fn skill_path_bounds_dominate_every_deck() {
     let mut rng = ExactLcg(0xd0_5c11);

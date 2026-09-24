@@ -6,6 +6,7 @@ use crate::types::{DECK_SIZE, LiveType, ScoreTarget};
 use super::context::SearchContext;
 use super::objective::{CeilingInputs, ObjectiveBound, ScoreCutoff};
 use super::placement::evaluate_candidate;
+use super::skill_ceiling::{Composition, SkillCeiling};
 use super::suffix::{PartialDeck, SuffixBound, UsedSet};
 use super::tracker::TopKTracker;
 use super::types::{DeckResult, SearchParams};
@@ -243,6 +244,8 @@ pub(crate) fn dfs_search_with_budget(
         budget,
         tracker: &mut tracker,
         cutoff: ScoreCutoff::new(suffix.objective()),
+        skill_ceilings: leaf_skill_ceilings(pool, ctx),
+        leaf_prefix: LeafPrefix::default(),
         node_count: 0,
         stats: seed_stats,
         avx512_candidate_mask: crate::simd::avx512_available(),
@@ -398,6 +401,12 @@ struct SearchState<'a> {
     tracker: &'a mut TopKTracker,
     /// Decides ceilings against the tracker threshold.
     cutoff: ScoreCutoff,
+    /// Composition-aware skill ceilings of the pool's cards for the leaf
+    /// bound; empty when no card's skill depends on the deck or the request
+    /// does not read skills.
+    skill_ceilings: Vec<SkillCeiling>,
+    /// Leaf-bound terms of the last four-card prefix.
+    leaf_prefix: LeafPrefix,
     node_count: u64,
     stats: SearchStats,
     avx512_candidate_mask: bool,
@@ -429,6 +438,10 @@ impl SearchState<'_> {
         }
         if depth == DECK_SIZE {
             self.stats.leaf_nodes += 1;
+            if self.leaf_below_threshold(deck, &partial) {
+                self.stats.bound_prunes += 1;
+                return;
+            }
             self.consider(deck);
             return;
         }
@@ -1311,6 +1324,66 @@ impl SearchState<'_> {
         self.budget.expired_sampled()
     }
 
+    /// Whether the complete `deck` stays below the threshold once every
+    /// composition-dependent skill takes its ceiling for this composition;
+    /// `partial` holds the deck's power and counted bonus bounds. The four
+    /// leading cards, shared by every fifth card of one node, are first
+    /// bounded with one member still unknown.
+    #[inline(always)]
+    fn leaf_below_threshold(&mut self, deck: &[CardIdx; DECK_SIZE], partial: &PartialDeck) -> bool {
+        if self.skill_ceilings.is_empty() {
+            return false;
+        }
+        let threshold = self.threshold();
+        if threshold == 0 {
+            return false;
+        }
+        let ceilings = &self.skill_ceilings;
+        let (head, last) = (&deck[..DECK_SIZE - 1], deck[DECK_SIZE - 1]);
+        let prefix = &mut self.leaf_prefix;
+        if !prefix.valid || prefix.cards[..] != *head {
+            let composition = head
+                .iter()
+                .fold(Composition::default(), |composition, &card| {
+                    composition.with(self.pool, card)
+                });
+            let (skill, leader) = head.iter().fold((0, 0), |(sum, largest), &card| {
+                let value = ceilings[card.raw()].selected(&composition, 1);
+                (sum + value, largest.max(value))
+            });
+            *prefix = LeafPrefix {
+                valid: true,
+                cards: head.try_into().expect("four leading cards"),
+                composition,
+                fixed: head.iter().all(|card| ceilings[card.raw()].is_fixed()),
+                skill,
+                leader,
+            };
+        }
+        let fixed = prefix.fixed && ceilings[last.raw()].is_fixed();
+        if fixed {
+            return false;
+        }
+        let objective = self.suffix.objective();
+        let bonus = partial.bonus + self.suffix.extra_bonus_ub();
+        let value = ceilings[last.raw()].candidate(&prefix.composition, 1);
+        if objective.ceiling(
+            partial.power,
+            bonus,
+            prefix.skill + value,
+            prefix.leader.max(value),
+        ) < threshold
+        {
+            return true;
+        }
+        let composition = prefix.composition.with(self.pool, last);
+        let (skill, leader) = deck.iter().fold((0, 0), |(sum, largest), &card| {
+            let value = ceilings[card.raw()].selected(&composition, 0);
+            (sum + value, largest.max(value))
+        });
+        objective.ceiling(partial.power, bonus, skill, leader) < threshold
+    }
+
     fn consider(&mut self, deck: &[CardIdx; DECK_SIZE]) {
         if let Some(candidate) = evaluate_candidate(self.pool, self.ctx, deck) {
             self.tracker.insert(self.pool, self.ctx, candidate);
@@ -1326,6 +1399,54 @@ impl SearchState<'_> {
             return false;
         }
         self.ctx.card_matches_slot(self.pool, depth, card)
+    }
+}
+
+/// Leaf-bound terms of four leading cards: their composition and their
+/// skill ceilings with one member still unknown.
+#[derive(Clone, Copy)]
+struct LeafPrefix {
+    valid: bool,
+    cards: [CardIdx; DECK_SIZE - 1],
+    composition: Composition,
+    /// Every leading card's ceiling is its skill_max.
+    fixed: bool,
+    skill: u32,
+    leader: u32,
+}
+
+impl Default for LeafPrefix {
+    fn default() -> Self {
+        Self {
+            valid: false,
+            cards: [CardIdx::new(0); DECK_SIZE - 1],
+            composition: Composition::default(),
+            fixed: true,
+            skill: 0,
+            leader: 0,
+        }
+    }
+}
+
+/// Skill ceilings for the leaf bound: a Score, Bonus or Skill request
+/// outside the Final Chapter whose pool holds a composition-dependent skill.
+fn leaf_skill_ceilings(pool: &CardPool, ctx: &SearchContext) -> Vec<SkillCeiling> {
+    if ctx.is_final_chapter
+        || !matches!(
+            ctx.target,
+            ScoreTarget::Score | ScoreTarget::Bonus | ScoreTarget::Skill
+        )
+    {
+        return Vec::new();
+    }
+    let ceilings = pool
+        .indices()
+        .map(|card| SkillCeiling::new(pool, card, ctx.skill_reference_strategy))
+        .collect::<Vec<_>>();
+    if ceilings.iter().all(SkillCeiling::is_fixed) {
+        Vec::new()
+    } else {
+        ceilings
     }
 }
 

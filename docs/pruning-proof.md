@@ -400,6 +400,21 @@ below $\tau$, the scan resumes at $e$.
 The dense-suffix break of Corollary 2 is checked by scan position rather than
 stride alignment, so a skip never lowers how often that check runs.
 
+### 8.1 Complete-deck skill ceilings
+
+The depth-first search bounds every member's skill by its skill_max. At a
+complete deck $D$ of a Score, Bonus or Skill request outside the Final
+Chapter, a member whose skill depends on the composition is bounded instead
+by its ceiling of Section 20.3 with $P=D$ and $r=0$; the other members keep
+skill_max. The generic ceiling is non-decreasing in the skill sum and the
+leader skill (Section 20.1, Lemmas N2 and N6), and its power and bonus terms
+are the ones the search already carries: the sum of power maxima, and the
+counted bonus ceilings plus the extra-bonus bound. It is therefore an
+admissible bound on $D$, and a deck whose bound is below the threshold is
+not evaluated (Theorem 1).
+
+Implementation: `leaf_below_threshold` (search/dfs.rs).
+
 ## 9. Monotone Power / Skill candidate breaks
 
 For the general monotone path, the pool ordering is descending by power_max for
@@ -1852,6 +1867,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Sorted Power / Skill break | search/dfs.rs | descending candidate component + fixed relaxed tail |
 | No-event numerator | search/dfs.rs, search/suffix.rs | exact floor/division equivalence |
 | Event Score cutoff | search/objective.rs, search/dfs.rs | exact inversion of a key non-decreasing in the live score |
+| Complete-deck skill ceilings | search/dfs.rs, search/skill_ceiling.rs | composition-aware member ceilings with no member left |
 | Correlated Score bound | search/correlated.rs | linear relaxation + concave quadratic envelope |
 | Event independent bound | search/suffix.rs | monotonic formula over componentwise maxima |
 | Composition regimes | search/composition.rs, pool/card_pool.rs | per-regime member-key power bound, regime ceiling, shared tracker floor |
@@ -1901,7 +1917,7 @@ independent checks designed to expose a violated premise.
 | Historical incomplete oracle | case7_audit.rs |
 | Numeric admissibility | numeric_soundness.rs, handler/capacity.rs unit tests |
 | Log-linear event-point bound | search/log_linear.rs unit tests against `ObjectiveBound::ceiling` for every supported live type and skill order |
-| Skill ceilings | skill_composition.rs — every bound on the search path of every deck dominates its key and member values; Top-K against the exhaustive oracle with unit-count, different-unit, reference and two-unit cards, and an equal-objective variant at the public-set equality rule |
+| Skill ceilings | skill_composition.rs — every bound on the search path of every deck dominates its key and member values; Skill and Score Top-K against the exhaustive oracle with unit-count, different-unit, reference and two-unit cards, and an equal-objective variant at the public-set equality rule |
 
 The permanent case7 fixture is important evidence for the methodology:
 agreement with another implementation, or even with an incomplete “oracle”, is
