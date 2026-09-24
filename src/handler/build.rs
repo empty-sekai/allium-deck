@@ -180,19 +180,10 @@ impl<'a> PreparedPoolBuild<'a> {
                 "target_bonus_list 仅支持 bonus target".to_string(),
             ));
         }
-        if matches!(params.target, crate::types::ScoreTarget::Bonus) {
-            if event_ctx.is_none() {
-                return Err(BuildError::InvalidConfig(
-                    "bonus target 需要活动上下文".to_string(),
-                ));
-            }
-            if params.event_id == Some(crate::types::FINAL_CHAPTER_EVENT_ID)
-                || params.world_bloom_finale_turn.is_some()
-            {
-                return Err(BuildError::InvalidConfig(
-                    "终章不支持 bonus target".to_string(),
-                ));
-            }
+        if matches!(params.target, crate::types::ScoreTarget::Bonus) && event_ctx.is_none() {
+            return Err(BuildError::InvalidConfig(
+                "bonus target 需要活动上下文".to_string(),
+            ));
         }
 
         let fixture_bonus_limit = resolve_fixture_bonus_limit(game, event_ctx.as_ref());

@@ -396,11 +396,47 @@ fn final_seed_traversal_never_changes_unlimited_canonical_results() {
     }
 }
 
+/// A World Bloom Final Chapter context with leader-dependent support profiles,
+/// honor and limit bonuses, and in odd cases a forced leader character.
+fn randomized_final_ctx(pool: &CardPool, case: u64, target: ScoreTarget) -> SearchContext {
+    let mut ctx = ready_ctx(pool, target);
+    ctx.is_final_chapter = true;
+    ctx.best_skill_as_leader = false;
+    ctx.is_world_bloom = true;
+    ctx.event_type = Some(EventType::WorldBloom);
+    ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
+    for character in 1usize..=6 {
+        ctx.support_decks_by_character[character] =
+            support_deck_for_property(pool, character + case as usize);
+    }
+    for dense in 0..pool.count() {
+        ctx.leader_honor_bonus_x10[dense] = (((dense * 3 + case as usize) % 9) as u16) * 10;
+        ctx.leader_limit_bonus_x10[dense] = (((dense * 5 + case as usize) % 7) as u16) * 10;
+    }
+    if case % 2 == 1 {
+        ctx.forced_leader_character_id = Some((case % 6) as u8 + 1);
+    }
+    ctx
+}
+
+fn assert_final_matches_oracle(pool: &CardPool, ctx: &SearchContext, label: &str) {
+    for top_k in [1, 3, 30] {
+        let params = SearchParams {
+            top_k,
+            timeout_ms: 0,
+        };
+        let got = search_exact(pool, ctx, &params);
+        let expected = final_chapter_auto_oracle(pool, ctx, top_k);
+        let label = format!("{label} K={top_k}");
+        assert_property_results(pool, &got, &expected, &label);
+        assert_property_scores(pool, ctx, &got, &expected, &label);
+    }
+}
+
 #[test]
 fn final_chapter_mysekai_matches_exhaustive_oracle_on_power_ties() {
     // Deck powers straddle several 45k steps of the MySekai value, so many
-    // decks tie on it and resolved power decides, with and without a forced
-    // leader character.
+    // decks tie on it and resolved power decides.
     for case in 0..16u64 {
         let mut cards = randomized_exact_cards(0x3E5C_0000 + case, 12, 6);
         for card in &mut cards {
@@ -408,35 +444,28 @@ fn final_chapter_mysekai_matches_exhaustive_oracle_on_power_ties() {
             card.power_max = card.power;
         }
         let pool = build_pool(&cards);
-        let mut ctx = ready_ctx(&pool, ScoreTarget::Mysekai);
-        ctx.is_final_chapter = true;
+        let mut ctx = randomized_final_ctx(&pool, case, ScoreTarget::Mysekai);
         ctx.live_type = LiveType::Mysekai;
-        ctx.best_skill_as_leader = false;
-        ctx.is_world_bloom = true;
-        ctx.event_type = Some(EventType::WorldBloom);
-        ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
-        for character in 1usize..=6 {
-            ctx.support_decks_by_character[character] =
-                support_deck_for_property(&pool, character + case as usize);
-        }
-        for dense in 0..pool.count() {
-            ctx.leader_honor_bonus_x10[dense] = (((dense * 3 + case as usize) % 9) as u16) * 10;
-            ctx.leader_limit_bonus_x10[dense] = (((dense * 5 + case as usize) % 7) as u16) * 10;
-        }
-        if case % 2 == 1 {
-            ctx.forced_leader_character_id = Some((case % 6) as u8 + 1);
-        }
-        for top_k in [1, 3, 30] {
-            let params = SearchParams {
-                top_k,
-                timeout_ms: 0,
-            };
-            let got = search_exact(&pool, &ctx, &params);
-            let expected = final_chapter_auto_oracle(&pool, &ctx, top_k);
-            let label = format!("case {case} K={top_k}");
-            assert_property_results(&pool, &got, &expected, &label);
-            assert_property_scores(&pool, &ctx, &got, &expected, &label);
-        }
+        assert_final_matches_oracle(&pool, &ctx, &format!("case {case}"));
+    }
+}
+
+#[test]
+fn final_chapter_bonus_matches_exhaustive_oracle() {
+    for case in 0..24u64 {
+        let cards = randomized_exact_cards(0xB0F1_0000 + case, 12, 6);
+        let pool = build_pool(&cards);
+        let mut ctx = randomized_final_ctx(&pool, case, ScoreTarget::Bonus);
+        ctx.diff_attr_bonus = [0, 0, 11, 29, 59, 101];
+        ctx.live_type = [LiveType::Multi, LiveType::Solo, LiveType::Auto][(case % 3) as usize];
+        ctx.live_skill_order = [
+            LiveSkillOrder::Average,
+            LiveSkillOrder::Best,
+            LiveSkillOrder::Specific,
+        ][(case / 3 % 3) as usize];
+        ctx.specific_skill_order =
+            (ctx.live_skill_order == LiveSkillOrder::Specific).then_some([4, 2, 0, 3, 1]);
+        assert_final_matches_oracle(&pool, &ctx, &format!("case {case}"));
     }
 }
 

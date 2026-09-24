@@ -94,17 +94,7 @@ pub(crate) fn search(
             tracker
         })
         .collect::<Vec<_>>();
-    let scopes = if ctx.enforce_char_uniqueness {
-        vec![None]
-    } else {
-        let mut characters = pool
-            .indices()
-            .map(|card| pool.char_id(card))
-            .collect::<Vec<_>>();
-        characters.sort_unstable();
-        characters.dedup();
-        characters.into_iter().map(Some).collect()
-    };
+    let scopes = scopes(pool, ctx);
     for scope in scopes {
         if budget.expired() {
             break;
@@ -119,6 +109,56 @@ pub(crate) fn search(
         .flat_map(TopKTracker::into_vec)
         .collect();
     (results, stats)
+}
+
+/// The decks one [`Problem`] searches; together the scopes of a request
+/// cover every legal deck exactly once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scope {
+    /// Character-unique decks of the whole pool.
+    Unique,
+    /// Character-unique Final Chapter decks whose leader has this character,
+    /// which fixes the support profile.
+    Leader(u8),
+    /// Challenge decks of this character.
+    Character(u8),
+}
+
+impl Scope {
+    fn admits(self, pool: &CardPool, card: CardIdx) -> bool {
+        match self {
+            Self::Unique | Self::Leader(_) => true,
+            Self::Character(character) => pool.char_id(card) == character,
+        }
+    }
+}
+
+/// Challenge decks split by character. Final Chapter decks split by leader
+/// character, so that each search folds one support profile into its card
+/// keys instead of the extremes over every leader's profile.
+fn scopes(pool: &CardPool, ctx: &SearchContext) -> Vec<Scope> {
+    let characters = |cards: &mut dyn Iterator<Item = CardIdx>| {
+        let mut characters = cards.map(|card| pool.char_id(card)).collect::<Vec<_>>();
+        characters.sort_unstable();
+        characters.dedup();
+        characters
+    };
+    if !ctx.enforce_char_uniqueness {
+        return characters(&mut pool.indices())
+            .into_iter()
+            .map(Scope::Character)
+            .collect();
+    }
+    if ctx.is_final_chapter && ctx.is_world_bloom {
+        let leaders = pool
+            .indices()
+            .filter(|&card| ctx.card_matches_slot(pool, 0, card));
+        return characters(&mut { leaders })
+            .into_iter()
+            .map(Scope::Leader)
+            .collect();
+    }
+    vec![Scope::Unique]
 }
 
 /// How the event counts limited card bonuses.
@@ -325,11 +365,10 @@ impl<'a> Problem<'a> {
         pool: &'a CardPool,
         ctx: &'a SearchContext,
         targets: &'a [i32],
-        scope: Option<u8>,
+        scope: Scope,
     ) -> Option<Self> {
-        let in_scope =
-            |card: CardIdx| scope.is_none_or(|character| pool.char_id(card) == character);
-        if let Some(character) = scope
+        let in_scope = |card: CardIdx| scope.admits(pool, card);
+        if let Scope::Character(character) = scope
             && ctx
                 .forced_leader_character_id
                 .is_some_and(|forced| forced != character)
@@ -385,7 +424,7 @@ impl<'a> Problem<'a> {
 
         let extras = ctx
             .is_world_bloom
-            .then(|| Self::fold_support(pool, ctx, unit, &mut bonus));
+            .then(|| Self::fold_support(pool, ctx, scope, unit, &mut bonus));
         let mut lowest_key = 0i64;
         let mut group_max = Vec::with_capacity(groups.len());
         for group in &groups {
@@ -434,7 +473,7 @@ impl<'a> Problem<'a> {
             objective: ObjectiveBound::from_context(ctx),
             targets,
             counting,
-            unique_characters: scope.is_none(),
+            unique_characters: !matches!(scope, Scope::Character(_)),
             unit,
             offset_x10,
             max_units,
@@ -445,9 +484,10 @@ impl<'a> Problem<'a> {
     }
 
     /// Fixed roles in slot order, then the free groups of the scope.
-    fn groups(pool: &CardPool, ctx: &SearchContext, scope: Option<u8>) -> Option<Vec<Group>> {
-        let in_scope =
-            |card: CardIdx| scope.is_none_or(|character| pool.char_id(card) == character);
+    fn groups(pool: &CardPool, ctx: &SearchContext, scope: Scope) -> Option<Vec<Group>> {
+        let in_scope = |card: CardIdx| scope.admits(pool, card);
+        let unique = !matches!(scope, Scope::Character(_));
+        let leader_role = |slot: usize| ctx.is_final_chapter && slot == 0;
         let fixed_slots = (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len()).min(DECK_SIZE);
         let role_slots = fixed_slots.max(usize::from(ctx.is_final_chapter));
         let mut groups = Vec::with_capacity(32);
@@ -456,10 +496,19 @@ impl<'a> Problem<'a> {
         for slot in 0..role_slots {
             let cards = pool
                 .indices()
-                .filter(|&card| in_scope(card) && ctx.card_matches_slot(pool, slot, card))
+                .filter(|&card| {
+                    in_scope(card)
+                        && ctx.card_matches_slot(pool, slot, card)
+                        && match scope {
+                            Scope::Leader(character) if leader_role(slot) => {
+                                pool.char_id(card) == character
+                            }
+                            _ => true,
+                        }
+                })
                 .collect::<Vec<_>>();
             let first = *cards.first()?;
-            if scope.is_none()
+            if unique
                 && cards
                     .iter()
                     .all(|&card| pool.char_id(card) == pool.char_id(first))
@@ -474,7 +523,7 @@ impl<'a> Problem<'a> {
             }
             groups.push(Group {
                 fixed_role: true,
-                leader_role: ctx.is_final_chapter && slot == 0,
+                leader_role: leader_role(slot),
                 mandatory: true,
                 cards,
             });
@@ -495,7 +544,7 @@ impl<'a> Problem<'a> {
             if !in_scope(card) || excluded_game_ids.contains(&pool.game_id(card)) {
                 continue;
             }
-            let key = if scope.is_none() {
+            let key = if unique {
                 if excluded_characters.contains(pool.char_id(card)) {
                     continue;
                 }
@@ -513,8 +562,7 @@ impl<'a> Problem<'a> {
             groups.push(Group {
                 fixed_role: false,
                 leader_role: false,
-                mandatory: scope.is_none()
-                    && forced_member.is_some_and(|forced| u32::from(forced) == key),
+                mandatory: unique && forced_member.is_some_and(|forced| u32::from(forced) == key),
                 cards,
             });
         }
@@ -522,18 +570,23 @@ impl<'a> Problem<'a> {
     }
 
     /// Folds the support deck into each card's key, slack and displaced
-    /// entry count and returns the deck-level World Bloom terms. In the Final
-    /// Chapter every leader profile is covered: card losses take their
+    /// entry count and returns the deck-level World Bloom terms. A Final
+    /// Chapter scope of one leader character folds that character's profile;
+    /// otherwise every leader profile is covered: card losses take their
     /// extremes over the profiles, counts and excess bounds their maxima.
     fn fold_support(
         pool: &CardPool,
         ctx: &SearchContext,
+        scope: Scope,
         unit: u32,
         bonus: &mut [CardBonus],
     ) -> Extras {
         let mut profiles = vec![SupportTerms::new(&ctx.support_deck)];
         let mut leader_profile = Vec::new();
-        if ctx.is_final_chapter {
+        if let (true, Scope::Leader(character)) = (ctx.is_final_chapter, scope) {
+            profiles = vec![SupportTerms::new(ctx.support_deck_for_leader(character))];
+            leader_profile = vec![0; usize::from(u8::MAX) + 1];
+        } else if ctx.is_final_chapter {
             for character in 0..=u8::MAX {
                 let deck = ctx.support_deck_for_leader(character);
                 if std::ptr::eq(deck, &ctx.support_deck) {

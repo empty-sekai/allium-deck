@@ -795,6 +795,12 @@ public-id checks. Hence the sets of cards reachable as leaves are exactly the
 legal card sets with a legal fixed-slot assignment, each fixed role in its
 slot and the free cards in the remaining slots.
 
+In the World Bloom Final Chapter the search runs once per character $h$ of
+the cards that satisfy slot 0, with the leader role restricted to cards of
+$h$. Every legal deck has exactly one leader, so the runs partition the legal
+decks; they share the tier trackers, whose canonical Top-K does not depend on
+the order of insertion.
+
 A leaf is evaluated by the shared placement routine
 (`visit_bonus_candidates`). When first-N limited counting can distinguish
 orders of the free slots, it offers every permutation of the free slots;
@@ -867,7 +873,9 @@ of the card's entries at positions $\le W+M$, $q=\sum_{c\in D}q_c$.
 Write $[\ell_c^{\min},\ell_c^{\max}]$ for the range of $\ell_c$ over the
 support profiles in use: a single profile outside the Final Chapter, where
 both ends are $\ell_c$; in the Final Chapter the profile depends on the
-leader and every profile is included. $q_c$ is the maximum over those
+leader's character, so a run of one leader character (§17.1) uses that
+character's profile alone, and any other Final Chapter search includes every
+profile. $q_c$ is the maximum over those
 profiles, and $\xi(q)$ the maximum over profiles of
 $\lceil 10X_{\min(q,M)}\rceil$ with that profile's $M$; since a deck holds
 at most $M$ entries of each profile and each $X$ is non-decreasing,
@@ -884,7 +892,7 @@ $$
 so $-10\operatorname{loss}(D)$ lies between the key sum minus $\xi(q(D))$
 and the key-plus-slack sum. $E(D)=10\,d(k)+10B$ is bounded by $10\,d(k)$
 plus the outward integer range of $10B$ — of the leader's profile once the
-leader is chosen, of all profiles before. A card with no entry in the first
+leader is chosen, of all profiles in use before. A card with no entry in the first
 $W+M$ positions keeps $\kappa_c=b_c$ and $\sigma_c=q_c=0$.
 
 *Rounding.* Each real-valued term $x$ (a card loss, a profile base, an excess

@@ -40,6 +40,8 @@ fn canonical_topk_public_sets_match_every_solver_family_and_limit() {
         (ScoreTarget::Bonus, false, false),
         (ScoreTarget::Mysekai, false, false),
         (ScoreTarget::Score, false, true),
+        (ScoreTarget::Bonus, false, true),
+        (ScoreTarget::Mysekai, false, true),
     ] {
         let mut ctx = ready_ctx(&pool, target);
         ctx.minimize = minimize;
@@ -49,7 +51,9 @@ fn canonical_topk_public_sets_match_every_solver_family_and_limit() {
         if final_chapter {
             ctx.is_final_chapter = true;
             ctx.is_world_bloom = true;
-            ctx.live_type = LiveType::Multi;
+            if target != ScoreTarget::Mysekai {
+                ctx.live_type = LiveType::Multi;
+            }
             ctx.live_skill_order = LiveSkillOrder::Average;
             ctx.event_type = Some(EventType::WorldBloom);
         }

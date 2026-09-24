@@ -99,7 +99,7 @@ fn validate_rejects_out_of_range_challenge_character() {
 }
 
 #[test]
-fn bonus_target_requires_non_final_event_context() {
+fn bonus_target_requires_event_context() {
     let game = sample_game(&[], &[], &[], &[], &[], &[], &[], &[], &[]);
     let user = UserProfile::default();
 
@@ -110,17 +110,6 @@ fn bonus_target_requires_non_final_event_context() {
     assert!(matches!(
         build_card_pool(&user, &game, &no_event),
         Err(BuildError::InvalidConfig(reason)) if reason.contains("活动")
-    ));
-
-    let final_chapter = BuildParams {
-        target: ScoreTarget::Bonus,
-        event_id: Some(crate::types::FINAL_CHAPTER_EVENT_ID),
-        event_type: Some("world_bloom".to_string()),
-        ..BuildParams::default()
-    };
-    assert!(matches!(
-        build_card_pool(&user, &game, &final_chapter),
-        Err(BuildError::InvalidConfig(reason)) if reason.contains("终章")
     ));
 }
 
@@ -574,15 +563,19 @@ fn handler_final_chapter_allows_auto_leader_without_fixed_character() {
         user_cards: vec![sample_user_card(1)],
         ..UserProfile::default()
     };
-    let params = BuildParams {
-        event_id: Some(FINAL_CHAPTER_EVENT_ID),
-        ..BuildParams::default()
-    };
+    for target in [ScoreTarget::Score, ScoreTarget::Bonus] {
+        let params = BuildParams {
+            event_id: Some(FINAL_CHAPTER_EVENT_ID),
+            target,
+            ..BuildParams::default()
+        };
 
-    let (_, ctx) = build_card_pool(&user, &game, &params)
-        .expect("终章无固定队长应允许进入自动 leader 搜索路径");
-    assert!(ctx.is_final_chapter);
-    assert!(!ctx.has_fixed_leader());
+        let (_, ctx) = build_card_pool(&user, &game, &params)
+            .expect("终章无固定队长应允许进入自动 leader 搜索路径");
+        assert!(ctx.is_final_chapter);
+        assert!(!ctx.has_fixed_leader());
+        assert_eq!(ctx.target, target);
+    }
 }
 
 #[test]
