@@ -1485,8 +1485,24 @@ $$
 The resolved value $\min(skill\_max,\ b+i\cdot\min(2,d))$ is non-decreasing
 in $d$, so substituting these bounds yields a ceiling.
 
-**Other skills.** Ordinary and reference skills, and entries the evaluator
-resolves to zero, keep skill_max.
+**Reference skill.** A card $x$ with base $b$ (its skill_min), rate $\rho$
+and cap $m$ resolves to $b+A\bigl(\{\sigma(y): y\in D\setminus\{x\}\}\bigr)$,
+where $\sigma(y)=\min(\rho\cdot ref(y)/100,\ m)$ is the share of member
+$y$'s static skill maximum and $A$ is the largest, the smallest or the mean of
+the four shares by the reference strategy. Every share lies in $[0,m]$ and
+$A$ is non-decreasing in each share. The four other members of $x$ are the
+cards of $P\setminus\{x\}$ and $r$ unknown ones when $x\in P$, and the
+cards of $P$ and $r-1$ unknown ones when $x\in C$; replacing each unknown
+share by $m$ therefore bounds $A$. The shares are integers in hundredths of a
+percent. The largest and the smallest share are rounded up to a whole
+percent; a correctly rounded share never exceeds that value, since it is
+representable. The mean is bounded by one more than the floor of the exact
+mean, which exceeds the exact mean by at least $1/400$ and hence the
+floating-point mean of four shares, whose error is below $10^{-12}$.
+Intersected with skill_max, the bound is the ceiling.
+
+**Other skills.** Ordinary skills, and entries the evaluator resolves to zero
+or to the base alone, keep skill_max.
 
 Write $\kappa_P(x)$ for the ceiling of a selected card $x\in P$ and
 $\kappa'_P(y)$ for that of an unselected card $y$ taken as one of the $r$
@@ -2102,11 +2118,11 @@ power and bonus inputs, is dominated by F2.
 
 The Skill key is $\lfloor\mathrm{fl}(\mathrm{fl}(10v)+10^{-6})\rfloor$, where
 $v$ is the leader's score-up plus $0.2$ times each other score-up, added in
-ascending order. With integral or quarter-integral score-ups, the exact $10v^*$
-is a multiple of $1/2$ and at most the ceiling $2S+8L$. For $10v^*<10^5$ the
-float error is below $10^{-9}$, so the float value lies in
-$(\lfloor10v^*\rfloor,\lfloor10v^*\rfloor+1)$ and the key is at most
-$\lfloor10v^*\rfloor\le2S+8L$.
+ascending order. The exact $10v^*$ is at most the integer ceiling $2S+8L$.
+For $10v^*<10^5$ the float error, including that of a reference share and
+its mean, is below $10^{-9}$, so the float value is below $10v^*+1$. A key
+above $2S+8L$ would need a float value of at least $2S+8L+1>10v^*+1$; hence
+the key is at most $2S+8L$.
 
 ### 29.9 Lemma N7 — correlated bound
 

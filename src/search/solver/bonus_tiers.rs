@@ -569,7 +569,7 @@ impl<'a> Problem<'a> {
             extras,
             ceilings: pool
                 .indices()
-                .map(|card| SkillCeiling::new(pool, card))
+                .map(|card| SkillCeiling::new(pool, card, ctx.skill_reference_strategy))
                 .collect(),
         })
     }
@@ -1603,8 +1603,9 @@ impl TierSearch<'_, '_> {
                     Some(suffix)
                 };
                 // The frontier after a card depends on the card only through
-                // its unit mask.
-                let mut frontiers: [Option<(u32, u32)>; 64] = [None; 64];
+                // its unit mask and its reference value.
+                let mut frontiers = [((0u8, 0u16), (0u32, 0u32)); 8];
+                let mut cached = 0usize;
                 for &card in &group.cards[class.start as usize..class.end as usize] {
                     let character = pool.char_id(card);
                     if (problem.unique_characters && state.characters.contains(character))
@@ -1644,9 +1645,19 @@ impl TierSearch<'_, '_> {
                                 self.stats.ub_prunes += 1;
                                 continue;
                             }
-                            let mask = usize::from(pool.unit_mask_raw(card));
-                            let (skill, leader) = *frontiers[mask]
-                                .get_or_insert_with(|| self.suffix_skill(&child, skill, leader));
+                            let key = (pool.unit_mask_raw(card), pool.skill_reference(card));
+                            let (skill, leader) =
+                                match frontiers[..cached].iter().find(|entry| entry.0 == key) {
+                                    Some(entry) => entry.1,
+                                    None => {
+                                        let value = self.suffix_skill(&child, skill, leader);
+                                        if cached < frontiers.len() {
+                                            frontiers[cached] = (key, value);
+                                            cached += 1;
+                                        }
+                                        value
+                                    }
+                                };
                             let remaining = DECK_SIZE - usize::from(child.picked);
                             let (selected, largest) = self.selected_skill(&child, remaining);
                             problem.live_upper(

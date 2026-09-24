@@ -140,7 +140,7 @@ impl<'a> SimpleExactState<'a> {
             .unwrap_or(0);
         let skill_ceilings = if matches!(ctx.target, ScoreTarget::Skill) {
             pool.indices()
-                .map(|card| SkillCeiling::new(pool, card))
+                .map(|card| SkillCeiling::new(pool, card, ctx.skill_reference_strategy))
                 .collect()
         } else {
             Vec::new()

@@ -2,7 +2,7 @@
 //! can resolve to in any deck around a given selection.
 use crate::pool::{CardIdx, CardPool, DiffSkill};
 use crate::search::evaluate;
-use crate::types::DECK_SIZE;
+use crate::types::{DECK_SIZE, SkillReferenceStrategy};
 
 /// Unit bits a card's unit mask can carry.
 const UNIT_BITS: usize = 6;
@@ -16,6 +16,10 @@ pub(crate) struct Composition {
     /// Union of the selected cards' different-unit units
     /// ([`evaluate::member_unit`]).
     member_units: u8,
+    /// Static skill maxima that reference skills read
+    /// ([`CardPool::skill_reference`]), of the selected cards.
+    references: [u16; DECK_SIZE],
+    selected: u8,
 }
 
 impl Composition {
@@ -26,6 +30,8 @@ impl Composition {
             *count += (mask >> unit) & 1;
         }
         self.member_units |= evaluate::member_unit(mask);
+        self.references[usize::from(self.selected)] = pool.skill_reference(card);
+        self.selected += 1;
         self
     }
 }
@@ -40,6 +46,57 @@ enum CeilingKind {
     /// Different-unit skill: `steps[d]` bounds every deck in which the card
     /// counts at most `d` units.
     DifferentUnit,
+    /// Reference skill, bounded from the other members' static maxima and
+    /// `steps[0]`.
+    Reference(ReferenceRule),
+}
+
+/// A reference skill resolves to `base` plus the share its strategy takes
+/// from `min(reference * rate / 100, cap)` over the other four members.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReferenceRule {
+    base: u8,
+    rate: u8,
+    cap: u8,
+    /// The card's own reference value, which its selected ceiling skips once.
+    own: u16,
+    strategy: SkillReferenceStrategy,
+}
+
+impl ReferenceRule {
+    /// Ceiling of the card's value when `composition` holds the card itself
+    /// (`held`) or not, with `unknown` further members. Shares are integers
+    /// in hundredths of a percent. The largest and the smallest share round
+    /// up exactly, and so does the evaluator's rounded share; the mean takes
+    /// one more than the floor of the exact mean, which also stays above the
+    /// evaluator's floating-point mean.
+    #[inline(always)]
+    fn bound(&self, composition: &Composition, held: bool, unknown: usize) -> u32 {
+        let cap = 100 * u32::from(self.cap);
+        let mut skip = held;
+        let (mut sum, mut high, mut low) = (0u32, 0u32, u32::MAX);
+        for &reference in &composition.references[..usize::from(composition.selected)] {
+            if skip && reference == self.own {
+                skip = false;
+                continue;
+            }
+            let share = (u32::from(reference) * u32::from(self.rate)).min(cap);
+            sum += share;
+            high = high.max(share);
+            low = low.min(share);
+        }
+        if unknown > 0 {
+            sum += unknown as u32 * cap;
+            high = high.max(cap);
+            low = low.min(cap);
+        }
+        let added = match self.strategy {
+            SkillReferenceStrategy::Max => high.div_ceil(100),
+            SkillReferenceStrategy::Min => low.div_ceil(100),
+            SkillReferenceStrategy::Average => sum / (100 * (DECK_SIZE as u32 - 1)) + 1,
+        };
+        u32::from(self.base) + added
+    }
 }
 
 /// Ceiling of one card's resolved skill as a function of the composition of
@@ -58,7 +115,7 @@ pub(crate) struct SkillCeiling {
 impl SkillCeiling {
     /// Reads the card's skill exactly as `evaluate::resolve_skills` does. A
     /// skill that resolves to a deck-independent value keeps `skill_max`.
-    pub(crate) fn new(pool: &CardPool, card: CardIdx) -> Self {
+    pub(crate) fn new(pool: &CardPool, card: CardIdx, strategy: SkillReferenceStrategy) -> Self {
         let max = pool.skill_max(card);
         let slot = pool.skill(card);
         let index = usize::from(slot.value.saturating_sub(1));
@@ -111,6 +168,24 @@ impl SkillCeiling {
                     steps,
                 }
             }
+            3 => {
+                let Some(entry) = pool.special().ref_skills().get(index) else {
+                    return fixed;
+                };
+                if entry.rate == 0 || entry.max == 0 {
+                    return fixed;
+                }
+                Self {
+                    kind: CeilingKind::Reference(ReferenceRule {
+                        base: pool.skill_min(card),
+                        rate: entry.rate,
+                        cap: entry.max,
+                        own: pool.skill_reference(card),
+                        strategy,
+                    }),
+                    ..fixed
+                }
+            }
             _ => fixed,
         }
     }
@@ -122,19 +197,25 @@ impl SkillCeiling {
     }
 
     /// Ceiling in every deck made of the cards counted in `composition`, the
-    /// card itself, and `unknown` further members. `own` is the card's
-    /// contribution to its counted unit when `composition` does not hold it.
+    /// card itself (`held` when `composition` counts it already), and
+    /// `unknown` further members.
     #[inline(always)]
-    fn bound(&self, composition: &Composition, own: u8, unknown: usize) -> u32 {
+    fn bound(&self, composition: &Composition, held: bool, unknown: usize) -> u32 {
         let step = match self.kind {
             CeilingKind::Fixed => 0,
             CeilingKind::UnitCount => {
+                let own = if held { 0 } else { self.carries };
                 let known = composition.unit_counts[usize::from(self.unit)] + own;
                 (usize::from(known) + unknown).clamp(1, DECK_SIZE) - 1
             }
             CeilingKind::DifferentUnit => {
                 let counted = (composition.member_units & !self.unit).count_ones() as usize;
                 (counted + unknown).min(usize::from(DiffSkill::MAX_COUNTED_UNITS))
+            }
+            CeilingKind::Reference(rule) => {
+                return rule
+                    .bound(composition, held, unknown)
+                    .min(u32::from(self.steps[0]));
             }
         };
         u32::from(self.steps[step])
@@ -144,14 +225,14 @@ impl SkillCeiling {
     /// left.
     #[inline(always)]
     pub(crate) fn selected(&self, composition: &Composition, free: usize) -> u32 {
-        self.bound(composition, 0, free)
+        self.bound(composition, true, free)
     }
 
     /// Ceiling of an unselected card taken as one of the `free` remaining
     /// picks.
     #[inline(always)]
     pub(crate) fn candidate(&self, composition: &Composition, free: usize) -> u32 {
-        self.bound(composition, self.carries, free - 1)
+        self.bound(composition, false, free - 1)
     }
 }
 
@@ -164,15 +245,27 @@ pub(crate) struct CeilingSet {
 
 impl CeilingSet {
     pub(crate) fn insert(&mut self, ceiling: SkillCeiling) {
-        let same = |entry: &&mut SkillCeiling| {
-            entry.kind == ceiling.kind
-                && entry.unit == ceiling.unit
-                && entry.carries == ceiling.carries
+        let same = |entry: &&mut SkillCeiling| match (entry.kind, ceiling.kind) {
+            (CeilingKind::Reference(left), CeilingKind::Reference(right)) => {
+                left.strategy == right.strategy
+            }
+            (left, right) => {
+                left == right && entry.unit == ceiling.unit && entry.carries == ceiling.carries
+            }
         };
         match self.entries.iter_mut().find(same) {
             Some(entry) => {
                 for (step, &other) in entry.steps.iter_mut().zip(&ceiling.steps) {
                     *step = (*step).max(other);
+                }
+                // A candidate reference ceiling is non-decreasing in the
+                // base, the rate and the cap, and never reads `own`.
+                if let (CeilingKind::Reference(left), CeilingKind::Reference(right)) =
+                    (&mut entry.kind, ceiling.kind)
+                {
+                    left.base = left.base.max(right.base);
+                    left.rate = left.rate.max(right.rate);
+                    left.cap = left.cap.max(right.cap);
                 }
             }
             None => self.entries.push(ceiling),
