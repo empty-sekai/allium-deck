@@ -30,7 +30,11 @@
 //!   position, remaining card count, limited-bonus counting state and key sum,
 //!   the componentwise maxima of power bound, skill sum and maximum skill over
 //!   all selections of the suffix groups. A missing entry proves the key sum
-//!   unreachable.
+//!   unreachable. Bit rows that follow the same steps without the maxima
+//!   first find the sums of the regime's full decks; a tier and diversity
+//!   class they miss has no deck there, and the table is built only when
+//!   some requested pair remains. The regime that admits every card does
+//!   the same for its whole scope.
 //! * When the live score is a product of power and a rate affine in skill,
 //!   the table also keeps each entry's largest weighted sum of power and
 //!   skill, and the product is bounded over the box of the separate maxima
@@ -53,6 +57,7 @@
 //!   the tiers no deck reaches and ends when its tier is one of them.
 use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::pool::{CardIdx, CardPool};
 use crate::search::SearchStats;
@@ -132,27 +137,43 @@ pub(crate) fn search(
             tracker
         })
         .collect::<Vec<_>>();
-    let problems = scopes(pool, ctx)
+    let ceilings = pool
+        .indices()
+        .map(|card| SkillCeiling::new(pool, card, ctx.skill_reference_strategy))
+        .collect::<Vec<_>>();
+    let mut problems = scopes(pool, ctx)
         .into_iter()
-        .filter_map(|scope| Problem::new(pool, ctx, &targets, scope))
+        .filter_map(|scope| Problem::new(pool, ctx, &targets, &ceilings, scope))
         .collect::<Vec<_>>();
     // The regimes of every scope, strongest first: the shared tier cutoffs
     // then rise as early as the regime ceilings allow, whatever scope the
     // strong regimes belong to.
-    let mut views = problems
+    let powers = RegimePowers::new(pool);
+    let mut table = SuffixTable::default();
+    for problem in &mut problems {
+        problem.find_unreachable(powers.of(Regime::Mixed), &mut table);
+    }
+    let mut regimes = problems
         .iter()
         .enumerate()
-        .flat_map(|(scope, problem)| problem.views().into_iter().map(move |view| (scope, view)))
+        .flat_map(|(scope, problem)| {
+            let powers = &powers;
+            Regime::all().filter_map(move |regime| {
+                problem
+                    .regime_bounds(regime, powers.of(regime))
+                    .map(|bounds| (scope, bounds))
+            })
+        })
         .collect::<Vec<_>>();
-    views.sort_by_key(|(_, view)| std::cmp::Reverse(view.ceiling));
+    regimes.sort_by_key(|(_, bounds)| std::cmp::Reverse(bounds.ceiling));
     let mut joined = vec![false; problems.len()];
-    let mut table = SuffixTable::default();
-    for (scope, mut view) in views {
+    for (scope, bounds) in regimes {
         if budget.expired() {
             break;
         }
         problems[scope].solve(
-            &mut view,
+            &bounds,
+            powers.of(bounds.regime),
             &mut joined[scope],
             &mut table,
             &mut trackers,
@@ -516,9 +537,13 @@ struct Problem<'a> {
     widest_units: usize,
     bonus: Vec<CardBonus>,
     groups: Vec<Group>,
+    /// Class parts `(κ, limited, σ, q)` of every group's cards, in the
+    /// group's card order; `κ` includes the leader-only bonus on the Final
+    /// leader role.
+    parts: Vec<Vec<(i32, u32, u32, u32)>>,
     extras: Option<Extras>,
     /// Composition-aware skill ceiling of every card, by pool index.
-    ceilings: Vec<SkillCeiling>,
+    ceilings: &'a [SkillCeiling],
     /// The live score as a product of power and rate, when it is one.
     product: Option<LiveProduct>,
     /// Nodes visited with one attribute set before its completions are
@@ -526,6 +551,9 @@ struct Problem<'a> {
     restrict_after: u64,
     /// The scope's single support profile, when its losses are whole ticks.
     terms: Option<SupportTerms>,
+    /// `(tier, diversity bonus)` pairs no deck of the scope reaches, from
+    /// the root sums of the regime that admits every card.
+    unreachable: Vec<(usize, i64)>,
     /// The scope's tier certificate, built by the first tier search that
     /// visits `certify_after` nodes; `None` inside when the scope has none.
     certificate: OnceCell<Option<TierCertificate>>,
@@ -537,6 +565,7 @@ impl<'a> Problem<'a> {
         pool: &'a CardPool,
         ctx: &'a SearchContext,
         targets: &'a [i32],
+        ceilings: &'a [SkillCeiling],
         scope: Scope,
     ) -> Option<Self> {
         let in_scope = |card: CardIdx| scope.admits(pool, card);
@@ -631,6 +660,29 @@ impl<'a> Problem<'a> {
             }
             group_max.push(best);
         }
+        let parts = groups
+            .iter()
+            .map(|group| {
+                group
+                    .cards
+                    .iter()
+                    .map(|&card| {
+                        let parts = bonus[card.raw()];
+                        let leader = if group.leader_role {
+                            leader_extra(card)
+                        } else {
+                            0
+                        };
+                        (
+                            parts.fixed as i32 + parts.adjust + leader as i32,
+                            parts.limited,
+                            parts.slack,
+                            parts.support,
+                        )
+                    })
+                    .collect()
+            })
+            .collect();
         let unit_i = i64::from(unit);
         let offset_ticks = (-lowest_key + unit_i - 1) / unit_i * unit_i;
         group_max.sort_unstable_by(|left, right| right.cmp(left));
@@ -676,13 +728,12 @@ impl<'a> Problem<'a> {
             widest_units,
             bonus,
             groups,
+            parts,
             extras,
-            ceilings: pool
-                .indices()
-                .map(|card| SkillCeiling::new(pool, card, ctx.skill_reference_strategy))
-                .collect(),
+            ceilings,
             restrict_after: if eager { 1 } else { RESTRICT_AFTER },
             terms,
+            unreachable: Vec::new(),
             certificate: OnceCell::new(),
             certify_after: if eager { 0 } else { CERTIFY_AFTER },
         })
@@ -863,10 +914,66 @@ impl<'a> Problem<'a> {
     /// Whether the scope's certificate, once built, shows that no deck hits
     /// `tier` with the diversity bonus `extra_ticks`.
     fn excluded(&self, tier: usize, extra_ticks: i64) -> bool {
-        self.certificate
-            .get()
-            .and_then(Option::as_ref)
-            .is_some_and(|certificate| certificate.excludes(tier, extra_ticks))
+        self.unreachable.contains(&(tier, extra_ticks))
+            || self
+                .certificate
+                .get()
+                .and_then(Option::as_ref)
+                .is_some_and(|certificate| certificate.excludes(tier, extra_ticks))
+    }
+
+    /// Debug builds build the regime's table and check that the root sums
+    /// are exactly the sums it holds at its root.
+    #[cfg(debug_assertions)]
+    fn check_root_sums(&self, view: &RegimeView, sums: &SuffixTable, joined: bool) {
+        let mut table = SuffixTable::default();
+        table.fit(self);
+        table.build(self, view, joined);
+        let capacity = usize::from(self.counting.capacity());
+        for sum in 0..=self.max_units {
+            assert_eq!(
+                sums.reaches_root(sum, sum),
+                table.best(0, DECK_SIZE, capacity, 0, sum, sum).is_some(),
+                "root sum {sum}"
+            );
+        }
+    }
+
+    /// Records the `(tier, diversity bonus)` pairs no deck of the scope
+    /// reaches. The regime that admits every card, `Mixed`, holds every
+    /// group and card of any other regime, so its root sums contain theirs;
+    /// its suffix slack and displaced entries are the largest, so its needed
+    /// ranges contain theirs. A pair its root misses is missed in every
+    /// regime.
+    fn find_unreachable(&mut self, power: &Rc<[u32]>, table: &mut SuffixTable) {
+        let Some(bounds) = self.regime_bounds(Regime::Mixed, power) else {
+            return;
+        };
+        let view = self.regime_view(&bounds, Rc::clone(power));
+        table.fit(self);
+        table.find_root_sums(self, &view);
+        let mut extras = self
+            .diversity_classes(false)
+            .into_iter()
+            .chain(self.diversity_classes(true))
+            .map(|(extra_ticks, _)| extra_ticks)
+            .collect::<Vec<_>>();
+        extras.sort_unstable();
+        extras.dedup();
+        let root = State::root();
+        let mut unreachable = Vec::new();
+        for tier in 0..self.targets.len() {
+            let target_ticks = i64::from(self.targets[tier]) * 10 * self.scale;
+            for &extra_ticks in &extras {
+                if !self
+                    .needed(&view, target_ticks, extra_ticks, &root, None)
+                    .is_some_and(|(low, high)| table.reaches_root(low, high))
+                {
+                    unreachable.push((tier, extra_ticks));
+                }
+            }
+        }
+        self.unreachable = unreachable;
     }
 
     /// The visited-node count at which a search starting at `visited`
@@ -892,59 +999,86 @@ impl<'a> Problem<'a> {
             * self.scale as u32
     }
 
-    /// Admitted groups of one regime in search order, or `None` when the
-    /// regime has no legal deck.
-    fn regime_view(&self, regime: Regime) -> Option<RegimeView> {
+    /// The maxima and admissible ceiling of `regime` in the scope, with
+    /// `power` its per-card power bounds, or `None` when the regime has no
+    /// legal deck: every deck takes each role and at most `DECK_SIZE - roles`
+    /// further groups.
+    fn regime_bounds(&self, regime: Regime, power: &[u32]) -> Option<RegimeBounds> {
         let pool = self.pool;
-        let keys = regime.member_keys();
-        let mut power = vec![0u32; pool.count()];
-        let mut roles = Vec::new();
-        let mut free = Vec::new();
+        // Largest power and skill of each group's admitted cards.
+        let mut roles: Vec<(u32, u32)> = Vec::new();
+        let mut free: Vec<(u32, u32)> = Vec::new();
         for group in &self.groups {
-            let mut cards = group
+            let best = group
                 .cards
                 .iter()
-                .copied()
-                .filter(|&card| regime.admits(pool, card))
+                .filter(|&&card| regime.admits(pool, card))
+                .map(|&card| (power[card.raw()], u32::from(pool.skill_max(card))))
+                .reduce(|left, right| (left.0.max(right.0), left.1.max(right.1)));
+            match best {
+                Some(best) if group.fixed_role => roles.push(best),
+                Some(best) => free.push(best),
+                None if group.mandatory => return None,
+                None => {}
+            }
+        }
+        if roles.len() + free.len() < DECK_SIZE {
+            return None;
+        }
+        let free_slots = DECK_SIZE - roles.len();
+        let top = |field: fn(&(u32, u32)) -> u32| {
+            let mut values = free.iter().map(field).collect::<Vec<_>>();
+            values.sort_unstable_by(|left, right| right.cmp(left));
+            roles.iter().map(field).sum::<u32>() + values.iter().take(free_slots).sum::<u32>()
+        };
+        let (power, skill) = (top(|best| best.0), top(|best| best.1));
+        let leader = roles
+            .iter()
+            .chain(&free)
+            .map(|best| best.1)
+            .max()
+            .unwrap_or(0);
+        Some(RegimeBounds {
+            regime,
+            power,
+            skill,
+            leader,
+            ceiling: self.live_upper(power, skill, leader),
+        })
+    }
+
+    /// The view of a regime with a legal deck: its groups, classes and
+    /// joint ceiling, with `power` its per-card power bounds.
+    fn regime_view(&self, bounds: &RegimeBounds, power: Rc<[u32]>) -> RegimeView {
+        let pool = self.pool;
+        let regime = bounds.regime;
+        let mut roles = Vec::new();
+        let mut free = Vec::new();
+        for (group, parts) in self.groups.iter().zip(&self.parts) {
+            // Admitted cards by class parts, then by falling power.
+            let mut members = group
+                .cards
+                .iter()
+                .zip(parts)
+                .filter(|&(&card, _)| regime.admits(pool, card))
+                .map(|(&card, &parts)| (parts, power[card.raw()], card))
                 .collect::<Vec<_>>();
-            if cards.is_empty() {
-                if group.mandatory {
-                    return None;
-                }
+            if members.is_empty() {
                 continue;
             }
-            for &card in &cards {
-                power[card.raw()] = power_over_keys(pool, card, keys);
-            }
-            let class_key = |card: &CardIdx| {
-                let parts = self.bonus[card.raw()];
-                let leader = if group.leader_role {
-                    self.leader_extra_ticks(*card)
-                } else {
-                    0
-                };
-                (
-                    parts.fixed as i32 + parts.adjust + leader as i32,
-                    parts.limited,
-                    parts.slack,
-                    parts.support,
-                )
-            };
-            cards.sort_unstable_by(|left, right| {
-                class_key(left)
-                    .cmp(&class_key(right))
-                    .then(power[right.raw()].cmp(&power[left.raw()]))
-                    .then(left.raw().cmp(&right.raw()))
+            members.sort_unstable_by(|left, right| {
+                left.0
+                    .cmp(&right.0)
+                    .then(right.1.cmp(&left.1))
+                    .then(left.2.cmp(&right.2))
             });
             let mut classes: Vec<Class> = Vec::new();
-            for (index, card) in cards.iter().enumerate() {
-                let parts = class_key(card);
+            for (index, &(parts, card_power, card)) in members.iter().enumerate() {
                 let (key_ticks, limited_ticks, slack_ticks, support) = parts;
-                let card_power = power[card.raw()];
-                let skill = u32::from(pool.skill_max(*card));
+                let skill = u32::from(pool.skill_max(card));
                 match classes.last_mut() {
                     Some(class) if class.parts() == parts => {
-                        class.attrs |= 1 << pool.attr(*card);
+                        class.attrs |= 1 << pool.attr(card);
                         class.power = class.power.max(card_power);
                         class.skill = class.skill.max(skill);
                         class.leader = class.leader.max(skill);
@@ -955,7 +1089,7 @@ impl<'a> Problem<'a> {
                         limited_ticks,
                         slack_ticks,
                         support,
-                        attrs: 1 << pool.attr(*card),
+                        attrs: 1 << pool.attr(card),
                         power: card_power,
                         skill,
                         leader: skill,
@@ -965,6 +1099,10 @@ impl<'a> Problem<'a> {
                     }),
                 }
             }
+            let cards = members
+                .into_iter()
+                .map(|member| member.2)
+                .collect::<Vec<_>>();
             let mut ceilings = CeilingSet::default();
             for card in &cards {
                 ceilings.insert(self.ceilings[card.raw()]);
@@ -983,38 +1121,11 @@ impl<'a> Problem<'a> {
                 free.push(view);
             }
         }
-        if roles.len() + free.len() < DECK_SIZE {
-            return None;
-        }
         let best = |group: &RegimeGroup, field: fn(&Class) -> u32| {
             group.classes.iter().map(field).max().unwrap_or(0)
         };
-        // Admissible regime ceiling: every deck takes each role and at most
-        // `DECK_SIZE - roles` further groups.
-        let free_slots = DECK_SIZE - roles.len();
-        let top = |field: fn(&Class) -> u32| {
-            let mut values = free
-                .iter()
-                .map(|group| best(group, field))
-                .collect::<Vec<_>>();
-            values.sort_unstable_by(|left, right| right.cmp(left));
-            roles.iter().map(|group| best(group, field)).sum::<u32>()
-                + values.iter().take(free_slots).sum::<u32>()
-        };
-        let leader = roles
-            .iter()
-            .chain(&free)
-            .map(|group| best(group, |class| class.leader))
-            .max()
-            .unwrap_or(0);
-        let ceiling = self.live_upper(top(|class| class.power), top(|class| class.skill), leader);
         let joint = self.product.and_then(|product| {
-            JointCeiling::new(
-                product,
-                top(|class| class.power),
-                top(|class| class.skill),
-                leader,
-            )
+            JointCeiling::new(product, bounds.power, bounds.skill, bounds.leader)
         });
         // The class maxima bound every card's joint value; below
         // `JointCeiling::LIMIT` five of them fit the table and keep an
@@ -1039,12 +1150,11 @@ impl<'a> Problem<'a> {
             suffix_slack: Vec::new(),
             suffix_support: Vec::new(),
             dynamic_from: Vec::new(),
-            ceiling,
             joint,
             joined: false,
         };
         view.order_groups();
-        Some(view)
+        view
     }
 
     /// Prepares `view` for the joint column: every class's largest per-card
@@ -1097,6 +1207,70 @@ impl<'a> Problem<'a> {
 
     fn live_upper(&self, power: u32, skill: u32, leader: u32) -> u32 {
         self.objective.ceiling(power, 0, skill, leader) as u32
+    }
+
+    /// Deck-level terms of every completion of `state` in `view` with the
+    /// diversity bonus `extra_ticks`, in ticks: the support excess is
+    /// subtracted from the lower end. `leader` is the card in the first slot
+    /// once `state` holds one.
+    #[inline(always)]
+    fn extra_range(
+        &self,
+        view: &RegimeView,
+        extra_ticks: i64,
+        state: &State,
+        leader: Option<CardIdx>,
+    ) -> (i64, i64) {
+        let Some(extras) = &self.extras else {
+            return (0, 0);
+        };
+        if !extras.bounded {
+            return UNBOUNDED;
+        }
+        let base = match (&extras.by_leader, leader) {
+            (Some(by_leader), Some(leader)) => by_leader[usize::from(self.pool.char_id(leader))],
+            _ => extras.base,
+        };
+        let remaining = DECK_SIZE - usize::from(state.picked);
+        let displaced = state.support + view.suffix_support[usize::from(state.position)][remaining];
+        let excess = extras.excess[(displaced as usize).min(extras.excess.len() - 1)];
+        (extra_ticks + base.0 - excess, extra_ticks + base.1)
+    }
+
+    /// Inclusive range of the suffix's shifted key sum (in units) that can
+    /// still complete `state` in `view` to `target_ticks` with the diversity
+    /// bonus `extra_ticks`, or `None` when none can.
+    #[inline(always)]
+    fn needed(
+        &self,
+        view: &RegimeView,
+        target_ticks: i64,
+        extra_ticks: i64,
+        state: &State,
+        leader: Option<CardIdx>,
+    ) -> Option<(usize, usize)> {
+        let unit = i64::from(self.unit);
+        let remaining = DECK_SIZE - usize::from(state.picked);
+        let (extra_low, extra_high) = self.extra_range(view, extra_ticks, state, leader);
+        // With exact slack the selected cards contribute exactly their key
+        // plus slack sum; otherwise their slack only widens the interval.
+        let (known, uncertain) = if self.exact_slack {
+            (i64::from(state.slack_ticks), 0)
+        } else {
+            (0, i64::from(state.slack_ticks))
+        };
+        let rest = target_ticks - i64::from(state.key_ticks) - known;
+        let shift = remaining as i64 * self.offset_ticks;
+        let high = rest - extra_low + shift;
+        if high < 0 {
+            return None;
+        }
+        let slack =
+            uncertain + i64::from(view.suffix_slack[usize::from(state.position)][remaining]);
+        let low = rest - extra_high - slack + shift;
+        let high_units = (high / unit).min(self.max_units as i64);
+        let low_units = if low <= 0 { 0 } else { (low + unit - 1) / unit };
+        (low_units <= high_units).then_some((low_units as usize, high_units as usize))
     }
 
     /// `view` limited to the cards with one of `attrs`, in the same group
@@ -1160,7 +1334,6 @@ impl<'a> Problem<'a> {
             suffix_slack: Vec::new(),
             suffix_support: Vec::new(),
             dynamic_from: Vec::new(),
-            ceiling: view.ceiling,
             joint: view.joint,
             fixed_roles: view.fixed_roles,
             joined: view.joined,
@@ -1172,47 +1345,60 @@ impl<'a> Problem<'a> {
         (restricted, table)
     }
 
-    /// The regime views of the scope that have a legal deck.
-    fn views(&self) -> Vec<RegimeView> {
-        Regime::all()
-            .filter_map(|regime| self.regime_view(regime))
-            .collect()
-    }
-
-    /// Searches every tier in one regime view of the scope.
+    /// Searches every tier in one regime of the scope, `power` its per-card
+    /// power bounds.
     ///
     /// The joint column costs a table pass and tightens only bound tests;
     /// the scope keeps it (`joined`) from its first regime whose search
     /// passes a multiple of `JOIN_AFTER` visited nodes with at least one
     /// bound prune per `JOIN_RATIO` feasibility prunes, and that regime is
     /// searched again with it.
+    #[allow(clippy::too_many_arguments)]
     fn solve(
         &self,
-        view: &mut RegimeView,
+        bounds: &RegimeBounds,
+        power: &Rc<[u32]>,
         joined: &mut bool,
         table: &mut SuffixTable,
         trackers: &mut [TopKTracker],
         budget: &mut SearchBudget,
         stats: &mut SearchStats,
     ) {
-        let ceiling = view.ceiling;
+        let ceiling = bounds.ceiling;
         let open = |tracker: &TopKTracker| {
             tracker
                 .cutoff()
                 .is_none_or(|cutoff| ceiling >= cutoff as u32)
         };
-        if !trackers.iter().any(open) {
+        // A tier is wanted while its cutoff allows the regime and some
+        // diversity class of the regime may still reach it.
+        let diversity = self.diversity_classes(bounds.regime.shares_attr());
+        let wanted = |tier: usize, tracker: &TopKTracker| {
+            open(tracker)
+                && diversity
+                    .iter()
+                    .any(|&(extra_ticks, _)| !self.excluded(tier, extra_ticks))
+        };
+        if !trackers
+            .iter()
+            .enumerate()
+            .any(|(tier, tracker)| wanted(tier, tracker))
+        {
             stats.diagnostics.regimes_pruned += 1;
             return;
         }
         stats.diagnostics.regimes_searched += 1;
+        let mut view = self.regime_view(bounds, Rc::clone(power));
         table.fit(self);
         loop {
             if *joined {
-                self.join(view);
+                self.join(&mut view);
             }
-            let view = &*view;
-            table.build(self, view, *joined);
+            let view = &view;
+            table.find_root_sums(self, view);
+            #[cfg(debug_assertions)]
+            self.check_root_sums(view, table, *joined);
+            let mut built = false;
             // Only a diversity class whose largest attribute count is below
             // five limits the attributes of the completions.
             let limits = view
@@ -1241,16 +1427,32 @@ impl<'a> Problem<'a> {
                         stats.ub_prunes += 1;
                         continue;
                     }
+                    let target_ticks = i64::from(self.targets[tier]) * 10 * self.scale;
+                    let reaches = self
+                        .needed(view, target_ticks, extra_ticks, &State::root(), None)
+                        .is_some_and(|(low, high)| table.reaches_root(low, high));
                     if self.excluded(tier, extra_ticks) {
+                        debug_assert!(
+                            !reaches || !self.unreachable.contains(&(tier, extra_ticks)),
+                            "a regime reaches a pair its scope excludes"
+                        );
                         stats.feasibility_prunes += 1;
                         continue;
+                    }
+                    if !reaches {
+                        stats.feasibility_prunes += 1;
+                        continue;
+                    }
+                    if !built {
+                        table.build(self, view, *joined);
+                        built = true;
                     }
                     let certify_at = self.certify_at(stats.visited_nodes);
                     let mut search = TierSearch {
                         problem: self,
                         view,
                         table: &*table,
-                        target_ticks: i64::from(self.targets[tier]) * 10 * self.scale,
+                        target_ticks,
                         extra_ticks,
                         counts,
                         tier,
@@ -1281,12 +1483,58 @@ impl<'a> Problem<'a> {
     }
 }
 
+/// A regime of one scope with a legal deck, before its view is built.
+#[derive(Clone, Copy, Debug)]
+struct RegimeBounds {
+    regime: Regime,
+    /// Largest power sum, skill sum and single skill of the regime's decks
+    /// from the per-group maxima.
+    power: u32,
+    skill: u32,
+    leader: u32,
+    /// Live-score ceiling of every deck of the regime.
+    ceiling: u32,
+}
+
+/// Per-card power bounds of the composition regimes. A card's bound depends
+/// on its regime only through the regime's member keys, so each key set has
+/// one array, shared by every scope.
+struct RegimePowers {
+    kinds: Vec<(u8, Rc<[u32]>)>,
+}
+
+impl RegimePowers {
+    fn new(pool: &CardPool) -> Self {
+        let mut kinds: Vec<(u8, Rc<[u32]>)> = Vec::new();
+        for keys in Regime::all().map(Regime::member_keys) {
+            if kinds.iter().all(|kind| kind.0 != keys) {
+                let power = pool
+                    .indices()
+                    .map(|card| power_over_keys(pool, card, keys))
+                    .collect();
+                kinds.push((keys, power));
+            }
+        }
+        Self { kinds }
+    }
+
+    fn of(&self, regime: Regime) -> &Rc<[u32]> {
+        let keys = regime.member_keys();
+        &self
+            .kinds
+            .iter()
+            .find(|kind| kind.0 == keys)
+            .expect("every regime's member keys have an array")
+            .1
+    }
+}
+
 struct RegimeView {
     /// Diversity classes `(bonus × 10, attribute-count mask)`; one class with
     /// an empty mask when there is no diversity bonus.
     diversity: Vec<(i64, u8)>,
-    /// Regime power bound per dense card; zero for cards the regime rejects.
-    power: Vec<u32>,
+    /// Regime power bound per dense card, read for the admitted cards.
+    power: Rc<[u32]>,
     /// Fixed roles in slot order, then the free groups in search order.
     groups: Vec<RegimeGroup>,
     /// `suffix_slack[position][count]`: largest slack `count` groups from
@@ -1299,7 +1547,6 @@ struct RegimeView {
     /// whose skill depends on the composition. Otherwise the frontier cannot
     /// improve on the suffix table, which already sums skill maxima.
     dynamic_from: Vec<bool>,
-    ceiling: u32,
     joint: Option<JointCeiling>,
     /// Number of fixed roles leading `groups`.
     fixed_roles: usize,
@@ -1439,6 +1686,20 @@ struct SuffixTable {
     /// Raw layers of the counting states while a table is built.
     current: Layer,
     next: Layer,
+    sums: RootSums,
+}
+
+/// Reachable key sums of five cards at a table's first position, in bit
+/// rows of every counting state.
+#[derive(Default)]
+struct RootSums {
+    /// Rows of the last and the current position; every row spans as many
+    /// words as the widest one.
+    current: Vec<u64>,
+    next: Vec<u64>,
+    /// The sums of the root query: the whole capacity open and no positive
+    /// limited card left uncounted.
+    root: Vec<u64>,
 }
 
 /// Raw suffix layer: `(count, counted, uncounted)` rows in block layout.
@@ -1741,6 +2002,104 @@ impl SuffixTable {
     #[inline]
     fn index(&self, position: usize, count: usize, capacity: usize, mode: usize) -> usize {
         position * self.block + self.row(count, capacity, mode)
+    }
+
+    /// Finds the sums that [`Self::best`] reaches at the first position with
+    /// five cards and the whole capacity open, without building the table:
+    /// bit rows of `(count, counted, uncounted)` take the steps of
+    /// [`Self::build_in_place`] and [`Self::build_counted`], so a sum is set
+    /// exactly when the table holds its entry, and the root row joins the
+    /// states [`Self::aggregate`] joins.
+    fn find_root_sums(&mut self, problem: &Problem<'_>, view: &RegimeView) {
+        let (capacities, modes) = (self.capacities, self.modes);
+        let words = self.widths[DECK_SIZE].div_ceil(64);
+        let row = move |count: usize, counted: usize, uncounted: usize| {
+            ((count * capacities + counted) * modes + uncounted) * words
+        };
+        let sums = &mut self.sums;
+        let len = row(COUNTS, 0, 0);
+        sums.next.clear();
+        sums.next.resize(len, 0);
+        sums.current.clear();
+        sums.current.resize(len, 0);
+        sums.next[row(0, 0, 0)] = 1;
+        let unit = i64::from(problem.unit);
+        for group in view.groups.iter().rev() {
+            if group.mandatory {
+                sums.current.fill(0);
+            } else {
+                sums.current.copy_from_slice(&sums.next);
+            }
+            for class in &group.classes {
+                let fixed = ((i64::from(class.key_ticks) + problem.offset_ticks) / unit) as usize;
+                let limited = (i64::from(class.limited_ticks) / unit) as usize;
+                for count in 1..COUNTS {
+                    let width = self.widths[count];
+                    for counted in 0..capacities {
+                        for uncounted in 0..modes {
+                            let target = row(count, counted, uncounted);
+                            let mut apply = |origin: usize, shift: usize| {
+                                or_shifted(
+                                    &mut sums.current[target..target + words],
+                                    &sums.next[origin..origin + words],
+                                    shift,
+                                    width,
+                                );
+                            };
+                            if limited == 0 {
+                                apply(row(count - 1, counted, uncounted), fixed);
+                                continue;
+                            }
+                            if counted > 0 {
+                                apply(row(count - 1, counted - 1, uncounted), fixed + limited);
+                            }
+                            if uncounted == 1 {
+                                for from in 0..modes {
+                                    apply(row(count - 1, counted, from), fixed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            std::mem::swap(&mut sums.current, &mut sums.next);
+        }
+        let capacity = capacities - 1;
+        let first = row(DECK_SIZE, capacity, 0);
+        sums.root.clear();
+        sums.root
+            .extend_from_slice(&sums.next[first..first + words]);
+        if modes > 1 {
+            let others = (0..capacity)
+                .map(|counted| row(DECK_SIZE, counted, 0))
+                .chain([row(DECK_SIZE, capacity, 1)]);
+            for other in others {
+                for (out, &bits) in sums.root.iter_mut().zip(&sums.next[other..other + words]) {
+                    *out |= bits;
+                }
+            }
+        }
+    }
+
+    /// Whether some sum in `low..=high` is a root sum of
+    /// [`Self::find_root_sums`], which is when [`Self::best`] finds an entry
+    /// there at the root.
+    fn reaches_root(&self, low: usize, high: usize) -> bool {
+        let high = high.min(self.widths[DECK_SIZE] - 1);
+        if low > high {
+            return false;
+        }
+        let (first, last) = (low / 64, high / 64);
+        (first..=last).any(|index| {
+            let mut bits = self.sums.root[index];
+            if index == first {
+                bits &= u64::MAX << (low % 64);
+            }
+            if index == last {
+                bits &= u64::MAX >> (63 - high % 64);
+            }
+            bits != 0
+        })
     }
 
     fn aggregate(&mut self, position: usize, layer: &Layer) {
@@ -2159,6 +2518,30 @@ struct State {
     dynamic_len: u8,
 }
 
+impl State {
+    /// No group decided and no card selected.
+    fn root() -> Self {
+        Self {
+            position: 0,
+            picked: 0,
+            counted: 0,
+            uncounted: false,
+            attrs: 0,
+            characters: CharacterSet::default(),
+            key_ticks: 0,
+            slack_ticks: 0,
+            support: 0,
+            power: 0,
+            skill: 0,
+            leader: 0,
+            fixed_leader: 0,
+            composition: Composition::default(),
+            dynamic: [CardIdx::new(0); DECK_SIZE],
+            dynamic_len: 0,
+        }
+    }
+}
+
 /// Search counters when a regime's search began, and the visited-node count
 /// of the next test whether it gains the joint column.
 #[derive(Clone, Copy, Debug)]
@@ -2221,24 +2604,7 @@ struct TierSearch<'s, 'a> {
 
 impl<'s> TierSearch<'s, '_> {
     fn run(&mut self) {
-        let root = State {
-            position: 0,
-            picked: 0,
-            counted: 0,
-            uncounted: false,
-            attrs: 0,
-            characters: CharacterSet::default(),
-            key_ticks: 0,
-            slack_ticks: 0,
-            support: 0,
-            power: 0,
-            skill: 0,
-            leader: 0,
-            fixed_leader: 0,
-            composition: Composition::default(),
-            dynamic: [CardIdx::new(0); DECK_SIZE],
-            dynamic_len: 0,
-        };
+        let root = State::root();
         match self.bound(&root) {
             None => self.stats.feasibility_prunes += 1,
             Some(bound) if bound.upper < self.threshold() => self.stats.ub_prunes += 1,
@@ -2254,63 +2620,22 @@ impl<'s> TierSearch<'s, '_> {
             .map_or(0, |cutoff| cutoff as u32)
     }
 
-    /// Deck-level terms of every completion of `state`, in ticks: the
-    /// support excess is subtracted from the lower end.
-    #[inline]
-    fn extra_range(&self, state: &State) -> (i64, i64) {
-        let Some(extras) = &self.problem.extras else {
-            return (0, 0);
-        };
-        if !extras.bounded {
-            return UNBOUNDED;
-        }
-        let base = match &extras.by_leader {
-            Some(by_leader) if state.picked > 0 => {
-                by_leader[usize::from(self.problem.pool.char_id(self.deck[0]))]
-            }
-            _ => extras.base,
-        };
-        let remaining = DECK_SIZE - usize::from(state.picked);
-        let displaced =
-            state.support + self.view.suffix_support[usize::from(state.position)][remaining];
-        let excess = extras.excess[(displaced as usize).min(extras.excess.len() - 1)];
-        (
-            self.extra_ticks + base.0 - excess,
-            self.extra_ticks + base.1,
+    /// Inclusive range of the suffix's shifted key sum (in units) that can
+    /// still complete `state` to the tier, or `None` when none can.
+    #[inline(always)]
+    fn needed(&self, state: &State) -> Option<(usize, usize)> {
+        let leader = (state.picked > 0).then(|| self.deck[0]);
+        self.problem.needed(
+            self.view,
+            self.target_ticks,
+            self.extra_ticks,
+            state,
+            leader,
         )
     }
 
-    /// Inclusive range of the suffix's shifted key sum (in units) that can
-    /// still complete `state` to the tier, or `None` when none can.
-    #[inline]
-    fn needed(&self, state: &State) -> Option<(usize, usize)> {
-        let problem = self.problem;
-        let unit = i64::from(problem.unit);
-        let remaining = DECK_SIZE - usize::from(state.picked);
-        let (extra_low, extra_high) = self.extra_range(state);
-        // With exact slack the selected cards contribute exactly their key
-        // plus slack sum; otherwise their slack only widens the interval.
-        let (known, uncertain) = if problem.exact_slack {
-            (i64::from(state.slack_ticks), 0)
-        } else {
-            (0, i64::from(state.slack_ticks))
-        };
-        let rest = self.target_ticks - i64::from(state.key_ticks) - known;
-        let shift = remaining as i64 * problem.offset_ticks;
-        let high = rest - extra_low + shift;
-        if high < 0 {
-            return None;
-        }
-        let slack =
-            uncertain + i64::from(self.view.suffix_slack[usize::from(state.position)][remaining]);
-        let low = rest - extra_high - slack + shift;
-        let high_units = (high / unit).min(problem.max_units as i64);
-        let low_units = if low <= 0 { 0 } else { (low + unit - 1) / unit };
-        (low_units <= high_units).then_some((low_units as usize, high_units as usize))
-    }
-
     /// Suffix maxima over every completion of `state` that can hit the tier.
-    #[inline]
+    #[inline(always)]
     fn suffix(&self, state: &State) -> Option<Maxima> {
         let (low, high) = self.needed(state)?;
         let capacity = self.problem.counting.capacity() - state.counted;

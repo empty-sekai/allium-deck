@@ -1028,6 +1028,20 @@ reaches a larger one.
 The fixed roles are treated in the table as if their limited bonus could be
 counted or not; this only enlarges the selection set.
 
+**Root sums.** Before a regime's table is built, bit rows indexed like its
+rows by card count, counting state and shifted sum run the same recurrence
+without the maxima, so a bit is set exactly when the table's entry is
+reachable, and the root query of §17.5 (position 0, five cards, the whole
+capacity open, mode 0) joins the same rows. A tier and diversity class whose
+interval at the root holds no set bit has no deck in the regime; the table
+is built only when some requested pair holds one. The regime `Mixed` admits
+every card of the scope, so its groups and cards contain those of every
+regime of the scope: its root sums contain theirs, and its
+$\sigma^{\max}_0(5)$ and $q^{\max}_0(5)$ are the largest, so its root
+interval contains theirs. A pair its root sums miss has no deck in any regime
+of the scope, and a regime is searched only while some tier's cutoff admits
+it with a diversity class not proven so.
+
 ### 17.4 First-N limited counting
 
 When the event counts limited bonuses only for the first $N<5$ positive
@@ -1986,6 +2000,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | WL attribute matching | search/suffix.rs | every legal novel-attribute set induces a matching |
 | WL support upper bound | search/suffix.rs, Final helpers | support can only stay or decrease as main deck grows |
 | Exact bonus tiers | search/solver/bonus_tiers.rs, search/skill_ceiling.rs | per-card key and slack, exact reachable-sum suffix table per regime, per-tier live ceiling with composition-aware selected skills and suffix skill frontier; at a diversity class's largest attribute count, the regime restricted to the attributes held |
+| Root sums | search/solver/bonus_tiers.rs | the table's reachable root entries from bit rows before the table; the all-card regime's root proves pairs for the whole scope |
 | Joint power-skill ceiling | search/solver/bonus_tiers.rs, search/objective.rs | the live-score product peaks on the box of separate maxima cut by the joint half-plane |
 | Tier certificate | search/solver/bonus_tiers.rs | exact totals under one whole-tick support profile: reachability over card count, removed entries, counting state and sum, completed by every subset of the cards holding refill positions |
 | Final member dominance | search/dominance.rs, search/alternatives.rs | member-role substitution + legal leader rotations |
@@ -2021,7 +2036,7 @@ independent checks designed to expose a violated premise.
 | Event Score cutoff | exact_score.rs cutoff against the packed comparison over every event live type |
 | Dominance | exact_dominance.rs, dominance_contract.rs, exact_world_bloom.rs |
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
-| Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views and tier certificates from the first node), exact_bonus.rs, fractional_bonus.rs; solver/bonus_tiers.rs unit test — the refill of the removed and held entries is the evaluator's support loss beyond the card losses |
+| Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views and tier certificates from the first node), exact_bonus.rs, fractional_bonus.rs; solver/bonus_tiers.rs unit test — the refill of the removed and held entries is the evaluator's support loss beyond the card losses; debug builds compare every regime's root sums with its table's root entries and each scope exclusion with the regime's root |
 | Joint power-skill ceiling | exact_score.rs — the live product dominates the live ceiling for every live type and skill order that has one; solver/bonus_tiers.rs unit test — the joint peak dominates every selection in the box and half-plane and never exceeds the box corner |
 | Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |
