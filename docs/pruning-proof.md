@@ -967,7 +967,9 @@ Cards with equal key, slack, displaced count and limited bonus share one
 table item with their componentwise maxima, which can only raise entries.
 Sums above the largest value any hitting deck can need are dropped: with
 bounded deck terms ($E_{lo}\ge -1$ tenth) a hitting deck has
-$\sum\kappa\le 10T_{\max}+1+\max_q\xi(q)$.
+$\sum\kappa\le 10T_{\max}+1+\max_q\xi(q)$. A row of $r$ cards stores only
+the sums up to $r$ times the largest shifted key; no selection of $r$ cards
+reaches a larger one.
 
 The fixed roles are treated in the table as if their limited bonus could be
 counted or not; this only enlarges the selection set.

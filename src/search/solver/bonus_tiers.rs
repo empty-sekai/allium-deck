@@ -428,6 +428,8 @@ struct Problem<'a> {
     offset_ticks: i64,
     /// Largest shifted key sum the table represents, in units.
     max_units: usize,
+    /// Largest shifted key of one card, in units.
+    widest_units: usize,
     bonus: Vec<CardBonus>,
     groups: Vec<Group>,
     extras: Option<Extras>,
@@ -531,6 +533,9 @@ impl<'a> Problem<'a> {
         let unit_i = i64::from(unit);
         let offset_ticks = (-lowest_key + unit_i - 1) / unit_i * unit_i;
         group_max.sort_unstable_by(|left, right| right.cmp(left));
+        let widest_units = group_max
+            .first()
+            .map_or(0, |best| ((best + offset_ticks).max(0) / unit_i) as usize);
         let reachable = group_max
             .iter()
             .take(DECK_SIZE)
@@ -564,6 +569,7 @@ impl<'a> Problem<'a> {
             unit,
             offset_ticks,
             max_units,
+            widest_units,
             bonus,
             groups,
             extras,
@@ -914,6 +920,7 @@ impl<'a> Problem<'a> {
             .filter_map(|regime| self.regime_view(regime))
             .collect::<Vec<_>>();
         views.sort_by_key(|view| std::cmp::Reverse(view.ceiling));
+        let mut table = SuffixTable::new(self);
         for view in &views {
             if budget.expired() {
                 return;
@@ -928,7 +935,7 @@ impl<'a> Problem<'a> {
                 continue;
             }
             stats.diagnostics.regimes_searched += 1;
-            let table = SuffixTable::build(self, view);
+            table.build(self, view);
             for tier in 0..self.targets.len() {
                 for &(extra_ticks, counts) in &view.diversity {
                     if budget.expired() {
@@ -988,16 +995,28 @@ struct RegimeView {
 /// positive limited card uncounted, or counts exactly `capacity`; mode 1 (the
 /// prefix already left a positive limited card uncounted) requires exactly
 /// `capacity`.
+///
+/// A row of `count` remaining cards holds the key sums below
+/// `widths[count]`: a card adds at most `widest_units`, and sums past the
+/// table width cannot hit a tier. One position's rows form a block; the
+/// storage is reused from regime to regime.
 struct SuffixTable {
-    width: usize,
     capacities: usize,
     modes: usize,
+    widths: [usize; COUNTS],
+    /// Offset of each count's rows inside a block.
+    starts: [usize; COUNTS],
+    block: usize,
     power: Vec<i32>,
     skill: Vec<i16>,
     leader: Vec<i16>,
+    /// Raw layers of the counting states while a table is built.
+    current: Layer,
+    next: Layer,
 }
 
-/// Raw suffix layer: `(count, counted, uncounted)` states over key sums.
+/// Raw suffix layer: `(count, counted, uncounted)` rows in block layout.
+#[derive(Default)]
 struct Layer {
     power: Vec<i32>,
     skill: Vec<i16>,
@@ -1005,18 +1024,13 @@ struct Layer {
 }
 
 impl Layer {
-    fn new(len: usize) -> Self {
-        Self {
-            power: vec![NO_POWER; len],
-            skill: vec![NO_SKILL; len],
-            leader: vec![NO_SKILL; len],
-        }
-    }
-
-    fn clear(&mut self) {
-        self.power.fill(NO_POWER);
-        self.skill.fill(NO_SKILL);
-        self.leader.fill(NO_SKILL);
+    fn clear(&mut self, len: usize) {
+        self.power.clear();
+        self.power.resize(len, NO_POWER);
+        self.skill.clear();
+        self.skill.resize(len, NO_SKILL);
+        self.leader.clear();
+        self.leader.resize(len, NO_SKILL);
     }
 
     fn copy_from(&mut self, other: &Self) {
@@ -1027,83 +1041,178 @@ impl Layer {
 }
 
 /// `destination[b] = max(destination[b], source[b - shift] + class)` over
-/// one key row, componentwise and only from reachable source entries.
+/// one key row, componentwise and only from reachable source entries. The
+/// rows may differ in width; sums past the destination row are dropped.
 #[inline]
 fn relax(
-    destination: &mut Layer,
-    target: usize,
-    source: &Layer,
-    origin: usize,
-    width: usize,
+    destination: (&mut [i32], &mut [i16], &mut [i16]),
+    source: (&[i32], &[i16], &[i16]),
     shift: usize,
     class: &Class,
 ) {
-    if shift >= width {
+    let (out_power, out_skill, out_leader) = destination;
+    let (in_power, in_skill, in_leader) = source;
+    if shift >= out_power.len() {
         return;
     }
-    let len = width - shift;
+    let len = in_power.len().min(out_power.len() - shift);
     let (power, skill, leader) = (class.power as i32, class.skill as i16, class.leader as i16);
-    let out_power = &mut destination.power[target + shift..target + shift + len];
-    let in_power = &source.power[origin..origin + len];
-    for (out, &value) in out_power.iter_mut().zip(in_power) {
+    for (out, &value) in out_power[shift..shift + len]
+        .iter_mut()
+        .zip(&in_power[..len])
+    {
         *out = (*out).max(value + power);
     }
-    let out_skill = &mut destination.skill[target + shift..target + shift + len];
-    let in_skill = &source.skill[origin..origin + len];
-    for (out, &value) in out_skill.iter_mut().zip(in_skill) {
+    for (out, &value) in out_skill[shift..shift + len]
+        .iter_mut()
+        .zip(&in_skill[..len])
+    {
         *out = (*out).max(value + skill);
     }
-    let out_leader = &mut destination.leader[target + shift..target + shift + len];
-    let in_leader = &source.leader[origin..origin + len];
-    for (out, &value) in out_leader.iter_mut().zip(in_leader) {
+    for (out, &value) in out_leader[shift..shift + len]
+        .iter_mut()
+        .zip(&in_leader[..len])
+    {
         // A negative (unreachable) source stays negative.
         *out = (*out).max(value.max(leader | (value >> 15)));
     }
 }
 
-fn max_into(out: &mut [i32], values: &[i32]) {
-    for (out, &value) in out.iter_mut().zip(values) {
-        *out = (*out).max(value);
-    }
-}
-
-fn max_into_i16(out: &mut [i16], values: &[i16]) {
+fn max_into<T: Copy + Ord>(out: &mut [T], values: &[T]) {
     for (out, &value) in out.iter_mut().zip(values) {
         *out = (*out).max(value);
     }
 }
 
 impl SuffixTable {
-    fn build(problem: &Problem<'_>, view: &RegimeView) -> Self {
+    fn new(problem: &Problem<'_>) -> Self {
         let width = problem.max_units + 1;
         let (capacities, modes) = match problem.counting {
             Counting::All => (1, 1),
             Counting::FirstN(cap) => (usize::from(cap) + 1, 2),
         };
-        let states = COUNTS * capacities * modes;
-        let positions = view.groups.len() + 1;
-        let block = states * width;
-        let mut table = Self {
-            width,
+        let mut widths = [0; COUNTS];
+        let mut starts = [0; COUNTS];
+        let mut block = 0;
+        for count in 0..COUNTS {
+            widths[count] = (count * problem.widest_units + 1).min(width);
+            starts[count] = block;
+            block += capacities * modes * widths[count];
+        }
+        Self {
             capacities,
             modes,
-            power: vec![NO_POWER; positions * block],
-            skill: vec![NO_SKILL; positions * block],
-            leader: vec![NO_SKILL; positions * block],
-        };
-        let raw = |count: usize, counted: usize, uncounted: usize| {
-            ((count * capacities + counted) * modes + uncounted) * width
-        };
-        let mut next = Layer::new(block);
-        let mut current = Layer::new(block);
-        next.power[raw(0, 0, 0)] = 0;
-        next.skill[raw(0, 0, 0)] = 0;
-        next.leader[raw(0, 0, 0)] = 0;
-        table.aggregate(view.groups.len(), &next);
+            widths,
+            starts,
+            block,
+            power: Vec::new(),
+            skill: Vec::new(),
+            leader: Vec::new(),
+            current: Layer::default(),
+            next: Layer::default(),
+        }
+    }
+
+    /// Offset of a row inside a block.
+    #[inline]
+    fn row(&self, count: usize, capacity: usize, mode: usize) -> usize {
+        self.starts[count] + (capacity * self.modes + mode) * self.widths[count]
+    }
+
+    /// Rebuilds the table for one regime.
+    fn build(&mut self, problem: &Problem<'_>, view: &RegimeView) {
+        // Every entry of the regime's positions is written below.
+        let len = (view.groups.len() + 1) * self.block;
+        if self.power.len() < len {
+            self.power.resize(len, NO_POWER);
+            self.skill.resize(len, NO_SKILL);
+            self.leader.resize(len, NO_SKILL);
+        }
+        if self.capacities == 1 && self.modes == 1 {
+            self.build_in_place(problem, view);
+        } else {
+            self.build_counted(problem, view);
+        }
+    }
+
+    /// Every card counts its whole bonus, so the only state is the card
+    /// count and each position's block is built from the next one directly.
+    fn build_in_place(&mut self, problem: &Problem<'_>, view: &RegimeView) {
+        let block = self.block;
+        let last = view.groups.len();
+        let tail = last * block..(last + 1) * block;
+        self.power[tail.clone()].fill(NO_POWER);
+        self.skill[tail.clone()].fill(NO_SKILL);
+        self.leader[tail].fill(NO_SKILL);
+        self.power[last * block] = 0;
+        self.skill[last * block] = 0;
+        self.leader[last * block] = 0;
+        let unit = i64::from(problem.unit);
+        for (position, group) in view.groups.iter().enumerate().rev() {
+            let split = (position + 1) * block;
+            let (head_power, tail_power) = self.power.split_at_mut(split);
+            let (head_skill, tail_skill) = self.skill.split_at_mut(split);
+            let (head_leader, tail_leader) = self.leader.split_at_mut(split);
+            let current = (
+                &mut head_power[position * block..],
+                &mut head_skill[position * block..],
+                &mut head_leader[position * block..],
+            );
+            let next = (
+                &tail_power[..block],
+                &tail_skill[..block],
+                &tail_leader[..block],
+            );
+            if group.mandatory {
+                current.0.fill(NO_POWER);
+                current.1.fill(NO_SKILL);
+                current.2.fill(NO_SKILL);
+            } else {
+                current.0.copy_from_slice(next.0);
+                current.1.copy_from_slice(next.1);
+                current.2.copy_from_slice(next.2);
+            }
+            for class in &group.classes {
+                let shift = ((i64::from(class.key_ticks) + problem.offset_ticks) / unit) as usize;
+                for count in 1..COUNTS {
+                    let target = self.starts[count]..self.starts[count] + self.widths[count];
+                    let origin =
+                        self.starts[count - 1]..self.starts[count - 1] + self.widths[count - 1];
+                    relax(
+                        (
+                            &mut current.0[target.clone()],
+                            &mut current.1[target.clone()],
+                            &mut current.2[target],
+                        ),
+                        (
+                            &next.0[origin.clone()],
+                            &next.1[origin.clone()],
+                            &next.2[origin],
+                        ),
+                        shift,
+                        class,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Limited bonuses count for the first `cap` cards: raw layers keep the
+    /// counted and uncounted states, aggregated into the table per position.
+    fn build_counted(&mut self, problem: &Problem<'_>, view: &RegimeView) {
+        let mut current = std::mem::take(&mut self.current);
+        let mut next = std::mem::take(&mut self.next);
+        current.clear(self.block);
+        next.clear(self.block);
+        let zero = self.row(0, 0, 0);
+        next.power[zero] = 0;
+        next.skill[zero] = 0;
+        next.leader[zero] = 0;
+        self.aggregate(view.groups.len(), &next);
         let unit = i64::from(problem.unit);
         for (position, group) in view.groups.iter().enumerate().rev() {
             if group.mandatory {
-                current.clear();
+                current.clear(self.block);
             } else {
                 current.copy_from(&next);
             }
@@ -1111,77 +1220,87 @@ impl SuffixTable {
                 let fixed = ((i64::from(class.key_ticks) + problem.offset_ticks) / unit) as usize;
                 let limited = (i64::from(class.limited_ticks) / unit) as usize;
                 for count in 1..COUNTS {
-                    for counted in 0..capacities {
-                        for uncounted in 0..modes {
-                            let target = raw(count, counted, uncounted);
+                    for counted in 0..self.capacities {
+                        for uncounted in 0..self.modes {
+                            let target = self.row(count, counted, uncounted);
+                            let mut apply = |origin: usize, shift: usize| {
+                                let target = target..target + self.widths[count];
+                                let origin = origin..origin + self.widths[count - 1];
+                                relax(
+                                    (
+                                        &mut current.power[target.clone()],
+                                        &mut current.skill[target.clone()],
+                                        &mut current.leader[target],
+                                    ),
+                                    (
+                                        &next.power[origin.clone()],
+                                        &next.skill[origin.clone()],
+                                        &next.leader[origin],
+                                    ),
+                                    shift,
+                                    class,
+                                );
+                            };
                             if limited == 0 {
-                                let origin = raw(count - 1, counted, uncounted);
-                                relax(&mut current, target, &next, origin, width, fixed, class);
+                                apply(self.row(count - 1, counted, uncounted), fixed);
                                 continue;
                             }
                             if counted > 0 {
-                                let origin = raw(count - 1, counted - 1, uncounted);
-                                relax(
-                                    &mut current,
-                                    target,
-                                    &next,
-                                    origin,
-                                    width,
-                                    fixed + limited,
-                                    class,
-                                );
+                                apply(self.row(count - 1, counted - 1, uncounted), fixed + limited);
                             }
                             if uncounted == 1 {
-                                for from in 0..modes {
-                                    let origin = raw(count - 1, counted, from);
-                                    relax(&mut current, target, &next, origin, width, fixed, class);
+                                for from in 0..self.modes {
+                                    apply(self.row(count - 1, counted, from), fixed);
                                 }
                             }
                         }
                     }
                 }
             }
-            table.aggregate(position, &current);
+            self.aggregate(position, &current);
             std::mem::swap(&mut current, &mut next);
         }
-        table
+        self.current = current;
+        self.next = next;
     }
 
+    #[inline]
     fn index(&self, position: usize, count: usize, capacity: usize, mode: usize) -> usize {
-        (((position * COUNTS + count) * self.capacities + capacity) * self.modes + mode)
-            * self.width
+        position * self.block + self.row(count, capacity, mode)
     }
 
     fn aggregate(&mut self, position: usize, layer: &Layer) {
-        let width = self.width;
-        let raw = |count: usize, counted: usize, uncounted: usize| {
-            ((count * self.capacities + counted) * self.modes + uncounted) * width
-        };
         let mut sources = Vec::with_capacity(self.capacities + 2);
         for count in 0..COUNTS {
+            let width = self.widths[count];
             for capacity in 0..self.capacities {
                 for mode in 0..self.modes {
                     let out = self.index(position, count, capacity, mode);
                     sources.clear();
-                    if self.modes == 1 {
-                        sources.push(raw(count, capacity, 0));
-                    } else if mode == 0 {
-                        sources.extend((0..=capacity).map(|counted| raw(count, counted, 0)));
-                        sources.push(raw(count, capacity, 1));
+                    if mode == 0 {
+                        sources.extend((0..=capacity).map(|counted| self.row(count, counted, 0)));
+                        sources.push(self.row(count, capacity, 1));
                     } else {
-                        sources.push(raw(count, capacity, 0));
-                        sources.push(raw(count, capacity, 1));
+                        sources.push(self.row(count, capacity, 0));
+                        sources.push(self.row(count, capacity, 1));
                     }
-                    for &source in &sources {
+                    let (first, rest) = sources.split_first().expect("a state has a source");
+                    self.power[out..out + width]
+                        .copy_from_slice(&layer.power[*first..*first + width]);
+                    self.skill[out..out + width]
+                        .copy_from_slice(&layer.skill[*first..*first + width]);
+                    self.leader[out..out + width]
+                        .copy_from_slice(&layer.leader[*first..*first + width]);
+                    for &source in rest {
                         max_into(
                             &mut self.power[out..out + width],
                             &layer.power[source..source + width],
                         );
-                        max_into_i16(
+                        max_into(
                             &mut self.skill[out..out + width],
                             &layer.skill[source..source + width],
                         );
-                        max_into_i16(
+                        max_into(
                             &mut self.leader[out..out + width],
                             &layer.leader[source..source + width],
                         );
@@ -1203,6 +1322,10 @@ impl SuffixTable {
         low: usize,
         high: usize,
     ) -> Option<(u32, u32, u32)> {
+        let high = high.min(self.widths[count] - 1);
+        if low > high {
+            return None;
+        }
         let base = self.index(position, count, capacity, mode);
         let mut best: Option<(u32, u32, u32)> = None;
         for sum in low..=high {
