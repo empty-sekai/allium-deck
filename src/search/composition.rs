@@ -34,15 +34,18 @@
 //! seeds are generated once on the whole pool and enter that tracker first. A
 //! regime is searched with the K-th objective already reached as an external
 //! floor; a branch strictly below that floor cannot enter the global Top-K
-//! because K distinct legal public sets at least that good are known. Seeds
+//! because K distinct legal public sets at least that good are known. A
+//! regime whose ceiling, or whose log-linear bound over the coupled power,
+//! skill and bonus of its cards, is below that cutoff is skipped. Seeds
 //! whose cards are all admitted by a regime are also handed to its search as
 //! ordering hints; they are never needed for completeness.
 
 use super::budget::SearchBudget;
 use super::dfs::canonicalize_seed_result;
+use super::log_linear::{FeatureBox, LogLinearBound};
 use super::objective::ObjectiveBound;
 use super::tracker::TopKTracker;
-use super::{DeckResult, SearchContext, SearchParams, SearchStats};
+use super::{DeckResult, SearchContext, SearchParams, SearchStats, SupportDeck};
 use crate::pool::{CardIdx, CardPool};
 use crate::search::evaluate::decode_u18;
 use crate::types::DECK_SIZE;
@@ -123,17 +126,22 @@ pub(super) fn power_over_keys(pool: &CardPool, card: CardIdx, keys: u8) -> u32 {
     best
 }
 
-struct RegimePlan {
+pub(super) struct RegimePlan {
     order: usize,
-    keep: Vec<bool>,
-    power_bound: Vec<u32>,
-    ceiling: u64,
+    pub(super) keep: Vec<bool>,
+    pub(super) power_bound: Vec<u32>,
+    pub(super) ceiling: u64,
+    /// Features of every deck of the regime.
+    feature_box: FeatureBox,
+    /// The part of every deck's extra bonus that does not depend on its
+    /// leader.
+    shared_extra: u32,
 }
 
 impl RegimePlan {
     /// Admitted cards, their regime power bounds and an admissible ceiling on
     /// every deck of the regime, or `None` when the regime has no legal deck.
-    fn new(
+    pub(super) fn new(
         pool: &CardPool,
         ctx: &SearchContext,
         objective: &ObjectiveBound,
@@ -149,6 +157,7 @@ impl RegimePlan {
         let mut characters = 0u32;
         let mut attrs = 0u8;
         let mut leader_bonus = 0u32;
+        let mut leader_skill_min = u32::MAX;
         // A same-character deck takes five distinct public cards instead.
         let unique = ctx.enforce_char_uniqueness;
         let mut cards = Vec::new();
@@ -165,6 +174,9 @@ impl RegimePlan {
             best_bonus[character] = best_bonus[character].max(pool.event_bonus(card).total_ceil());
             characters |= 1 << character;
             attrs |= 1 << pool.attr(card);
+            if may_lead(pool, ctx, card) {
+                leader_skill_min = leader_skill_min.min(u32::from(pool.skill_max(card)));
+            }
             if !unique {
                 cards.push((
                     pool.game_id(card),
@@ -210,7 +222,7 @@ impl RegimePlan {
             return None;
         }
 
-        let extra_bonus = if ctx.is_world_bloom {
+        let (shared_extra, support_extra) = if ctx.is_world_bloom {
             let attribute_count = if regime.shares_attr() {
                 1
             } else {
@@ -220,23 +232,111 @@ impl RegimePlan {
                 .map(|count| u32::from(ctx.diff_attr_bonus[count]))
                 .max()
                 .unwrap_or(0);
-            diversity + support_bonus_ceiling(ctx)
+            (diversity, support_bonus_ceiling(ctx))
         } else {
-            ctx.extra_bonus_ub
+            (ctx.extra_bonus_ub, 0)
         };
-        let ceiling = objective.ceiling(
-            power_sum,
-            bonus_sum + extra_bonus + leader_bonus,
-            skill_sum,
-            skill_peak,
-        );
+        let bonus = bonus_sum + shared_extra + support_extra + leader_bonus;
+        let ceiling = objective.ceiling(power_sum, bonus, skill_sum, skill_peak);
         Some(Self {
             order,
             keep,
             power_bound,
             ceiling,
+            feature_box: FeatureBox {
+                power: power_sum,
+                skill: skill_sum,
+                card_skill: skill_peak,
+                leader_skill_min,
+                leader_skill_max: skill_peak,
+                bonus,
+            },
+            shared_extra,
         })
     }
+
+    /// Whether the log-linear bound rules out every deck of the regime at the
+    /// event point of `threshold` (pruning-proof Section 13).
+    pub(super) fn log_linear_excludes(
+        &self,
+        pool: &CardPool,
+        ctx: &SearchContext,
+        objective: &ObjectiveBound,
+        threshold: u64,
+    ) -> bool {
+        if !ctx.enforce_char_uniqueness {
+            return false;
+        }
+        let threshold_ep = threshold >> 32;
+        let Some(bound) = LogLinearBound::new(objective, &self.feature_box, threshold_ep) else {
+            return false;
+        };
+        // Per character, the largest weight of a member card, and the
+        // largest weight of a card that leads, whose skill and
+        // leader-dependent bonus count once more.
+        let mut member = [0.0f64; CHARACTER_COUNT];
+        let mut leader = [f64::NEG_INFINITY; CHARACTER_COUNT];
+        for card in pool.indices().filter(|card| self.keep[card.raw()]) {
+            let character = usize::from(pool.char_id(card));
+            let skill = u32::from(pool.skill_max(card));
+            let weight = bound.weigh(
+                self.power_bound[card.raw()],
+                skill,
+                pool.event_bonus(card).total_ceil(),
+            );
+            member[character] = member[character].max(weight);
+            if may_lead(pool, ctx, card) {
+                let leading = weight
+                    + bound.leader_skill * f64::from(skill)
+                    + bound.bonus * f64::from(leader_extra(pool, ctx, card));
+                leader[character] = leader[character].max(leading);
+            }
+        }
+        let mut ranked: [usize; CHARACTER_COUNT] = core::array::from_fn(|character| character);
+        ranked.sort_unstable_by(|&left, &right| member[right].total_cmp(&member[left]));
+        let best = (0..CHARACTER_COUNT)
+            .filter(|&character| leader[character].is_finite())
+            .map(|character| {
+                leader[character]
+                    + ranked
+                        .iter()
+                        .filter(|&&other| other != character)
+                        .take(DECK_SIZE - 1)
+                        .map(|&other| member[other])
+                        .sum::<f64>()
+            })
+            .fold(f64::NEG_INFINITY, f64::max);
+        let value = bound.constant + bound.bonus * f64::from(self.shared_extra) + best;
+        bound.excludes(
+            value,
+            threshold_ep,
+            LogLinearBound::log_cutoff(threshold_ep),
+        )
+    }
+}
+
+/// Whether `card` may lead a deck: any card, or only one of the forced
+/// leader character.
+fn may_lead(pool: &CardPool, ctx: &SearchContext, card: CardIdx) -> bool {
+    ctx.forced_leader_character_id
+        .is_none_or(|character| pool.char_id(card) == character)
+}
+
+/// The part of a deck's extra bonus that depends on its leader `card`: its
+/// Final Chapter leader bonus and, under World Bloom, the support profile of
+/// its character.
+fn leader_extra(pool: &CardPool, ctx: &SearchContext, card: CardIdx) -> u32 {
+    let leader_bonus = if ctx.is_final_chapter {
+        ctx.leader_bonus_upper_at(card.raw())
+    } else {
+        0
+    };
+    let support = if ctx.is_world_bloom {
+        support_top(ctx.support_deck_for_leader(pool.char_id(card)))
+    } else {
+        0
+    };
+    leader_bonus + support
 }
 
 /// Fixed cards, fixed characters and a forced leader must all be admitted.
@@ -252,22 +352,25 @@ fn admits_constraints(pool: &CardPool, ctx: &SearchContext, keep: &[bool]) -> bo
             .all(|&character| admitted().any(|card| pool.char_id(card) == character))
 }
 
-/// The counted support entries of any one profile, rounded up. Profiles are
-/// stored in non-increasing bonus order, so the first `count` entries are the
-/// largest sum any main-deck exclusion can leave.
+/// The counted support entries of any one profile, rounded up.
 fn support_bonus_ceiling(ctx: &SearchContext) -> u32 {
     std::iter::once(&ctx.support_deck)
         .chain(&ctx.support_decks_by_character)
-        .map(|deck| {
-            deck.cards
-                .iter()
-                .take(usize::from(deck.count))
-                .map(|(_, bonus)| *bonus)
-                .sum::<f64>()
-                .ceil() as u32
-        })
+        .map(support_top)
         .max()
         .unwrap_or(0)
+}
+
+/// The first `count` entries of a support profile, rounded up. Profiles are
+/// stored in non-increasing bonus order, so this is the largest sum any
+/// main-deck exclusion can leave.
+fn support_top(deck: &SupportDeck) -> u32 {
+    deck.cards
+        .iter()
+        .take(usize::from(deck.count))
+        .map(|(_, bonus)| *bonus)
+        .sum::<f64>()
+        .ceil() as u32
 }
 
 /// Sum of the five largest per-character values.
@@ -323,7 +426,9 @@ pub(super) fn search_regimes(
             break;
         }
         let cutoff = tracker.rank_threshold(ctx.target);
-        if cutoff != 0 && plan.ceiling < cutoff {
+        if cutoff != 0
+            && (plan.ceiling < cutoff || plan.log_linear_excludes(pool, ctx, &objective, cutoff))
+        {
             stats.diagnostics.regimes_pruned += 1;
             continue;
         }

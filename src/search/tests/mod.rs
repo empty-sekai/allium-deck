@@ -16,6 +16,7 @@ mod performance;
 mod power_scenarios;
 mod property_bounds;
 mod property_matrix;
+mod regime_bounds;
 mod skill_composition;
 
 mod canonical_topk;

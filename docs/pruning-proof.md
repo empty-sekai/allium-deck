@@ -698,6 +698,36 @@ is dropped when the regime admits fewer than five characters (five public
 cards for a same-character search) or cannot satisfy a fixed card, fixed
 character or forced leader; it then has no feasible deck.
 
+*Regime log-linear test.* For the Score target of an event on a Solo, Auto or
+Multi live, a deck $D$ of $R$ with leader $\ell$ has power at most
+$\sum_{c\in D}b_R(c)$, skill at most the sum of its skill maxima $s_c$, leader
+skill at most $s_\ell$ and bonus at most $\sum_{c\in D}b_c+\epsilon+\epsilon_\ell$,
+where $b_c$ is the card-bonus ceiling, $\epsilon$ the part of the extra-bonus
+term that does not depend on the leader (the diversity bound under World
+Bloom, the context's extra-bonus bound otherwise) and $\epsilon_\ell$ the part
+that does: $\ell$'s Final Chapter leader bonus and, under World Bloom, the
+rounded-up first `count` entries of the support profile of $\ell$'s character,
+the largest sum any exclusion can leave. By the argument of the regime
+ceiling, the event point of the objective relaxation at these features bounds
+the deck's, and they lie in the box of the regime ceiling's inputs, whose
+smallest leader skill is the smallest skill maximum of a card that may lead
+(of the forced leader character when there is one). For the event point
+$\tau$ of the cutoff, Lemma LL3 with this box gives
+
+$$
+\ln E\le K+a_B\epsilon+\Bigl(w_\ell+a_Ls_\ell+a_B\epsilon_\ell\Bigr)+\sum_{c\in D\setminus\{\ell\}}w_c,
+\qquad w_c=a_Pb_R(c)+a_Ss_c+a_Bb_c,
+$$
+
+for every deck with $E\ge\tau$. The coefficients are non-negative and the
+five cards have distinct characters, so the right side is at most $K+a_B\epsilon$
+plus the largest, over characters $x$, of the best leader term of a card of $x$
+that may lead and the four largest per-character maxima of $w_c$ over the
+other characters. When that value is below $\ln\tau-10^{-9}$, no deck of $R$
+has an event point of $\tau$ or more, so every deck of $R$ is below the cutoff,
+and the regime is skipped. The sum has fewer than twenty terms, so the
+numerics of Section 18.8 apply. A same-character search makes no such test.
+
 **Shared tracker and external floor.** All regimes feed one canonical tracker
 in original pool indices. `restrict` preserves the relative order of dense
 indices, so remapping a regime result keeps every tie-break of the canonical
@@ -710,8 +740,9 @@ whose objective is strictly below $f$ cannot enter the global Top-K. Each
 regime search therefore starts its own tracker with $f$ as an external floor:
 its cutoff is the larger of its own K-th value and $f$, and the floor never
 evicts a result. Regimes are visited in non-increasing ceiling order, and a
-regime whose ceiling is strictly below the current cutoff is skipped: every
-deck of it is below the K-th known value. Equality is never pruned.
+regime whose ceiling is strictly below the current cutoff, or whose
+log-linear test rules it out, is skipped: every deck of it is below the K-th
+known value. Equality is never pruned.
 
 **Incumbents.** Before the first regime, warm-start seeds are generated once
 on the whole pool, canonicalized to their optimal legal placement and inserted
@@ -2056,7 +2087,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Complete-deck skill ceilings | search/dfs.rs, search/skill_ceiling.rs | composition-aware member ceilings with no member left |
 | Correlated Score bound | search/correlated.rs | linear relaxation + concave quadratic envelope |
 | Event independent bound | search/suffix.rs | monotonic formula over componentwise maxima |
-| Composition regimes | search/composition.rs, pool/card_pool.rs | per-regime member-key power bound, regime ceiling, shared tracker floor |
+| Composition regimes | search/composition.rs, pool/card_pool.rs | per-regime member-key power bound, regime ceiling, regime log-linear test, shared tracker floor |
 | SIMD threshold mask | simd.rs | vectorized scalar upper >= threshold |
 | WL attribute matching | search/suffix.rs | every legal novel-attribute set induces a matching |
 | WL support upper bound | search/suffix.rs, Final helpers | support can only stay or decrease as main deck grows |
@@ -2109,6 +2140,7 @@ independent checks designed to expose a violated premise.
 | Historical incomplete oracle | case7_audit.rs |
 | Numeric admissibility | numeric_soundness.rs, handler/capacity.rs unit tests |
 | Log-linear event-point bound | search/log_linear.rs unit tests against `ObjectiveBound::ceiling` for every supported live type and skill order |
+| Regime log-linear test | regime_bounds.rs — never rules out a regime at the exact score of its best deck, for Marathon, World Bloom and Final Chapter contexts under each event live type, with and without a forced leader |
 | Skill ceilings | skill_composition.rs — every bound on the search path of every deck dominates its key and member values; Skill and Score Top-K against the exhaustive oracle with unit-count, different-unit, reference and two-unit cards, and an equal-objective variant at the public-set equality rule |
 
 The permanent case7 fixture is important evidence for the methodology:
