@@ -287,7 +287,7 @@ pub(crate) fn dfs_search_with_budget(
                     continue;
                 }
             }
-            state.recurse(1, 0, &mut deck, used, partial, Some(leader));
+            state.recurse(1, 0, &mut deck, used, partial, Some(leader), false);
         }
     } else {
         state.recurse(
@@ -297,6 +297,7 @@ pub(crate) fn dfs_search_with_budget(
             UsedSet::new(),
             PartialDeck::default(),
             None,
+            false,
         );
     }
 
@@ -432,6 +433,7 @@ impl SearchState<'_> {
         used: UsedSet,
         partial: PartialDeck,
         fixed_leader: Option<CardIdx>,
+        bounded: bool,
     ) {
         if self.timed_out() {
             return;
@@ -454,8 +456,10 @@ impl SearchState<'_> {
             return;
         }
 
+        // A child that its parent's candidate tests bounded at this threshold
+        // is not tested again.
         let threshold = self.threshold();
-        if threshold != 0 {
+        if threshold != 0 && !bounded {
             let prunable = if matches!(self.ctx.target, ScoreTarget::Score) && self.ctx.has_event()
             {
                 let global = self.suffix.upper_bound_with_depth(depth, &used, &partial);
@@ -571,7 +575,7 @@ impl SearchState<'_> {
                 bonus: partial.bonus + bonus,
                 max_skill: partial.max_skill.max(self.pool.skill_max(card)),
             };
-            self.recurse(depth + 1, 0, deck, next_used, next, fixed_leader);
+            self.recurse(depth + 1, 0, deck, next_used, next, fixed_leader, false);
             if self.budget.hit {
                 return;
             }
@@ -647,6 +651,7 @@ impl SearchState<'_> {
                 next_used,
                 next_partial,
                 fixed_leader,
+                false,
             );
         }
     }
@@ -738,6 +743,7 @@ impl SearchState<'_> {
                 next_used,
                 next_partial,
                 fixed_leader,
+                false,
             );
         }
     }
@@ -969,9 +975,12 @@ impl SearchState<'_> {
                     skill: tight_skill,
                     leader: tight_leader,
                 };
-                if !self
-                    .cutoff
-                    .reaches(self.suffix.objective(), global, threshold)
+                // Under World Bloom the tight test below, with this candidate's
+                // own extra bonus, implies this one.
+                if world_bloom_parts.is_none()
+                    && !self
+                        .cutoff
+                        .reaches(self.suffix.objective(), global, threshold)
                 {
                     self.stats.ep_continue_prunes += 1;
                     continue;
@@ -1005,8 +1014,8 @@ impl SearchState<'_> {
                         slots,
                         extra_bonus_ub,
                     );
-                    if !self.cutoff.reaches(objective, tight, threshold)
-                        || !self.cutoff.reaches(objective, dense_inputs, threshold)
+                    if !self.cutoff.reaches(objective, dense_inputs, threshold)
+                        || !self.cutoff.reaches(objective, tight, threshold)
                     {
                         self.stats.ep_continue_prunes += 1;
                         continue;
@@ -1035,6 +1044,7 @@ impl SearchState<'_> {
                 next_used,
                 next_partial,
                 fixed_leader,
+                true,
             );
 
             let new_threshold = self.threshold();
@@ -1239,6 +1249,7 @@ impl SearchState<'_> {
             next_used,
             next_partial,
             None,
+            true,
         );
     }
 
@@ -1311,6 +1322,7 @@ impl SearchState<'_> {
                 next_used,
                 next_partial,
                 fixed_leader,
+                false,
             );
         }
     }

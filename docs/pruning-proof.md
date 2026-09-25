@@ -400,6 +400,9 @@ below $\tau$, the scan resumes at $e$.
 The dense-suffix break of Corollary 2 is checked by scan position rather than
 stride alignment, so a skip never lowers how often that check runs.
 
+A child that its parent's candidate tests bounded at the current threshold is
+not tested again when it is entered; omitting a test never removes a deck.
+
 ### 8.1 Complete-deck skill ceilings
 
 The depth-first search bounds every member's skill by its skill_max. At a
@@ -799,7 +802,13 @@ Each event-score layer computes the extra-bonus bound of any completion of its
 prefix once, from the matching bound of Section 15 and the support sum above,
 capped by the pool-wide fallback; the minimum of two admissible bounds is
 admissible by Lemma 1. The candidate, run and exclusion-aware ceilings of that
-layer use it in place of the fallback.
+layer use it in place of the fallback. A candidate's own extra-bonus bound
+reads the matching bound with the candidate's attribute and character taken
+and one slot fewer; a matching there extends by the candidate's own edge to a
+matching for the layer, so the attribute counts it allows lie within the
+layer's and the bound is at most the layer's. The exclusion-aware ceiling with
+it is therefore at most the one with the layer's bound, and only the former is
+tested.
 
 ## 17. Exact bonus tiers
 
