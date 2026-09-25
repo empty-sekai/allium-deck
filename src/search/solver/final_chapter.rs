@@ -8,9 +8,8 @@ use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
 use crate::search::context::{SearchContext, SupportDeck};
 use crate::search::dfs::SearchStats;
 use crate::search::log_linear::{FeatureBox, LogLinearBound};
-use crate::search::objective::{CeilingInputs, ScoreCutoff};
+use crate::search::objective::{CeilingInputs, ObjectiveBound, ScoreCutoff};
 use crate::search::skill_ceiling::{Composition, SkillCeiling};
-use crate::search::suffix::SuffixBound;
 use crate::search::types::{DeckResult, SearchParams};
 use crate::search::{placement, tracker::TopKTracker};
 
@@ -303,7 +302,12 @@ impl GroupWeightCache {
     /// 1/128 since the last attempt; returns whether it tried. A higher
     /// threshold narrows the chord and moves the tangent point closer to the
     /// decks that can still reach it.
-    fn refresh(&mut self, suffix: &SuffixBound, groups: &[CharGroup], threshold_ep: u64) -> bool {
+    fn refresh(
+        &mut self,
+        objective: &ObjectiveBound,
+        groups: &[CharGroup],
+        threshold_ep: u64,
+    ) -> bool {
         let Some(feature_box) = self.feature_box else {
             return false;
         };
@@ -311,7 +315,7 @@ impl GroupWeightCache {
             return false;
         }
         self.attempted = threshold_ep;
-        self.weights = LogLinearBound::new(suffix.objective(), &feature_box, threshold_ep)
+        self.weights = LogLinearBound::new(objective, &feature_box, threshold_ep)
             .map(|bound| GroupWeights::build(bound, groups));
         true
     }
@@ -771,7 +775,7 @@ fn search_leaders(
         return (Vec::new(), SearchStats::default());
     }
 
-    let suffix = SuffixBound::build(pool, ctx);
+    let objective = ObjectiveBound::from_context(ctx);
     // member 位图由 search_instrumented 统一计算（含支援惩罚维度与替代记录），
     // 经 ctx 透传；空位图等价全保留。
     let member_keep = ctx.final_chapter_member_keep.clone();
@@ -783,7 +787,7 @@ fn search_leaders(
             pool,
             ctx,
             params,
-            &suffix,
+            &objective,
             &member_keep,
             guard,
             tracker,
@@ -813,7 +817,7 @@ fn search_leaders(
         LeaderRange::of(ctx, &leaders),
     );
     if group_set.groups.len() >= MEMBER_COUNT {
-        let mut cutoff = ScoreCutoff::new(suffix.objective());
+        let mut cutoff = ScoreCutoff::new(&objective);
         let skill_ceilings = leaf_skill_ceilings(pool, ctx);
         // Exact path: every leader variant must remain reachable.  Heuristic
         // per-character caps are unsound under Final Chapter support occupancy,
@@ -825,7 +829,7 @@ fn search_leaders(
             }
             stats.diagnostics.leader_jobs += 1;
             let leader_ceiling = character_ceiling(
-                &suffix,
+                &objective,
                 ctx,
                 &group_set.suffix,
                 0,
@@ -857,7 +861,7 @@ fn search_leaders(
             CharacterSearchState::new(
                 pool,
                 ctx,
-                &suffix,
+                &objective,
                 &mut group_set,
                 leader_const,
                 &mut tracker,
@@ -880,7 +884,7 @@ fn search_auto_leaders_two_phase(
     pool: &CardPool,
     ctx: &SearchContext,
     params: &SearchParams,
-    suffix: &SuffixBound,
+    objective: &ObjectiveBound,
     member_keep: &[bool],
     guard: &mut DeadlineGuard,
     mut tracker: TopKTracker,
@@ -917,7 +921,7 @@ fn search_auto_leaders_two_phase(
             }
             stats.diagnostics.leader_jobs += 1;
             let ceiling = character_ceiling(
-                suffix,
+                objective,
                 ctx,
                 &tail,
                 0,
@@ -940,7 +944,7 @@ fn search_auto_leaders_two_phase(
     });
     // A leader character's group set is built when its first job runs.
     let mut group_sets: [Option<GroupSet>; 27] = Default::default();
-    let mut cutoff = ScoreCutoff::new(suffix.objective());
+    let mut cutoff = ScoreCutoff::new(objective);
     let skill_ceilings = leaf_skill_ceilings(pool, ctx);
     for job in jobs {
         if guard.expired() {
@@ -969,7 +973,7 @@ fn search_auto_leaders_two_phase(
         // The character's own table reads a subset of the cards and groups
         // behind the job ceiling, so it bounds the job at least as tightly.
         let ceiling = character_ceiling(
-            suffix,
+            objective,
             ctx,
             &group_set.suffix,
             0,
@@ -999,7 +1003,7 @@ fn search_auto_leaders_two_phase(
         CharacterSearchState::new(
             pool,
             ctx,
-            suffix,
+            objective,
             group_set,
             job.leader,
             &mut tracker,
@@ -1217,7 +1221,7 @@ fn build_leader_const(pool: &CardPool, ctx: &SearchContext, leader: CardIdx) -> 
 struct CharacterSearchState<'a> {
     pool: &'a CardPool,
     ctx: &'a SearchContext,
-    suffix: &'a SuffixBound,
+    objective: &'a ObjectiveBound,
     groups: &'a [CharGroup],
     group_suffix: &'a [GroupCeilingTail],
     tails: &'a AttributeTails,
@@ -1246,7 +1250,7 @@ impl<'a> CharacterSearchState<'a> {
     fn new(
         pool: &'a CardPool,
         ctx: &'a SearchContext,
-        suffix: &'a SuffixBound,
+        objective: &'a ObjectiveBound,
         group_set: &'a mut GroupSet,
         leader: LeaderConst,
         tracker: &'a mut TopKTracker,
@@ -1263,7 +1267,7 @@ impl<'a> CharacterSearchState<'a> {
         Self {
             pool,
             ctx,
-            suffix,
+            objective,
             groups: &group_set.groups,
             group_suffix: &group_set.suffix,
             tails: &group_set.tails,
@@ -1682,8 +1686,7 @@ impl CharacterSearchState<'_> {
     /// Whether the ceiling with `inputs` reaches `threshold`.
     #[inline(always)]
     fn reaches(&mut self, inputs: CeilingInputs, threshold: u64) -> bool {
-        self.cutoff
-            .reaches(self.suffix.objective(), inputs, threshold)
+        self.cutoff.reaches(self.objective, inputs, threshold)
     }
 
     /// Candidate ceiling of `entry`, or `None` when a bound over the rest of
@@ -1702,7 +1705,7 @@ impl CharacterSearchState<'_> {
         threshold: u64,
     ) -> Option<u64> {
         let leader_skill = self.leader.skill;
-        let objective = self.suffix.objective();
+        let objective = self.objective;
         let rest = selected_card_inputs(
             self.ctx,
             plan,
@@ -1753,7 +1756,7 @@ impl CharacterSearchState<'_> {
     fn refresh_weights(&mut self, threshold: u64) {
         if self
             .weights
-            .refresh(self.suffix, self.groups, threshold >> 32)
+            .refresh(self.objective, self.groups, threshold >> 32)
         {
             self.leader_weight = self
                 .weights
@@ -1859,7 +1862,7 @@ impl CharacterSearchState<'_> {
             return candidate_ub;
         }
         selected_card_ceiling_from_partial(
-            self.suffix,
+            self.objective,
             self.ctx,
             plan,
             depth + 1,
@@ -1892,7 +1895,7 @@ fn group_card_order_before(groups: &[CharGroup], left: usize, right: usize) -> b
 }
 
 fn character_ceiling(
-    suffix: &SuffixBound,
+    objective: &ObjectiveBound,
     ctx: &SearchContext,
     group_suffix: &[GroupCeilingTail],
     start: usize,
@@ -1900,7 +1903,7 @@ fn character_ceiling(
     prefix: &CharacterPrefix,
     leader: &LeaderConst,
 ) -> u64 {
-    suffix.objective().ceiling_of(character_ceiling_inputs(
+    objective.ceiling_of(character_ceiling_inputs(
         ctx,
         group_suffix,
         start,
@@ -2027,14 +2030,14 @@ fn final_chapter_ceiling_skill(ctx: &SearchContext, leader_skill: u32, skill_pea
 }
 
 fn selected_card_ceiling_from_partial(
-    suffix: &SuffixBound,
+    objective: &ObjectiveBound,
     ctx: &SearchContext,
     plan: &CardGroupPlan,
     chosen: usize,
     partial: &CardPartial,
     leader_skill: u32,
 ) -> u64 {
-    suffix.objective().ceiling_of(selected_card_inputs(
+    objective.ceiling_of(selected_card_inputs(
         ctx,
         plan,
         chosen,
@@ -2468,9 +2471,9 @@ mod skill_ceiling_tests {
                 let actual = crate::search::evaluate::leaf_evaluate_checked(&pool, &ctx, &deck)
                     .expect("the five-character fixture is legal");
                 assert_eq!(actual as u32, 6_720_000);
-                let suffix = SuffixBound::build(&pool, &ctx);
+                let objective = ObjectiveBound::from_context(&ctx);
                 if order != LiveSkillOrder::Average {
-                    let invalid = suffix.objective().ceiling(336_000, 0, 400, 0);
+                    let invalid = objective.ceiling(336_000, 0, 400, 0);
                     assert_eq!(invalid as u32, 1_344_000);
                     assert!(
                         invalid < actual,
@@ -2500,7 +2503,7 @@ mod skill_ceiling_tests {
                             .unwrap_or(0),
                     );
                     let upper = character_ceiling(
-                        &suffix,
+                        &objective,
                         &ctx,
                         &group_suffix,
                         chosen,
@@ -2513,7 +2516,7 @@ mod skill_ceiling_tests {
                         "character stage live={live:?} order={order:?} chosen={chosen}"
                     );
                     let upper = selected_card_ceiling_from_partial(
-                        &suffix,
+                        &objective,
                         &ctx,
                         &plan,
                         chosen,
@@ -2528,7 +2531,7 @@ mod skill_ceiling_tests {
                         break;
                     }
                     let card = groups[chosen].scan[0].card;
-                    let upper = suffix.objective().ceiling_of(selected_card_inputs(
+                    let upper = objective.ceiling_of(selected_card_inputs(
                         &ctx,
                         &plan,
                         chosen + 1,
