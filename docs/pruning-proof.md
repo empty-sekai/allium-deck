@@ -416,7 +416,16 @@ counted bonus ceilings plus the extra-bonus bound. It is therefore an
 admissible bound on $D$, and a deck whose bound is below the threshold is
 not evaluated (Theorem 1).
 
-Implementation: `leaf_below_threshold` (search/dfs.rs).
+The Final Chapter card search applies the same check to the complete decks of
+a Score request. There the leader's ceiling takes the place of the leader's
+skill, and the largest of the five ceilings that of the largest card skill,
+which the ceiling reads for Solo and Auto orders other than Average; the
+ceiling is non-decreasing in both and in the skill sum, and its power and
+bonus terms are those of the card-level ceiling of Section 18.5 at the
+complete deck.
+
+Implementation: `leaf_below_threshold` (search/dfs.rs and
+search/solver/final_chapter.rs).
 
 ## 9. Monotone Power / Skill candidate breaks
 
@@ -2092,7 +2101,7 @@ independent checks designed to expose a violated premise.
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
 | Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views and tier certificates from the first node), exact_bonus.rs, fractional_bonus.rs; solver/bonus_tiers.rs unit tests — the refill of the removed and held entries is the evaluator's support loss beyond the card losses, and the refill of any cards selected first is at most the deck's; debug builds compare every regime's root sums with its table's root entries and each scope exclusion with the regime's root |
 | Joint power-skill ceiling | exact_score.rs — the live product dominates the live ceiling for every live type and skill order that has one; solver/bonus_tiers.rs unit test — the joint peak dominates every selection in the box and half-plane and never exceeds the box corner |
-| Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample; solver/final_chapter.rs unit test — the last group's ceiling with its own terms is the plan ceiling of the four groups, and each attribute's rest maxima cover its remaining groups |
+| Final Chapter | exact_final_chapter.rs (including unit-count, different-unit and reference skills under each reference strategy), role_constraints.rs, historical auto-leader counterexample; solver/final_chapter.rs unit test — the last group's ceiling with its own terms is the plan ceiling of the four groups, and each attribute's rest maxima cover its remaining groups |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |
 | Power | exact_power.rs, power_scenarios.rs (Top-K against the exhaustive oracle with unit, attribute and two-unit sharing, cultivation variants, honor power and uniform-bonus MySekai; a deck that shares two units; a shared unit set that is no card mask) and the all-scene oracle matrix |
 | Challenge | exact_challenge.rs and challenge-all timeout regression |

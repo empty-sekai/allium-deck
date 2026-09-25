@@ -451,6 +451,24 @@ fn final_chapter_mysekai_matches_exhaustive_oracle_on_power_ties() {
 }
 
 #[test]
+fn final_chapter_composition_dependent_skills_match_exhaustive_oracle() {
+    // Unit-count, different-unit and reference skills resolve below their
+    // maxima in most decks.
+    let pool = build_special_exact_pool();
+    for case in 0..18u64 {
+        let mut ctx = randomized_final_ctx(&pool, case, ScoreTarget::Score);
+        ctx.live_type = [LiveType::Multi, LiveType::Solo, LiveType::Auto][(case % 3) as usize];
+        ctx.skill_reference_strategy = [
+            SkillReferenceStrategy::Max,
+            SkillReferenceStrategy::Min,
+            SkillReferenceStrategy::Average,
+        ][(case / 3 % 3) as usize];
+        ctx.live_skill_order = [LiveSkillOrder::Average, LiveSkillOrder::Best][(case / 9) as usize];
+        assert_final_matches_oracle(&pool, &ctx, &format!("case {case}"));
+    }
+}
+
+#[test]
 fn final_chapter_bonus_matches_exhaustive_oracle() {
     for case in 0..24u64 {
         let cards = randomized_exact_cards(0xB0F1_0000 + case, 12, 6);

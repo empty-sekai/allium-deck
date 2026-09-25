@@ -3,12 +3,13 @@ use core::cell::Cell;
 use crate::search::budget::SearchBudget as DeadlineGuard;
 
 use crate::pool::{CardIdx, CardPool};
-use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType};
+use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
 
 use crate::search::context::{SearchContext, SupportDeck};
 use crate::search::dfs::SearchStats;
 use crate::search::log_linear::{FeatureBox, LogLinearBound};
 use crate::search::objective::{CeilingInputs, ScoreCutoff};
+use crate::search::skill_ceiling::{Composition, SkillCeiling};
 use crate::search::suffix::SuffixBound;
 use crate::search::types::{DeckResult, SearchParams};
 use crate::search::{placement, tracker::TopKTracker};
@@ -813,6 +814,7 @@ fn search_leaders(
     );
     if group_set.groups.len() >= MEMBER_COUNT {
         let mut cutoff = ScoreCutoff::new(suffix.objective());
+        let skill_ceilings = leaf_skill_ceilings(pool, ctx);
         // Exact path: every leader variant must remain reachable.  Heuristic
         // per-character caps are unsound under Final Chapter support occupancy,
         // leader-only bonuses and Top-K set identity.  Job/character ceilings
@@ -862,6 +864,7 @@ fn search_leaders(
                 &mut stats,
                 guard,
                 &mut cutoff,
+                &skill_ceilings,
             )
             .run();
         }
@@ -938,6 +941,7 @@ fn search_auto_leaders_two_phase(
     // A leader character's group set is built when its first job runs.
     let mut group_sets: [Option<GroupSet>; 27] = Default::default();
     let mut cutoff = ScoreCutoff::new(suffix.objective());
+    let skill_ceilings = leaf_skill_ceilings(pool, ctx);
     for job in jobs {
         if guard.expired() {
             break;
@@ -1002,6 +1006,7 @@ fn search_auto_leaders_two_phase(
             &mut stats,
             guard,
             &mut cutoff,
+            &skill_ceilings,
         )
         .run();
     }
@@ -1009,6 +1014,23 @@ fn search_auto_leaders_two_phase(
     stats.deadline_hit = guard.hit;
     stats.finalize();
     (tracker.into_vec(), stats)
+}
+
+/// Skill ceilings of the pool's cards for the leaf check of a Score search;
+/// empty when every skill is deck-independent or lives are not scored.
+fn leaf_skill_ceilings(pool: &CardPool, ctx: &SearchContext) -> Vec<SkillCeiling> {
+    if !matches!(ctx.target, ScoreTarget::Score) {
+        return Vec::new();
+    }
+    let ceilings: Vec<SkillCeiling> = pool
+        .indices()
+        .map(|card| SkillCeiling::new(pool, card, ctx.skill_reference_strategy))
+        .collect();
+    if ceilings.iter().all(SkillCeiling::is_fixed) {
+        Vec::new()
+    } else {
+        ceilings
+    }
 }
 
 fn seed_leader_groups(
@@ -1215,6 +1237,8 @@ struct CharacterSearchState<'a> {
     /// The event-point threshold of the last log-linear test and its
     /// [`LogLinearBound::log_cutoff`].
     log_cutoff: Cell<(u64, f64)>,
+    /// Skill ceilings of the pool's cards; empty when no leaf check applies.
+    skill_ceilings: &'a [SkillCeiling],
 }
 
 impl<'a> CharacterSearchState<'a> {
@@ -1229,6 +1253,7 @@ impl<'a> CharacterSearchState<'a> {
         stats: &'a mut SearchStats,
         deadline: &'a mut DeadlineGuard,
         cutoff: &'a mut ScoreCutoff,
+        skill_ceilings: &'a [SkillCeiling],
     ) -> Self {
         let leader_weight = group_set
             .weights
@@ -1253,6 +1278,7 @@ impl<'a> CharacterSearchState<'a> {
             leader,
             cutoff,
             log_cutoff: Cell::new((0, f64::NEG_INFINITY)),
+            skill_ceilings,
         }
     }
 }
@@ -1489,6 +1515,11 @@ impl CharacterSearchState<'_> {
         self.stats.visited_nodes += 1;
         if depth == MEMBER_COUNT {
             self.stats.leaf_nodes += 1;
+            let threshold = self.tracker.rank_threshold(self.ctx.target);
+            if threshold != 0 && self.leaf_below_threshold(plan, &partial, deck, threshold) {
+                self.stats.bound_prunes += 1;
+                return;
+            }
             if let Some(candidate) = placement::evaluate_candidate(self.pool, self.ctx, deck) {
                 self.tracker.insert(self.pool, self.ctx, candidate);
             }
@@ -1617,6 +1648,37 @@ impl CharacterSearchState<'_> {
 }
 
 impl CharacterSearchState<'_> {
+    /// Whether the complete `deck` stays below the threshold once every skill
+    /// takes its ceiling for this composition; the card terms of `partial`
+    /// bound everything else.
+    fn leaf_below_threshold(
+        &mut self,
+        plan: &CardGroupPlan,
+        partial: &CardPartial,
+        deck: &[CardIdx; DECK_SIZE],
+        threshold: u64,
+    ) -> bool {
+        let ceilings = self.skill_ceilings;
+        if ceilings.is_empty() || deck.iter().all(|card| ceilings[card.raw()].is_fixed()) {
+            return false;
+        }
+        let composition = deck
+            .iter()
+            .fold(Composition::default(), |composition, &card| {
+                composition.with(self.pool, card)
+            });
+        let leader_skill = ceilings[deck[0].raw()].selected(&composition, 0);
+        let (skill, peak) = deck.iter().fold((0u32, 0u32), |(sum, peak), &card| {
+            let value = ceilings[card.raw()].selected(&composition, 0);
+            (sum + value, peak.max(value))
+        });
+        let mut inputs =
+            selected_card_inputs(self.ctx, plan, MEMBER_COUNT, partial, None, leader_skill);
+        inputs.skill = skill;
+        inputs.leader = final_chapter_ceiling_skill(self.ctx, leader_skill, peak);
+        !self.reaches(inputs, threshold)
+    }
+
     /// Whether the ceiling with `inputs` reaches `threshold`.
     #[inline(always)]
     fn reaches(&mut self, inputs: CeilingInputs, threshold: u64) -> bool {
