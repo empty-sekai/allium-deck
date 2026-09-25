@@ -416,6 +416,14 @@ counted bonus ceilings plus the extra-bonus bound. It is therefore an
 admissible bound on $D$, and a deck whose bound is below the threshold is
 not evaluated (Theorem 1).
 
+At every node of such a request below the root, the chosen cards take their
+ceilings of Section 20.3 with $P$ the chosen cards and $r$ the open slots in
+place of their skill_max, in the skill sum and in the largest card skill that
+the node's ceilings add to the suffix terms; the open slots keep their suffix
+maxima. Each ceiling bounds the card's skill in every completion of the node,
+and every completion of a child completes the node, so the lowered values
+carry to the children, which lower them again for their own composition.
+
 The Final Chapter card search applies the same check at every card-level node
 of a Score request below the four selected groups. The leader and the chosen
 members, the set $P$, take their ceilings of Section 20.3 with $r$ the members

@@ -456,6 +456,8 @@ impl SearchState<'_> {
             return;
         }
 
+        let mut partial = partial;
+        self.tighten_chosen_skills(&deck[..depth], &mut partial);
         // A child that its parent's candidate tests bounded at this threshold
         // is not tested again.
         let threshold = self.threshold();
@@ -1394,6 +1396,30 @@ impl SearchState<'_> {
             (sum + value, largest.max(value))
         });
         objective.ceiling(partial.power, bonus, skill, leader) < threshold
+    }
+
+    /// Lowers the skill sum and the largest skill of `partial` to the
+    /// ceilings of the `chosen` cards for their composition with the other
+    /// slots open. The bounds hold for every completion, so they also carry
+    /// to the children.
+    #[inline(always)]
+    fn tighten_chosen_skills(&self, chosen: &[CardIdx], partial: &mut PartialDeck) {
+        let ceilings = &self.skill_ceilings;
+        if ceilings.is_empty() || chosen.iter().all(|card| ceilings[card.raw()].is_fixed()) {
+            return;
+        }
+        let composition = chosen
+            .iter()
+            .fold(Composition::default(), |composition, &card| {
+                composition.with(self.pool, card)
+            });
+        let open = DECK_SIZE - chosen.len();
+        let (skill, peak) = chosen.iter().fold((0u32, 0u32), |(sum, peak), &card| {
+            let value = ceilings[card.raw()].selected(&composition, open);
+            (sum + value, peak.max(value))
+        });
+        partial.skill = partial.skill.min(skill);
+        partial.max_skill = partial.max_skill.min(u8::try_from(peak).unwrap_or(u8::MAX));
     }
 
     fn consider(&mut self, deck: &[CardIdx; DECK_SIZE]) {
