@@ -1595,7 +1595,9 @@ impl CharacterSearchState<'_> {
         if depth == MEMBER_COUNT {
             self.stats.leaf_nodes += 1;
             let threshold = self.tracker.rank_threshold(self.ctx.target);
-            if threshold != 0 && self.leaf_below_threshold(plan, &partial, deck, threshold) {
+            if threshold != 0
+                && self.composition_below_threshold(plan, depth, &partial, deck, threshold)
+            {
                 self.stats.bound_prunes += 1;
                 return;
             }
@@ -1616,6 +1618,11 @@ impl CharacterSearchState<'_> {
             self.refresh_weights(threshold);
             if self.cards_excluded(selected, plan, depth, &partial, None, threshold) {
                 self.stats.correlated_prunes += 1;
+                return;
+            }
+            if depth > 0 && self.composition_below_threshold(plan, depth, &partial, deck, threshold)
+            {
+                self.stats.bound_prunes += 1;
                 return;
             }
         }
@@ -1727,34 +1734,42 @@ impl CharacterSearchState<'_> {
 }
 
 impl CharacterSearchState<'_> {
-    /// Whether the complete `deck` stays below the threshold once every skill
-    /// takes its ceiling for this composition; the card terms of `partial`
-    /// bound everything else.
-    fn leaf_below_threshold(
+    /// Whether every completion of the leader and the first `depth` members
+    /// of `deck` stays below the threshold once each of their skills takes
+    /// its ceiling for their composition with the other members free; the
+    /// remaining groups keep their best skills, and the card terms of
+    /// `partial` bound everything else.
+    fn composition_below_threshold(
         &mut self,
         plan: &CardGroupPlan,
+        depth: usize,
         partial: &CardPartial,
         deck: &[CardIdx; DECK_SIZE],
         threshold: u64,
     ) -> bool {
         let ceilings = self.skill_ceilings;
-        if ceilings.is_empty() || deck.iter().all(|card| ceilings[card.raw()].is_fixed()) {
+        let chosen = &deck[..=depth];
+        if ceilings.is_empty() || chosen.iter().all(|card| ceilings[card.raw()].is_fixed()) {
             return false;
         }
-        let composition = deck
+        let free = MEMBER_COUNT - depth;
+        let composition = chosen
             .iter()
             .fold(Composition::default(), |composition, &card| {
                 composition.with(self.pool, card)
             });
-        let leader_skill = ceilings[deck[0].raw()].selected(&composition, 0);
-        let (skill, peak) = deck.iter().fold((0u32, 0u32), |(sum, peak), &card| {
-            let value = ceilings[card.raw()].selected(&composition, 0);
+        let leader_skill = ceilings[deck[0].raw()].selected(&composition, free);
+        let (skill, peak) = chosen.iter().fold((0u32, 0u32), |(sum, peak), &card| {
+            let value = ceilings[card.raw()].selected(&composition, free);
             (sum + value, peak.max(value))
         });
-        let mut inputs =
-            selected_card_inputs(self.ctx, plan, MEMBER_COUNT, partial, None, leader_skill);
-        inputs.skill = skill;
-        inputs.leader = final_chapter_ceiling_skill(self.ctx, leader_skill, peak);
+        let mut inputs = selected_card_inputs(self.ctx, plan, depth, partial, None, leader_skill);
+        inputs.skill = skill + plan.rem_skill[depth];
+        inputs.leader = final_chapter_ceiling_skill(
+            self.ctx,
+            leader_skill,
+            peak.max(plan.rem_max_skill[depth]),
+        );
         !self.reaches(inputs, threshold)
     }
 

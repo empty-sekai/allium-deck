@@ -416,16 +416,21 @@ counted bonus ceilings plus the extra-bonus bound. It is therefore an
 admissible bound on $D$, and a deck whose bound is below the threshold is
 not evaluated (Theorem 1).
 
-The Final Chapter card search applies the same check to the complete decks of
-a Score request. There the leader's ceiling takes the place of the leader's
-skill, and the largest of the five ceilings that of the largest card skill,
-which the ceiling reads for Solo and Auto orders other than Average; the
-ceiling is non-decreasing in both and in the skill sum, and its power and
-bonus terms are those of the card-level ceiling of Section 18.5 at the
-complete deck.
+The Final Chapter card search applies the same check at every card-level node
+of a Score request below the four selected groups. The leader and the chosen
+members, the set $P$, take their ceilings of Section 20.3 with $r$ the members
+still to choose, and each remaining group keeps its best skill, so every
+completion of the node has its skill sum and each of its skills at most these;
+at a complete deck $r=0$. There the leader's ceiling takes the place of the
+leader's skill, and the largest of the chosen ceilings and the remaining best
+skills that of the largest card skill, which the ceiling reads for Solo and
+Auto orders other than Average; the ceiling is non-decreasing in both and in
+the skill sum, and its power and bonus terms are those of the card-level
+ceiling of Section 18.5 at the node, so a node whose bound is below the
+threshold is pruned (Theorem 1).
 
-Implementation: `leaf_below_threshold` (search/dfs.rs and
-search/solver/final_chapter.rs).
+Implementation: `leaf_below_threshold` (search/dfs.rs) and
+`composition_below_threshold` (search/solver/final_chapter.rs).
 
 ## 9. Monotone Power / Skill candidate breaks
 
