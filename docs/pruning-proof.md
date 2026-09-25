@@ -403,6 +403,14 @@ stride alignment, so a skip never lowers how often that check runs.
 A child that its parent's candidate tests bounded at the current threshold is
 not tested again when it is entered; omitting a test never removes a deck.
 
+A no-event Score node applies the dense-suffix test of Corollary 2 at its
+first scan position on entry, before its scenario bound, and a parent applies
+it to a child before descending. The parent uses the child's partial deck
+before the child lowers its skills (Section 8.1) and the threshold from its
+own entry, and the ceiling is non-decreasing in the partial terms while the
+threshold only rises, so a child it skips is one whose scan would end at its
+first card. Neither test changes which decks are evaluated.
+
 ### 8.1 Complete-deck skill ceilings
 
 The depth-first search bounds every member's skill by its skill_max. At a
@@ -2103,7 +2111,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Alternative-tree threshold | search/alternatives.rs | inverse substitutions are score non-increasing |
 | Character suffix bound | search/suffix.rs | top-r per-character relaxation |
 | Exclusion delta | search/suffix.rs | exact removal/replacement inside relaxed top-r set |
-| Dense suffix break | search/dfs.rs, search/suffix.rs | nested suffix sets imply non-increasing ceiling |
+| Dense suffix break | search/dfs.rs, search/suffix.rs | nested suffix sets imply non-increasing ceiling; no-event Score also tests it on node entry and for a child before descending |
 | Candidate runs | search/dfs.rs, search/suffix.rs | equal bonus terms, run maxima and nested tails bound the rest of a run |
 | Sorted Power / Skill break | search/dfs.rs | descending candidate component + fixed relaxed tail |
 | No-event numerator | search/dfs.rs, search/suffix.rs | exact floor/division equivalence |

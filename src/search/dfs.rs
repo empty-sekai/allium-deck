@@ -473,13 +473,22 @@ impl SearchState<'_> {
                 );
                 global.min(dense) < threshold
             } else if matches!(self.ctx.target, ScoreTarget::Score) {
-                self.suffix.upper_bound_score_noevent_numerator(
-                    self.pool,
-                    &deck[..depth],
-                    &used,
+                // The dense tail from `start` is the test that ends this
+                // node's scan at its first card, and far cheaper than the
+                // scenario bound.
+                let threshold_numerator = score_noevent_threshold_numerator(threshold);
+                self.suffix.score_noevent_dense_live_numerator_ceiling(
+                    start,
                     &partial,
                     DECK_SIZE - depth,
-                ) < score_noevent_threshold_numerator(threshold)
+                ) < threshold_numerator
+                    || self.suffix.upper_bound_score_noevent_numerator(
+                        self.pool,
+                        &deck[..depth],
+                        &used,
+                        &partial,
+                        DECK_SIZE - depth,
+                    ) < threshold_numerator
             } else {
                 self.suffix.upper_bound_with_depth(depth, &used, &partial) < threshold
             };
@@ -738,6 +747,19 @@ impl SearchState<'_> {
                 bonus: partial.bonus + card_bonus,
                 max_skill: partial.max_skill.max(self.pool.skill_max(card)),
             };
+            // A child whose scan would end at its first card is not entered.
+            if threshold != 0
+                && depth + 1 < DECK_SIZE
+                && !self.ctx.is_fixed_slot(depth + 1)
+                && self.suffix.score_noevent_dense_live_numerator_ceiling(
+                    dense,
+                    &next_partial,
+                    slots - 1,
+                ) < threshold_numerator
+            {
+                self.stats.ub_prunes += 1;
+                continue;
+            }
             self.recurse(
                 depth + 1,
                 dense,
