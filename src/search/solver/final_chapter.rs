@@ -14,6 +14,8 @@ use crate::search::types::{DeckResult, SearchParams};
 use crate::search::{placement, tracker::TopKTracker};
 
 const MEMBER_COUNT: usize = 4;
+/// Card attributes; an attribute union is a five-bit set.
+const ATTRIBUTES: usize = 5;
 const FINAL_CHAPTER_SEED_GROUP_PREFIX: usize = 6;
 /// 每层最多按上界降序保留的候选卡数。
 const RANKED_CAP: usize = 32;
@@ -168,7 +170,35 @@ struct AutoLeaderJob {
 struct GroupSet {
     groups: Vec<CharGroup>,
     suffix: Vec<GroupCeilingTail>,
+    tails: AttributeTails,
     weights: GroupWeightCache,
+}
+
+/// Per-attribute suffix tables of the groups, for the last member slot.
+struct AttributeTails {
+    /// `rest[idx]` holds the maxima of the terms of the groups from `idx`
+    /// on that share its attribute.
+    rest: Vec<MemberTerms>,
+    /// `attrs[idx]` is the set of attributes of the groups from `idx` on.
+    attrs: Vec<u8>,
+}
+
+impl AttributeTails {
+    fn build(groups: &[CharGroup]) -> Self {
+        // A group's best terms are the rest maxima of its first scan card.
+        let mut rest: Vec<MemberTerms> = groups.iter().map(|group| group.scan[0].rest).collect();
+        let mut attrs = vec![0u8; groups.len() + 1];
+        let mut later: [Option<MemberTerms>; ATTRIBUTES] = [None; ATTRIBUTES];
+        for idx in (0..groups.len()).rev() {
+            let attr = usize::from(groups[idx].attr);
+            if let Some(terms) = later[attr] {
+                rest[idx] = rest[idx].max(terms);
+            }
+            later[attr] = Some(rest[idx]);
+            attrs[idx] = attrs[idx + 1] | (1u8 << attr);
+        }
+        Self { rest, attrs }
+    }
 }
 
 impl GroupSet {
@@ -183,12 +213,14 @@ impl GroupSet {
     ) -> Self {
         let groups = build_char_groups(pool, ctx, buckets, leader_char, member_keep, top_k);
         let suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
+        let tails = AttributeTails::build(&groups);
         let feature_box = leaders
             .filter(|_| groups.len() >= MEMBER_COUNT)
             .map(|leaders| leaders.feature_box(&suffix[0]));
         Self {
             groups,
             suffix,
+            tails,
             weights: GroupWeightCache {
                 feature_box,
                 attempted: 0,
@@ -1166,6 +1198,7 @@ struct CharacterSearchState<'a> {
     suffix: &'a SuffixBound,
     groups: &'a [CharGroup],
     group_suffix: &'a [GroupCeilingTail],
+    tails: &'a AttributeTails,
     weights: &'a mut GroupWeightCache,
     /// The leader's log-linear terms under the current weights.
     leader_weight: f64,
@@ -1208,6 +1241,7 @@ impl<'a> CharacterSearchState<'a> {
             suffix,
             groups: &group_set.groups,
             group_suffix: &group_set.suffix,
+            tails: &group_set.tails,
             weights: &mut group_set.weights,
             leader_weight,
             support: ctx.support_deck_for_leader(pool.char_id(leader.leader)),
@@ -1257,44 +1291,15 @@ impl CharacterSearchState<'_> {
             return;
         }
         self.stats.visited_nodes += 1;
-        if depth == MEMBER_COUNT {
-            let threshold = self.tracker.rank_threshold(self.ctx.target);
-            // The four groups fix every member attribute, so this ceiling
-            // reads the exact union before the card plan is built.
-            if threshold != 0
-                && !self.reaches(
-                    character_ceiling_inputs(
-                        self.ctx,
-                        self.group_suffix,
-                        self.groups.len(),
-                        MEMBER_COUNT,
-                        &prefix,
-                        &self.leader,
-                    ),
-                    threshold,
-                )
-            {
-                self.stats.ub_prunes += 1;
-                return;
-            }
-            if threshold != 0 {
-                self.refresh_weights(threshold);
-                if self.groups_excluded(self.groups.len(), &selected[..], &prefix, threshold) {
-                    self.stats.correlated_prunes += 1;
-                    return;
-                }
-            }
-            let mut ordered = *selected;
-            order_card_groups(self.groups, &mut ordered);
-            let mut deck = [self.leader.leader; DECK_SIZE];
-            let plan = build_card_group_plan(
-                self.groups,
-                &ordered,
-                self.leader.leader_attr_set,
-                &self.diversity,
-                self.uniform_limited_cap,
+        if depth == MEMBER_COUNT - 1 {
+            self.scan_last_group(
+                start,
+                used_chars,
+                selected,
+                prefix,
+                initial_partial,
+                scratch,
             );
-            self.recurse_cards(&ordered, &plan, 0, &mut deck, *initial_partial, scratch);
             return;
         }
 
@@ -1352,6 +1357,121 @@ impl CharacterSearchState<'_> {
             );
             threshold = self.tracker.rank_threshold(self.ctx.target);
         }
+    }
+
+    /// Chooses the last member group in search order, ending where the
+    /// suffix ceiling falls below the threshold as the loop above does. A
+    /// group whose own ceiling fails while its terms are the maxima of the
+    /// remaining groups of its attribute drops that attribute, and the scan
+    /// ends once every attribute of the remaining groups is dropped.
+    fn scan_last_group(
+        &mut self,
+        start: usize,
+        used_chars: u32,
+        selected: &mut [usize; MEMBER_COUNT],
+        prefix: CharacterPrefix,
+        initial_partial: &CardPartial,
+        scratch: &mut [[RankedSlot; RANKED_CAP]],
+    ) {
+        let groups = self.groups;
+        let tails = self.tails;
+        let depth = MEMBER_COUNT - 1;
+        let mut live_attrs = u8::MAX;
+        let mut reached: Option<(u32, u64)> = None;
+        let mut idx = start;
+        loop {
+            // `attrs` ends with the empty set after the last group.
+            live_attrs &= tails.attrs[idx];
+            if live_attrs == 0 || self.deadline.expired_sampled() {
+                return;
+            }
+            let group = &groups[idx];
+            let attr_bit = 1u8 << group.attr;
+            if live_attrs & attr_bit == 0 || used_chars & (1u32 << group.char_id) != 0 {
+                idx += 1;
+                continue;
+            }
+            let threshold = self.tracker.rank_threshold(self.ctx.target);
+            if threshold != 0 {
+                let version = self.group_suffix[idx].versions[MEMBER_COUNT - depth];
+                if reached != Some((version, threshold)) {
+                    let inputs = character_ceiling_inputs(
+                        self.ctx,
+                        self.group_suffix,
+                        idx,
+                        depth,
+                        &prefix,
+                        &self.leader,
+                    );
+                    if !self.reaches(inputs, threshold) {
+                        self.stats.ub_prunes += 1;
+                        return;
+                    }
+                    reached = Some((version, threshold));
+                }
+                self.refresh_weights(threshold);
+                if self.groups_excluded(idx, &selected[..depth], &prefix, threshold) {
+                    self.stats.correlated_prunes += 1;
+                    return;
+                }
+                let terms = group.scan[0].rest;
+                if !self.reaches(self.last_group_inputs(&prefix, &terms), threshold) {
+                    self.stats.ub_prunes += 1;
+                    // Every remaining group of the attribute has terms at
+                    // most these, so its ceiling failed too.
+                    if tails.rest[idx] == terms {
+                        live_attrs &= !attr_bit;
+                    }
+                    idx += 1;
+                    continue;
+                }
+            }
+            selected[depth] = idx;
+            self.stats.ep_candidates += 1;
+            self.stats.visited_nodes += 1;
+            self.enter_plan(
+                selected,
+                &prefix.with_group(group),
+                initial_partial,
+                scratch,
+            );
+            idx += 1;
+        }
+    }
+
+    /// Searches the cards of the four `selected` groups, whose ceiling
+    /// reached the threshold.
+    fn enter_plan(
+        &mut self,
+        selected: &[usize; MEMBER_COUNT],
+        prefix: &CharacterPrefix,
+        initial_partial: &CardPartial,
+        scratch: &mut [[RankedSlot; RANKED_CAP]],
+    ) {
+        let threshold = self.tracker.rank_threshold(self.ctx.target);
+        if threshold != 0 {
+            self.refresh_weights(threshold);
+            if self.groups_excluded(self.groups.len(), &selected[..], prefix, threshold) {
+                self.stats.correlated_prunes += 1;
+                return;
+            }
+        }
+        let mut ordered = *selected;
+        order_card_groups(self.groups, &mut ordered);
+        let mut deck = [self.leader.leader; DECK_SIZE];
+        let plan = build_card_group_plan(
+            self.groups,
+            &ordered,
+            self.leader.leader_attr_set,
+            &self.diversity,
+            self.uniform_limited_cap,
+        );
+        self.recurse_cards(&ordered, &plan, 0, &mut deck, *initial_partial, scratch);
+    }
+
+    #[inline(always)]
+    fn last_group_inputs(&self, prefix: &CharacterPrefix, terms: &MemberTerms) -> CeilingInputs {
+        last_group_inputs(self.ctx, &self.leader, &self.diversity, prefix, terms)
     }
 
     fn recurse_cards(
@@ -1772,6 +1892,45 @@ fn character_ceiling_inputs(
                 .max_skill
                 .max(if remaining == 0 { 0 } else { tail.top_skill[0] }),
         ),
+    }
+}
+
+/// Inputs of the ceiling of every deck that completes `prefix` with one
+/// group whose terms are at most `terms`. The group's attribute fixes the
+/// deck's attribute union, and with the group's own terms these are the
+/// inputs of [`character_ceiling`] for the four selected groups.
+#[inline(always)]
+fn last_group_inputs(
+    ctx: &SearchContext,
+    leader: &LeaderConst,
+    diversity: &[u16; 32],
+    prefix: &CharacterPrefix,
+    terms: &MemberTerms,
+) -> CeilingInputs {
+    let limited_limit = ctx
+        .card_bonus_count_limit
+        .saturating_sub(leader.limited_count as usize);
+    let limited_sum = merged_limited_sum(
+        &prefix.limited_values,
+        &[terms.limited_bonus],
+        limited_limit.min(MEMBER_COUNT),
+    );
+    let extra = if leader.use_group_attr_dp {
+        u32::from(diversity[usize::from(prefix.attr_set | (1u8 << terms.attr))])
+            + leader.support_bonus_ub
+    } else {
+        leader.extra_bonus_ub
+    };
+    CeilingInputs {
+        power: leader.power + prefix.power + terms.power,
+        bonus: leader.base_bonus_const
+            + leader.limited_bonus
+            + prefix.base_bonus
+            + terms.base_bonus
+            + limited_sum
+            + extra,
+        skill: leader.skill + prefix.skill + terms.skill,
+        leader: final_chapter_ceiling_skill(ctx, leader.skill, prefix.max_skill.max(terms.skill)),
     }
 }
 
@@ -2459,6 +2618,99 @@ mod attribute_bound_tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn last_group_ceiling_is_the_plan_ceiling_of_the_four_groups() {
+        let (_, mut ctx) = super::skill_ceiling_tests::fixture();
+        ctx.diff_attr_bonus = [0, 0, 10, 20, 30, 50];
+        let diversity = diversity_bonus(&ctx.diff_attr_bonus);
+        let mut checked = 0usize;
+        for attrs in [[0, 1, 2, 3, 4, 0], [1, 1, 0, 3, 4, 2], [4; 6]] {
+            let mut groups = groups_of(&attrs);
+            for group in &mut groups {
+                let terms = MemberTerms {
+                    power: group.best_power,
+                    skill: group.best_skill,
+                    base_bonus: group.best_base_bonus,
+                    limited_bonus: group.best_limited_bonus,
+                    attr: group.attr,
+                };
+                group.scan = vec![ScanCard {
+                    card: CardIdx::new(0),
+                    terms,
+                    rest: terms,
+                }];
+            }
+            let tails = AttributeTails::build(&groups);
+            assert_eq!(tails.attrs[groups.len()], 0);
+            for (idx, group) in groups.iter().enumerate() {
+                let rest = groups[idx..]
+                    .iter()
+                    .filter(|later| later.attr == group.attr)
+                    .map(|later| later.scan[0].terms)
+                    .reduce(MemberTerms::max);
+                assert_eq!(Some(tails.rest[idx]), rest);
+                let attrs = groups[idx..]
+                    .iter()
+                    .fold(0u8, |attrs, later| attrs | (1u8 << later.attr));
+                assert_eq!(tails.attrs[idx], attrs);
+            }
+            let group_suffix = build_group_ceiling_suffix(&groups, &ctx.diff_attr_bonus);
+            for leader_attr in 0..5u8 {
+                for cap in [0, 1, 4] {
+                    ctx.card_bonus_count_limit = cap;
+                    let leader = LeaderConst {
+                        leader: CardIdx::new(0),
+                        power: 1_000,
+                        skill: 60,
+                        base_bonus_const: 7,
+                        limited_bonus: 3,
+                        limited_count: 1,
+                        extra_bonus_ub: 0,
+                        support_bonus_ub: 9,
+                        leader_attr_set: 1u8 << leader_attr,
+                        use_group_attr_dp: true,
+                    };
+                    for selection in 0..(1u32 << groups.len()) {
+                        if selection.count_ones() as usize != MEMBER_COUNT {
+                            continue;
+                        }
+                        let four: Vec<_> = (0..groups.len())
+                            .filter(|index| selection & (1u32 << index) != 0)
+                            .collect();
+                        let prefix = four[..MEMBER_COUNT - 1]
+                            .iter()
+                            .fold(CharacterPrefix::for_leader(&leader), |prefix, &index| {
+                                prefix.with_group(&groups[index])
+                            });
+                        let last = &groups[four[MEMBER_COUNT - 1]];
+                        let scanned = last_group_inputs(
+                            &ctx,
+                            &leader,
+                            &diversity,
+                            &prefix,
+                            &last.scan[0].terms,
+                        );
+                        let plan = character_ceiling_inputs(
+                            &ctx,
+                            &group_suffix,
+                            groups.len(),
+                            MEMBER_COUNT,
+                            &prefix.with_group(last),
+                            &leader,
+                        );
+                        assert_eq!(
+                            (scanned.power, scanned.bonus, scanned.skill, scanned.leader),
+                            (plan.power, plan.bonus, plan.skill, plan.leader),
+                            "attrs={attrs:?} leader_attr={leader_attr} cap={cap} four={four:?}"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 3 * 5 * 3 * 15);
     }
 }
 

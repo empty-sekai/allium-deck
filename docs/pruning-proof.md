@@ -1329,6 +1329,24 @@ changes exactly when those entries change; they only grow with the suffix, so
 a version never returns to an earlier table, and an unchanged version keeps
 the previous decision while the threshold is unchanged.
 
+**Last group.** The fourth member group is chosen in search order from the
+first group after the third one, and the loop ends as above where the
+suffix ceiling falls below $\tau$. A group of attribute $a$ completes the
+leader and the three selected groups to the attribute union with $a$ added,
+so its own terms at that union give the ceiling of the four selected groups
+that Section 18.5 starts from, and a group whose ceiling fails is skipped.
+Each group also carries the componentwise maxima of the power, skill, base
+bonus and rounded limited bonus of the groups from it to the end that share
+its attribute. When a failing group's terms equal these maxima, every later
+group of attribute $a$ has terms at most the failing group's at the same
+union, so its ceiling is at most the failing one: the ceiling is
+non-decreasing in each term, and the top limited values it merges cannot
+shrink when one value grows. The threshold never decreases, so the
+remaining groups of attribute $a$ are skipped, and the scan ends once every
+attribute of the remaining groups is skipped. A group of a character
+already taken is skipped, and its terms may stay in the maxima, which only
+raises them.
+
 ### 18.5 Card-level plan
 
 After four member groups are fixed, CardGroupPlan stores suffix sums of
@@ -2033,6 +2051,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Final leader/job bound | solver/final_chapter.rs | admissible character ceiling |
 | Final attribute DP | solver/final_chapter.rs | exact isolated OR-union DP |
 | Final character-loop break | solver/final_chapter.rs | nested group suffixes imply non-increasing character ceiling |
+| Final last group | solver/final_chapter.rs | a group's own terms give its plan ceiling; a failing group that holds its attribute's rest maxima bounds the remaining groups of the attribute |
 | Final card-group bound | solver/final_chapter.rs | independent per-group maxima + limited top-cap + support UB |
 | Final group rest maxima | solver/final_chapter.rs | same attribute, rest maxima and a non-decreasing candidate ceiling bound the rest of a group |
 | Final ranked-buffer break | solver/final_chapter.rs | candidates sorted by admissible UB; overflow candidates still visited |
@@ -2064,7 +2083,7 @@ independent checks designed to expose a violated premise.
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
 | Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views and tier certificates from the first node), exact_bonus.rs, fractional_bonus.rs; solver/bonus_tiers.rs unit tests — the refill of the removed and held entries is the evaluator's support loss beyond the card losses, and the refill of any cards selected first is at most the deck's; debug builds compare every regime's root sums with its table's root entries and each scope exclusion with the regime's root |
 | Joint power-skill ceiling | exact_score.rs — the live product dominates the live ceiling for every live type and skill order that has one; solver/bonus_tiers.rs unit test — the joint peak dominates every selection in the box and half-plane and never exceeds the box corner |
-| Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample |
+| Final Chapter | exact_final_chapter.rs, role_constraints.rs, historical auto-leader counterexample; solver/final_chapter.rs unit test — the last group's ceiling with its own terms is the plan ceiling of the four groups, and each attribute's rest maxima cover its remaining groups |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |
 | Power | exact_power.rs, power_scenarios.rs (Top-K against the exhaustive oracle with unit, attribute and two-unit sharing, cultivation variants, honor power and uniform-bonus MySekai; a deck that shares two units; a shared unit set that is no card mask) and the all-scene oracle matrix |
 | Challenge | exact_challenge.rs and challenge-all timeout regression |
