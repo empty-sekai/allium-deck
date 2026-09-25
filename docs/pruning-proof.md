@@ -1593,7 +1593,18 @@ $\square$
 The group loop breaks on this test for the same reason as in Section 18.4:
 the suffix lists and attribute rows only shrink as the start index grows. The
 scan of a group stops when the rest maxima of Section 18.5 fail it, since the
-weight is non-decreasing in every term. A bound built for $\tau_0$ holds at
+weight is non-decreasing in every term.
+
+In the last member slot, let $F$ be $\ln\tau-10^{-9}$ less the leader's
+terms, the weights of the three selected groups and $a_B$ times the attribute
+and support bound of the suffix from the slot's first group. That bound is at
+least the one of every attribute union a group of the suffix completes, so a
+group whose weight is below $F$ fails the test of the four groups, and the
+scan moves to the next group whose weight reaches $F$; blocks of sixteen
+groups whose largest weight is below $F$ are passed over whole. $F$ is
+recomputed whenever the threshold changes. The comparison rearranges the sum
+of the four-group test, which changes its rounding by far less than the
+margin. A bound built for $\tau_0$ holds at
 every higher threshold, so the search rebuilds the weights only when the
 event-point threshold has risen by $1/128$ since the last build, which
 narrows the chord and moves the tangent point; every sum is recomputed from
@@ -2104,7 +2115,7 @@ Thus deadline handling is deliberately outside Theorem 1.
 | Final card-group bound | solver/final_chapter.rs | independent per-group maxima + limited top-cap + support UB |
 | Final group rest maxima | solver/final_chapter.rs | same attribute, rest maxima and a non-decreasing candidate ceiling bound the rest of a group |
 | Final ranked-buffer break | solver/final_chapter.rs | candidates sorted by admissible UB; overflow candidates still visited |
-| Final log-linear bound | search/log_linear.rs, solver/final_chapter.rs | Section 18.8: product form, chord and tangents of the logarithm, per-group weights |
+| Final log-linear bound | search/log_linear.rs, solver/final_chapter.rs | Section 18.8: product form, chord and tangents of the logarithm, per-group weights, the last slot's jump to the next group whose weight can pass |
 | Numeric Power max/min | solver/numeric.rs | global max UB / global min LB |
 | Numeric Skill | solver/numeric.rs, search/skill_ceiling.rs | Section 20: composition-aware per-card ceilings, per-character frontier, candidate break, public-set equality rule |
 | Power scenarios | solver/power.rs | Section 21: unit-set scenarios, Lemma 3 scenario ceiling, Lemma 4 completion, Theorem 4 |
@@ -2132,7 +2143,7 @@ independent checks designed to expose a violated premise.
 | Top-K / ties | canonical_topk.rs, same-game-id cultivation regressions |
 | Exact bonus tiers | bonus_tiers.rs (with and without attribute-limited views and tier certificates from the first node), exact_bonus.rs, fractional_bonus.rs; solver/bonus_tiers.rs unit tests — the refill of the removed and held entries is the evaluator's support loss beyond the card losses, and the refill of any cards selected first is at most the deck's; debug builds compare every regime's root sums with its table's root entries and each scope exclusion with the regime's root |
 | Joint power-skill ceiling | exact_score.rs — the live product dominates the live ceiling for every live type and skill order that has one; solver/bonus_tiers.rs unit test — the joint peak dominates every selection in the box and half-plane and never exceeds the box corner |
-| Final Chapter | exact_final_chapter.rs (including unit-count, different-unit and reference skills under each reference strategy), role_constraints.rs, historical auto-leader counterexample; solver/final_chapter.rs unit test — the last group's ceiling with its own terms is the plan ceiling of the four groups, and each attribute's rest maxima cover its remaining groups |
+| Final Chapter | exact_final_chapter.rs (including unit-count, different-unit and reference skills under each reference strategy), role_constraints.rs, historical auto-leader counterexample; solver/final_chapter.rs unit test — the last group's ceiling with its own terms is the plan ceiling of the four groups, each attribute's rest maxima cover its remaining groups, and the weight jump lands on the first group whose weight reaches the floor |
 | WL / Final cross-product | validation_oracle.rs, complete ordered Top-K with support profiles, constraints, variants and nonmonotone attributes |
 | Power | exact_power.rs, power_scenarios.rs (Top-K against the exhaustive oracle with unit, attribute and two-unit sharing, cultivation variants, honor power and uniform-bonus MySekai; a deck that shares two units; a shared unit set that is no card mask) and the all-scene oracle matrix |
 | Challenge | exact_challenge.rs and challenge-all timeout regression |

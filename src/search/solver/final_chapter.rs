@@ -14,6 +14,8 @@ use crate::search::types::{DeckResult, SearchParams};
 use crate::search::{placement, tracker::TopKTracker};
 
 const MEMBER_COUNT: usize = 4;
+/// Groups per block of [`GroupWeights::block_max`].
+const WEIGHT_BLOCK: usize = 16;
 /// Card attributes; an attribute union is a five-bit set.
 const ATTRIBUTES: usize = 5;
 const FINAL_CHAPTER_SEED_GROUP_PREFIX: usize = 6;
@@ -329,6 +331,8 @@ struct GroupWeights {
     /// From each suffix start, the largest group weights of distinct
     /// characters, best first.
     tail: Vec<[f64; MEMBER_COUNT]>,
+    /// The largest group weight of each block of [`WEIGHT_BLOCK`] groups.
+    block_max: Vec<f64>,
 }
 
 impl GroupWeights {
@@ -349,7 +353,16 @@ impl GroupWeights {
             top.raise(groups[idx].char_id, group[idx]);
             tail[idx].copy_from_slice(&top.values()[..MEMBER_COUNT]);
         }
-        Self { bound, group, tail }
+        let block_max = group
+            .chunks(WEIGHT_BLOCK)
+            .map(|block| block.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+            .collect();
+        Self {
+            bound,
+            group,
+            tail,
+            block_max,
+        }
     }
 
     /// The leader's own terms.
@@ -362,6 +375,23 @@ impl GroupWeights {
                 leader.base_bonus_const + leader.limited_bonus,
             )
     }
+}
+
+/// The first index from `idx` on whose weight is at least `floor`, or the
+/// number of weights; `block_max` holds the largest weight of each block of
+/// [`WEIGHT_BLOCK`].
+#[inline(always)]
+fn next_weight_at_least(weights: &[f64], block_max: &[f64], mut idx: usize, floor: f64) -> usize {
+    while idx < weights.len() {
+        if idx.is_multiple_of(WEIGHT_BLOCK) && block_max[idx / WEIGHT_BLOCK] < floor {
+            idx += WEIGHT_BLOCK;
+        } else if weights[idx] >= floor {
+            return idx;
+        } else {
+            idx += 1;
+        }
+    }
+    weights.len()
 }
 
 #[derive(Clone, Copy)]
@@ -1393,7 +1423,9 @@ impl CharacterSearchState<'_> {
     /// suffix ceiling falls below the threshold as the loop above does. A
     /// group whose own ceiling fails while its terms are the maxima of the
     /// remaining groups of its attribute drops that attribute, and the scan
-    /// ends once every attribute of the remaining groups is dropped.
+    /// ends once every attribute of the remaining groups is dropped. A group
+    /// whose weight fails the log-linear test of the four groups moves the
+    /// scan to the next group whose weight can pass it.
     fn scan_last_group(
         &mut self,
         start: usize,
@@ -1408,6 +1440,9 @@ impl CharacterSearchState<'_> {
         let depth = MEMBER_COUNT - 1;
         let mut live_attrs = u8::MAX;
         let mut reached: Option<(u32, u64)> = None;
+        // The weight a group needs to pass the log-linear test of the four
+        // groups, and the threshold it was computed at.
+        let mut floor: Option<(u64, f64)> = None;
         let mut idx = start;
         loop {
             // `attrs` ends with the empty set after the last group.
@@ -1443,6 +1478,24 @@ impl CharacterSearchState<'_> {
                 if self.groups_excluded(idx, &selected[..depth], &prefix, threshold) {
                     self.stats.correlated_prunes += 1;
                     return;
+                }
+                if let Some(weights) = self.weights.weights.as_ref() {
+                    let need = match floor {
+                        Some((seen, need)) if seen == threshold => need,
+                        _ => {
+                            let need = self.last_group_weight_floor(
+                                weights, start, selected, &prefix, threshold,
+                            );
+                            floor = Some((threshold, need));
+                            need
+                        }
+                    };
+                    if weights.group[idx] < need {
+                        self.stats.correlated_prunes += 1;
+                        idx =
+                            next_weight_at_least(&weights.group, &weights.block_max, idx + 1, need);
+                        continue;
+                    }
                 }
                 let terms = group.scan[0].rest;
                 if !self.reaches(self.last_group_inputs(&prefix, &terms), threshold) {
@@ -1497,6 +1550,28 @@ impl CharacterSearchState<'_> {
             self.uniform_limited_cap,
         );
         self.recurse_cards(&ordered, &plan, 0, &mut deck, *initial_partial, scratch);
+    }
+
+    /// The weight below which a last group from `start` on fails the
+    /// log-linear test of the four groups: the attribute and support bound
+    /// of the suffix from `start` is at least that of each union it
+    /// completes.
+    fn last_group_weight_floor(
+        &self,
+        weights: &GroupWeights,
+        start: usize,
+        selected: &[usize; MEMBER_COUNT],
+        prefix: &CharacterPrefix,
+        threshold: u64,
+    ) -> f64 {
+        let extra = extra_bonus_ceiling(&self.group_suffix[start], 1, prefix, &self.leader);
+        let fixed = self.leader_weight
+            + weights.bound.bonus * f64::from(extra)
+            + selected[..MEMBER_COUNT - 1]
+                .iter()
+                .map(|&group| weights.group[group])
+                .sum::<f64>();
+        self.log_cutoff(threshold >> 32) - fixed
     }
 
     #[inline(always)]
@@ -2783,6 +2858,36 @@ mod attribute_bound_tests {
 mod scan_tests {
     use super::*;
     use crate::pool::{EventBonusExact, PoolBuilder};
+
+    #[test]
+    fn weight_jump_finds_the_first_weight_that_reaches_the_floor() {
+        let mut state = 0x9e37_79b9u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            f64::from(state % 1000) / 10.0
+        };
+        for count in [0usize, 1, 15, 16, 17, 40, 130] {
+            let weights: Vec<f64> = (0..count).map(|_| next()).collect();
+            let block_max: Vec<f64> = weights
+                .chunks(WEIGHT_BLOCK)
+                .map(|block| block.iter().copied().fold(f64::NEG_INFINITY, f64::max))
+                .collect();
+            for _ in 0..200 {
+                let start = (next() as usize) % (count + 1);
+                let floor = next();
+                let expected = (start..count)
+                    .find(|&idx| weights[idx] >= floor)
+                    .unwrap_or(count);
+                assert_eq!(
+                    next_weight_at_least(&weights, &block_max, start, floor),
+                    expected,
+                    "count {count} start {start} floor {floor}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn scan_keeps_the_member_order_and_carries_rest_maxima() {
