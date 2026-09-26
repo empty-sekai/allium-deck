@@ -42,7 +42,7 @@
 
 use super::budget::SearchBudget;
 use super::dfs::canonicalize_seed_result;
-use super::log_linear::{FeatureBox, LogLinearBound};
+use super::log_linear::{FeatureBox, LogLinearBound, mul_up, sum_up};
 use super::objective::ObjectiveBound;
 use super::tracker::TopKTracker;
 use super::{DeckResult, SearchContext, SearchParams, SearchStats, SupportDeck};
@@ -286,9 +286,11 @@ impl RegimePlan {
             );
             member[character] = member[character].max(weight);
             if may_lead(pool, ctx, card) {
-                let leading = weight
-                    + bound.leader_skill * f64::from(skill)
-                    + bound.bonus * f64::from(leader_extra(pool, ctx, card));
+                let leading = sum_up([
+                    weight,
+                    mul_up(bound.leader_skill, f64::from(skill)),
+                    mul_up(bound.bonus, f64::from(leader_extra(pool, ctx, card))),
+                ]);
                 leader[character] = leader[character].max(leading);
             }
         }
@@ -297,16 +299,22 @@ impl RegimePlan {
         let best = (0..CHARACTER_COUNT)
             .filter(|&character| leader[character].is_finite())
             .map(|character| {
-                leader[character]
-                    + ranked
-                        .iter()
-                        .filter(|&&other| other != character)
-                        .take(DECK_SIZE - 1)
-                        .map(|&other| member[other])
-                        .sum::<f64>()
+                sum_up(
+                    std::iter::once(leader[character]).chain(
+                        ranked
+                            .iter()
+                            .filter(|&&other| other != character)
+                            .take(DECK_SIZE - 1)
+                            .map(|&other| member[other]),
+                    ),
+                )
             })
             .fold(f64::NEG_INFINITY, f64::max);
-        let value = bound.constant + bound.bonus * f64::from(self.shared_extra) + best;
+        let value = sum_up([
+            bound.constant,
+            mul_up(bound.bonus, f64::from(self.shared_extra)),
+            best,
+        ]);
         bound.excludes(
             value,
             threshold_ep,

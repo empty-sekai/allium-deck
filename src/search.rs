@@ -42,6 +42,7 @@ use tracker::{TopKTracker, deck_result_cmp};
 mod placement;
 mod problem;
 mod skill_ceiling;
+mod small_ids;
 /// 角色感知的后缀上界，用于剪枝。
 pub mod suffix;
 mod tuning;
@@ -84,6 +85,11 @@ use budget::SearchBudget;
 /// Execute the complete search pipeline and return its completion certificate.
 /// Only `SearchCompletion::Complete` certifies canonical Top-K; `TimedOut`
 /// contains legal, exactly evaluated incumbents, not a proven ranking.
+///
+/// `pool` and `ctx` must preserve the handler's numeric/representation invariants
+/// and alignment. Mutating a built context does not re-run validation. In
+/// particular, support profiles must remain sorted, finite and non-negative;
+/// see `docs/pruning-proof.md`, Section 29.2, for the low-level preconditions.
 pub fn search(
     pool: &CardPool,
     ctx: &SearchContext,

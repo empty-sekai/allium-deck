@@ -7,6 +7,7 @@
 //! character-distinct decks runs against the one canonical tracker.
 use crate::pool::{CardIdx, CardPool};
 use crate::search::budget::SearchBudget;
+use crate::search::small_ids::SmallestIds;
 use crate::search::{
     DeckResult, SearchContext, SearchParams, SearchStats, TopKTracker, evaluate, placement,
 };
@@ -241,7 +242,7 @@ impl PowerSearch<'_> {
         }
         let slots = DECK_SIZE - depth;
         let selected = &self.game_ids[..depth];
-        let mut smallest = [u16::MAX; DECK_SIZE];
+        let mut smallest = SmallestIds::<DECK_SIZE>::new();
         for entry in entries[pos..]
             .iter()
             .take_while(|entry| entry.power >= least)
@@ -250,22 +251,16 @@ impl PowerSearch<'_> {
                 continue;
             }
             let id = self.pool.game_id(entry.card);
-            if id >= smallest[slots - 1] || selected.contains(&id) || smallest.contains(&id) {
-                continue;
+            if !selected.contains(&id) {
+                smallest.insert(id);
             }
-            let mut at = slots - 1;
-            while at > 0 && smallest[at - 1] > id {
-                smallest[at] = smallest[at - 1];
-                at -= 1;
-            }
-            smallest[at] = id;
         }
-        if smallest[slots - 1] == u16::MAX {
+        let Some(tail) = smallest.as_slice().get(..slots) else {
             return true;
-        }
+        };
         let mut set = [0u16; DECK_SIZE];
         set[..depth].copy_from_slice(selected);
-        set[depth..].copy_from_slice(&smallest[..slots]);
+        set[depth..].copy_from_slice(tail);
         set.sort_unstable();
         set > kth
     }

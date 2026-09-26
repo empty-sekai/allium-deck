@@ -10,8 +10,8 @@ pub(crate) const NUMERIC_POWER_MAX: u64 = 1 << 24;
 /// Largest a priori live-score rate `base + score_up * sum(rates) / 100`.
 pub(crate) const NUMERIC_RATE_MAX: u64 = 1 << 16;
 /// Largest a priori live-score ceiling. The fixed-point live bound dominates
-/// the floating-point evaluator while `28 * 2^-53 * live < 10^-6`, that is for
-/// live scores below about `3.2e8`.
+/// the floating-point evaluator while `41 * 2^-53 * live < 10^-6` on the tight-bound case; looser
+/// bounds dominate the separately bounded legal leaf value directly.
 pub(crate) const NUMERIC_LIVE_SCORE_MAX: u64 = 1 << 27;
 /// Largest a priori total event bonus, in percent.
 pub(crate) const NUMERIC_BONUS_MAX: u64 = 1 << 20;
@@ -24,8 +24,8 @@ pub(crate) const NUMERIC_EVENT_POINT_MAX: u64 = 1 << 30;
 /// fixed-point search ceiling provably dominates the floating-point leaf
 /// evaluator (`docs/pruning-proof.md`, "Numeric admissibility").
 ///
-/// All checked quantities are a priori maxima over every deck of the pool, so
-/// every ceiling the search evaluates for this request is covered. Request
+/// These are a priori maxima over legal decks, not over relaxed states or
+/// inverse-cutoff probes. Wide/checking arithmetic covers those separately. Request
 /// parameters (teammate values, opponent score) are validated before pool
 /// construction.
 pub(crate) fn numeric_domain(pool: &CardPool, ctx: &SearchContext) -> Result<(), BuildError> {
@@ -177,6 +177,27 @@ pub(super) fn score(value: i64, limit: Option<u32>, field: &'static str) -> Resu
     Ok(value as u8)
 }
 
+/// Check identities before either the main pool or a support-only seed narrows them.
+pub(super) fn public_card_id(value: i32) -> Result<u16, BuildError> {
+    if value < 0 {
+        return Err(BuildError::InvalidConfig(
+            "card identity must be nonnegative".to_string(),
+        ));
+    }
+    ensure("public card id", value as u64, u64::from(u16::MAX))?;
+    Ok(value as u16)
+}
+
+pub(super) fn character_id(value: i32) -> Result<u8, BuildError> {
+    if value < 0 {
+        return Err(BuildError::InvalidConfig(
+            "character identity must be nonnegative".to_string(),
+        ));
+    }
+    ensure("character id", value as u64, 26)?;
+    Ok(value as u8)
+}
+
 pub(super) fn validate_cards(cards: &[CardIntermediate]) -> Result<(), BuildError> {
     // Dense indices are u16 because CardIdx is intentionally compact.  The
     // 512-bit metadata mask is only a ZMM fast-path view; overflow cards stay
@@ -186,16 +207,7 @@ pub(super) fn validate_cards(cards: &[CardIntermediate]) -> Result<(), BuildErro
     }
     let mut limited_values = Vec::new();
     for card in cards {
-        if card.game_card_id < 0 {
-            return Err(BuildError::InvalidConfig(
-                "card identity must be nonnegative".to_string(),
-            ));
-        }
-        ensure(
-            "public card id",
-            card.game_card_id as u64,
-            u64::from(u16::MAX),
-        )?;
+        public_card_id(card.game_card_id)?;
         ensure("character id", u64::from(card.character_id), 26)?;
         ensure("attribute id", u64::from(card.attr), 5)?;
         ensure("unit mask", u64::from(card.unit_mask_raw), 63)?;

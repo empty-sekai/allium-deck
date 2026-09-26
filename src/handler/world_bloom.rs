@@ -121,9 +121,9 @@ pub fn world_bloom_support_cards(
             event_id,
             Some(turn),
             Some(special_character_id),
-            master.id.clamp(0, u16::MAX as i32) as u16,
+            super::capacity::public_card_id(master.id)?,
             master.card_rarity_type,
-            master.character_id.clamp(0, u8::MAX as i32) as u8,
+            super::capacity::character_id(master.character_id)?,
             unit_mask_raw,
             !filter_other_unit,
             card.master_rank,
@@ -165,7 +165,7 @@ pub(crate) fn support_seed_from_intermediate(
     indexes: &index::PoolIndexes,
     support_master_max: bool,
     support_skill_max: bool,
-) -> SupportSeedSlim {
+) -> Result<SupportSeedSlim, BuildError> {
     let master = indexes
         .card_data(card.game_card_id)
         .map(|entry| &entry.master);
@@ -183,14 +183,14 @@ pub(crate) fn support_seed_from_intermediate(
     } else {
         card.skill_level
     };
-    SupportSeedSlim {
-        card_id: card.game_card_id.max(0).min(u16::MAX as i32) as u16,
+    Ok(SupportSeedSlim {
+        card_id: super::capacity::public_card_id(card.game_card_id)?,
         rarity: card.card_rarity_type,
         character_id: card.character_id,
         unit_mask: card.unit_mask_raw,
         master_rank,
         skill_level,
-    }
+    })
 }
 
 /// Precomputed per-(event, turn, special-character) support bonus rate tables.

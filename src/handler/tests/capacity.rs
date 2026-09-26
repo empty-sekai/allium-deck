@@ -230,3 +230,66 @@ fn capacity_applies_a_real_event_cap_before_checking_skill_width() {
         }
     }
 }
+
+#[test]
+fn capacity_maximum_public_id_is_supported() {
+    let mut fixture = pool_constraint_fixture(&[(1, 4, 100)]);
+    fixture.master_cards[0].id = 65_535;
+    fixture.card_params[0].card_id = 65_535;
+    let game = bonus_tier_game(&fixture);
+    let (pool, _) = checked_build(&fixture, &game, &BuildParams::default()).unwrap();
+    assert_eq!(pool.game_id(pool.card_idx(0).unwrap()), u16::MAX);
+}
+
+#[test]
+fn capacity_support_only_id_is_checked_before_main_filtering() {
+    let mut fixture = pool_constraint_fixture(&[
+        (1, 4, 100),
+        (2, 4, 100),
+        (3, 4, 100),
+        (4, 4, 100),
+        (5, 4, 100),
+        (6, 4, 100),
+    ]);
+    fixture.master_cards[5].id = 70_000;
+    fixture.card_params[5].card_id = 70_000;
+    let events = [types::Event {
+        id: 214,
+        event_type: "world_bloom".to_string(),
+    }];
+    let chapters = [types::WorldBloom {
+        event_id: 214,
+        game_character_id: Some(1),
+        chapter_no: 1,
+        world_bloom_chapter_type: Some("game_character".to_string()),
+    }];
+    let game = GameData {
+        events: &events,
+        world_blooms: &chapters,
+        ..bonus_tier_game(&fixture)
+    };
+    let params = BuildParams {
+        event_id: Some(214),
+        excluded_cards: vec![70_000],
+        ..Default::default()
+    };
+    assert!(matches!(
+        checked_build(&fixture, &game, &params),
+        Err(BuildError::CapacityExceeded {
+            field: "public card id",
+            value: 70_000,
+            max: 65_535
+        })
+    ));
+}
+
+#[test]
+fn capacity_negative_character_is_not_silently_changed_to_zero() {
+    let mut fixture = pool_constraint_fixture(&[(1, 4, 100)]);
+    fixture.master_cards[0].character_id = -1;
+    let game = bonus_tier_game(&fixture);
+    assert!(matches!(
+        checked_build(&fixture, &game, &BuildParams::default()),
+        Err(BuildError::InvalidConfig(_))
+    ));
+}

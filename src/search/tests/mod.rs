@@ -854,3 +854,5 @@ fn dfs_search_exact(
     assert_eq!(outcome.completion(), SearchCompletion::Complete);
     outcome.results
 }
+
+mod proof_audit;

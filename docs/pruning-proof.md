@@ -80,9 +80,11 @@ A branch with $U(N)=\tau$ cannot be discarded from the numeric bound alone.
 It may contain a distinct public card set, a better legal placement, or a better
 deterministic cultivation representative with the same primary objective.
 
-This is why all maximizing comparisons in the exact path use strict
-upper < threshold, and why the SIMD candidate mask retains
-upper >= threshold.
+This is why a **numeric-only** maximizing comparison uses strict
+upper < threshold and the SIMD candidate mask retains upper >= threshold.
+Equality may be pruned only with an additional proved lower bound on the
+canonical public-set key (Sections 20.5 and 21.2), not from the numeric
+bound alone.
 
 ### Lemma 1 — tighter admissible bounds stay admissible
 
@@ -189,8 +191,24 @@ the dense `CardIdx` cannot represent the pool and the builder returns
 There is deliberately no theorem that “the best 512 are enough”; no such
 truncation exists in the exact path.
 
+The public card-ID domain includes every `u16`, including 65535; its upper
+endpoint is not a missing-card sentinel. `SmallestIds` stores a separate
+occupied length and inserts only into its occupied prefix. By induction,
+that prefix is exactly the smallest distinct IDs seen so far, limited by its
+capacity. The Power and numeric equality bounds read only that prefix, so
+“too few remaining IDs” cannot be inferred from a legal ID's value. This is
+a representation obligation of their lexicographic lower-bound proofs.
+
+Support candidates are prepared before the main-deck hard filters. Their
+public IDs are checked **before** narrowing and deduplication even if the main
+pool later excludes the card; a support-only ID cannot alias 65535 by clamping.
+The standalone support-card operation uses the same checked conversion. Raw
+negative or out-of-range character identities likewise return explicit errors
+rather than being clamped before validation.
+
 Implementation:
-src/handler/build.rs, src/handler/filter.rs, src/handler/capacity.rs.
+src/handler/build.rs, src/handler/filter.rs, src/handler/capacity.rs,
+src/handler/world_bloom.rs.
 
 ## 4. Same-character dominance
 
@@ -206,7 +224,9 @@ The implementation requires all of the following:
 2. skill type and all completion-observable skill semantics are substitutable,
    including skill_min, skill_max, unit-count / different-unit / reference
    tables;
-3. required training-state semantics are equal;
+3. training-dependent effects have already been resolved into the compared
+   power/skill/bonus columns; the leaf evaluator does not read a separate raw
+   training-state flag;
 4. base and limited event bonus of $A$ are componentwise no worse;
 5. limited-bonus zero/nonzero class is preserved when the event has a count cap;
 6. attributes are equal;
@@ -243,37 +263,89 @@ backward in the deterministic tie order. ∎
 ## 5. World Bloom support-aware dominance
 
 A World Bloom main-deck card may also occupy a support-deck position. Replacing
-a main card can therefore change support opportunity cost.
+a main card can therefore change support opportunity cost. `SupportDimension`
+checks every profile it uses: entries must be sorted by non-increasing finite,
+non-negative bonus, with one entry per public ID. A malformed profile produces
+an unusable dimension, **not** the absence of a support penalty; no dominance
+pair is approved from it. Cultivation variants of one ID share its entry.
 
-SupportDimension records outward-rounded support values for every public card
-identity and cultivation variant. Let $q$ be the number of counted support
-slots. After removing the other four main cards, let $t$ be the value that
-would refill the $q$-th support position.
-
-For support values $a$ and $b$ of replacement $A$ and removed card $B$,
+Fix a leader profile with $q>0$ counted support slots. Let $R$ be the other
+four main cards, and let $a,b$ be the stored `f64` support values of replacement
+$A$ and removed card $B$, interpreted as exact real numbers (zero if absent).
+For distinct IDs let $t$ be the $q$-th value after excluding $R,A,B$, padded
+with zero. In exact arithmetic the support loss on replacing $B$ by $A$ is
 
 $$
-(a-t)^+-(b-t)^+
-\le \max(0,\,a-\max(b,f)),
+(a-t)^+-(b-t)^+ \le \Delta=\max(0,a-\max(b,f)),
 $$
 
-where $f$ is the globally safe replacement floor at support rank $q+5$.
-Removing at most five main cards cannot make the refill value worse than this
-floor.
+where $f$ is the value at one-based rank $q+5$ in the original profile (zero
+past the end). If $b\ge f$, the loss is at most $(a-b)^+$ for every $t$.
+If $b<f$, removing $B$ removes no entry with value at least $f$, and removing
+$R,A$ removes at most five: at least $q$ such entries remain, hence $t\ge f$.
+This proves the inequality without incorrectly assuming that excluding six
+IDs always leaves the $q$-th value above rank $q+5$. For the same public ID,
+the support subsequence is unchanged.
 
-The code rounds $a$ upward and $b,f$ downward before computing this maximum,
-so the resulting support deficit is conservative.
+### Theorem 3a — zero-cost substitution in the implemented evaluator
 
-The replacement is accepted only when $A$'s guaranteed **base** event-bonus
-surplus pays this worst-case deficit. Limited bonus is not used as payment
-because a count cap may omit it.
+If $a\le\max(b,f)$, the support value at **every selected rank** is no worse
+after substitution. For $a\le b$, the new list replaces at most $a$ by the
+no-smaller $b$. For $b<f$ and $a\le f$, both candidates are below the common
+cutoff $t$, or equal to it; the selected value sequence is unchanged.
+Appending zero padding does not change a sum. Monotonicity of each rounded
+addition (F2) proves that the left-to-right `f64` support sum cannot decrease.
+The integer main/leader bonus sum is componentwise non-decreasing, and its
+conversion and subsequent additions are monotone. Thus the **implemented**
+total bonus cannot decrease; no cancellation-error estimate is needed. ∎
 
-### Theorem 3 — World Bloom substitution
+### Theorem 3b — compensated substitution with a strict error margin
 
-When support_deficit_affordable succeeds, the combined
-main-deck-bonus + support-deck contribution after replacing $B$ with $A$
-cannot decrease. Together with Theorem 2, $A$ is a valid substitute for every
-legal completion containing $B$. ∎
+Equality of real-valued main + support totals does **not** prove equality of
+the evaluator's totals: their different operation sequences may round to
+opposite sides of an integer score boundary. Compensation is therefore allowed
+only with a strict, outward-certified surplus.
+
+The code first upward-sums the largest $q\le255$ support entries and permits
+compensation only if that sum is at most $2^{20}$. The main terms are bounded
+by their representations: five bonuses of at most 409.5%, two leader terms of
+at most 6553.5%, and a diversity term of at most 65535%. Every exact-real total
+is consequently below $2^{21}$. At most 255 support additions and three other
+rounded operations give, for one deck, an absolute error at most
+
+$$
+1.01\cdot258\cdot2^{-53}\cdot2^{21}+258\cdot2^{-1074}.
+$$
+
+The last term also covers subnormal absolute rounding. The sum of the errors
+of two decks is less than $2^{-22}$. Let $s$ be the guaranteed base surplus
+$(\operatorname{base}_{10}(A)-\operatorname{base}_{10}(B))/10$.
+The implementation computes
+
+$$
+s^- = \operatorname{nextDown}(\mathrm{fl}(s)),\qquad
+\Delta^+ = \operatorname{nextUp}(\mathrm{fl}(a-\max(b,f))),
+$$
+
+and accepts only if
+
+$$
+\operatorname{nextDown}(\mathrm{fl}(s^- - \Delta^+))>2^{-20}.
+$$
+
+Each endpoint rounds outward, including the subtraction. Therefore the real
+total improves by more than $2^{-20}$, exceeding the two-deck rounding error
+by a factor of at least four. The implemented total cannot decrease.
+Limited bonus is not used as payment, since its cap may omit it. Every possible
+leader profile must pass Theorem 3a or 3b. The other substitution dimensions
+of Theorem 2 then establish objective and canonical-order preservation. ∎
+
+The permanent `proof_audit::support_compensation_preserves_actual_floating_point_top_one`
+regression records the equal-real-total counterexample: 64.1 + 8.8 and
+62.5 + 10.4 produce MYSEKAI scores 1728 and 1729 respectively in the unchanged
+evaluator. The weaker candidate must survive, including Top-1 where alternatives
+are not expanded. A separate strict-surplus regression confirms that safe
+compensation remains enabled.
 
 ## 6. Top-K recovery after dominance
 
@@ -284,7 +356,7 @@ Implementation: src/search/alternatives.rs.
 
 Let $D$ be any true Top-K deck containing one or more dominated cards. Replace
 each dominated card by its surviving dominance root, obtaining $R(D)$.
-By Theorems 2 and 3,
+By Theorem 2 and Theorems 3a–3b,
 
 $$
 v(R(D)) \ge v(D),
@@ -292,10 +364,23 @@ $$
 
 and an equal primary objective is not canonically worsened by the replacement.
 
-If $D$ is in the true Top-K, $v(D)\ge\tau^*$, where $\tau^*$ is the true
-K-th primary value. Therefore $R(D)$ is at or above the same threshold and
-must be represented among the compacted search's K best public sets, modulo
-deduplication of roots.
+Use the **full canonical order**, not just a numeric threshold. Let $D$ be
+the best representative of a true Top-K public set and let $R(D)$ be its legal
+root arrangement. The substitution theorems give $R(D)\preceq D$. The best
+representative of the root set in the compacted pool is no worse than $R(D)$.
+If K distinct compacted public sets preceded that representative, those same
+K sets, with their possibly better full-pool representatives, would precede
+$D$ in the full feasible set, contradicting $D$'s rank. Hence the root set is
+retained by the compacted Top-K. This counting argument covers objective ties
+and many-to-one root mappings without assuming that a numeric threshold alone
+selects a canonical Top-K.
+
+A retained public set can have several cultivation realizations whose best
+choice changes after substitution. The implementation enumerates its original
+cultivation combinations **before** any alternative-score pruning. Each
+realization is evaluated independently; scores of different realizations are
+not monotone bounds on one another. Inverse-edge pruning is applied only after
+this enumeration has fixed a concrete realization.
 
 The post-search alternatives pass recursively substitutes every recorded
 inverse dominance edge back into every slot and exact-evaluates the result.
@@ -744,7 +829,7 @@ for every deck with $E\ge\tau$. The coefficients are non-negative and the
 five cards have distinct characters, so the right side is at most $K+a_B\epsilon$
 plus the largest, over characters $x$, of the best leader term of a card of $x$
 that may lead and the four largest per-character maxima of $w_c$ over the
-other characters. When that value is below $\ln\tau-10^{-9}$, no deck of $R$
+other characters. When that upward-rounded value is below the certified lower endpoint for $\ln\tau$, no deck of $R$
 has an event point of $\tau$ or more, so every deck of $R$ is below the cutoff,
 and the regime is skipped. The sum has fewer than twenty terms, so the
 numerics of Section 18.8 apply. A same-character search makes no such test.
@@ -1252,7 +1337,11 @@ $C\ge 2\beta W$, and $C^2/(4\alpha\beta)$ otherwise. The search keeps that peak
 as an exact rational, adds $c_0$ times its denominator, divides by the
 denominator times $d\,10^6$ with floor, and takes the smaller of this and
 the separate-maxima ceiling as the branch ceiling. The weights only decide
-which of the two is smaller. A regime takes the normal of the level curve of
+which of the two is smaller. The potentially large rational products and
+final numerator/denominator use checked arithmetic. Overflow returns
+`u32::MAX`, so taking the smaller with the separate-maxima bound falls back
+to that already-proved bound instead of interpreting wrapped arithmetic as a
+small ceiling. An unrepresentable `LiveProduct` disables this optional component. A regime takes the normal of the level curve of
 $uw$ at its unconditioned ceiling, $\omega_S/\omega_P\approx bU/W$, and keeps the
 component only when every card's joint value is below $2^{26}$, so five of
 them fit the table and an unreachable entry stays negative. A class test
@@ -1474,7 +1563,7 @@ slots. The comparison is performed in a member context that removes
 leader-only numeric benefits but preserves the card's real skill/training
 semantics and World Bloom support opportunity cost.
 
-Therefore Theorems 2 and 3 apply to **member positions**: replacing a dominated
+Therefore Theorem 2 and Theorems 3a–3b apply to **member positions**: replacing a dominated
 member by its root cannot worsen a completion in any dimension visible to that
 member role. The relation is never used to assert that the dominated card is
 also safe to remove as a leader.
@@ -1505,7 +1594,8 @@ event point of `ObjectiveBound::ceiling` at these features, which bounds the
 event point of the deck by Section 18.5 and Section 29.
 
 **Lemma LL1 (product form).** Let $h$ be the honor bonus, $m$ and $\beta$ the
-music and boost rates in percent, $\kappa=m\beta/10^6$, and
+music and boost rates in percent, $\kappa\ge m\beta/10^6$ the upward-prepared
+coefficient, and
 $(c,D)=(100,20000)$ for Solo and Auto, $(110+o,17000)$ for Multi, where $o=13$
 when the opponent score is zero and $\min(\lfloor\text{other}/340000\rfloor,13)$
 otherwise. Then
@@ -1516,8 +1606,10 @@ $$
 
 where $q(S,L)=(4\bar r(S,L)+a)/10^6$, $a$ is the active-score coefficient per
 unit power (five times $0.075\cdot10^6$ without a teammate power, once with
-one), $c'=c+4\cdot0.075\,t/D$ for teammate power $t$ ($c'=c$ otherwise), and
-$\bar r$ bounds the fixed-point live rate of Section 12:
+one), $c'$ an upward-prepared bound on $c+4\cdot0.075\,t/D$ for teammate power $t$
+(on $c$ otherwise), and $\bar r$ bounds the fixed-point live rate of Section 12.
+The following coefficients and intercepts are prepared upward; their stored
+`f64` values define an exact-real majorant of the listed expressions:
 
 - Multi: $\max(4L+S,T)\rho\le(4L+S)\rho+\max(0,T-4L_{\min})\rho$ over leaders
   with skill at least $L_{\min}$, where $T$ is five times the teammate
@@ -1549,7 +1641,7 @@ $\square$
 
 **Lemma LL3 (affine bound).** Suppose $0<u_{\mathrm{lo}}<u_{\mathrm{hi}}$. Let
 $\ell(S,L)=\ell_0+\ell_SS+\ell_LL$ be affine with $\ell\ge q$ for $S\ge0$ and
-$L\in[L_{\min},\hat L]$, and let $P_0,B_0>0$ and $Q_0=\ell(S_0,\hat L)>0$ for
+$L\in[L_{\min},\hat L]$, and let $P_0>0$, $B_0\ge0$ and $Q_0=\ell(S_0,\hat L)>0$ for
 some $S_0$. Every deck of Lemma LL2 with $E\ge\tau_0$ satisfies
 
 $$
@@ -1597,7 +1689,8 @@ weights of distinct characters from the suffix start, and $a_B$ times the
 attribute and support bound of Section 18.3. A card-level node sums the
 terms of the chosen cards, the weights of the remaining planned groups and
 $a_B$ times the plan's diversity bonus and the current support ceiling. If
-the sum is below $\ln\tau-10^{-9}$, where $\tau\ge\tau_0$ is the event point
+the upward-rounded sum is below a certified lower endpoint for $\ln\tau$,
+where $\tau\ge\tau_0$ is the event point
 of the current threshold, no deck of the subtree has $E\ge\tau$, so every
 leaf of the subtree is below the threshold and the subtree is pruned by
 Theorem 1.
@@ -1616,33 +1709,79 @@ the suffix lists and attribute rows only shrink as the start index grows. The
 scan of a group stops when the rest maxima of Section 18.5 fail it, since the
 weight is non-decreasing in every term.
 
-In the last member slot, let $F$ be $\ln\tau-10^{-9}$ less the leader's
+In the last member slot, let $F$ be a certified lower endpoint for $\ln\tau$ less the leader's
 terms, the weights of the three selected groups and $a_B$ times the attribute
 and support bound of the suffix from the slot's first group. That bound is at
 least the one of every attribute union a group of the suffix completes, so a
 group whose weight is below $F$ fails the test of the four groups, and the
 scan moves to the next group whose weight reaches $F$; blocks of sixteen
-groups whose largest weight is below $F$ are passed over whole. $F$ is
-recomputed whenever the threshold changes. The comparison rearranges the sum
-of the four-group test, which changes its rounding by far less than the
-margin. A bound built for $\tau_0$ holds at
+groups whose largest weight is below $F$ are passed over whole. The fixed
+terms are summed upward and their subtraction from the cutoff is rounded
+downward, so the stored $F$ is a lower bound on the weight needed. $F$ is
+recomputed whenever the threshold changes. This rearrangement therefore has
+an explicit directed-rounding proof, not an assumed small-error margin. A bound built for $\tau_0$ holds at
 every higher threshold, so the search rebuilds the weights only when the
 event-point threshold has risen by $1/128$ since the last build, which
 narrows the chord and moves the tangent point; every sum is recomputed from
 the current weights, never mixed across builds. When $u_{\mathrm{lo}}\le0$ or
 $u_{\mathrm{lo}}\ge u_{\mathrm{hi}}$ no log-linear test is made.
 
-*Numerics.* The parameters $P_0$, $Q_0$, $B_0$ and $\sigma$ are `f64`
-numbers, and Lemma LL3 holds for their exact values, except that $\sigma$,
-$\varphi(t_{\mathrm{lo}})$ and the logarithms in $K$ carry an error of a few
-units in the last place. The search uses a bound only when $\lambda\ge2^{-10}$,
-so each weighted term $a_PP$, $a_SS$, $a_LL$ and $a_BB$ is at most $2^{10}$
-($P_0$, $Q_0$ and $100+B_0$ are at least $\lambda$ times the box values),
-and only when $|K|<2^8$. A sum of fewer than twenty such terms in
-`f64` therefore has an absolute error below $10^{-11}$, which together with
-the parameter errors stays far below the margin of $10^{-9}$.
-`log_linear::tests` checks the bound against `ObjectiveBound::ceiling` at
-random feature points for every supported live type and skill order.
+**Certified binary64 preparation and application.** The implementation does
+not assume a fixed ulp accuracy for the platform `ln`, nor that the ratio of
+two tiny logarithms has a small error. In `log_linear/interval.rs`, every
+addition, subtraction, multiplication and division encloses its exact real
+result by rounding endpoint operations outward with `next_down` / `next_up`.
+Products and quotients take all four endpoint combinations; division through
+zero is unavailable. Non-finite intermediate intervals cannot produce a bound.
+Induction on the expression tree proves containment, including negative
+intercepts and cancellation in the constant term.
+
+For logarithms, every positive finite binary64 value has the exact reduction
+$x=2^e m$, $1\le m<2$. Subnormal values are first scaled exactly by $2^{52}$.
+For $z=(m-1)/(m+1)\in[0,1/3]$,
+
+$$
+\ln m=2\sum_{j=0}^{31}\frac{z^{2j+1}}{2j+1}+R,\qquad
+0\le R\le\frac{2z^{65}}{65(1-z^2)}.
+$$
+
+The identity follows by integrating the geometric series of $1/(1-z^2)$.
+Every omitted denominator is at least 65, which proves the geometric remainder
+bound. Both the finite sum and remainder are evaluated as outward intervals.
+$\ln2$ is computed by the same series at $m=2$, cached, and multiplied by the
+signed exact exponent using interval multiplication. Monotonicity of $\ln$
+extends this point procedure to an interval argument. Thus **no transcendental
+library call** is trusted by a pruning decision.
+
+The calculated interval for $u_{lo}$ contributes its lower endpoint, and that
+for $u_{hi}$ its upper endpoint. This widens the chord's domain rather than
+excluding feasible endpoint values. The true chord slope is enclosed using
+interval logarithms and interval division; if the denominator interval reaches
+zero, or the slope interval cannot be certified inside $(0,1)$, construction
+returns `None`. Nearly coincident endpoints therefore fall back, rather than
+turning a rounded slope of zero into a certificate.
+
+The tangent's segment is selected by comparing with exact integer breakpoints,
+not by flooring a rounded quotient. Its intercept is calculated upward; hence
+it remains a supergradient majorant even at a breakpoint. Bisection chooses
+only the tangent point and has no authority to prune. For its stored positive
+point coordinates the interval expression encloses the exact constant $K$ and
+coefficients of Lemma LL3. Choosing each coefficient's upper endpoint is safe
+because all aggregate features are non-negative.
+
+Application is outward too: card products, leader weights, selected-group and
+suffix sums, and the regime-level maximum are upper bounds on the exact affine
+value. The threshold is the lower endpoint of the interval logarithm. A strict
+comparison of upper value with lower threshold proves exclusion. Last-group
+subtraction is downward as described above. No fixed `1e-9` error budget is
+needed, and widening an interval can only weaken pruning. Finite/positive
+constructor guards and the existing tangent-point heuristics merely decline
+an optional optimization; they never delete a candidate.
+
+Tests exercise the logarithm at binary64 extremes, the coincident-endpoint
+fallback, affine admissibility against `ObjectiveBound`, and every existing
+regime/Final oracle comparison. They are falsification attempts for this
+analytic and directed-arithmetic proof, not its replacement.
 
 ## 19. Constrained Power bounds
 
@@ -1992,7 +2131,9 @@ soon small public sets are found.
 of one character. A deck holds at most one of them, and each is searched, so
 the canonical representative of every public set is among the leaves.
 Nothing is truncated per character or per partial state: the only removals
-are the three bounds above and the feasibility checks.
+are the three numeric bounds, the separately proved canonical equality test,
+and the feasibility checks. The equality test's ID frontier uses the explicit
+occupied length of Section 3.3, including public ID 65535.
 
 ## 22. Challenge bound frontier
 
@@ -2215,8 +2356,8 @@ real formulas.
 ### 29.1 Floating-point facts
 
 Let $u=2^{-53}$ and let $\mathrm{fl}$ denote round-to-nearest. Every operand
-below is finite and non-negative, and nonzero magnitudes stay far above the
-subnormal range.
+below is finite and non-negative. The relative form below is used on normal
+operations; the absolute-error extension for subnormals is included in N2.
 
 - **(F1) Relative error.** $\mathrm{fl}(x\circ y)=(x\circ y)(1+\delta)$ with
   $|\delta|\le u$ for $\circ\in\{+,\times,/\}$. A chain of $k$ such operations
@@ -2231,7 +2372,8 @@ subnormal range.
   of $1/4$ well inside that range, are exact, and so are their sums while they
   stay in range. Decimal constants such as $0.1$, $1.1$ or $1.15$ are not.
 - **(F4) Truncation.** On non-negative values the evaluator's `as i32` /
-  `as u32` / `as u64` casts and `floor` are the floor function; on non-negative
+  `as u32` / `as u64` casts are floor within the represented range
+  (as ensured for legal leaves), and `floor` is the floor function; on non-negative
   integers the ceilings' integer `/` is the floor function.
 
 ### 29.2 Numeric domain
@@ -2265,15 +2407,35 @@ skill base plus maximum at most the card's skill maximum) they establish:
   $\hat I=\hat b\,m(\hat B+100)/10^4\le2^{27}$,
   $\hat E=\hat I\lambda\beta/100\le2^{30}$.
 
-Every argument passed to an aggregate ceiling is a sum of at most five
-per-card maxima (power, skill, bonus ceilings) plus request constants, and the
-skill-peak argument is a single card's skill value. Hence every ceiling value
-evaluated for a request is at most the corresponding a priori quantity, and
-(D2) also keeps every `i64` numerator product below $2^{63}$ and every `u32`
-power sum below $2^{32}$. The limits keep a factor of at least 2 below the
-thresholds at which the lemmas stop holding; real master data lies one to three
-orders of magnitude inside them. A `SearchContext` constructed directly for the
-search API is expected to satisfy the same domain.
+These are a priori bounds on **legal leaves**, not on every relaxed state or
+inverse-cutoff probe. A relaxation may reuse a selected card's maximum, and
+`needed_live` probes the whole non-negative `i32` range. Neither is a legal
+five-card selection, so its value need not stay below $\hat X$ or $\hat E$.
+
+For actual live-numerator relaxations, the skill sum is at most five card
+maxima and the peak at most one maximum. A power relaxation is at most five
+times $\hat P$, even when the same card is reused. With a power cap, it is
+still at most five times the capped $\hat P$. Upward coefficient preparation
+adds less than one to the full rate over the input widths: in Multi the
+largest multiplier is $5(2^{31}-1)$, whose quantization contribution is less
+than $5(2^{31}-1)/(2^{20}10^6)<0.011$; the other orders have much smaller
+multipliers. Thus the numerator's represented live bound is less than
+$5\hat X+20\hat P<2^{30}$ (including preparation rounding), well inside
+`i32`, and its numerator and intermediate rate products fit `i64`.
+
+Event-bound stages instead use `i128` and clip their final result upward-domain
+safely to `i32::MAX`. The legal event-point maximum remains below that clip,
+so oversized probes cannot wrap and destroy monotonicity. Optional joint-bound
+coefficient construction uses checked `i64` arithmetic; unrepresentable
+coefficients disable only that bound. Its potentially large rational products,
+constant addition and final denominator use checked `i128` operations and
+return an infinite (`u32::MAX`) ceiling on overflow.
+
+A directly constructed low-level `SearchContext` must preserve the builder's
+numeric and representation invariants, sorted non-negative support profiles,
+and pool/context alignment. The public search API does not re-run the handler's
+validation. Its completeness theorem is conditional on these preconditions,
+not an assertion that arbitrary mutated contexts are valid.
 
 ### 29.3 Lemma N1 — fixed-point coefficients
 
@@ -2298,10 +2460,13 @@ base rate is the same `f64` value on both sides. Hence the live numerator
 satisfies
 
 $$
-N\ge10^6X_B(1-u)^8,
+N\ge10^6X_B(1-u)^8-2^{-880},
 $$
 
 where $X_B$ is the real-valued ceiling evaluated at the exact `f64` constants.
+The negligible absolute term covers underflow in an intermediate rate division
+before fixed-point scaling; it is zero when every contributing operation is
+normal (see the absolute-error discussion in N2).
 
 The ceiling of a rounded product can lie below the real product: the constant
 $1.1$ is stored as $1.1+8.9\cdot10^{-17}$ and $\mathrm{fl}(1.1\cdot10^6)$ is
@@ -2309,76 +2474,100 @@ exactly $1\,100\,000$, so $K/10^6<c$. Lemma N1 needs only the relative form.
 
 ### 29.4 Lemma N2 — evaluator rounding
 
-Let $X^*(D)$ be the live score of a legal completion $D$ computed in exact
-arithmetic from the same `f64` constants, and $X_e(D)$ the evaluator's value
-before truncation. Then $X_e\le X^*(1+u)^{20}$:
+Let $X^*(D)$ be the live score of a legal completion evaluated in exact
+arithmetic from the same stored constants and the evaluator's selected slot
+assignment. Let $X_e(D)$ be its floating value before truncation. Then
+$X_e\le X^*(1+u)^{32}+2^{-900}$. The bound is on the longest dependency path,
+not the sum of operation counts across independent terms:
 
-- integral and quarter-integral slot score-ups are exact (F3); the Multi self
-  score-up $L+\sum_i o_i/5$ costs at most 5 roundings, and a further Average
-  division at most 5 more. These sums, and the Average reference-skill share,
-  add their terms in ascending order, so the value is the same for every
-  order of the deck's free members;
-- the rate $\mathrm{base}+\sum_k\mathrm{fl}(\mathrm{fl}(su_k r_k)/100)$ costs 2
-  roundings per term and 6 additions;
-- the product with power costs 1 (the factor 4 is exact), the co-op term
-  $\mathrm{fl}(\mathrm{fl}(5\cdot0.015)\cdot\text{power sum})$ costs 3 and the
-  final addition 1.
+- ordinary, unit-count and different-unit skills are exact integers. A
+  reference share has one division by 100 (the bounded integer product is
+  exact); an Average share adds at most three nontrivial sums, exact division
+  by four and one addition of the base: at most five roundings. Reference
+  shares need **not** be quarter-integral;
+- Multi/Cheerful divide each member by five and add four terms to the leader:
+  at most five further roundings. Average live order sums the first five slots
+  and divides by five: at most five further roundings;
+- multiplying a slot by its rate and dividing by 100 costs two roundings,
+  followed by at most six rate additions. Multiplication by integer power
+  costs one; multiplication by four is exact. Adding the active term costs
+  one. The active term's own shorter path is covered as well.
 
-All terms are non-negative, so by F1 the counts compose to at most 20. The
-monotonicity arguments of Section 12 and of exactness-proof Section 3 (every
-slot score-up is at most the slot peak used by the ceiling, rates are
-non-negative, power and skill inputs are upper bounds) give $X^*\le X_B$.
+This gives at most 25 roundings on any contributing path; 32 is a conservative
+budget, also covering preparation of the common base rate. Sorting and
+min/max select operands rather than introducing arithmetic error. Ascending
+sums make exchangeable member order deterministic.
+
+For subnormal intermediate operations use the absolute-error extension of F1,
+$|\eta|\le2^{-1074}$ per operation. On a contributing nonzero skill path the
+integer skill maximum is at least one, so D2 bounds each rate by less than
+$2^{23}$ and power by $2^{24}$. With fewer than 64 operations the propagated
+absolute error is below $2^{-900}$. An unbounded rate on an all-zero-skill path
+multiplies an exact zero and contributes no error. The same allowance covers
+underflow in coefficient preparation in N1. This avoids assuming the
+finite/non-negative input check excludes subnormal constants.
+
+The independent component maxima give $X^*\le X_B$. Together with N1 this
+establishes N3 for the actual evaluator, including reference-skill strategies
+and Multi Average, rather than only integral skill examples.
 
 ### 29.5 Theorem N3 — live-score granularity
 
 Inside the domain, $\lfloor X_e\rfloor\le\lfloor N/10^6\rfloor$ for every legal
 completion.
 
-**Proof.** By N1 and N2,
-$X_e\le(N/10^6)(1+u)^{20}(1-u)^{-8}\le N/10^6+29u\,N/10^6$. By (D2),
-$N/10^6\le2^{27}(1+10^{-12})$, so $29u\,N/10^6<4.4\cdot10^{-7}<10^{-6}$. Since
-$N$ is an integer, $\lfloor N/10^6\rfloor+1\ge(N+1)/10^6>X_e$. ∎
+**Proof.** The legal evaluator value satisfies $X_e<5\cdot2^{25}$ by D2 and N2.
+If $N/10^6\ge5\cdot2^{25}$, the claim is immediate. Otherwise N1 and N2 give
 
-The argument needs no extra margin in the code: the $10^{-6}$ grid of the
-numerator is the margin. It fails only beyond $N/10^6\approx3.2\cdot10^8$; at
-real magnitudes (live scores near $10^7$) the rounding uses less than 4% of one
-grid step. Section 10 compares the same integer $N$, and the packed live
-component takes $\lfloor N/10^6\rfloor<2^{31}$ without wrapping.
+$$
+X_e\le(N/10^6)(1+u)^{32}(1-u)^{-8}+2^{-898}
+\le N/10^6+41u\,N/10^6+2^{-898},
+$$
+
+where $41u\,N/10^6+2^{-898}<7.7\cdot10^{-7}<10^{-6}$. Since $N$ is an integer,
+$\lfloor N/10^6\rfloor+1\ge(N+1)/10^6>X_e$. This covers both tight and loose
+relaxations without assuming that the relaxed value is a legal-leaf maximum. ∎
+
+No extra epsilon is needed: the numerator's integer grid supplies the margin
+in the small-bound case. Section 10 compares this same integer numerator.
+The arithmetic range argument in Section 29.2 keeps the packed live component
+inside `i32`; a larger optional rational bound falls back as stated there.
 
 ### 29.6 Theorem N4 — event-point stages
 
 Write $b$ for the integer event base score, $t$ for the evaluator's `f64` bonus
 and $T$ for the integer bonus handed to the ceiling, with $t\le T$ (Lemma N5).
 
-1. *Base score.* $b$ is non-decreasing in the live score, and Theorem N3 makes
-   the ceiling's live score at least the evaluator's. For Multi/Cheerful the
-   evaluator's `(live as f64 / 17000.0) as i32` equals the integer quotient:
-   for $0\le\text{live}<2^{31}$ the real quotient is either an integer or at
-   least $1/17000$ away from one. The opponent term is the same integer
-   expression on both sides; for live scores below $2^{29}$ neither the
-   saturating `i32` nor the `i64` product by 4 saturates.
-2. *First stage.* The evaluator computes
-   $I_e=\lfloor\mathrm{fl}(\mathrm{fl}(b\cdot\mathrm{fl}(m/100))\cdot\mathrm{fl}(\mathrm{fl}(t/100)+1))\rfloor$
-   and the ceiling $I_B=\lfloor V_B\rfloor$ with $V_B=b_Bm(T+100)/10^4$. The
-   float value is at most $V_B(1+5.1u)$. $V_B$ is a multiple of $10^{-4}$, so
-   $V_B\le\lfloor V_B\rfloor+1-10^{-4}$ unless it is an integer. Therefore
-   $I_e\le I_B$ whenever $5.1u\,V_B<10^{-4}$, that is for
-   $V_B<1.7\cdot10^{11}$; (D4) gives $V_B\le2^{27}$.
-3. *Cheerful life stage.* The evaluator's life factor is
-   $\mathrm{fl}(\mathrm{fl}(1.15)+q)$ where $q=\mathrm{fl}(\ell/5000)$ clamped to
-   $[\mathrm{fl}(0.1),\mathrm{fl}(0.2)]$. Because $\mathrm{fl}(0.1)$ and
-   $\mathrm{fl}(0.2)$ are exactly $\mathrm{fl}(500/5000)$ and
-   $\mathrm{fl}(1000/5000)$, $q=\mathrm{fl}(c/5000)$ with
-   $c=\mathrm{clamp}(\ell,500,1000)$, the ceiling's integer clamp, and the
-   factor is at most $(1+u)^2(5750+c)/5000$. The ceiling's stage
-   $\lfloor I_B(5750+c)/5000\rfloor$ lies on a $1/5000$ grid; with
-   $I_B\le2^{27}$ the float error $1.35\cdot3.1u\,I_B<10^{-7}$ stays far below
-   the grid step $2\cdot10^{-4}$.
-4. *Boost stage.* $\lfloor W\beta/100\rfloor$ lies on a $1/100$ grid and the
-   float error is at most $2.1u\,\hat E<10^{-6}$. For the normalized boost
-   values, multiples of 100, the stage is exact.
-5. *Range.* By (D4) every intermediate is below $2^{30}$, so the ceiling's
-   `i64 → i32` casts are lossless and the evaluator's casts do not saturate.
+1. *Base score.* $b$ is non-decreasing in live score, and N3 makes the
+   bound's live score at least the evaluator's. For legal live scores, division
+   by 17000 has either an integer result or distance at least $1/17000$ from
+   an integer; its floating rounding cannot cross that distance. The wide
+   opponent-score product is at least the evaluator's saturating product, and
+   both apply the same cap of 13. Thus oversized probes remain conservative.
+2. *First stage.* Write $V_B=b_Bm(T+100)/10^4$ and $I_B=\lfloor V_B\rfloor$.
+   The evaluator's pre-floor value is at most $V_B(1+5.1u)$, but D4 bounds
+   only its legal value, not an oversized $V_B$. If $V_B\ge2^{28}$, then
+   $I_B$ already exceeds every legal first-stage value. Otherwise the absolute
+   error is less than $5.1u2^{28}<10^{-4}$, the grid spacing of $V_B$, and the
+   same next-grid-point argument as N3 proves $I_e\le I_B$.
+3. *Cheerful life stage.* Let $c=\mathrm{clamp}(\ell,500,1000)$. The real
+   life factor is $(5750+c)/5000$; the evaluator's factor is at most this times
+   $(1+u)^2$. If $I_B\ge2^{28}$, its life-adjusted result already dominates
+   every legal life-stage value from D4. Otherwise the floating error of
+   multiplication and factor preparation is below $1.35\cdot3.1u2^{28}$,
+   smaller than the $1/5000$ pre-floor grid. Hence the integer life stage is
+   an upper bound too.
+4. *Boost stage.* If the exact bound $W_B\beta/100\ge2^{31}$, clipping to
+   `i32::MAX` is still above every legal output (D4, including its negligible
+   rounding). Below $2^{31}$, the multiplication/division error is less than
+   $2.1u2^{31}<10^{-6}$, smaller than the $1/100$ grid, so flooring preserves
+   the bound. Normalized integral boost factors are a simpler exact case.
+5. *Range and inversion.* All bound stages above are `i128`: even an `i32`
+   live probe and full-width `u32` music, bonus and boost operands fit before
+   their divisions. Only the final upper bound is clipped, never wrapped.
+   A non-negative monotone expression remains monotone after floors and the
+   final clip. Therefore the full-domain gallop/bisection in `needed_live`
+   preserves its bracket, including probes above the legal-leaf domain.
 
 Challenge event points use the same integer expression on both sides, and a
 MySekai live has event point 0 on both sides. Component-wise dominance of event
@@ -2422,8 +2611,9 @@ The Skill key is $\lfloor\mathrm{fl}(\mathrm{fl}(10v)+10^{-6})\rfloor$, where
 $v$ is the leader's score-up plus $0.2$ times each other score-up, added in
 ascending order. The exact $10v^*$ is at most the integer ceiling $2S+8L$.
 For $10v^*<10^5$ the float error, including that of a reference share and
-its mean, is below $10^{-9}$, so the float value is below $10v^*+1$. A key
-above $2S+8L$ would need a float value of at least $2S+8L+1>10v^*+1$; hence
+its mean, is below $10^{-9}$. Adding the explicit $10^{-6}$ encoding offset
+still leaves the float value below $10v^*+1$. A key
+above $2S+8L$ would need a float value of at least $2S+8L+1\ge10v^*+1$; hence
 the key is at most $2S+8L$.
 
 ### 29.9 Lemma N7 — correlated bound
@@ -2436,17 +2626,20 @@ $\mathrm{fl}(cQ)$ is below $5\cdot10^{-4}$, so each coefficient exceeds $cQ$ by
 at least $1-5\cdot10^{-4}$, and the plane's real live expression exceeds the
 exact-constant live score by at least $4P(1+S+L)(1-5\cdot10^{-4})/Q$. The
 Solo/Auto Average evaluator exceeds that live score by at most
-$((1+u)^{12}-1)\cdot4P(4+(S+L)/100)$. The first is more than 180 times the
-second for all $S,L\ge0$, so every plane dominates the floating-point value
+$((1+u)^{32}-1)\cdot4P(4+(S+L)/100)+2^{-900}$. For $P\ge1$ the first is more than 60 times the
+second for all $S,L\ge0$; for $P=0$ both live values are zero. Thus every plane dominates the floating-point value
 before its outward integer steps. The final `+1` in **quadratic** is not
 required by this argument.
 
 ### 29.10 Scope
 
-Everything else in the search is integer arithmetic on exact discrete state.
-Floating-point values enter a ceiling only through the aggregate objective
-coefficients (N1–N4, N6), the correlated coefficients (N7), support sums
-(N5) and the MySekai value (N5). A MySekai live has no live score: the
+In addition to the exact discrete state, floating-point values enter the
+aggregate objective coefficients (N1–N4, N6), correlated coefficients (N7),
+support sums and MySekai value (N5), support substitution (Theorems 3a–3b),
+and the certified log-linear preparation/application (Section 18.8). The last
+two need their own arguments; N5 alone does not prove cross-deck compensated
+substitution, and IEEE basic-operation error bounds alone do not prove a
+platform logarithm's accuracy. A MySekai live has no live score: the
 evaluator and every live-score ceiling use 0 for it.
 
 Verification: src/search/tests/numeric_soundness.rs enumerates every deck of

@@ -94,38 +94,49 @@ pub struct MemberDominance {
     pub alternatives: Vec<Vec<CardIdx>>,
 }
 
-/// Completion-safe support opportunity cost, including reserve entries and all
-/// cultivation variants of each public card identity.
+/// Support opportunity costs over every possible leader profile.
 ///
-/// Let R be the other four main cards and t the q-th support value after removing
-/// R, A and B. Replacing B by A loses at most
-/// `(a - t)+ - (b - t)+ <= max(0, a - max(b, floor))`, where floor is the global
-/// support value at one-based rank q+5. Removing at most five cards cannot push
-/// the q-th remaining value below that rank. Outward rounding preserves the
-/// inequality: a is rounded up, b and floor down. Taking the worst leader
-/// profile is safe for every legal completion.
+/// The zero-cost case preserves each sorted support term, hence also its f64
+/// sum. Compensation needs a STRICT real bonus surplus larger than the two
+/// evaluator rounding errors; equality over the reals is not sufficient.
 struct SupportDimension {
-    /// Support profiles compared per card; each row below holds one value per
-    /// profile, card-major.
     profiles: usize,
-    upper_x100: Vec<i32>,
-    lower_x100: Vec<i32>,
-    replacement_floor_x100: Vec<i32>,
+    values: Vec<f64>,
+    replacement_floor: Vec<f64>,
+    compensation_safe: Vec<bool>,
+    valid: bool,
 }
 
 impl SupportDimension {
-    #[inline(always)]
-    fn deficit_x100(&self, lhs: CardIdx, rhs: CardIdx) -> i32 {
-        let upper = &self.upper_x100[lhs.raw() * self.profiles..][..self.profiles];
-        let lower = &self.lower_x100[rhs.raw() * self.profiles..][..self.profiles];
+    #[inline]
+    fn affordable(&self, lhs: CardIdx, rhs: CardIdx, surplus_x10: u32) -> bool {
+        if !self.valid {
+            return false;
+        }
+        let upper = &self.values[lhs.raw() * self.profiles..][..self.profiles];
+        let lower = &self.values[rhs.raw() * self.profiles..][..self.profiles];
+        let surplus_lower = (f64::from(surplus_x10) / 10.0).next_down();
         upper
             .iter()
             .zip(lower)
-            .zip(&self.replacement_floor_x100)
-            .map(|((&upper, &lower), &floor)| upper - lower.max(floor))
-            .max()
-            .unwrap_or(0)
-            .max(0)
+            .enumerate()
+            .all(|(profile, (&a, &b))| {
+                let refill = b.max(self.replacement_floor[profile]);
+                if a <= refill {
+                    // No support order statistic decreases. No cancellation or
+                    // real-to-float error estimate is needed for this branch.
+                    return true;
+                }
+                if !self.compensation_safe[profile] {
+                    return false;
+                }
+                let deficit_upper = (a - refill).next_up();
+                let slack_lower = (surplus_lower - deficit_upper).next_down();
+                // At most 255 support additions and three main/extra additions,
+                // at total magnitude < 2^21, give a two-deck error < 2^-22.
+                // 2^-20 is four times that bound (pruning-proof Section 5).
+                slack_lower > 1.0 / 1_048_576.0
+            })
     }
 }
 
@@ -149,57 +160,59 @@ fn support_dimension(
     if !is_world_bloom || profiles.is_empty() {
         return None;
     }
-    // Every cultivation variant of a public card shares its support value.
     let span = pool
         .indices()
         .map(|card| usize::from(pool.game_id(card)) + 1)
         .max()
         .unwrap_or(0);
-    // One-based position in the current profile's card list, zero if absent.
-    let mut entry_by_game_id = vec![0u32; span];
     let width = profiles.len();
-    let mut upper_x100 = vec![0i32; pool.count() * width];
-    let mut lower_x100 = vec![0i32; pool.count() * width];
-    let mut replacement_floor_x100 = vec![0i32; width];
-    let mut any = false;
+    let mut dimension = SupportDimension {
+        profiles: width,
+        values: vec![0.0; pool.count() * width],
+        replacement_floor: vec![0.0; width],
+        compensation_safe: vec![false; width],
+        valid: true,
+    };
+    let mut value_by_id = vec![0.0; span];
     for (profile, support) in profiles.iter().enumerate() {
-        let count = support.count as usize;
+        let count = usize::from(support.count);
         if count == 0 {
             continue;
         }
-        replacement_floor_x100[profile] = support
+        let mut seen = std::collections::BTreeSet::new();
+        let mut previous = f64::INFINITY;
+        let mut sum_upper = 0.0f64;
+        for (rank, &(id, value)) in support.cards.iter().enumerate() {
+            if !value.is_finite() || value < 0.0 || value > previous || !seen.insert(id) {
+                // None would mean "no support penalty" to the caller. Keep
+                // an explicit unusable dimension instead of approving a pair.
+                dimension.valid = false;
+                return Some(dimension);
+            }
+            previous = value;
+            if rank < count {
+                sum_upper = (sum_upper + value).next_up();
+            }
+            if let Some(slot) = value_by_id.get_mut(usize::from(id)) {
+                *slot = value;
+            }
+        }
+        dimension.compensation_safe[profile] = sum_upper <= 1_048_576.0;
+        dimension.replacement_floor[profile] = support
             .cards
             .get(count + crate::types::DECK_SIZE - 1)
-            .map(|(_, value)| (value * 100.0).floor() as i32)
-            .unwrap_or(0);
-        // A reserve may enter the counted prefix after another main card is
-        // excluded. Recording only the original q entries is not admissible.
-        for (entry, &(game_id, _)) in support.cards.iter().enumerate() {
-            if let Some(slot) = entry_by_game_id.get_mut(usize::from(game_id)) {
-                *slot = entry as u32 + 1;
-            }
-        }
+            .map_or(0.0, |entry| entry.1);
         for card in pool.indices() {
-            let entry = entry_by_game_id[usize::from(pool.game_id(card))];
-            if entry != 0 {
-                let value = support.cards[entry as usize - 1].1;
-                upper_x100[card.raw() * width + profile] = (value * 100.0).ceil() as i32;
-                lower_x100[card.raw() * width + profile] = (value * 100.0).floor() as i32;
-                any = true;
-            }
+            dimension.values[card.raw() * width + profile] =
+                value_by_id[usize::from(pool.game_id(card))];
         }
-        for &(game_id, _) in &support.cards {
-            if let Some(slot) = entry_by_game_id.get_mut(usize::from(game_id)) {
-                *slot = 0;
+        for &(id, _) in &support.cards {
+            if let Some(slot) = value_by_id.get_mut(usize::from(id)) {
+                *slot = 0.0;
             }
         }
     }
-    any.then_some(SupportDimension {
-        profiles: width,
-        upper_x100,
-        lower_x100,
-        replacement_floor_x100,
-    })
+    Some(dimension)
 }
 
 /// 终章 member 位支配裁剪：忽略队长专属称号/当期加成逐角色比较，
@@ -302,13 +315,9 @@ fn support_deficit_affordable(
     let Some(support) = support else {
         return true;
     };
-    let deficit = support.deficit_x100(lhs, rhs);
-    if deficit <= 0 {
-        return true;
-    }
-    let surplus_x10 = pool.event_bonus_exact(lhs).base_x10() as i32
-        - pool.event_bonus_exact(rhs).base_x10() as i32;
-    deficit <= surplus_x10 * 10
+    let surplus_x10 =
+        pool.event_bonus_exact(lhs).base_x10() - pool.event_bonus_exact(rhs).base_x10();
+    support.affordable(lhs, rhs, surplus_x10)
 }
 
 /// `leader_bonuses` also requires the leader-only bonuses not to be worse; a

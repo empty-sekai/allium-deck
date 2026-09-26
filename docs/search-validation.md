@@ -14,6 +14,19 @@ complete ranking. Unsupported capacity and empty feasible inputs are reported
 separately. Repeating one request measures timing variability; it does not add
 another input to correctness coverage.
 
+## Default and explicit evidence
+
+`cargo test --all-features` runs the permanent synthetic regressions, including
+`proof_audit`, but not the three external-masterdata `benchmark_proof` tests.
+Those are explicitly `ignored`; they must never appear as successful real-data
+proofs when no corpus was loaded. Running them explicitly with `--ignored`
+without their required masterdata, or running the issue #2 proof with too small
+a candidate budget, fails instead of returning a misleading success.
+
+The PR/push `exactness` CI job also runs the 256-case all-scene matrix and the
+16-seed WL/Final matrix. They remain bounded synthetic search-equivalence
+checks, not independent validation of game formulas or production latency.
+
 ## Exhaustive matrix
 
 ```sh

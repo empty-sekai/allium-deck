@@ -16,13 +16,14 @@
 //! the event point of every deck of a subtree. The derivation is "Log-linear
 //! event-point bound" in `docs/pruning-proof.md`.
 
+mod interval;
+use interval::Interval;
+use interval::div_up;
+pub(crate) use interval::{add_up, mul_up, sub_down, sum_up};
+
 use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
 
 use super::objective::{LIVE_SCORE_BOUND_SCALE, ObjectiveBound, RATE_FRACTION_SCALE};
-
-/// Slack below `ln(threshold)` that absorbs the floating-point error of a
-/// bound and of the sums compared with it.
-const LOG_MARGIN: f64 = 1e-9;
 
 /// Largest aggregate features of every deck a bound covers.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,29 +65,39 @@ impl LogLinearBound {
         threshold_ep: u64,
     ) -> Option<Self> {
         let model = EventModel::new(objective, feature_box)?;
-        if threshold_ep == 0 || feature_box.power == 0 {
+        if threshold_ep == 0
+            || threshold_ep > u64::from(u32::MAX)
+            || feature_box.power == 0
+            || feature_box.leader_skill_min > feature_box.leader_skill_max
+        {
             return None;
         }
+        let point = Interval::point;
         let honor = f64::from(objective.honor_bonus);
         let power_max = f64::from(feature_box.power) + honor;
         let skill_max = f64::from(feature_box.skill);
         let leader_max = f64::from(feature_box.leader_skill_max);
         let bonus_max = f64::from(feature_box.bonus);
         let tau = threshold_ep as f64;
+        let scale = point(LIVE_SCORE_BOUND_SCALE as f64);
+        let divisor = point(model.divisor);
+        let offset = point(model.offset);
+        let kappa = point(model.kappa);
 
-        // u = P * Q / D lies in [u_lo, u_hi] for every deck that can reach
-        // the threshold: below u_lo even the largest bonus falls short.
+        // Enclose the model's exact real endpoints, then WIDEN the chord
+        // interval. Inward-rounded endpoints could exclude a feasible deck.
+        let rate_max = model.rate_interval(skill_max, leader_max);
         let u_hi =
-            power_max * model.per_power(model.rate_1m(skill_max, leader_max)) / model.divisor;
-        let u_lo = tau / (model.kappa * (100.0 + bonus_max)) - model.offset;
-        if !(u_lo > 0.0 && u_lo < u_hi) {
+            point(power_max) * (point(4.0) * rate_max + point(model.active)) / scale / divisor;
+        let u_lo = point(tau) / (kappa * point(100.0 + bonus_max)) - offset;
+        if !u_lo.finite() || !u_hi.finite() || !(u_lo.lo > 0.0 && u_lo.lo < u_hi.hi) {
             return None;
         }
-        // Chord of the convex ln(c + e^t) over [ln u_lo, ln u_hi].
-        let sigma = ((model.offset + u_hi) / (model.offset + u_lo)).ln() / (u_hi / u_lo).ln();
+        let lo = point(u_lo.lo);
+        let sigma = chord_slope(model.offset, u_lo.lo, u_hi.hi)?;
 
-        // Tangent point: where the ray from the origin to the box maximum
-        // meets the threshold surface of the relaxed event point.
+        // This point is only a tightness heuristic. The certificate below
+        // holds for ANY positive finite point, including rounded bisection.
         let relaxed = |lambda: f64| {
             let rate = model.per_power(model.rate_1m(lambda * skill_max, leader_max));
             let u = lambda * power_max * rate / model.divisor;
@@ -101,42 +112,55 @@ impl LogLinearBound {
                 high = mid;
             }
         }
-        // A tangent point near the origin would make every weighted term
-        // large; keeping it at 2^-10 of the box bounds each term by 2^10.
         if high < 1.0 / 1024.0 {
             return None;
         }
-        let power_0 = high * power_max;
+        let power_0 = point(high * power_max);
         let skill_0 = high * skill_max;
-        let bonus_0 = high * bonus_max;
-        // Per unit power, rate(S, L) <= intercept + skill * S + leader * L.
+        let bonus_0 = point(high * bonus_max);
         let tangent = model.tangent(skill_0);
-        let intercept = model.per_power(tangent.intercept);
-        let skill = model.slope(tangent.skill);
-        let leader_skill = model.slope(tangent.leader_skill);
-        let rate_0 = intercept + skill * skill_0 + leader_skill * leader_max;
-        if !(power_0 > 0.0 && rate_0 > 0.0) {
+        // These scalar coefficients themselves bound q; treat their stored
+        // f64 values as exact constants of the affine majorant.
+        let intercept = point(model.per_power(tangent.intercept));
+        let skill = point(model.slope(tangent.skill));
+        let leader_skill = point(model.slope(tangent.leader_skill));
+        let rate_0 = intercept + skill * point(skill_0) + leader_skill * point(leader_max);
+        if !power_0.finite() || !rate_0.finite() || power_0.lo <= 0.0 || rate_0.lo <= 0.0 {
             return None;
         }
-
-        let constant = model.kappa.ln() + (model.offset + u_lo).ln() - sigma * u_lo.ln()
+        let one = point(1.0);
+        let hundred = point(100.0);
+        let bonus_denominator = hundred + bonus_0;
+        let constant = kappa.ln() + (offset + lo).ln() - sigma * lo.ln()
             + sigma
-                * (power_0.ln() - 1.0 + honor / power_0 + rate_0.ln() - 1.0 + intercept / rate_0
-                    - model.divisor.ln())
-            + (100.0 + bonus_0).ln()
-            - 1.0
-            + 100.0 / (100.0 + bonus_0);
-        // Keeps the rounding error of the sums compared with the threshold
-        // far below LOG_MARGIN.
-        if !constant.is_finite() || constant.abs() >= 256.0 {
+                * (power_0.ln() - one + point(honor) / power_0 + rate_0.ln() - one
+                    + intercept / rate_0
+                    - divisor.ln())
+            + bonus_denominator.ln()
+            - one
+            + hundred / bonus_denominator;
+        let coefficients = [
+            sigma / power_0,
+            sigma * skill / rate_0,
+            sigma * leader_skill / rate_0,
+            one / bonus_denominator,
+        ];
+        if !constant.finite()
+            || constant.hi.abs() >= 256.0
+            || coefficients
+                .iter()
+                .any(|value| !value.finite() || value.hi < 0.0)
+        {
             return None;
         }
+        // Every feature is non-negative, so choosing each upper endpoint
+        // yields a pointwise majorant of the real affine certificate.
         Some(Self {
-            power: sigma / power_0,
-            skill: sigma * skill / rate_0,
-            leader_skill: sigma * leader_skill / rate_0,
-            bonus: 1.0 / (100.0 + bonus_0),
-            constant,
+            power: coefficients[0].hi,
+            skill: coefficients[1].hi,
+            leader_skill: coefficients[2].hi,
+            bonus: coefficients[3].hi,
+            constant: constant.hi,
             floor_ep: threshold_ep,
         })
     }
@@ -144,9 +168,11 @@ impl LogLinearBound {
     /// Weight of one card's power, skill and bonus.
     #[inline(always)]
     pub(crate) fn weigh(&self, power: u32, skill: u32, bonus: u32) -> f64 {
-        self.power * f64::from(power)
-            + self.skill * f64::from(skill)
-            + self.bonus * f64::from(bonus)
+        sum_up([
+            mul_up(self.power, f64::from(power)),
+            mul_up(self.skill, f64::from(skill)),
+            mul_up(self.bonus, f64::from(bonus)),
+        ])
     }
 
     /// The weight below which [`Self::excludes`] rules a subtree out at
@@ -154,7 +180,10 @@ impl LogLinearBound {
     /// threshold computes it once.
     #[inline(always)]
     pub(crate) fn log_cutoff(threshold_ep: u64) -> f64 {
-        (threshold_ep as f64).ln() - LOG_MARGIN
+        if threshold_ep == 0 || threshold_ep > u64::from(u32::MAX) {
+            return f64::NEG_INFINITY;
+        }
+        Interval::point(threshold_ep as f64).ln().lo
     }
 
     /// Whether a subtree whose features weigh at most `value` has no deck
@@ -164,7 +193,32 @@ impl LogLinearBound {
     pub(crate) fn excludes(&self, value: f64, threshold_ep: u64, cutoff: f64) -> bool {
         debug_assert!(threshold_ep >= self.floor_ep);
         debug_assert_eq!(cutoff.to_bits(), Self::log_cutoff(threshold_ep).to_bits());
-        value < cutoff
+        value.is_finite() && cutoff.is_finite() && value < cutoff
+    }
+}
+
+/// The chord slope is certified, not assumed accurate because ln is accurate.
+/// A denominator interval reaching zero makes the optional bound unavailable.
+fn chord_slope(offset: f64, lo: f64, hi: f64) -> Option<Interval> {
+    let c = Interval::point(offset);
+    let a = Interval::point(lo);
+    let b = Interval::point(hi);
+    let denominator = b.ln() - a.ln();
+    if !denominator.finite() || denominator.lo <= 0.0 {
+        return None;
+    }
+    let sigma = ((c + b).ln() - (c + a).ln()) / denominator;
+    (sigma.finite() && sigma.lo > 0.0 && sigma.hi < 1.0).then_some(sigma)
+}
+
+/// Upper conversion of a non-negative fixed-point integer.
+fn integer_up(value: i64) -> f64 {
+    debug_assert!(value >= 0);
+    let rounded = value as f64;
+    if value <= (1_i64 << 53) {
+        rounded
+    } else {
+        rounded.next_up()
     }
 }
 
@@ -217,8 +271,13 @@ impl EventModel {
             _ => return None,
         };
         let scale = LIVE_SCORE_BOUND_SCALE as f64;
-        let kappa =
-            f64::from(objective.music_rate_pct) * f64::from(objective.boost_rate_pct) / scale;
+        let kappa = div_up(
+            mul_up(
+                f64::from(objective.music_rate_pct),
+                f64::from(objective.boost_rate_pct),
+            ),
+            scale,
+        );
         let non_negative = objective.base_rate_1m >= 0
             && objective.srs_div500_q >= 0
             && objective.avg_sum5_1m >= 0
@@ -232,32 +291,35 @@ impl EventModel {
         }
         // The live numerator is 4 * rate_1m * P + active_1m, with active_1m =
         // coefficient * (P + 4 * teammate) or coefficient * 5 * P.
-        let coefficient = objective.active_1m_coeff as f64;
+        let coefficient = integer_up(objective.active_1m_coeff);
         let (active, fixed) = match objective.multi_teammate_power {
-            Some(power) => (coefficient, coefficient * 4.0 * f64::from(power)),
-            None => (coefficient * DECK_SIZE as f64, 0.0),
+            Some(power) => (
+                coefficient,
+                mul_up(mul_up(coefficient, 4.0), f64::from(power)),
+            ),
+            None => (mul_up(coefficient, DECK_SIZE as f64), 0.0),
         };
-        let base = objective.base_rate_1m as f64;
+        let base = integer_up(objective.base_rate_1m);
         let rate = match objective.effective_live_type {
             LiveType::Multi => {
                 // max(4L + S, t) <= 4L + S + max(0, t - 4 L_min).
-                let excess = (objective.teammate_su_5x
-                    - 4 * i64::from(feature_box.leader_skill_min))
-                .max(0) as f64;
+                let excess =
+                    (objective.teammate_su_5x - 4 * i64::from(feature_box.leader_skill_min)).max(0);
+                let excess = integer_up(excess);
                 // The skill term rounds up by less than one.
-                let srs = objective.srs_div500_q as f64 / RATE_FRACTION_SCALE;
+                let srs = div_up(integer_up(objective.srs_div500_q), RATE_FRACTION_SCALE);
                 RateModel::Affine(Tangent {
-                    intercept: base + 1.0 + excess * srs,
+                    intercept: add_up(add_up(base, 1.0), mul_up(excess, srs)),
                     skill: srs,
-                    leader_skill: 4.0 * srs,
+                    leader_skill: mul_up(4.0, srs),
                 })
             }
             _ if matches!(objective.live_skill_order, LiveSkillOrder::Average) => {
                 // Each ceil_div_positive adds less than one.
                 RateModel::Affine(Tangent {
-                    intercept: base + 2.0,
-                    skill: objective.avg_sum5_1m as f64 / 500.0,
-                    leader_skill: objective.avg_leader_rate_1m as f64 / 100.0,
+                    intercept: add_up(base, 2.0),
+                    skill: div_up(integer_up(objective.avg_sum5_1m), 500.0),
+                    leader_skill: div_up(integer_up(objective.avg_leader_rate_1m), 100.0),
                 })
             }
             _ => {
@@ -267,9 +329,9 @@ impl EventModel {
                 let cap = f64::from(feature_box.card_skill);
                 let sorted = objective
                     .sorted_rates_q
-                    .map(|rate| rate as f64 / RATE_FRACTION_SCALE);
+                    .map(|rate| div_up(integer_up(rate), RATE_FRACTION_SCALE));
                 RateModel::Sorted {
-                    intercept: base + 1.0 + cap * sorted[0],
+                    intercept: add_up(add_up(base, 1.0), mul_up(cap, sorted[0])),
                     cap,
                     rates: core::array::from_fn(|slot| sorted[slot + 1]),
                 }
@@ -277,7 +339,7 @@ impl EventModel {
         };
         Some(Self {
             kappa,
-            offset: offset + fixed / scale / divisor,
+            offset: add_up(offset, div_up(div_up(fixed, scale), divisor)),
             divisor,
             rate,
             active,
@@ -303,14 +365,41 @@ impl EventModel {
         }
     }
 
+    /// Exact-real rate of the stored, upward-prepared model, enclosed.
+    fn rate_interval(&self, skill: f64, leader: f64) -> Interval {
+        let p = Interval::point;
+        match &self.rate {
+            RateModel::Affine(t) => {
+                p(t.intercept) + p(t.skill) * p(skill) + p(t.leader_skill) * p(leader)
+            }
+            RateModel::Sorted {
+                intercept,
+                cap,
+                rates,
+            } => {
+                let mut value = p(*intercept);
+                for (slot, &coefficient) in rates.iter().enumerate() {
+                    // Callers pass integer skill sums; these differences and
+                    // clamps are exact and within the u32 range.
+                    value =
+                        value + p(coefficient) * p((skill - slot as f64 * cap).clamp(0.0, *cap));
+                }
+                value
+            }
+        }
+    }
+
     /// Live score per unit power at fixed-point rate `rate_1m`.
     fn per_power(&self, rate_1m: f64) -> f64 {
-        (4.0 * rate_1m + self.active) / LIVE_SCORE_BOUND_SCALE as f64
+        div_up(
+            add_up(mul_up(4.0, rate_1m), self.active),
+            LIVE_SCORE_BOUND_SCALE as f64,
+        )
     }
 
     /// Live score per unit power of one unit of a fixed-point rate slope.
     fn slope(&self, rate_1m: f64) -> f64 {
-        4.0 * rate_1m / LIVE_SCORE_BOUND_SCALE as f64
+        div_up(mul_up(4.0, rate_1m), LIVE_SCORE_BOUND_SCALE as f64)
     }
 
     /// An affine function of `(S, L)` that bounds [`Self::rate_1m`] for every
@@ -318,16 +407,24 @@ impl EventModel {
     fn tangent(&self, skill_0: f64) -> Tangent {
         match &self.rate {
             RateModel::Affine(tangent) => *tangent,
-            RateModel::Sorted { cap, rates, .. } => {
-                // The right slope of the concave fill is a supergradient.
-                let segment = if *cap > 0.0 {
-                    (skill_0 / cap).floor() as usize
-                } else {
-                    DECK_SIZE
-                };
+            RateModel::Sorted {
+                intercept,
+                cap,
+                rates,
+            } => {
+                // Compare exact integer breakpoints instead of flooring a
+                // rounded quotient that could select the wrong segment.
+                let segment = (0..DECK_SIZE)
+                    .find(|&slot| skill_0 < (slot + 1) as f64 * cap)
+                    .unwrap_or(DECK_SIZE);
                 let slope = rates.get(segment).copied().unwrap_or(0.0);
+                let p = Interval::point;
+                let mut constant = p(*intercept);
+                for &rate in &rates[..segment] {
+                    constant = constant + p(*cap) * (p(rate) - p(slope));
+                }
                 Tangent {
-                    intercept: self.rate_1m(skill_0, 0.0) - slope * skill_0,
+                    intercept: constant.hi,
                     skill: slope,
                     leader_skill: 0.0,
                 }
@@ -432,7 +529,10 @@ mod tests {
                                 );
                             // The upper half of every range reaches the thresholds.
                             let upper = |max: u32, draw: u32| max - draw % (max / 2 + 1);
-                            let members = upper(4 * feature_box.card_skill, next(u32::MAX));
+                            let members = upper(
+                                (feature_box.skill - leader).min(4 * feature_box.card_skill),
+                                next(u32::MAX),
+                            );
                             let power = upper(feature_box.power, next(u32::MAX));
                             let bonus = upper(feature_box.bonus, next(u32::MAX));
                             let skill = leader + members;
@@ -468,6 +568,14 @@ mod tests {
             checked > 10_000,
             "only {checked} points reached a threshold"
         );
+    }
+
+    #[test]
+    fn nearly_coincident_chord_endpoints_fall_back() {
+        assert!(chord_slope(100.0, 100.0, 100.0_f64.next_up()).is_none());
+        let slope = chord_slope(100.0, 100.0, 200.0).unwrap();
+        let reference = 1.5_f64.ln() / 2.0_f64.ln();
+        assert!(slope.lo <= reference && slope.hi >= reference);
     }
 
     #[test]
