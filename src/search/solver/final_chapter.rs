@@ -7,7 +7,7 @@ use crate::types::{DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget};
 
 use crate::search::context::{SearchContext, SupportDeck};
 use crate::search::dfs::SearchStats;
-use crate::search::log_linear::{FeatureBox, LogLinearBound};
+use crate::search::log_linear::{FeatureBox, LogLinearBound, mul_up, sub_down, sum_up};
 use crate::search::objective::{CeilingInputs, ObjectiveBound, ScoreCutoff};
 use crate::search::skill_ceiling::{Composition, SkillCeiling};
 use crate::search::types::{DeckResult, SearchParams};
@@ -367,13 +367,15 @@ impl GroupWeights {
 
     /// The leader's own terms.
     fn leader(&self, leader: &LeaderConst) -> f64 {
-        self.bound.constant
-            + self.bound.leader_skill * f64::from(leader.skill)
-            + self.bound.weigh(
+        sum_up([
+            self.bound.constant,
+            mul_up(self.bound.leader_skill, f64::from(leader.skill)),
+            self.bound.weigh(
                 leader.power,
                 leader.skill,
                 leader.base_bonus_const + leader.limited_bonus,
-            )
+            ),
+        ])
     }
 }
 
@@ -1565,13 +1567,19 @@ impl CharacterSearchState<'_> {
         threshold: u64,
     ) -> f64 {
         let extra = extra_bonus_ceiling(&self.group_suffix[start], 1, prefix, &self.leader);
-        let fixed = self.leader_weight
-            + weights.bound.bonus * f64::from(extra)
-            + selected[..MEMBER_COUNT - 1]
-                .iter()
-                .map(|&group| weights.group[group])
-                .sum::<f64>();
-        self.log_cutoff(threshold >> 32) - fixed
+        let fixed = sum_up(
+            [
+                self.leader_weight,
+                mul_up(weights.bound.bonus, f64::from(extra)),
+            ]
+            .into_iter()
+            .chain(
+                selected[..MEMBER_COUNT - 1]
+                    .iter()
+                    .map(|&group| weights.group[group]),
+            ),
+        );
+        sub_down(self.log_cutoff(threshold >> 32), fixed)
     }
 
     #[inline(always)]
@@ -1871,13 +1879,15 @@ impl CharacterSearchState<'_> {
         };
         let remaining = MEMBER_COUNT - selected.len();
         let extra = extra_bonus_ceiling(&self.group_suffix[start], remaining, prefix, &self.leader);
-        let value = self.leader_weight
-            + weights.bound.bonus * f64::from(extra)
-            + selected
-                .iter()
-                .map(|&group| weights.group[group])
-                .sum::<f64>()
-            + weights.tail[start][..remaining].iter().sum::<f64>();
+        let value = sum_up(
+            [
+                self.leader_weight,
+                mul_up(weights.bound.bonus, f64::from(extra)),
+            ]
+            .into_iter()
+            .chain(selected.iter().map(|&group| weights.group[group]))
+            .chain(weights.tail[start][..remaining].iter().copied()),
+        );
         let threshold_ep = threshold >> 32;
         weights
             .bound
@@ -1907,18 +1917,20 @@ impl CharacterSearchState<'_> {
             self.ctx.extra_bonus_ub
         };
         let open = depth + usize::from(candidate.is_some());
-        let value = bound.constant
-            + bound.leader_skill * f64::from(self.leader.skill)
-            + bound.weigh(
-                partial.power,
-                partial.skill,
-                partial.base_bonus + partial.limited_sum + extra,
-            )
-            + candidate.map_or(0.0, |terms| terms.weight(bound))
-            + selected[open..]
-                .iter()
-                .map(|&group| weights.group[group])
-                .sum::<f64>();
+        let value = sum_up(
+            [
+                bound.constant,
+                mul_up(bound.leader_skill, f64::from(self.leader.skill)),
+                bound.weigh(
+                    partial.power,
+                    partial.skill,
+                    partial.base_bonus + partial.limited_sum + extra,
+                ),
+                candidate.map_or(0.0, |terms| terms.weight(bound)),
+            ]
+            .into_iter()
+            .chain(selected[open..].iter().map(|&group| weights.group[group])),
+        );
         let threshold_ep = threshold >> 32;
         bound.excludes(value, threshold_ep, self.log_cutoff(threshold_ep))
     }

@@ -1680,9 +1680,15 @@ impl JointCeiling {
         let (numerator, denominator) = if alpha * u + beta * w <= c {
             (u * w, 1)
         } else if c >= 2 * alpha * u {
-            (u * (c - alpha * u), beta)
+            let Some(numerator) = u.checked_mul(c - alpha * u) else {
+                return u32::MAX;
+            };
+            (numerator, beta)
         } else if c >= 2 * beta * w {
-            (w * (c - beta * w), alpha)
+            let Some(numerator) = w.checked_mul(c - beta * w) else {
+                return u32::MAX;
+            };
+            (numerator, alpha)
         } else {
             match c.checked_mul(c) {
                 Some(square) => (square, 4 * alpha * beta),

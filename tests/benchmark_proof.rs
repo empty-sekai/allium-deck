@@ -128,13 +128,10 @@ fn testdata_corpus_layers_are_classified() {
 }
 
 #[test]
+#[ignore = "requires external masterdata; run explicitly with configured paths"]
 fn rust_bruteforce_matches_exact_on_full_testdata_pools() {
-    let Some(masterdata_hint) = usable_masterdata_hint() else {
-        eprintln!(
-            "skip BF proof: set ALLIUM_MASTERDATA_CN/JP or provide ../masterdata_* from repo root"
-        );
-        return;
-    };
+    let masterdata_hint = usable_masterdata_hint()
+        .expect("external proof requires ALLIUM_MASTERDATA_CN/JP or ../masterdata_*");
     eprintln!(
         "BF proof using masterdata hint: {}",
         masterdata_hint.display()
@@ -208,15 +205,14 @@ fn rust_bruteforce_matches_exact_on_full_testdata_pools() {
 /// 故单列一个用例锁住该 fixture（仍受 ALLIUM_BF_CANDIDATE_LIMIT 控制，
 /// 按 issue 验证命令以 ALLIUM_BF_CANDIDATE_LIMIT=100000000 运行）。
 #[test]
+#[ignore = "requires external masterdata; run explicitly with configured paths"]
 fn rust_bruteforce_matches_exact_top_k_on_issue2_fixture() {
     const ISSUE2_CASE: &str = "mass_392500_score_multi_ev";
 
-    if usable_masterdata_hint().is_none() {
-        eprintln!(
-            "skip issue #2 Top-K proof: set ALLIUM_MASTERDATA_CN/JP or provide ../masterdata_* from repo root"
-        );
-        return;
-    }
+    assert!(
+        usable_masterdata_hint().is_some(),
+        "external issue #2 proof requires ALLIUM_MASTERDATA_CN/JP"
+    );
 
     let root = testdata_dir("real");
     let manifest = load_manifest(&root).unwrap();
@@ -231,13 +227,11 @@ fn rust_bruteforce_matches_exact_top_k_on_issue2_fixture() {
     let game = game_for_region(&params.region).unwrap();
     let (pool, ctx) = build_card_pool(&user, &game.as_ref(), &params).unwrap();
     let candidates = combination_count(pool.count(), allium_deck::DECK_SIZE);
-    if candidates > bf_candidate_limit() {
-        eprintln!(
-            "skip issue #2 Top-K proof: {candidates} candidates exceed ALLIUM_BF_CANDIDATE_LIMIT={}",
-            bf_candidate_limit()
-        );
-        return;
-    }
+    assert!(
+        candidates <= bf_candidate_limit(),
+        "issue #2 needs {candidates} candidates; increase ALLIUM_BF_CANDIDATE_LIMIT (currently {})",
+        bf_candidate_limit()
+    );
 
     let (exact, _) = search_instrumented(&pool, &ctx, &search_params);
     let (brute, _) = brute_force_search(&pool, &ctx, &search_params);
@@ -245,13 +239,10 @@ fn rust_bruteforce_matches_exact_top_k_on_issue2_fixture() {
 }
 
 #[test]
+#[ignore = "requires external masterdata; run explicitly with configured paths"]
 fn rust_bruteforce_matches_exact_on_large_filtered_pools() {
-    let Some(masterdata_hint) = usable_masterdata_hint() else {
-        eprintln!(
-            "skip large filtered BF proof: set ALLIUM_MASTERDATA_CN/JP or provide ../masterdata_* from repo root"
-        );
-        return;
-    };
+    let masterdata_hint = usable_masterdata_hint()
+        .expect("external filtered-pool proof requires ALLIUM_MASTERDATA_CN/JP");
     eprintln!(
         "large filtered BF proof using masterdata hint: {}",
         masterdata_hint.display()

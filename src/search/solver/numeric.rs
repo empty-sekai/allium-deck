@@ -4,6 +4,7 @@ use crate::pool::{CardIdx, CardPool};
 use crate::search::DeckResult;
 use crate::search::budget::SearchBudget;
 use crate::search::skill_ceiling::{Composition, SkillCeiling};
+use crate::search::small_ids::SmallestIds;
 use crate::search::{
     SearchContext, SearchParams, SearchStats, TopKTracker, evaluate, placement, tuning,
 };
@@ -60,8 +61,8 @@ struct SimpleExactState<'a> {
     /// Skill target: [`SkillCeiling`] of every card, by pool index.
     skill_ceilings: Vec<SkillCeiling>,
     /// For each position, the smallest distinct game ids of `cards[pos..]`
-    /// in ascending order, padded with `u16::MAX`.
-    suffix_small_ids: Vec<[u16; SMALL_IDS]>,
+    /// in ascending order, with an explicit occupied length.
+    suffix_small_ids: Vec<SmallestIds<SMALL_IDS>>,
     global_power_max: u32,
     global_power_min: u32,
     global_skill_max: u32,
@@ -645,15 +646,11 @@ fn is_free_slot_blocked(fixed_prefix: usize, depth: usize) -> bool {
 /// up to five ids already in the deck.
 const SMALL_IDS: usize = 2 * DECK_SIZE;
 
-fn suffix_small_ids(pool: &CardPool, cards: &[CardIdx]) -> Vec<[u16; SMALL_IDS]> {
-    let mut table = vec![[u16::MAX; SMALL_IDS]; cards.len() + 1];
+fn suffix_small_ids(pool: &CardPool, cards: &[CardIdx]) -> Vec<SmallestIds<SMALL_IDS>> {
+    let mut table = vec![SmallestIds::new(); cards.len() + 1];
     for pos in (0..cards.len()).rev() {
         let mut ids = table[pos + 1];
-        let id = pool.game_id(cards[pos]);
-        if !ids.contains(&id) && id < ids[SMALL_IDS - 1] {
-            ids[SMALL_IDS - 1] = id;
-            ids.sort_unstable();
-        }
+        ids.insert(pool.game_id(cards[pos]));
         table[pos] = ids;
     }
     table
@@ -666,18 +663,15 @@ fn suffix_small_ids(pool: &CardPool, cards: &[CardIdx]) -> Vec<[u16; SMALL_IDS]>
 /// only makes the result smaller. `None` when too few ids remain.
 fn smallest_public_set(
     selected: &[u16],
-    small_ids: &[u16; SMALL_IDS],
+    small_ids: &SmallestIds<SMALL_IDS>,
     slots: usize,
 ) -> Option<[u16; DECK_SIZE]> {
-    let mut set = [u16::MAX; DECK_SIZE];
+    let mut set = [0; DECK_SIZE];
     set[..selected.len()].copy_from_slice(selected);
     let mut len = selected.len();
-    for &id in small_ids {
+    for &id in small_ids.as_slice() {
         if len == selected.len() + slots {
             break;
-        }
-        if id == u16::MAX {
-            return None;
         }
         if !selected.contains(&id) {
             set[len] = id;

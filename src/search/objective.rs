@@ -14,7 +14,7 @@
 //! comes from the integer grid instead. The live numerator is an integer on a
 //! `10^-6` grid and each event-point stage is a rational on a `10^-4` (or
 //! coarser) grid, while the evaluator's accumulated relative rounding is at
-//! most `28 * 2^-53`. Inside the numeric domain that pool construction
+//! bounded by the full dependency-path argument in the proof. Inside the domain that pool construction
 //! enforces (`handler::capacity::numeric_domain`) the rounding never reaches
 //! the next grid point, so every truncated ceiling dominates the truncated
 //! evaluator value. The full argument is "Numeric admissibility" in
@@ -64,9 +64,16 @@ impl LiveProduct {
     /// `numerator / denominator`, for a positive denominator.
     #[inline]
     pub(crate) fn live(&self, numerator: i128, denominator: i128) -> u32 {
-        let live = (numerator + i128::from(self.constant) * denominator)
-            / (denominator * i128::from(self.divisor) * i128::from(LIVE_SCORE_BOUND_SCALE));
-        live.clamp(0, i128::from(u32::MAX)) as u32
+        // An unavailable tighter bound is +infinity, never a wrapped value.
+        let wide = || -> Option<i128> {
+            let numerator =
+                numerator.checked_add(i128::from(self.constant).checked_mul(denominator)?)?;
+            let denominator = denominator
+                .checked_mul(i128::from(self.divisor))?
+                .checked_mul(i128::from(LIVE_SCORE_BOUND_SCALE))?;
+            (denominator > 0).then(|| numerator / denominator)
+        };
+        wide().map_or(u32::MAX, |live| live.clamp(0, i128::from(u32::MAX)) as u32)
     }
 }
 
@@ -324,14 +331,7 @@ impl ObjectiveBound {
         };
         let active_1m = self.active_1m_coeff * power_sum;
         let live_score = ((rate_1m * power_total as i64 * 4 + active_1m) / 1_000_000) as i32;
-        let other_score = if self.other_score == 0 {
-            (live_score as i64).saturating_mul(4)
-        } else {
-            self.other_score as i64
-        };
-        let base_score = 110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
-        let inner = base_score * self.music_rate_pct as i64 * (bonus_total as i64 + 100) / 10_000;
-        let event_point = (inner * self.boost_rate_pct as i64 / 100) as i32;
+        let event_point = self.calc_event_point_bound(live_score, bonus_total);
         ((event_point as u64) << 32) | (live_score as u32 as u64)
     }
 
@@ -430,10 +430,12 @@ impl ObjectiveBound {
                 };
                 Some(LiveProduct {
                     honor,
-                    intercept: 4 * D * (self.base_rate_1m + 1) + D * per_power,
-                    leader: 16 * self.srs_div500_q,
-                    skill: 4 * self.srs_div500_q,
-                    constant: D * constant,
+                    intercept: (4 * D)
+                        .checked_mul(self.base_rate_1m.checked_add(1)?)?
+                        .checked_add(D.checked_mul(per_power)?)?,
+                    leader: 16_i64.checked_mul(self.srs_div500_q)?,
+                    skill: 4_i64.checked_mul(self.srs_div500_q)?,
+                    constant: D.checked_mul(constant)?,
                     divisor: D,
                     floor: self.teammate_su_5x,
                 })
@@ -446,9 +448,12 @@ impl ObjectiveBound {
                 // rate + S * sum5.
                 Some(LiveProduct {
                     honor,
-                    intercept: 4 * (500 * self.base_rate_1m + 1000),
-                    leader: 20 * self.avg_leader_rate_1m,
-                    skill: 4 * self.avg_sum5_1m,
+                    intercept: 500_i64
+                        .checked_mul(self.base_rate_1m)?
+                        .checked_add(1000)?
+                        .checked_mul(4)?,
+                    leader: 20_i64.checked_mul(self.avg_leader_rate_1m)?,
+                    skill: 4_i64.checked_mul(self.avg_sum5_1m)?,
                     constant: 0,
                     divisor: 500,
                     floor: 0,
@@ -469,39 +474,35 @@ impl ObjectiveBound {
         if !self.has_event {
             return live_score;
         }
-        match self.effective_live_type {
-            LiveType::Challenge | LiveType::ChallengeAuto => (100 + live_score / 20_000) * 120,
-            LiveType::Solo | LiveType::Auto => {
-                let base_score = (100 + live_score / 20_000) as i64;
-                let inner =
-                    base_score * self.music_rate_pct as i64 * (total_bonus as i64 + 100) / 10_000;
-                (inner * self.boost_rate_pct as i64 / 100) as i32
+        // Inverse-cutoff probes cover all non-negative i32 live scores,
+        // not just the a-priori range of legal leaves. Keep all stages wide
+        // and clip the final UPPER bound instead of wrapping a narrowing cast.
+        // Every supported leaf event point is below this saturation value.
+        let base = match self.effective_live_type {
+            LiveType::Challenge | LiveType::ChallengeAuto => {
+                return (100 + live_score / 20_000) * 120;
             }
-            LiveType::Multi => {
-                let other_score = if self.other_score == 0 {
-                    (live_score as i64).saturating_mul(4)
+            LiveType::Mysekai => return 0,
+            LiveType::Solo | LiveType::Auto => i128::from(100 + live_score / 20_000),
+            LiveType::Multi | LiveType::Cheerful => {
+                let other = if self.other_score == 0 {
+                    i64::from(live_score) * 4
                 } else {
-                    self.other_score as i64
+                    i64::from(self.other_score)
                 };
-                let base_score = 110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
-                let inner =
-                    base_score * self.music_rate_pct as i64 * (total_bonus as i64 + 100) / 10_000;
-                (inner * self.boost_rate_pct as i64 / 100) as i32
+                i128::from(110 + i64::from(live_score) / 17_000 + (other / 340_000).min(13))
             }
-            LiveType::Cheerful => {
-                let other_score = if self.other_score == 0 {
-                    (live_score as i64).saturating_mul(4)
-                } else {
-                    self.other_score as i64
-                };
-                let base_score = 110 + live_score as i64 / 17_000 + (other_score / 340_000).min(13);
-                let inner = (base_score * self.music_rate_pct as i64 * (total_bonus as i64 + 100)
-                    / 10_000) as i32;
-                let with_life = inner as i64 * self.life_rate_num as i64 / 5000;
-                (with_life * self.boost_rate_pct as i64 / 100) as i32
-            }
-            LiveType::Mysekai => 0,
-        }
+        };
+        // Three u32-sized factors and the bounded live-base fit i128,
+        // including the later life and boost factors.
+        let inner =
+            base * i128::from(self.music_rate_pct) * (i128::from(total_bonus) + 100) / 10_000;
+        let with_life = if self.effective_live_type == LiveType::Cheerful {
+            inner * i128::from(self.life_rate_num) / 5000
+        } else {
+            inner
+        };
+        (with_life * i128::from(self.boost_rate_pct) / 100).clamp(0, i128::from(i32::MAX)) as i32
     }
 
     #[inline(always)]

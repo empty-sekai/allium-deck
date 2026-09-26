@@ -228,6 +228,9 @@ impl<'a> PreparedPoolBuild<'a> {
             {
                 return Ok(());
             }
+            // A malformed identity is not an absent unit match. Validate the
+            // raw value before preparation can silently skip or narrow it.
+            super::capacity::character_id(master.character_id)?;
             if card_data.unit_mask == 0 {
                 return Ok(());
             }
@@ -838,7 +841,7 @@ pub(super) fn build_card_pool_fully_prepared_internal(
             let intermediate = CardIntermediate {
                 game_card_id: master.id,
                 card_rarity_type: master.card_rarity_type,
-                character_id: master.character_id.clamp(0, u8::MAX as i32) as u8,
+                character_id: super::capacity::character_id(master.character_id)?,
                 attr,
                 unit_mask_raw,
                 default_image,
@@ -862,7 +865,7 @@ pub(super) fn build_card_pool_fully_prepared_internal(
                     indexes,
                     params.support_master_max,
                     params.support_skill_max,
-                );
+                )?;
                 if support_seen.insert(seed.card_id) {
                     support_seeds.push(seed);
                 }

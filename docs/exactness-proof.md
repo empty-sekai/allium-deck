@@ -98,11 +98,14 @@ Top-K set, and the best canonical representative is retained. The public
 `compare_deck_results` wrapper exposes this same order for aggregation paths;
 callers must not replace it with a score-only comparator.
 
-Numeric branch-and-bound thresholds deliberately ignore later tie-break fields.
-For maximizing searches, a branch is discarded only when its admissible upper
-bound is strictly below the current K-th score. Equality is retained, including
-the SIMD mask. For minimization, the dual rule discards only when the
-admissible lower bound is strictly above the K-th value.
+A numeric-only branch-and-bound test deliberately ignores later tie-break
+fields: maximizing searches discard a branch only when its admissible upper
+bound is strictly below the K-th score; minimization uses a lower bound
+strictly above it. Equality survives these tests, including the SIMD mask.
+The Power/Skill specializations may additionally reject equality when a proved
+lower bound on the public-set key is strictly worse than the K-th set
+(pruning-proof Sections 20.5 and 21.2). Their smallest-ID frontiers carry an
+explicit occupied length: public ID 65535 is a value, never an empty slot.
 
 This strict relation is required even when K incumbents already exist: an
 equal-objective branch may contain a distinct public set or a canonically better
@@ -207,8 +210,10 @@ every completion-relevant condition represented by the mode:
 - attribute and unit-membership semantics needed by the remaining deck are
   identical;
 - fixed public identities are never removed;
-- for World Bloom, worst-case support-deck displacement is bounded and any
-  deficit is paid for by guaranteed base event-bonus surplus;
+- for World Bloom, sorted support order statistics must not decrease, or the
+  guaranteed base surplus must exceed the outward-bounded support loss by
+  more than the proved two-deck floating-point error; equality over the reals
+  alone never authorizes compensation (pruning-proof Theorems 3a–3b);
 - for Final member-only dominance, leader-only numeric benefits are excluded
   from the comparison and the appropriate leader support profile is used.
 
@@ -226,9 +231,14 @@ card by its surviving dominance root to obtain D'. By substitutability,
 
     objective(D') >= objective(D),
 
-and when objectives tie, D' is not canonically worse. If D belongs to the true
-Top-K, D' is therefore at or above the K-th threshold in the compacted pool.
-Production search discovers the root set. Post-search substitution expansion
+and when objectives tie, D' is not canonically worse. If K distinct compacted
+public sets preceded the best compacted representative of D', their full-pool
+representatives would also precede D, contradicting its true Top-K rank. Thus
+the root set is retained. This is a full-order counting argument, not merely a
+comparison with a numeric threshold. Production search discovers the root set.
+Before inverse-score pruning, reconstruction enumerates every original
+cultivation realization of a retained public set; the best realization can
+change after another card is substituted. Post-search substitution expansion
 walks the inverse dominance chains, re-evaluates every substituted deck exactly,
 and merges legal distinct public sets through the canonical tracker. Multi-slot
 substitutions are recursive, so chains involving more than one dominated card
@@ -335,8 +345,12 @@ bonus: the logarithm of the event-point ceiling of every deck that can reach
 the threshold is at most an affine function of its aggregate features
 (pruning-proof Section 18.8). Each group is weighted by its best card under
 that function, and a node is pruned when the sum of the weights it can still
-reach is below the logarithm of the threshold's event point. Like the other
-tests it only discards subtrees without a deck at or above the threshold.
+reach is below the logarithm of the threshold's event point. All model preparation, logarithms, weights,
+sums and threshold subtraction have outward interval bounds. Logarithms use
+an atanh series with an explicit remainder, not a platform `ln` error
+assumption. An uncertifiable near-degenerate chord falls back to the independent
+bound. Like the other tests it only discards subtrees without a deck at or
+above the threshold.
 
 ### 5.3 Support-deck upper bound
 
@@ -543,7 +557,10 @@ same resolved skill tables / semantics used by evaluation. A bound may relax
 correlations upward, but it may not silently change numeric precision in a way
 that can underestimate a legal completion.
 
-The floating-point side of these invariants is proved in
+Cross-deck support compensation and the log-linear optimization have separate
+floating-point proofs in pruning-proof Sections 5 and 18.8; neither follows
+merely from a real-valued inequality. The aggregate floating-point invariants
+are proved in
 [pruning-proof.md, Section 29](pruning-proof.md#29-numeric-admissibility): every
 integer or fixed-point ceiling dominates the `f64` leaf evaluator after its
 truncations, because the ceilings' integer grids are coarser than the
@@ -583,6 +600,10 @@ derived from the finalized stats rather than duplicated in mutable search
 state.
 
 ## 15. Verification evidence and what each class proves
+
+The [2026-09-26 audit and repairs](proof-audit-20260926.md) records concrete
+wrong-result counterexamples, their regression tests, and the distinction
+between repaired proof obligations and empirical release evidence.
 
 The runnable matrix and evidence boundaries are documented in
 [search-validation.md](search-validation.md). Final Top-K reconstruction must
