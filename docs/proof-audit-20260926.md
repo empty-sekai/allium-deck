@@ -95,8 +95,33 @@ ALLIUM_VALIDATION_ORACLE_SEEDS=16 cargo test --locked --release --all-features \
 The native unit suite passes 308 tests with 8 explicitly ignored. The default
 integration suite runs its corpus-classification test and explicitly ignores
 three external-masterdata proofs; one doctest passes. The all-scene matrix
-passes 256 cases / 3840 comparisons. Extended-matrix and independent runtime
-results are recorded in the PR verification section as those checks finish.
+passes 256 cases / 3840 comparisons. The 16-seed extended matrix passes 4608
+contexts, 18,432 complete searches, 13,765,632 ordered assignments and 287,232
+compared rows (oracle digest `6c7ca192360864cb`).
+
+Additional checks on the same implementation:
+
+- the separate Server workspace passes 13 unit tests and 13 HTTP/engine parity
+  tests locally; hosted CI also passes its release tests and default/jemalloc/
+  mimalloc lint configurations;
+- hosted CI passes `cargo check --all-features --locked` on Rust 1.89;
+- a real `wasm32-unknown-unknown` release module builds with Rust 1.94.0 and
+  version-matched wasm-bindgen 0.2.126 bindings;
+- Node 22.17.0 executes nine synthetic cases, each three times, matching 288
+  result rows against the native CLI. Cases cover Power, Power minimization,
+  Skill, Solo Average Score, Auto Score, Multi event Score, Cheerful Score,
+  MYSEKAI and Bonus. The comparison retains integer objective keys as decimal
+  strings, and compares order, power, skill and cultivation fields as well as
+  completion. Inputs include a legal public ID 65535;
+- the native build of `wasm/` contains zero tests and is **not** counted as
+  execution of the WebAssembly module.
+
+The runtime fixture is derived solely from `server/fixtures/synthetic.rs`:
+its full masterdata is retained while the account is restricted to eight
+characters, with one public card identity changed consistently to 65535.
+These are nine inputs, not 27 independent inputs. This smoke check does not
+replace Final/WL coverage or a real-browser release gate. The PR records
+hosted check status separately from these local results.
 
 The ordinary PR/push CI now executes both exhaustive synthetic matrices.
 `ExactOracle` independently enumerates placements and canonical public sets,

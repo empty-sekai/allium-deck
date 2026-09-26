@@ -2372,7 +2372,8 @@ operations; the absolute-error extension for subnormals is included in N2.
   of $1/4$ well inside that range, are exact, and so are their sums while they
   stay in range. Decimal constants such as $0.1$, $1.1$ or $1.15$ are not.
 - **(F4) Truncation.** On non-negative values the evaluator's `as i32` /
-  `as u32` / `as u64` casts and `floor` are the floor function; on non-negative
+  `as u32` / `as u64` casts are floor within the represented range
+  (as ensured for legal leaves), and `floor` is the floor function; on non-negative
   integers the ceilings' integer `/` is the floor function.
 
 ### 29.2 Numeric domain
@@ -2519,11 +2520,11 @@ completion.
 If $N/10^6\ge5\cdot2^{25}$, the claim is immediate. Otherwise N1 and N2 give
 
 $$
-X_e\le(N/10^6)(1+u)^{32}(1-u)^{-8}+2^{-899}
-\le N/10^6+41u\,N/10^6+2^{-899},
+X_e\le(N/10^6)(1+u)^{32}(1-u)^{-8}+2^{-898}
+\le N/10^6+41u\,N/10^6+2^{-898},
 $$
 
-where $41u\,N/10^6+2^{-899}<7.7\cdot10^{-7}<10^{-6}$. Since $N$ is an integer,
+where $41u\,N/10^6+2^{-898}<7.7\cdot10^{-7}<10^{-6}$. Since $N$ is an integer,
 $\lfloor N/10^6\rfloor+1\ge(N+1)/10^6>X_e$. This covers both tight and loose
 relaxations without assuming that the relaxed value is a legal-leaf maximum. ∎
 
@@ -2610,8 +2611,9 @@ The Skill key is $\lfloor\mathrm{fl}(\mathrm{fl}(10v)+10^{-6})\rfloor$, where
 $v$ is the leader's score-up plus $0.2$ times each other score-up, added in
 ascending order. The exact $10v^*$ is at most the integer ceiling $2S+8L$.
 For $10v^*<10^5$ the float error, including that of a reference share and
-its mean, is below $10^{-9}$, so the float value is below $10v^*+1$. A key
-above $2S+8L$ would need a float value of at least $2S+8L+1>10v^*+1$; hence
+its mean, is below $10^{-9}$. Adding the explicit $10^{-6}$ encoding offset
+still leaves the float value below $10v^*+1$. A key
+above $2S+8L$ would need a float value of at least $2S+8L+1\ge10v^*+1$; hence
 the key is at most $2S+8L$.
 
 ### 29.9 Lemma N7 — correlated bound
