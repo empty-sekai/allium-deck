@@ -10,3 +10,8 @@ import Allium.Search
 import Allium.Skill
 import Allium.Support
 import Allium.TopK
+import Allium.PowerModel
+import Allium.Composition
+import Allium.ScenarioSearch
+import Allium.ConcretePower
+import Allium.ScenarioPower

@@ -294,14 +294,28 @@
     {
       "id": "P18",
       "description": "Composition regimes",
-      "status": "open",
+      "status": "partial",
       "sources": [
         "src/search/composition.rs",
-        "src/pool/card_pool.rs"
+        "src/pool/card_pool.rs",
+        "src/search/evaluate.rs",
+        "src/search/context.rs"
       ],
-      "theorems": [],
+      "theorems": [
+        "Allium.Composition.regime_count",
+        "Allium.Composition.regimes_cover",
+        "Allium.Composition.matches_admits",
+        "Allium.Composition.actual_unit_flag_mem",
+        "Allium.Composition.actual_attribute_flag",
+        "Allium.Composition.power_bound_sound",
+        "Allium.Composition.deck_classes_cover",
+        "Allium.ScenarioSearch.required_search_spec",
+        "Allium.ScenarioSearch.runScenes_exact",
+        "Allium.ConcretePower.planPower_sound",
+        "Allium.ConcretePower.power_search_exact"
+      ],
       "remaining": [
-        "尚需证明 49 个区域场景的覆盖、非单调八槽 power lookup 的每场景上界和多场景共享阈值。"
+        "49 场景覆盖、任意非单调八槽 power 上界、允许额外合法叶子的跨场景共享阈值，以及具体 Power 数学实例已证明；仍需把普通/WL/Final 的完整 RegimePlan 特征和其他目标评分上界逐项接入，并完成实际场景 DFS 的叶子与启用剪枝构造（与 P17/P35/S05 相交）。"
       ]
     },
     {
@@ -547,15 +561,28 @@
       "description": "Numeric Power max/min",
       "status": "partial",
       "sources": [
-        "src/search/solver/numeric.rs"
+        "src/search/solver/numeric.rs",
+        "src/search/evaluate.rs",
+        "src/search/context.rs",
+        "src/handler/capacity.rs"
       ],
       "theorems": [
         "Allium.FiniteBounds.repeated_max_bound",
         "Allium.FiniteBounds.repeated_min_bound",
-        "Allium.Arithmetic.clamp_mono"
+        "Allium.Arithmetic.clamp_mono",
+        "Allium.PowerModel.tableIndex_surjective",
+        "Allium.PowerModel.count_five_iff_common",
+        "Allium.PowerModel.attribute_count_five",
+        "Allium.PowerModel.resolved_upper",
+        "Allium.PowerModel.resolved_lower",
+        "Allium.PowerModel.prefix_free_upper",
+        "Allium.PowerModel.prefix_free_lower",
+        "Allium.PowerModel.maximizing_prune",
+        "Allium.PowerModel.minimizing_prune",
+        "Allium.ScenarioPower.empty_units_require_a_lower_bound_guard"
       ],
       "remaining": [
-        "全局 max/min 的数学方向已证明；尚需证明八种 power 场景解析及 selected/free 组合对应。"
+        "已证明 decoded 八槽查表、五人成员计数、selected/free 组合及加称号后应用 cap 的双向严格剪枝；lower theorem 显式要求非空 unit 集合。尚需连接受理域（含空 unit 掩码与其压缩表构造）、具体 global/suffix 摘要和固定槽扫描状态，不能把这些连接归为 Rust refinement。"
       ]
     },
     {
@@ -580,13 +607,22 @@
     {
       "id": "P38",
       "description": "Power scenarios",
-      "status": "open",
+      "status": "partial",
       "sources": [
-        "src/search/solver/power.rs"
+        "src/search/solver/power.rs",
+        "src/search/evaluate.rs"
       ],
-      "theorems": [],
+      "theorems": [
+        "Allium.ScenarioPower.bound_sound",
+        "Allium.ScenarioPower.empty_exact",
+        "Allium.ScenarioPower.singleton_exact",
+        "Allium.ScenarioPower.bound_le_tableMax",
+        "Allium.ScenarioPower.actual_common_admitted",
+        "Allium.ScenarioPower.multi_unit_is_only_an_upper_bound",
+        "Allium.ScenarioPower.admission_is_not_bound_soundness"
+      ],
       "remaining": [
-        "尚需证明 unit-mask 交集场景集合完整、单单位 additive ceiling、实际完成回算和阈值同分恢复。"
+        "已证明实际 scenario_power 的非单调多单位 envelope、空/单单位精确性和真实公共 unit 集合的接纳性；并证明多单位只能作上界的反例。尚需证明生产 unit-mask 交集工作表的完整性、best_completion 扫描、实际叶子回算与带 least/cap 守卫的同分 public-set 剪枝。ConcretePower 的 49-regime 数学搜索不等于已证明此专用 fast path。"
       ]
     },
     {
@@ -702,15 +738,24 @@
     {
       "id": "S05",
       "description": "All-scene end-to-end instantiation of SearchTree.Sound and exhaustiveKeys",
-      "status": "open",
+      "status": "partial",
       "sources": [
         "src/search/solver/mod.rs",
         "src/search/problem.rs",
-        "src/search/evaluate.rs"
+        "src/search/evaluate.rs",
+        "src/search/composition.rs",
+        "src/search/context.rs"
       ],
-      "theorems": [],
+      "theorems": [
+        "Allium.ConcretePower.member_admitted",
+        "Allium.ConcretePower.planPower_sound",
+        "Allium.ConcretePower.ceiling_sound",
+        "Allium.ConcretePower.scene_valid",
+        "Allium.ConcretePower.scenes_cover",
+        "Allium.ConcretePower.power_search_exact"
+      ],
       "remaining": [
-        "尚未证明每个实际场景、评分目标及启用剪枝的模型构造都满足 search_exact 的 premises；这仍属于第一档，不能归为 Rust refinement 后搁置。"
+        "首个具体 Power 数学实例已贯通公开五槽规格、49-regime、八槽查表、per-character/per-card top-five、honor/cap、共享阈值与 exhaustiveKeys，主定理不再接受抽象上界或场景覆盖前提。但该树显式枚举已接纳的合法卡组，不是全部生产 DFS 优化；其他目标、实际 solver 场景、受理域/固定角色语义及每条启用剪枝的数学构造仍需逐项接入，全部仍属第一档。"
       ]
     },
     {

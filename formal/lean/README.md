@@ -19,6 +19,11 @@
 | `Quadratic` | 相关评分包络的两个分支；联合 power/skill 半平面；矩形与半平面相交后乘积峰值的四个分支。 |
 | `DynamicProgramming` | 有限组选择的完整可达性；必须组与可跳过组的区别；保持精确 key 的逐分量最大值压缩；每一轮压缩后的覆盖不变量；键区间查询与不可达排除。 |
 | `Support` | 有限支援池的最大和；主队排除集合增大时支援不增加；不同队长 profile 的逐 ID 最大值包络；排序前缀的阈值证书；替换损失的截止值代数；单调舍入加法下的逐项支配。 |
+| `PowerModel` | 2×4 八槽索引；六单位计数等于五人的语义；任意非单调查表的上下界；selected/free 松弛；先加称号再应用 cap 的双向严格剪枝。低界保留非空单位集合前提。 |
+| `Composition` | 全部 49 个区域场景的覆盖；语义归属与卡池接纳的区别；每个真实 member key 都在场景 key 集内；非单调八槽 power 上界。 |
+| `ScenarioSearch` | 场景允许额外合法叶子时的 required-class 证明；跨场景共享阈值；种子可不属于当前场景；不要求每个场景的局部 Top-K 在外部阈值下保持不变。 |
+| `ConcretePower` | 首个具体 Power 数学实例：五槽合法性 → 49 场景 → per-character/per-card 上界 → honor/cap → 共享阈值搜索 → canonical 穷举 Top-K，无抽象上界可靠性或覆盖前提。 |
+| `ScenarioPower` | 专用 Power 场景的多单位 singleton envelope；空/单单位精确性；实际单位交集的接纳性；三个内核检查的反例，保护非单调、接纳性和空单位边界。 |
 
 这些是数学机制的证明。表中出现一个辅助机制，不代表使用它的整个 Rust 函数、场景或所有前提已经证明。
 
@@ -30,6 +35,12 @@
 
 `SearchTree.Sound` **是待实例化的前提，不是已经验证所有生产上界的同义词**。当前尚未把各个 Allium 场景的完整评分、合法完成集合和每一个启用剪枝全部连接到该前提。这个连接仍属于第一档，而不是可以推迟到 Rust refinement 的工作。
 
+第二轮新增 `Allium.ConcretePower.power_search_exact`：对 `Enumeration.Roles` 定义的五槽规范，使用实际八槽 power 数学公式构造 49 个场景并完成共享阈值搜索，其结果等于 `Enumeration.exhaustiveKeys` 的 canonical Top-K。它仅要求初始种子属于合法候选；上界、场景覆盖及叶子合法性全部在该实例内部证明，不再由调用者提供 `SearchTree.Sound`。
+
+这里必须使用 `ScenarioSearch.RequiredSound`：卡牌通过某个场景的过滤，不代表完整卡组真的属于该场景。场景可以访问额外的合法叶子，但只对自己负责的候选承诺上界；各场景负责的候选并集覆盖全部合法答案。`ScenarioPower.admission_is_not_bound_soundness` 给出了不能混淆两者的机器检查反例。
+
+**这个 Power 实例仍不是全部生产 DFS 的证明。** 它显式枚举合法的 admitted leaves，验证场景级剪枝，而非声称证明所有后缀/DP/支配/同分 fast path 或实现性能；完整业务受理域与其他评分目标仍在 S05 中。第二轮结果与剩余工作见 [`ROUND2.md`](ROUND2.md)。
+
 同样，`Arithmetic.grid_floor_of_error` 的严格误差前提必须独立证明。当前并没有从 `pruning-proof.md` 第 29 节的全部 binary64 表达式推导出 N1–N7 误差预算；不能把实数或有理数定理当作这一缺口的替代品。
 
 ## 逐项覆盖与剩余义务
@@ -38,7 +49,7 @@
 
 状态含义如下：`proved` 指该条明确陈述的数学机制已经证明；`partial` 指仅完成部分引理；`open` 指尚未证明；`out_of_scope` 仅用于第一档之外的 Rust 实现/编译等价。**覆盖行数和 Lean 定理行数不是“验证百分比”。** 当前 `stage_one_complete` 为 `false`。
 
-尚未闭合的主要内容包括完整支配守卫与 Top-K 逆恢复、49 个 composition regimes 与 Power unit-set 场景、精确 bonus-tier 的 first-N/key/slack/refill/certificate 构造、Final 与 WL 的完整场景连接、对数弦界及向外区间/atanh 余项证明、全部评分目标的浮点误差预算。清单中的每项都保留具体缺口，不用未经证明的假设冒充完成。
+尚未闭合的主要内容包括完整支配守卫与 Top-K 逆恢复、49-regime 的其余评分目标连接与专用 Power unit-set 工作表/同分剪枝、精确 bonus-tier 的 first-N/key/slack/refill/certificate 构造、Final 与 WL 的完整场景连接、对数弦界及向外区间/atanh 余项证明、全部评分目标的浮点误差预算。清单中的每项都保留具体缺口，不用未经证明的假设冒充完成。
 
 Rust 的内存安全、缓存一致性、数据读取、机器指令、编译器、WASM，以及 `RustSearch = LeanSpec` 的 refinement 不属于本轮第一档声明。
 

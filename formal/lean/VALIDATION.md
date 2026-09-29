@@ -44,3 +44,11 @@ VERIFICATION PASSED FOR THE DECLARED SCOPE (see coverage.json)
 `.github/workflows/lean.yml` 在 Linux 上运行同一构建与 `--self-test` 检查。工作流的实际运行结果以对应 PR 的 GitHub Actions 日志为准；本记录不把本地成功写成未经执行的远端成功。
 
 本轮本地未重新运行 Rust 单测、穷举矩阵或性能测试，不引用历史测试数量作为本轮结果。仓库原有的 Rust CI 保持不变。
+
+## 第二轮追加记录（2026-09-29）
+
+此前内容保留为第一轮记录。当前第二轮的证明范围、命令输出、机器检查反例与明确剩余义务见 [ROUND2.md](ROUND2.md)。
+
+第二轮新增 5 个模块、41 条显式定理；累计 17 个模块、172 条显式定理、2,708 行模块源码。`python verify.py --self-test` 实际通过：31 个对照源文件、全部 17 个模块、公理审计（591 declarations / 332 含自动生成项的 theorems）与六项负向测试全部通过。`python verify.py --require-complete` 实际返回 1，并在构建/审计通过后列出 40 项未完成义务。
+
+本轮闭合的是 `ConcretePower.power_search_exact` 所陈述的具体五槽 Power 数学实例，不是全部生产 DFS、所有目标或 Rust refinement。覆盖状态为 6 proved / 27 partial / 13 open / 1 out_of_scope；`stage_one_complete` 仍为 false，PR 保持 Draft。
