@@ -10,6 +10,7 @@ mod exact_mysekai;
 mod exact_power;
 mod exact_score;
 mod exact_world_bloom;
+mod multi_unit;
 mod numeric_soundness;
 mod overflow;
 mod performance;
@@ -124,6 +125,7 @@ fn ctx(target: ScoreTarget) -> SearchContext {
         support_decks_by_character: Vec::new(),
         is_world_bloom: false,
         is_final_chapter: false,
+        is_wl3_finale: false,
         enforce_char_uniqueness: true,
         minimize: false,
         live_type: LiveType::Solo,

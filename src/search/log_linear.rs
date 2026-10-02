@@ -462,6 +462,7 @@ mod tests {
             support_decks_by_character: vec![SupportDeck::default(); 27],
             is_world_bloom: true,
             is_final_chapter: true,
+            is_wl3_finale: false,
             enforce_char_uniqueness: true,
             minimize: false,
             live_type,

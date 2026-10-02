@@ -14,7 +14,7 @@ pub(crate) struct CardIntermediate {
     pub card_rarity_type: i32,
     /// 角色 ID。
     pub character_id: u8,
-    /// 属性 ID。
+    /// Pool 使用的 0-based 属性索引（0..=4），不是 `Attr` 枚举值。
     pub attr: u8,
     /// 原始 unit mask。
     pub unit_mask_raw: u8,
@@ -55,7 +55,7 @@ pub struct FullPrecisionCard {
     pub card_rarity_type: i32,
     /// 角色 ID。
     pub character_id: u8,
-    /// 属性 ID。
+    /// Pool 使用的 0-based 属性索引（0..=4），不是 `Attr` 枚举值。
     pub attr: u8,
     /// 原始 unit mask。
     pub unit_mask_raw: u8,
@@ -71,6 +71,8 @@ pub struct FullPrecisionCard {
     pub skill_level: i32,
     /// 全精度 power 结果。
     pub power: [[PowerDetail; 4]; 6],
+    /// Optional exact multi-unit power details in original/support/attribute bit order.
+    pub multi_power: Option<[PowerDetail; 8]>,
     /// 全精度 skill 结果。
     pub skill: SkillInfo,
     /// 热路径活动 bonus。
@@ -87,6 +89,29 @@ pub struct FullPrecisionCard {
     pub leader_honor_bonus_x10: u16,
     /// leader limit bonus。
     pub leader_limit_bonus_x10: u16,
+}
+
+impl FullPrecisionCard {
+    /// Resolve component details using the same effective total as the search.
+    /// Returns `None` if these details do not belong to the requested pool card.
+    pub fn effective_detail(
+        &self,
+        pool: &CardPool,
+        card: crate::pool::CardIdx,
+        composition: crate::power::DeckComposition,
+    ) -> Option<PowerDetail> {
+        if self.game_card_id != pool.game_id(card) {
+            return None;
+        }
+        let total = crate::power::effective_power(pool, card, composition);
+        // Every stored state of this card differs only in its area component.
+        self.power
+            .iter()
+            .flatten()
+            .chain(self.multi_power.iter().flatten())
+            .find(|detail| detail.total.max(0) as u32 == total)
+            .copied()
+    }
 }
 
 pub(crate) struct GatheredContext {
@@ -333,6 +358,9 @@ pub(crate) fn sort_and_gather(
         }
 
         builder.set_power_values(dense, power_values);
+        if let Some(details) = card.power.multi_details() {
+            builder.set_multi_power_values(dense, details.map(|detail| detail.total.max(0) as u32));
+        }
         builder.set_power_lut(dense, power_lut);
         builder.set_power_max(dense, card.power.power_max.max(0) as u32);
         builder.set_skill(dense, slot);
@@ -373,6 +401,7 @@ pub(crate) fn sort_and_gather(
                 master_rank: card.master_rank,
                 skill_level: card.skill_level,
                 power: card.power.resolved(),
+                multi_power: card.power.multi_details(),
                 skill: card.skill.full,
                 event_bonus: card.event_bonus,
                 power_min_exact: card.power.power_min,

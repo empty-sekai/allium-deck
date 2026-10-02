@@ -179,19 +179,23 @@ impl PoolIndexes {
                 .entry((entry.area_item_id, entry.level))
                 .or_default()
                 .push(PowerAreaItem {
-                    unit: entry
-                        .unit
-                        .as_deref()
-                        .and_then(parse_unit_code)
-                        .and_then(unit_to_pool_index)
-                        .unwrap_or(PowerAreaItem::ANY),
+                    unit: match entry.unit.as_deref().map(str::trim) {
+                        None | Some("" | "any" | "none") => PowerAreaItem::ANY,
+                        Some("multi_unit") => PowerAreaItem::MULTI,
+                        Some(unit) => parse_unit_code(unit)
+                            .and_then(unit_to_pool_index)
+                            .unwrap_or(PowerAreaItem::UNKNOWN),
+                    },
                     attr: entry
                         .attr
                         .as_deref()
                         .and_then(parse_attr_code)
                         .and_then(attr_to_pool_index)
                         .unwrap_or(PowerAreaItem::ANY),
-                    character_id: entry.character_id.unwrap_or(PowerAreaItem::ANY_CHARACTER),
+                    character_id: entry
+                        .character_id
+                        .filter(|id| *id != 0)
+                        .unwrap_or(PowerAreaItem::ANY_CHARACTER),
                     power_rate: entry.power_rate,
                     power_all_match_rate: entry.power_all_match_rate,
                 });
@@ -357,6 +361,17 @@ impl PoolIndexes {
     pub(crate) fn area_items(&self, area_item_id: i32, level: i32) -> &[PowerAreaItem] {
         self.area_by_item_level
             .get(&(area_item_id, level))
+            .or_else(|| {
+                let max_level = self
+                    .area_by_item_level
+                    .keys()
+                    .filter(|(id, _)| *id == area_item_id)
+                    .map(|(_, level)| *level)
+                    .max()?;
+                (level > max_level)
+                    .then(|| self.area_by_item_level.get(&(area_item_id, max_level)))
+                    .flatten()
+            })
             .map(Vec::as_slice)
             .unwrap_or(&[])
     }

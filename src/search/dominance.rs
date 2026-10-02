@@ -358,6 +358,14 @@ fn dominates(
         idx += 1;
     }
 
+    if pool.multi_unit_bonus_mode() != crate::power::MultiUnitBonusMode::ForceOff
+        && let (Some(left), Some(right)) =
+            (pool.multi_power_values(lhs), pool.multi_power_values(rhs))
+        && left.iter().zip(right).any(|(a, b)| a < b)
+    {
+        return false;
+    }
+
     if !skill_dominates(pool, lhs, rhs) {
         return false;
     }

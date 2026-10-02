@@ -280,6 +280,7 @@ struct DeckOut {
     multi_live_score_up: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     event_bonus_total: Option<f64>,
+    shuffle_bonus_rate: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     main_honor_id: Option<i32>,
 }
@@ -347,6 +348,7 @@ impl Renderer<'_> {
                     skill_score: summary.multi_live_score_up,
                     multi_live_score_up: Some(summary.multi_live_score_up),
                     event_bonus_total: summary.event_bonus_total,
+                    shuffle_bonus_rate: Some(summary.shuffle_bonus_rate),
                     main_honor_id: summary.main_honor_id,
                 }
             }
@@ -381,6 +383,7 @@ impl Renderer<'_> {
                         .sum(),
                     multi_live_score_up: None,
                     event_bonus_total: None,
+                    shuffle_bonus_rate: None,
                     main_honor_id: None,
                 }
             }

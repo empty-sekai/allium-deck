@@ -170,6 +170,7 @@ Flags:
 | `--world-bloom-character-id` / `--world-bloom-event-turn` / `--challenge-live-character-id` | value | World Bloom / Challenge Live special parameters. |
 | `--skill-reference-strategy` / `--live-skill-order` / `--specific-skill-order` | value | Skill reference and activation order; a specific order is given as `0,1,2,3,4`. |
 | `--multi-teammate-power` / `--multi-teammate-score-up` / `--multi-live-score-up-lower-bound` | value | Teammate power, effective skill score-up, and total skill lower bound for multi / Cheerful lives. |
+| `--multi-unit-bonus-evaluation` | enum | Owned multi-unit area effects: `by_deck` (default), `force_on`, `force_off`. Shared by deck and area-upgrade recommendations; see the [parameter reference](docs/parameters.md#area-items-and-mysekai-gates). |
 | `--other-score` / `--life` | value | Cheerful opponent score and life. |
 | `--rarity4-config` / `--single-card-config` | value | Card training configs, e.g. `level_max,skill_max,master_max,episode_read,canvas` and `123:level_max,skill_max`. |
 

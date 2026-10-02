@@ -16,13 +16,24 @@ pub(crate) struct PowerAreaItem {
     pub(crate) unit: u8,
     pub(crate) attr: u8,
     pub(crate) character_id: i32,
-    pub(crate) power_rate: f64,
-    pub(crate) power_all_match_rate: f64,
+    pub(crate) power_rate: [f64; 3],
+    pub(crate) power_all_match_rate: Option<[f64; 3]>,
 }
 
 impl PowerAreaItem {
     pub(crate) const ANY: u8 = u8::MAX;
+    pub(crate) const MULTI: u8 = u8::MAX - 1;
+    pub(crate) const UNKNOWN: u8 = u8::MAX - 2;
     pub(crate) const ANY_CHARACTER: i32 = -1;
+
+    #[inline(always)]
+    pub(crate) fn rates(self, all_match: bool) -> [f64; 3] {
+        if all_match {
+            self.power_all_match_rate.unwrap_or(self.power_rate)
+        } else {
+            self.power_rate
+        }
+    }
 }
 
 impl PowerCommon16 {
@@ -260,15 +271,10 @@ fn power_area_single_unit_16_scalar(
             }
             let all_match = (item.unit != PowerAreaItem::ANY && member_key >= 2)
                 || (item.attr != PowerAreaItem::ANY && member_key % 2 == 1);
-            let rate = if all_match {
-                item.power_all_match_rate
-            } else {
-                item.power_rate
-            };
-            let factor = rate * 0.01_f64;
+            let rates = item.rates(all_match);
             let mut dim = 0usize;
             while dim < 3 {
-                acc[dim] += factor * base_dims[dim][lane] as f64;
+                acc[dim] += (rates[dim] * 0.01_f64) * base_dims[dim][lane] as f64;
                 dim += 1;
             }
         }
@@ -314,14 +320,10 @@ unsafe fn power_area_single_unit_16_avx512_unchecked(
             }
             let all_match = (item.unit != PowerAreaItem::ANY && member_key >= 2)
                 || (item.attr != PowerAreaItem::ANY && member_key % 2 == 1);
-            let rate = if all_match {
-                item.power_all_match_rate
-            } else {
-                item.power_rate
-            } * 0.01_f64;
-            let rate = _mm512_set1_pd(rate);
+            let rates = item.rates(all_match);
             let mut dim = 0usize;
             while dim < 3 {
+                let rate = _mm512_set1_pd(rates[dim] * 0.01_f64);
                 let mut half = 0usize;
                 while half < 2 {
                     let offset = half * 8;
@@ -627,22 +629,22 @@ mod tests {
                 unit: PowerAreaItem::ANY,
                 attr: PowerAreaItem::ANY,
                 character_id: PowerAreaItem::ANY_CHARACTER,
-                power_rate: 0.3,
-                power_all_match_rate: 0.7,
+                power_rate: [0.3, 0.4, 0.7],
+                power_all_match_rate: None,
             },
             PowerAreaItem {
                 unit: 2,
                 attr: PowerAreaItem::ANY,
                 character_id: PowerAreaItem::ANY_CHARACTER,
-                power_rate: 1.25,
-                power_all_match_rate: 2.75,
+                power_rate: [1.25, 2.0, 0.75],
+                power_all_match_rate: Some([2.75, 1.0, 3.125]),
             },
             PowerAreaItem {
                 unit: PowerAreaItem::ANY,
                 attr: 3,
                 character_id: 4,
-                power_rate: 0.85,
-                power_all_match_rate: 1.65,
+                power_rate: [0.85; 3],
+                power_all_match_rate: Some([1.65; 3]),
             },
         ];
         let active_lanes = 0b0111_1111_1111_1101;

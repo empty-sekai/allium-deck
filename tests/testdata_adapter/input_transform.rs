@@ -18,6 +18,7 @@ pub fn transform_input(
 
     let build = BuildParams {
         region: input.region.clone(),
+        multi_unit_bonus_mode: input.multi_unit_bonus_evaluation,
         event_id: input.event_id,
         music_id: input.music_id,
         music_diff: input.music_diff.clone(),
@@ -77,8 +78,8 @@ pub fn transform_input(
             .map(|entry| UserGateBonus {
                 mysekai_gate_id: Some(entry.mysekai_gate_id),
                 mysekai_gate_level: Some(entry.mysekai_gate_level),
-                unit: gate_unit(entry.mysekai_gate_id).to_string(),
-                bonus_rate: (entry.mysekai_gate_level.max(0) as f64) * 0.1,
+                unit: String::new(),
+                bonus_rate: 0.0,
             })
             .collect(),
         user_mysekai_canvas_bonus_cards: legacy_user
@@ -104,17 +105,6 @@ pub fn transform_input(
     };
 
     Ok((build, user, search))
-}
-
-fn gate_unit(gate_id: i32) -> &'static str {
-    match gate_id {
-        1 => "light_sound",
-        2 => "idol",
-        3 => "street",
-        4 => "theme_park",
-        5 => "school_refusal",
-        _ => "piapro",
-    }
 }
 
 fn transform_user_card(card: &LegacyUserCard) -> UserCard {

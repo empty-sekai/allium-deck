@@ -201,6 +201,9 @@ pub struct BuildParams {
     pub attr_filter: Option<String>,
     /// 反向搜索：求最弱（最小化 power）而非最强。仅 Power 目标生效，其它目标忽略。
     pub minimize: bool,
+    /// Activation policy for owned multi-unit area items.
+    #[serde(default, rename = "multi_unit_bonus_evaluation")]
+    pub multi_unit_bonus_mode: crate::power::MultiUnitBonusMode,
 }
 
 impl Default for BuildParams {
@@ -249,6 +252,7 @@ impl Default for BuildParams {
             unit_filter: None,
             attr_filter: None,
             minimize: false,
+            multi_unit_bonus_mode: crate::power::MultiUnitBonusMode::default(),
         }
     }
 }
@@ -442,10 +446,10 @@ pub struct AreaItemLevel {
     pub attr: Option<String>,
     /// 适用角色。
     pub character_id: Option<i32>,
-    /// 综合力倍率。
-    pub power_rate: f64,
-    /// 全匹配综合力倍率。
-    pub power_all_match_rate: f64,
+    /// Independent power rates for the three dimensions.
+    pub power_rate: [f64; 3],
+    /// All-match rates; missing any dimension makes the entire row use normal rates.
+    pub power_all_match_rate: Option<[f64; 3]>,
 }
 
 /// 角色所属团。

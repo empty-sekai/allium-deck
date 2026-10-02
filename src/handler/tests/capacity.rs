@@ -83,6 +83,72 @@ fn capacity_public_card_identity_is_not_clamped() {
 }
 
 #[test]
+fn capacity_pool_attributes_reject_out_of_range_without_panicking() {
+    for attr in 5..=u8::MAX {
+        let mut card = make_card(1, 1, 100, 50);
+        card.attr = attr;
+        let validation = super::super::capacity::validate_cards(std::slice::from_ref(&card));
+        let gathered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sort_and_gather(
+                vec![card],
+                ScoreTarget::Power,
+                false,
+                LiveType::Multi,
+                &[],
+                &[],
+                true,
+            )
+        }));
+        assert!(
+            gathered.is_ok(),
+            "pool attribute {attr} panicked after validation {validation:?}"
+        );
+        for error in [validation, gathered.unwrap().map(|_| ())] {
+            assert!(matches!(
+                error,
+                Err(BuildError::CapacityExceeded {
+                    field: "attribute id",
+                    value,
+                    max: 4,
+                }) if value == u64::from(attr)
+            ));
+        }
+    }
+}
+
+#[test]
+fn capacity_all_public_attributes_keep_zero_based_pool_indices() {
+    let mut fixture = pool_constraint_fixture(&[
+        (1, 4, 100),
+        (2, 4, 100),
+        (3, 4, 100),
+        (4, 4, 100),
+        (5, 4, 100),
+    ]);
+    let attrs = ["cool", "cute", "happy", "pure", "mysterious"];
+    for (card, attr) in fixture.master_cards.iter_mut().zip(attrs) {
+        card.attr = attr.to_string();
+    }
+    let game = bonus_tier_game(&fixture);
+    let (pool, _) = checked_build(&fixture, &game, &BuildParams::default())
+        .expect("all five game attributes fit the pool");
+    assert_eq!(pool.count(), 5);
+    for card in pool.indices() {
+        let master = fixture
+            .master_cards
+            .iter()
+            .find(|master| master.id == i32::from(pool.game_id(card)))
+            .expect("public card belongs to the fixture");
+        let expected = attrs.iter().position(|attr| *attr == master.attr).unwrap() as u8;
+        assert_eq!(pool.attr(card), expected);
+    }
+    assert_eq!(
+        types::attr_to_pool_index(crate::types::Attr::Mysterious),
+        Some(4)
+    );
+}
+
+#[test]
 fn capacity_bonus_overflow_returns_an_error_before_packing() {
     let fixture = pool_constraint_fixture(&[(1, 4, 100)]);
     let event_cards = [types::EventCard {
@@ -221,11 +287,11 @@ fn capacity_applies_a_real_event_cap_before_checking_skill_width() {
         let (pool, _) = checked_build(&fixture, &game, &params).unwrap();
         assert_eq!(pool.count(), 1);
         let card = pool.card_idx(0).unwrap();
-        assert_eq!(pool.skill_max(card), 140, "kind={kind}");
+        assert_eq!(pool.skill_max(card), 240, "kind={kind}");
         if let Some(reference) = pool.special().ref_skills().first() {
             assert_eq!(
                 u16::from(pool.skill_min(card)) + u16::from(reference.max),
-                140
+                240
             );
         }
     }

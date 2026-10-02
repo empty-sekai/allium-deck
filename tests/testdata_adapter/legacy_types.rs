@@ -57,6 +57,8 @@ pub struct LegacyInput {
     pub unit_filter: Option<String>,
     #[serde(default)]
     pub attr_filter: Option<String>,
+    #[serde(default, alias = "multiUnitBonusEvaluation")]
+    pub multi_unit_bonus_evaluation: allium_deck::power::MultiUnitBonusMode,
 }
 
 /// 旧引擎 output JSON 的单条结果。

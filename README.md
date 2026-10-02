@@ -189,6 +189,7 @@ recommend_cli \
 | `--mode area-items` / `--mode music` / `--mode exact-live` | 模式 | 辅助计算（不组卡）：`area-items` 需 `--card-ids`；`music` 需 `--deck`；`exact-live` 需 `--power/--skills/--music-score`。 |
 | `--skill-reference-strategy` / `--live-skill-order` / `--specific-skill-order` | 值 | 技能参考与发动顺序；指定顺序使用 `0,1,2,3,4`。 |
 | `--multi-teammate-power` / `--multi-teammate-score-up` / `--multi-live-score-up-lower-bound` | 值 | 协力和 Cheerful 队友综合力、技能实效、技能总下限。 |
+| `--multi-unit-bonus-evaluation` | 枚举 | 混编区域道具：`by_deck`（默认）/`force_on`/`force_off`；组卡与区域道具升级共用，规则见 [参数文档](docs/parameters.md#area-items-and-mysekai-gates)。 |
 | `--other-score` / `--life` | 值 | Cheerful 对手分数和体力。 |
 | `--rarity4-config` / `--single-card-config` | 值 | 养成配置，如 `level_max,skill_max,master_max,episode_read,canvas` 和 `123:level_max,skill_max`。 |
 
