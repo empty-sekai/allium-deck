@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "baseline_commit": "5c6dff7387e57384b9b2c989ab4f535cdd74f098",
   "source_normalization": "UTF-8 source bytes with CRLF normalized to LF; SHA-256",
   "inventory": "docs/pruning-proof.md section 26; P01..P41 preserve row order",
@@ -12,36 +12,46 @@
   },
   "sources": {
     "docs/exactness-proof.md": "3d029cbd293d82a1ab473eca01891148d1a96a5ab6212d0d1516c0a414221337",
-    "docs/pruning-proof.md": "654daec45043d02f8e744718c33bda1387229092a87f2806ecc3218c5d24bd56",
-    "src/handler/build.rs": "7ff56fc78e299b2eb31dd69481db6b2938d2ab1da0bce612181f8170cea002c8",
-    "src/handler/capacity.rs": "44572e898ee231d261444ade8960ca35d3842411cea1a5baf2565ee4f8105709",
+    "docs/pruning-proof.md": "bc483cf5d9a210b07021ae0a450eba3e2d4bd84e0e5a8ebba08bf9309618a638",
+    "src/handler/build.rs": "411dd82fef5a4d4ee4cde03a7e075576b21a7c94b113b672c4cb1c3af445e825",
+    "src/handler/capacity.rs": "0b22ed2602498dc0947ee50a0650b412c67a288782a9161627e08fb764d937ce",
+    "src/handler/gather.rs": "50986af534553d9e2d813851bb4c69c650f13f3598716ca38918a4298a2ecf0b",
+    "src/handler/types.rs": "18528cfacba7b92b1d4f2773ce7836cc0f5b1043c91ecaaf7725b0dba2b968c6",
+    "src/handler/power.rs": "162641a522181142e8449e857943e1a66d6345b1159b3725153188f4052ef980",
+    "src/handler/skill.rs": "97956ac2a7b26c855237348fd41698e43e7465a629201a540563ba27f2e6c1e6",
+    "src/types.rs": "d0cf4910f6801be28f6447bb5dfc50932767c55a43cc2be7fe64d7629c951a3a",
+    "src/pool/builder.rs": "121542d82522ed7ac9db09a634543704151409bead6b3a6255abb713cf216485",
+    "src/pool/types.rs": "513dc0fedcd1bac80075a856ef0edb137f10c6f2e75f6ec3a6f1aae65f9be6c3",
     "src/handler/filter.rs": "38e84afa3a02dd263c18ddab26ae2d81fa6c038d1b4887c81993a8d7755e9370",
     "src/handler/validate.rs": "f83d60a734b3aa9752a9f230ce0ce13643c85231ba683871216e06d009de15a3",
-    "src/pool/card_pool.rs": "d1f9509ae010f8b6c7944cf20de6ebd133fa7ff87d8a9e128870264a0358773a",
+    "src/handler/world_bloom.rs": "74155af740f87f492918a6fb20d1a88cb67191ee741c7fd2c4e72013236c8e3c",
+    "src/pool/card_pool.rs": "75b64ac6c26a99a2b67f66b284437c578f5d5860c053c2d5712170f929480e59",
+    "src/power.rs": "87d1aa12f3391a0404c6dfb801231d289aa101d3a6ac0d37f90fddc3e73d6a06",
     "src/search/alternatives.rs": "ae3b614dd7316a7170cc58bba65359d7de8dc59efb17747d9a470e13f3d90bd9",
     "src/search/budget.rs": "e8dbe903ea2d4524616d9ca5dfc35c16f599365f62b4f410344ae4af02b26d10",
-    "src/search/composition.rs": "29c1bf14dc8afa5b0bc8f163e274fc691a00892acac8676eecbaba72812515a3",
-    "src/search/context.rs": "c7f0f698618d0d1f7aa71eb90a8feee396a0a291aa1b83f40951e3589a072687",
+    "src/search/composition.rs": "2d7f7456ca8767f5413d8940a8fc3de86c028d9c2e06ee534c51d3fce9ad4d4f",
+    "src/search/context.rs": "952984ba81510e16e8c9b7302603c930b32436d015e301c9aa7b5664a4057a88",
     "src/search/correlated.rs": "37807a4f783b3365df7d2c00ba03ceaf3aa04d4b95a4c3fc7fe8caeff39d9abe",
     "src/search/dfs.rs": "5c68865d3e723dcdc03c092a2496ec93a1a8f5b927e1f8e4c157ac6e82ac3e55",
-    "src/search/dominance.rs": "70986e344848efcc296950ae4d6e31e685c8dd4d7e3c4f24dd1486658a2e5a17",
-    "src/search/evaluate.rs": "397c1a90507b1ba0a2fab16d28053d22debe16e51ee801f106c3fd567cb8216b",
-    "src/search/log_linear.rs": "f3f99d9994c8a1731feeefa6b1d695d1afadad1e6bd447b923b22ee9e1bd37d8",
+    "src/search/dominance.rs": "78f07e027abcb993407c89e30cd010dda7c77b9c871387211d8f48ce091dc055",
+    "src/search/evaluate.rs": "ecb6884c7db7f6e987b7282a6e0a780b35be0b54166dd56a27d7a89e7d81f4b1",
+    "src/search/log_linear.rs": "349f0983dfccfdcbcd321fec472d0c5b6b551219c3050d25ef0f8d15b7f52791",
     "src/search/log_linear/interval.rs": "3ad99ebc2649f71b99936ae276a372836407cf3d48530b6617d3f46fddae1b45",
     "src/search/objective.rs": "25cca846cfc78fd3459806a32b6b7b9e32f5578ea0157f294c55f073668edc73",
     "src/search/placement.rs": "b9ca952ef4d0d5ad72d1c2a3e3e9b2158e6524f10c81d2b2edb4f3a3296ad33b",
     "src/search/problem.rs": "4f566d0c353d32e532bf37888eaab4118deaebb0c0a66862762fd91914ebb5f7",
     "src/search/skill_ceiling.rs": "7754510f4e6d8a5d22ec617dff2309c36a49b81b60fe366b813d89d3ad793823",
-    "src/search/solver/bonus_tiers.rs": "83d637779f7c15515ff68281cbcb2282311c30658da45f20689cd117153a9574",
+    "src/search/solver/bonus_tiers.rs": "7eb977bdfb9486b1a23e8fa793eb4580b2a06422a5f631168d8d4c0f47719879",
     "src/search/solver/challenge.rs": "752b98922553ec498684c2ad948af34d3fe463703aa2a007f3f9a3624aea7ae9",
-    "src/search/solver/final_chapter.rs": "8a9c6b7e649bdef0cc073671b90380d47cdbf3de484ea977700e5ad0ec4b8450",
+    "src/search/solver/final_chapter.rs": "a87c6f21bbb80d1326d672136750d7f4ba178c1e57cee2667e838c958e7e6fbb",
     "src/search/solver/mod.rs": "d37f90c2a5f82791debd9e1c4e1b7260cba5e2a18701bb986e6a631a8eca7a4c",
-    "src/search/solver/numeric.rs": "dea69d0a3cac8821637588d453f93daa0f79f97fd10f81319c608cc1bfc09eae",
-    "src/search/solver/power.rs": "8eb79c577f05cff2786eb438a4679855b72c5847dc1bd96136d7e2c114b9a116",
-    "src/search/suffix.rs": "aac6deb47d759cae202502e36ec8526cbafe450c4fc48c020ff16172bfd916f5",
+    "src/search/solver/numeric.rs": "46e7168f94578bc852e69792fa1b2abf5bc9984549df4f4fd0446271b2078b28",
+    "src/search/small_ids.rs": "8e1fc0b8a32bcf2549a3f1ce9a5c2c4be796dde7d3fe0d0d31996a505f9d22e2",
+    "src/search/solver/power.rs": "2ca8f100a413ae10ef566cbd381105b8d20ff682da49ad00f99c7676ea0009fc",
+    "src/search/suffix.rs": "b92a66243d7f341144c502b3addb4be5d6dc60e2d0d427ae95cf6cc984bb9627",
     "src/search/tracker.rs": "3cbdd775eeda8b01e6b1b48dc2e56161605e4027ffa4e3631d019ef8a35d1a28",
-    "src/search/types.rs": "6dd1c41b4961dfb01df730cf23d310bf8953fa1bc880094cb975a416fa5d81e8",
-    "src/simd.rs": "948e4b7be60c519bdecaba84b8625de64d376b022a1a38071d213effc2c87687"
+    "src/search/types.rs": "3df0ab23fb0be54b4650157131c30f2082d63ba2c10b6adcde68f19e011ad84d",
+    "src/simd.rs": "aac037d43a89e40468d58ddee5f442819b504263e806ec6509b265b64f3c6d11"
   },
   "obligations": [
     {
@@ -76,15 +86,93 @@
     },
     {
       "id": "P03",
+      "certificates": [{"proof": "Allium.ProofCertificates.p03", "expected": "Allium.ProofContracts.P03", "scope": "complete"}],
       "description": "Capacity handling",
-      "status": "open",
+      "status": "proved",
       "sources": [
-        "src/handler/capacity.rs"
+        "src/handler/capacity.rs",
+        "src/handler/gather.rs",
+        "src/handler/types.rs",
+        "src/handler/skill.rs",
+        "src/types.rs",
+        "src/pool/builder.rs",
+        "src/pool/types.rs",
+        "src/pool/card_pool.rs",
+        "src/search/context.rs",
+        "src/handler/build.rs"
       ],
-      "theorems": [],
-      "remaining": [
-        "尚未建立 validate/capacity 的接受域及每一种显式错误分支；未将固定容量视为可截断候选的理由。"
-      ]
+      "theorems": [
+        "Allium.Admission.checked_ok_iff",
+        "Allium.Admission.identity_ok_iff",
+        "Allium.Admission.accepted_public_id_fin",
+        "Allium.Admission.score_never_saturates",
+        "Allium.Admission.identity_boundaries",
+        "Allium.Admission.CardTable.validate_iff",
+        "Allium.Admission.CardTable.dense_address",
+        "Allium.Admission.CardTable.accepted_public_identity",
+        "Allium.Admission.Intern.intern_invariants",
+        "Allium.Admission.Intern.intern_shape",
+        "Allium.Admission.Intern.run_lookup_stable",
+        "Allium.Admission.Intern.from_empty_invariants",
+        "Allium.Admission.CardTable.accepted_narrowing",
+        "Allium.Admission.LimitedCode.accepted_append_space",
+        "Allium.Admission.LimitedCode.accepted_reference",
+        "Allium.Admission.LimitedCode.accepted_packing",
+        "Allium.Admission.PowerEncoding.source_unit_selection",
+        "Allium.Admission.PowerEncoding.source_high_word",
+        "Allium.Admission.PowerEncoding.row_decode",
+        "Allium.Admission.PowerEncoding.row_profile",
+        "Allium.Admission.PowerEncoding.source_high_field",
+        "Allium.Admission.PowerEncoding.stored_widths",
+        "Allium.Admission.PoolAttribute.all_public_attributes",
+        "Allium.Admission.PoolAttribute.all_pool_indices",
+        "Allium.Admission.CardTable.metadata_addresses",
+        "Allium.Admission.CardTable.attribute_overflow_rejected",
+        "Allium.Admission.SkillGather.source_equal_iff",
+        "Allium.Admission.SkillGather.concrete_priority",
+        "Allium.Admission.SkillGather.fresh_builder_space",
+        "Allium.Admission.SkillGather.concrete_from_empty",
+        "Allium.Admission.SkillGather.concrete_reference_or_raw",
+        "Allium.Admission.SkillGather.no_side_table_preserves_raw",
+        "Allium.Admission.SkillGather.tagged_raw_slot_passthrough",
+        "Allium.Admission.GatherOrder.score_key_fits",
+        "Allium.Admission.GatherOrder.comparator_total",
+        "Allium.Admission.GatherOrder.comparator_trans",
+        "Allium.Admission.GatherOrder.sorted",
+        "Allium.Admission.GatherOrder.sort_preserves_validation",
+        "Allium.Admission.CardValidation.validate_ok",
+        "Allium.Admission.GatherPipeline.gather_success",
+        "Allium.Admission.GatherOrder.raw_slot_validation_row",
+        "Allium.Admission.GatherPipeline.tagged_raw_gather",
+        "Allium.Admission.GatherPipeline.successful_columns",
+        "Allium.Admission.GatherPipeline.gather_power_rows",
+        "Allium.Admission.GatherPipeline.gather_bonus_rows",
+        "Allium.Admission.NumericFlow.source_order",
+        "Allium.Admission.BuildPipeline.successful_build",
+        "Allium.Admission.GatherImage.bonuses_exact",
+        "Allium.Admission.GatherImage.power_column",
+        "Allium.Admission.GatherImage.skill_column",
+        "Allium.Admission.GatherImage.multi_column",
+        "Allium.Admission.SkillGather.fresh_failure",
+        "Allium.Admission.SourceNumeric.initial_checks",
+        "Allium.Admission.SourceNumeric.numeric_iff",
+        "Allium.Admission.SourceNumeric.build_success_iff",
+        "Allium.Admission.SourceNumeric.build_failure_iff",
+        "Allium.Admission.SourceNumeric.raw_power_u64",
+        "Allium.Admission.SourceNumeric.bonus_sum_u64",
+        "Allium.Admission.Construction.success",
+        "Allium.ProofCertificates.constructionCapacity",
+        "Allium.Admission.SkillProducer.build_skill_produced",
+        "Allium.Admission.PreparedSkills.run_states_origin",
+        "Allium.Admission.PreparedSkills.prepare_one_origin",
+        "Allium.Admission.PreparedSkills.prepare_origin",
+        "Allium.Admission.PreparedSkills.intermediates_origin",
+        "Allium.Admission.PreparedSkills.produced_reference",
+        "Allium.Admission.PreparedSkills.build_success",
+        "Allium.Admission.PreparedSkills.build_failure_iff",
+        "Allium.ProofCertificates.p03"
+      ],
+      "remaining": []
     },
     {
       "id": "P04",
@@ -105,6 +193,7 @@
     },
     {
       "id": "P05",
+      "certificates": [{"proof": "Allium.ProofCertificates.checkedRootPower", "expected": "Allium.ProofContracts.CheckedRootPower", "scope": "component"}],
       "description": "Same-character dominance",
       "status": "partial",
       "sources": [
@@ -113,22 +202,33 @@
       "theorems": [
         "Allium.Support.replacement_loss",
         "Allium.Support.rounded_sum_mono",
-        "Allium.Arithmetic.support_compensation"
+        "Allium.Arithmetic.support_compensation",
+        "Allium.PowerDominance.effective_mono",
+        "Allium.PowerDominance.total_mono",
+        "Allium.DominanceLoop.checked_scan_power"
       ],
       "remaining": [
-        "尚需证明完整支配守卫、q+5 截止名次、每个评分目标的替换单调性和两次舍入误差预算。"
+        "已从逐状态power比较、同角色和public/dense次序检查构造删除循环及传递父链不变量，覆盖空mask；仍需由真实编码导出完整facts/profile守卫，并证明其余skill/bonus/support维度、q+5截止名次、所有目标和完整比较键的替换单调性及两次舍入误差预算。"
       ]
     },
     {
       "id": "P06",
       "description": "Dominance Top-K recovery",
-      "status": "open",
+      "status": "partial",
       "sources": [
         "src/search/alternatives.rs"
       ],
-      "theorems": [],
+      "theorems": [
+        "Allium.RootForest.parent_rank_lt",
+        "Allium.RootForest.root_kept",
+        "Allium.RootForest.inverse_fibers_cover",
+        "Allium.RootForest.inverse_fibers_exact",
+        "Allium.VariantRecovery.choices_exact",
+        "Allium.VariantRecovery.cultivation_exact",
+        "Allium.VariantRecovery.recover_covers"
+      ],
       "remaining": [
-        "尚需证明根映射、全部根养成实现的枚举及逆替换树覆盖；不能仅靠同分/同公共卡组替换引理宣称完成。"
+        "根遍历终止、压缩逆纤维、全部同公共ID培养组合及多槽替换覆盖已证明；仍需完整根卡组合法性、根公共集合的Top-K覆盖、所有目标/完整比较键沿逆边单调，以及固定槽、队长轮换和跨轮member替代闭包。组合覆盖不替代这些义务。"
       ]
     },
     {
@@ -145,6 +245,7 @@
     },
     {
       "id": "P08",
+      "certificates": [{"proof": "Allium.ProofCertificates.suffixScans", "expected": "Allium.ProofContracts.SuffixScans", "scope": "component"}],
       "description": "Character suffix bound",
       "status": "partial",
       "sources": [
@@ -152,23 +253,36 @@
       ],
       "theorems": [
         "Allium.FiniteBounds.character_bound_sound",
-        "Allium.FiniteBounds.insufficient_characters"
+        "Allium.FiniteBounds.insufficient_characters",
+        "Allium.SuffixScan.production_prefix_exact",
+        "Allium.SuffixScan.effective_scan_bound",
+        "Allium.SuffixScan.scan_bound_antitone",
+        "Allium.NumericSlots.guarded_free_scan"
       ],
       "remaining": [
-        "逐角色最大值再取 Top-r 的数学松弛已证明；各场景实际池、被排除角色和特征上界的实例化仍需连接。"
+        "已将真实27角色排序/used过滤和dense suffix内逐角色最大值接到集合Top-r，并由numeric槽位guard推出free唯一性与排除条件；仍需把实际扫描/缓存更新构造及所有场景的skill、bonus等特征上界和调用方状态逐项实例化。"
       ]
     },
     {
       "id": "P09",
       "description": "Exclusion delta",
-      "status": "open",
+      "status": "proved",
       "sources": [
         "src/search/suffix.rs"
       ],
-      "theorems": [],
-      "remaining": [
-        "尚需形式化 Top-r 集合内移除/补入后的精确 delta 及预算使用方向。"
-      ]
+      "certificates": [{"proof": "Allium.ProofCertificates.p09", "expected": "Allium.ProofContracts.P09", "scope": "complete"}],
+      "theorems": [
+        "Allium.SuffixDelta.exclusion_exact",
+        "Allium.SuffixDelta.prepared_descending",
+        "Allium.SuffixDelta.used_update_exact",
+        "Allium.CompactDelta.position_eq_population",
+        "Allium.CompactDelta.position_injective",
+        "Allium.CompactDelta.written_lookup",
+        "Allium.CompactDelta.production_delta_exact",
+        "Allium.CompactDelta.production_address",
+        "Allium.CompactDelta.production_budget_iff"
+      ],
+      "remaining": []
     },
     {
       "id": "P10",
@@ -219,6 +333,7 @@
     },
     {
       "id": "P13",
+      "certificates": [{"proof": "Allium.ProofCertificates.p13", "expected": "Allium.ProofContracts.P13", "scope": "complete"}],
       "description": "No-event numerator",
       "status": "proved",
       "sources": [
@@ -285,19 +400,30 @@
       "theorems": [
         "Allium.FiniteBounds.independent_components",
         "Allium.Arithmetic.upper_min",
-        "Allium.Arithmetic.clamp_mono"
+        "Allium.Arithmetic.clamp_mono",
+        "Allium.WorldBloom.global_shuffle_upper",
+        "Allium.WorldBloom.actual_shuffle_class",
+        "Allium.WorldBloom.tier_extra_value_present"
       ],
       "remaining": [
-        "尚需形式化六技能槽的排序/截断分配、具体活动公式及它们对 P/S/L/B 的单调性。"
+        "尚需形式化六技能槽的排序/截断分配、具体活动公式及它们对 P/S/L/B 的单调性。",
+        "原团shuffle的实际0/50全局ceiling和0/10/30/50取值集、与属性奖励交叉后的tier值覆盖已证明；已核对composition、suffix、Final leader/attribute/selected-card/last-group和bonus-tier入口均显式包含该项。仍需证明完整bonus表达式、合并后的count mask、correlated/log-linear特征和全部调用状态，不能将整数分量界视作这些生产分支整体已证。"
       ]
     },
     {
       "id": "P18",
+      "certificates": [
+        {"proof": "Allium.ProofCertificates.mixedScenes", "expected": "Allium.ProofContracts.MixedScenes", "scope": "component"},
+        {"proof": "Allium.ProofCertificates.rawMembershipPower", "expected": "Allium.ProofContracts.RawMembershipPower", "scope": "component"},
+        {"proof": "Allium.ProofCertificates.finaleInheritance", "expected": "Allium.ProofContracts.FinaleInheritance", "scope": "component"}
+      ],
       "description": "Composition regimes",
       "status": "partial",
       "sources": [
         "src/search/composition.rs",
+        "src/handler/world_bloom.rs",
         "src/pool/card_pool.rs",
+        "src/power.rs",
         "src/search/evaluate.rs",
         "src/search/context.rs"
       ],
@@ -312,23 +438,42 @@
         "Allium.ScenarioSearch.required_search_spec",
         "Allium.ScenarioSearch.runScenes_exact",
         "Allium.ConcretePower.planPower_sound",
-        "Allium.ConcretePower.power_search_exact"
+        "Allium.ConcretePower.power_search_exact",
+        "Allium.MixedPower.raw_original_bits",
+        "Allium.MixedPower.raw_support_bits",
+        "Allium.MixedPower.from_raw_units",
+        "Allium.MixedPower.regime_bound_sound",
+        "Allium.MixedPower.multi_bound_eq_filtered",
+        "Allium.SidecarLayout.source_plan_covers",
+        "Allium.MixedPower.suffix_bound_sound",
+        "Allium.SidecarLayout.compact_total",
+        "Allium.SourceRows.finale_first_eligible",
+        "Allium.SourceRows.finale_output_domain"
       ],
       "remaining": [
-        "49 场景覆盖、任意非单调八槽 power 上界、允许额外合法叶子的跨场景共享阈值，以及具体 Power 数学实例已证明；仍需把普通/WL/Final 的完整 RegimePlan 特征和其他目标评分上界逐项接入，并完成实际场景 DFS 的叶子与启用剪枝构造（与 P17/P35/S05 相交）。"
+        "49场景及实际activation枚举覆盖、state&6筛选与双unit-flag上界的等式、mode相关非单调suffix状态枚举、完整重排保持已证明并接入组件类型证书；仍需把普通/WL/Final的完整RegimePlan特征和其他目标评分上界逐项接入，并完成实际场景DFS的叶子与启用剪枝构造。ConcretePower仅为显式枚举的Power数学实例（与P17/P35/S05相交）。",
+        "已证明六位raw mask的原团/支援位与零mask解码、mode/sidecar全状态界、五卡ALL_MATCH守卫及完整重排保持；仍需从真实area rows的分桶优先级、三维可空all-match条件、f32竞争比较及按原顺序f64累加/逐维floor构造侧表，并把gate选择、升级替换和全部实际regime/solver分支接入。",
+        "源行继承按有符号ID、有效角色与正率先过滤再去重，包含第一条eligible行及保率复制的类型证书；已绑定world_bloom.rs源快照。输入浮点值解码、event edition/type解析及完整构造器调用链仍需接合。"
       ]
     },
     {
       "id": "P19",
       "description": "SIMD threshold mask",
-      "status": "open",
+      "status": "proved",
       "sources": [
-        "src/simd.rs"
+        "src/simd.rs",
+        "src/search/dfs.rs"
       ],
-      "theorems": [],
-      "remaining": [
-        "尚需建立 lane/tail 位图的数学模型及 unsigned >= 阈值比较等价；不声称验证 Rust SIMD 指令。"
-      ]
+      "certificates": [{"proof": "Allium.ProofCertificates.p19", "expected": "Allium.ProofContracts.P19", "scope": "complete"}],
+      "theorems": [
+        "Allium.SimdMask.encode_bit",
+        "Allium.SimdMask.unsigned_halves_eq_scalar",
+        "Allium.SimdMask.surviving_iff",
+        "Allium.SimdMask.equal_threshold_retained",
+        "Allium.SimdMask.threshold_refresh",
+        "Allium.SimdMask.break_mask_iff"
+      ],
+      "remaining": []
     },
     {
       "id": "P20",
@@ -395,13 +540,20 @@
     {
       "id": "P24",
       "description": "Selected-card refill",
-      "status": "open",
+      "status": "partial",
       "sources": [
         "src/search/solver/bonus_tiers.rs"
       ],
-      "theorems": [],
+      "theorems": [
+        "Allium.Refill.prefix_sublist",
+        "Allium.Refill.refill_mono",
+        "Allium.Refill.loss_steps_monotone",
+        "Allium.Refill.held_mask_lower",
+        "Allium.Refill.twice_budget_enough",
+        "Allium.Refill.budgeted_refill_mono"
+      ],
       "remaining": [
-        "尚需证明 whole-tick profile 下选中卡 refill 的序单调性、完整卡组时的等式和截断松弛方向。"
+        "已证明自然数 whole-tick lossSteps 的单调构造、held/removed 增长时的 refill 序单调性、64-bit held 截断的下界方向及 2*removable 的足量性；仍需证明实际 tick_scale 与原始浮点值之间的精确转换、每卡 counted/past/multiplicity 状态构造，以及完整卡组 refill 与实际支援评分的等式。"
       ]
     },
     {
@@ -558,10 +710,17 @@
     },
     {
       "id": "P36",
+      "certificates": [
+        {"proof": "Allium.ProofCertificates.mixedExtrema", "expected": "Allium.ProofContracts.MixedExtrema", "scope": "component"},
+        {"proof": "Allium.ProofCertificates.numericGlobalPower", "expected": "Allium.ProofContracts.NumericGlobalPower", "scope": "component"},
+        {"proof": "Allium.ProofCertificates.rawMembershipPower", "expected": "Allium.ProofContracts.RawMembershipPower", "scope": "component"}
+      ],
       "description": "Numeric Power max/min",
       "status": "partial",
       "sources": [
         "src/search/solver/numeric.rs",
+        "src/pool/card_pool.rs",
+        "src/power.rs",
         "src/search/evaluate.rs",
         "src/search/context.rs",
         "src/handler/capacity.rs"
@@ -579,10 +738,17 @@
         "Allium.PowerModel.prefix_free_lower",
         "Allium.PowerModel.maximizing_prune",
         "Allium.PowerModel.minimizing_prune",
-        "Allium.ScenarioPower.empty_units_require_a_lower_bound_guard"
+        "Allium.ScenarioPower.empty_units_require_a_lower_bound_guard",
+        "Allium.MixedPower.empty_minimum_zero",
+        "Allium.MixedPower.effective_lower_for",
+        "Allium.NumericPower.accepted_power_fits",
+        "Allium.NumericPower.maximizing_prune",
+        "Allium.NumericPower.minimizing_prune",
+        "Allium.NumericSlots.complete_pool_domain",
+        "Allium.NumericSlots.guarded_total_scan"
       ],
       "remaining": [
-        "已证明 decoded 八槽查表、五人成员计数、selected/free 组合及加称号后应用 cap 的双向严格剪枝；lower theorem 显式要求非空 unit 集合。尚需连接受理域（含空 unit 掩码与其压缩表构造）、具体 global/suffix 摘要和固定槽扫描状态，不能把这些连接归为 Rust refinement。"
+        "已证明包括零mask的raw单位解码、mode依赖minimum、global selected/free摘要、u32饱和及称号后cap的双向严格剪枝，并由槽位guard推出free唯一性与suffix上界；仍需由encode_power/PoolBuilder的真实字段和实存power_max导出数据模型，并把全部frontier顺序、public-ID同分守卫与递归状态转移接到实际numeric搜索树。这些仍是一阶数学连接义务，不归入Rust refinement。"
       ]
     },
     {
@@ -609,20 +775,36 @@
       "description": "Power scenarios",
       "status": "partial",
       "sources": [
+        "src/handler/power.rs",
+        "src/handler/gather.rs",
+        "src/search/small_ids.rs",
+        "src/search/placement.rs",
+        "src/search/tracker.rs",
+        "src/search/problem.rs",
         "src/search/solver/power.rs",
         "src/search/evaluate.rs"
       ],
       "theorems": [
-        "Allium.ScenarioPower.bound_sound",
-        "Allium.ScenarioPower.empty_exact",
-        "Allium.ScenarioPower.singleton_exact",
-        "Allium.ScenarioPower.bound_le_tableMax",
+        "Allium.ScenarioPower.source_bound_sound",
+        "Allium.ScenarioPower.source_full_deck_bound",
+        "Allium.ScenarioPower.source_bound_le_maximum",
         "Allium.ScenarioPower.actual_common_admitted",
-        "Allium.ScenarioPower.multi_unit_is_only_an_upper_bound",
-        "Allium.ScenarioPower.admission_is_not_bound_soundness"
+        "Allium.PowerScenarios.unit_sets_spec",
+        "Allium.PowerScenarios.common_mask_covered",
+        "Allium.PowerScenarios.best_completion_spec",
+        "Allium.PowerScenarios.PowerAdmission.accepted_integer_limit",
+        "Allium.PowerScenarios.PowerAdmission.built_raw_limit",
+        "Allium.PowerScenarios.PowerProduction.built_scenario_sum_limit",
+        "Allium.PowerScenarios.PowerProduction.built_repeated_bound_u32",
+        "Allium.PowerScenarios.SceneTable.build_covers_deck",
+        "Allium.PowerScenarios.SmallIds.collect_projection",
+        "Allium.PowerScenarios.SmallIds.public_set_lower",
+        "Allium.PowerScenarios.TiePruning.rejected_canonical_key",
+        "Allium.PowerScenarios.LeafEvaluation.result_key_permutation",
+        "Allium.PowerScenarios.LeafEvaluation.built_actual_sum_limit"
       ],
       "remaining": [
-        "已证明实际 scenario_power 的非单调多单位 envelope、空/单单位精确性和真实公共 unit 集合的接纳性；并证明多单位只能作上界的反例。尚需证明生产 unit-mask 交集工作表的完整性、best_completion 扫描、实际叶子回算与带 least/cap 守卫的同分 public-set 剪枝。ConcretePower 的 49-regime 数学搜索不等于已证明此专用 fast path。"
+        "已证明六位交集工作表和七属性槽对真实五卡所需场景的覆盖、best_completion可行性/最大和/least、生产max-fold经实存power_max与Binary64受理检查导出的累加范围、SmallestIds真实移位到最小不同ID前缀的等价，以及least/cap守卫下相对于五字段Power比较键的局部排除。实际Power回算的排列不变性和报告键排序已有组件证明。尚需把这些组件的合法补全、范围、叶子上界与已收集阈值前提全部实例化到生产DFS、实际叶子入口及bounded tracker，并证明Complete/预算耗尽分支的区别和完整Top-K总契约；尚无P38完成证书。ConcretePower的49-regime显式枚举不替代此专用fast path。"
       ]
     },
     {
@@ -643,6 +825,7 @@
     },
     {
       "id": "P40",
+      "certificates": [{"proof": "Allium.ProofCertificates.p40", "expected": "Allium.ProofContracts.P40", "scope": "complete"}],
       "description": "Challenge-all Top-K merge",
       "status": "proved",
       "sources": [
@@ -675,6 +858,7 @@
     },
     {
       "id": "S01",
+      "certificates": [{"proof": "Allium.ProofCertificates.s01", "expected": "Allium.ProofContracts.S01", "scope": "complete"}],
       "description": "Canonical five-field Top-K, public-set deduplication, cardinality and bounded insertion",
       "status": "proved",
       "sources": [
@@ -692,6 +876,7 @@
     },
     {
       "id": "S02",
+      "certificates": [{"proof": "Allium.ProofCertificates.s02", "expected": "Allium.ProofContracts.S02", "scope": "complete"}],
       "description": "Mathematical branch-and-bound kernel with explicitly sound node bounds",
       "status": "proved",
       "sources": [
@@ -706,6 +891,7 @@
     },
     {
       "id": "S03",
+      "certificates": [{"proof": "Allium.ProofCertificates.s03", "expected": "Allium.ProofContracts.S03", "scope": "complete"}],
       "description": "Interruptible mathematical search: legal partial results, sticky expiry and Complete exactness",
       "status": "proved",
       "sources": [
@@ -722,6 +908,7 @@
     },
     {
       "id": "S04",
+      "certificates": [{"proof": "Allium.ProofCertificates.s04", "expected": "Allium.ProofContracts.S04", "scope": "complete"}],
       "description": "Public-slot mathematical specification and complete ordered cultivation enumeration",
       "status": "proved",
       "sources": [

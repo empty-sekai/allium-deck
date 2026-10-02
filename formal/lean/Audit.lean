@@ -11,6 +11,30 @@ theorem types: passing this audit does NOT discharge an unproved premise.
 -/
 
 open Lean Elab Command in
+elab "check_theorem " proof:ident : command => do
+  liftTermElabM do
+    let info ← getConstInfo proof.getId
+    match info with
+    | .thmInfo _ => pure ()
+    | _ => throwError "PROOF CERTIFICATE FAILED: {proof.getId} is not a theorem"
+    unless ← Meta.isProp info.type do
+      throwError "PROOF CERTIFICATE FAILED: {proof.getId} does not prove a proposition"
+
+open Lean Elab Command in
+elab "check_certificate " proof:ident " : " expected:ident : command => do
+  liftTermElabM do
+    let info ← getConstInfo proof.getId
+    match info with
+    | .thmInfo _ => pure ()
+    | _ => throwError "PROOF CERTIFICATE FAILED: {proof.getId} is not a theorem"
+    let goal := mkConst expected.getId
+    unless ← Meta.isProp goal do
+      throwError "PROOF CERTIFICATE FAILED: {expected.getId} is not a proposition"
+    unless ← Meta.isDefEq info.type goal do
+      throwError "PROOF CERTIFICATE FAILED: {proof.getId} has the wrong type for {expected.getId}"
+    logInfo m!"PROOF CERTIFICATE PASSED: {proof.getId} : {expected.getId}"
+
+open Lean Elab Command in
 run_cmd do
   let env ← getEnv
   let allowed : List Name := [`propext, `Classical.choice, `Quot.sound]

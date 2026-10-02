@@ -1,13 +1,13 @@
 import Allium.Composition
+import Allium.MixedPower
 
 /-!
-# The multi-unit Power scenario envelope
+# Shared-unit Power scenario envelopes
 
-This is solver/power.rs::scenario_power, not composition::power_over_keys.
-For nonempty common units it maximizes the evaluator over singleton common-unit
-hypotheses. The result can be strictly larger than the real power with several
-shared units; this is why visited leaves must be evaluated in their true context.
-No monotonicity of the eight decoded values is used.
+The production solver fixes the complete shared-unit set and takes the maximum
+of the two physical mixed-unit states under the pool's activation policy.
+The singleton envelope below is an auxiliary legacy-table inequality, not the
+production scenario constructor. No monotonicity of stored values is required.
 -/
 namespace Allium.ScenarioPower
 open PowerModel
@@ -95,5 +95,34 @@ def emptyUnitCard : CardData :=
 
 theorem empty_units_require_a_lower_bound_guard :
     tableMin emptyUnitCard = 1 ∧ resolved emptyUnitCard ∅ false = 0 := by decide
+
+/-- Both physical states are evaluated against the same shared-unit set. The
+mode is applied inside each evaluation, so ForceOn/ForceOff do not add states
+excluded by the caller's policy. -/
+def sourceBound (mode : MixedPower.Mode) (card : MixedPower.Card)
+    (common : Finset UnitId) (attr : Bool) : Nat :=
+  max (MixedPower.effective mode false common attr card)
+    (MixedPower.effective mode true common attr card)
+
+theorem source_bound_sound (mode : MixedPower.Mode) (card : MixedPower.Card)
+    (common : Finset UnitId) (attr mixed : Bool) :
+    MixedPower.effective mode mixed common attr card ≤ sourceBound mode card common attr := by
+  cases mixed
+  · exact le_max_left _ _
+  · exact le_max_right _ _
+
+theorem source_full_deck_bound {Id : Type*} (mode : MixedPower.Mode)
+    (data : Id → MixedPower.Card) (deck : List Id) (full : deck.length = 5) (id : Id) :
+    MixedPower.cardPower mode data deck id ≤
+      sourceBound mode (data id) (commonUnits (fun card => MixedPower.legacy (data card)) deck)
+        (sharesAttribute (fun card => MixedPower.legacy (data card)) deck) := by
+  simpa only [MixedPower.cardPower, full, ↓reduceIte] using
+    source_bound_sound mode (data id) _ _ (DeckComposition.isMultiUnit (MixedPower.deckFacts data deck))
+
+theorem source_bound_le_maximum (mode : MixedPower.Mode) (card : MixedPower.Card)
+    (common : Finset UnitId) (attr : Bool) :
+    sourceBound mode card common attr ≤ MixedPower.maximum card :=
+  max_le (MixedPower.effective_upper mode false common attr card)
+    (MixedPower.effective_upper mode true common attr card)
 
 end Allium.ScenarioPower

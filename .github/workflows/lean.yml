@@ -44,10 +44,9 @@ jobs:
           test: 'false'
           lint: 'false'
           use-mathlib-cache: 'true'
-      - name: Check source snapshot, full imports and transitive axioms
-        run: python3 formal/lean/verify.py --self-test
+      - name: Verify complete mathematical coverage and typed certificates
+        run: python3 formal/lean/verify.py --self-test --require-complete
       - name: Report verification boundary
         run: |
-          echo 'This job verifies the scope declared in formal/lean/coverage.json.'
-          echo 'A green job is not an all-scenes or Rust-refinement certificate.'
-          echo 'Use verify.py --require-complete to check stage-one completion.'
+          echo 'This job requires complete stage-one mathematical coverage.'
+          echo 'Rust binary/compiler refinement remains outside this certificate.'

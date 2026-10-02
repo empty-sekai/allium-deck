@@ -20,6 +20,12 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 NAME = re.compile(r"Allium(?:\.[A-Za-z_][A-Za-z_0-9']*)+")
 STATUSES = {"proved", "partial", "open", "out_of_scope"}
+# Completion contracts are tied to the inventory, not chosen by the manifest.
+# A contract not yet defined in Lean cannot acquire a completion certificate.
+COMPLETE_CONTRACTS = {
+    **{f"P{i:02}": f"Allium.ProofContracts.P{i:02}" for i in range(1, 42)},
+    **{f"S{i:02}": f"Allium.ProofContracts.S{i:02}" for i in range(1, 6)},
+}
 
 
 def digest(path: Path) -> str:
@@ -27,13 +33,13 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
-def run(args: list[str], *, expect_failure: bool = False) -> str:
+def run(args: list[str], *, expect_failure: str | None = None) -> str:
     result = subprocess.run(args, cwd=HERE, text=True, encoding="utf-8",
                             errors="replace", stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, timeout=1800, check=False)
     if expect_failure:
-        if result.returncode == 0 or "AXIOM AUDIT FAILED:" not in result.stdout:
-            raise RuntimeError(f"Negative audit fixture did not fail as intended:\n{result.stdout}")
+        if result.returncode == 0 or expect_failure not in result.stdout:
+            raise RuntimeError(f"Negative fixture did not fail with {expect_failure!r}:\n{result.stdout}")
     elif result.returncode != 0:
         raise RuntimeError(f"Command failed ({result.returncode}): {args}\n{result.stdout}")
     return result.stdout
@@ -72,11 +78,54 @@ def inventory_self_test(obligations: list[dict]) -> None:
             print(f"NEGATIVE COVERAGE TEST PASSED: {label}")
         else:
             raise RuntimeError(f"Coverage fixture was incorrectly accepted: {label}")
+    complete = next(o for o in obligations if o["status"] == "proved")
+    p03 = next(o for o in obligations if o["id"] == "P03")
+    p03_component = dict(p03, status="proved", remaining=[],
+                         theorems=["Allium.ProofCertificates.cardCapacity"],
+                         certificates=[{"proof": "Allium.ProofCertificates.cardCapacity",
+                                        "expected": "Allium.ProofContracts.CardCapacity",
+                                        "scope": "complete"}])
+    wrong_obligation = dict(complete, certificates=[{
+        "proof": "Allium.ProofCertificates.s04" if complete["id"] != "S04" else "Allium.ProofCertificates.p13",
+        "expected": "Allium.ProofContracts.S04" if complete["id"] != "S04" else "Allium.ProofContracts.P13",
+        "scope": "complete"}])
+    for label, fixture in [
+        ("missing-typed-certificate", dict(complete, certificates=[])),
+        ("component-is-not-completion", dict(complete, certificates=[
+            dict(c, scope="component") for c in complete["certificates"]])),
+        ("p03-component-contract-substitution", p03_component),
+        ("other-obligation-contract-substitution", wrong_obligation),
+    ]:
+        try:
+            check_certificates(fixture)
+        except ValueError:
+            print(f"NEGATIVE COVERAGE TEST PASSED: {label}")
+        else:
+            raise RuntimeError(f"Coverage fixture was incorrectly accepted: {label}")
+
+
+def check_certificates(obligation: dict) -> None:
+    """Only explicit proposition certificates can support a completed row."""
+    certificates = obligation.get("certificates", [])
+    for certificate in certificates:
+        if set(certificate) != {"proof", "expected", "scope"}:
+            raise ValueError(f"Malformed typed certificate: {obligation['id']}")
+        if not NAME.fullmatch(certificate["proof"]) or not NAME.fullmatch(certificate["expected"]):
+            raise ValueError(f"Invalid typed certificate names: {obligation['id']}")
+        if certificate["scope"] not in {"component", "complete"}:
+            raise ValueError(f"Invalid certificate scope: {obligation['id']}")
+        if certificate["scope"] == "complete":
+            canonical = COMPLETE_CONTRACTS.get(obligation["id"])
+            if canonical is None or certificate["expected"] != canonical:
+                raise ValueError(f"Completion contract mismatch: {obligation['id']} requires {canonical!r}, "
+                                 f"not {certificate['expected']!r}")
+    if obligation["status"] == "proved" and not any(c["scope"] == "complete" for c in certificates):
+        raise ValueError(f"Completed obligation lacks a typed completion certificate: {obligation['id']}")
 
 
 def metadata() -> tuple[dict, list[str]]:
     manifest = json.loads((HERE / "coverage.json").read_text(encoding="utf-8"))
-    if manifest.get("schema") != 1 or not manifest.get("sources") or not manifest.get("obligations"):
+    if manifest.get("schema") != 2 or not manifest.get("sources") or not manifest.get("obligations"):
         raise ValueError("Missing or unsupported source/coverage manifest")
     for relative, expected in manifest["sources"].items():
         path = (ROOT / relative).resolve()
@@ -109,6 +158,7 @@ def metadata() -> tuple[dict, list[str]]:
             raise ValueError(f"A proved obligation needs theorem references and no remaining work: {oid}")
         if obligation["status"] in {"partial", "open"} and not obligation.get("remaining"):
             raise ValueError(f"An incomplete obligation must disclose remaining work: {oid}")
+        check_certificates(obligation)
         for theorem in obligation.get("theorems", []):
             if not NAME.fullmatch(theorem):
                 raise ValueError(f"Invalid theorem name: {theorem}")
@@ -125,7 +175,7 @@ def metadata() -> tuple[dict, list[str]]:
     return manifest, sorted(theorem_names)
 
 
-def audit(theorems: list[str], self_test: bool) -> None:
+def audit(theorems: list[str], obligations: list[dict], self_test: bool) -> None:
     script = (HERE / "Audit.lean").read_text(encoding="utf-8")
     imports, body = script.split("/-!", 1)
     # Preserve the checker verbatim; inject fixtures before its run_cmd block.
@@ -133,11 +183,14 @@ def audit(theorems: list[str], self_test: bool) -> None:
     with tempfile.TemporaryDirectory(prefix="allium-lean-audit-") as tmp:
         root = Path(tmp)
         checked = root / "Check.lean"
-        checked.write_text(script + "\n" + "\n".join(f"#check {name}" for name in theorems) + "\n",
-                           encoding="utf-8")
+        certificates = [c for o in obligations for c in o.get("certificates", [])]
+        checks = [f"check_theorem {name}" for name in theorems]
+        checks += [f"check_certificate {c['proof']} : {c['expected']}" for c in certificates]
+        checked.write_text(script + "\n" + "\n".join(checks) + "\n", encoding="utf-8", newline="\n")
         output = run(["lake", "env", "lean", "-DwarningAsError=true", str(checked)])
         for line in output.splitlines():
-            if "AXIOM AUDIT PASSED:" in line or "depends on axioms:" in line:
+            if any(marker in line for marker in ("AXIOM AUDIT PASSED:", "depends on axioms:",
+                                                  "PROOF CERTIFICATE PASSED:")):
                 print(line)
         if "AXIOM AUDIT PASSED:" not in output:
             raise RuntimeError("Audit completed without its success marker")
@@ -152,8 +205,23 @@ def audit(theorems: list[str], self_test: bool) -> None:
             for label, fixture in fixtures.items():
                 path = root / f"Reject-{label}.lean"
                 path.write_text(imports + "\n" + fixture + "\n" + body, encoding="utf-8")
-                run(["lake", "env", "lean", "-DwarningAsError=true", str(path)], expect_failure=True)
+                run(["lake", "env", "lean", "-DwarningAsError=true", str(path)],
+                    expect_failure="AXIOM AUDIT FAILED:")
                 print(f"NEGATIVE AUDIT TEST PASSED: {label}")
+            type_fixtures = {
+                "definition-not-proof": "def Allium.negativeDefinition : Nat := 7\n"
+                                        "check_theorem Allium.negativeDefinition\n",
+                "wrong-proposition": "theorem Allium.negativeType : True := True.intro\n"
+                                     "check_certificate Allium.negativeType : Allium.ProofContracts.P13\n",
+                "non-proposition-goal": "def Allium.negativeGoal : Nat := 0\n"
+                                        "check_certificate Allium.ProofCertificates.p13 : Allium.negativeGoal\n",
+            }
+            for label, fixture in type_fixtures.items():
+                path = root / f"Reject-{label}.lean"
+                path.write_text(script + "\n" + fixture, encoding="utf-8", newline="\n")
+                run(["lake", "env", "lean", "-DwarningAsError=true", str(path)],
+                    expect_failure="PROOF CERTIFICATE FAILED:")
+                print(f"NEGATIVE CERTIFICATE TEST PASSED: {label}")
 
 
 def main() -> int:
@@ -166,7 +234,7 @@ def main() -> int:
     args = parser.parse_args()
     manifest, theorems = metadata()
     print(run(["lake", "build"]).strip())
-    audit(theorems, args.self_test)
+    audit(theorems, manifest["obligations"], args.self_test)
     if args.self_test:
         inventory_self_test(manifest['obligations'])
     if args.require_complete and not manifest["stage_one_complete"]:

@@ -9,7 +9,7 @@ The six-unit scan, count-equals-five guards, and optional total-power cap are
 modeled explicitly. The packed u18 representation is not identified with Lean
 machine integers; this is the mathematical model of the decoded entries.
 
-Sources: evaluate.rs::{member_key,resolve_card_power,resolve_power_target},
+Sources: power.rs::{legacy_power,DeckComposition::from_cards},
 context.rs::clamp_power_total, solver/numeric.rs::bound_can_prune.
 -/
 namespace Allium.PowerModel

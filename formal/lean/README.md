@@ -2,7 +2,9 @@
 
 **状态：第一档部分完成，尚未完成全量验证。** 这里没有对当前 Rust 引擎作出“已经形式化验证”的声明。
 
-代码对照基线为 `5c6dff7387e57384b9b2c989ab4f535cdd74f098`，即合并 PR #43 后的 main。Lean 工程不修改 Rust 搜索、评分、超时、服务器或 WASM 实现，也不改变它们的运行时依赖。
+机制清单的起始基线为 `5c6dff7387e57384b9b2c989ab4f535cdd74f098`；当前实际对照源码由 `coverage.json` 的逐文件 SHA-256 固定，包含混编区域道具与 WL3 规则。Lean 工程不改变 Rust 的运行时依赖。
+
+本归档节点为 **9 proved / 29 partial / 8 open**，P03 构造链已完成，P38 仍缺完整搜索覆盖定理。最新验证结果与精确续接位置见 [`CHECKPOINT.md`](CHECKPOINT.md)。
 
 ## 已经证明什么
 
@@ -23,7 +25,9 @@
 | `Composition` | 全部 49 个区域场景的覆盖；语义归属与卡池接纳的区别；每个真实 member key 都在场景 key 集内；非单调八槽 power 上界。 |
 | `ScenarioSearch` | 场景允许额外合法叶子时的 required-class 证明；跨场景共享阈值；种子可不属于当前场景；不要求每个场景的局部 Top-K 在外部阈值下保持不变。 |
 | `ConcretePower` | 首个具体 Power 数学实例：五槽合法性 → 49 场景 → per-character/per-card 上界 → honor/cap → 共享阈值搜索 → canonical 穷举 Top-K，无抽象上界可靠性或覆盖前提。 |
-| `ScenarioPower` | 专用 Power 场景的多单位 singleton envelope；空/单单位精确性；实际单位交集的接纳性；三个内核检查的反例，保护非单调、接纳性和空单位边界。 |
+| `ScenarioPower` | 同一精确公共单位集合上的模式相关 power 上界；原 singleton envelope 保留为辅助引理，非当前源码的完整场景实现。 |
+| `Admission`、`Construction`、`SkillProducer`、`PreparedSkills` | P03 容量检查、排序与实存列回读，以及实际技能构造→两槽准备→gather 的成功/失败总连接；内部 raw slot 受理域不附加 producer 形态前提。 |
+| `PowerScenarios` | 生产场景工作表、best-completion、数值范围、最小不同 ID、局部同分排除与 bounded tracker 组件；DFS 选择状态和已访问条目来源保持。尚未证明 `Complete` 返回完整 Top-K。 |
 
 这些是数学机制的证明。表中出现一个辅助机制，不代表使用它的整个 Rust 函数、场景或所有前提已经证明。
 
@@ -63,17 +67,17 @@ lake exe cache get
 python verify.py --self-test
 ```
 
-验证脚本检查对照源文件的 SHA-256、全部模块导入、覆盖表引用的定理名、整库编译，以及所有 `Allium` 声明的传递公理依赖。Windows 的 CRLF 与 Linux 的 LF 仅作换行归一化，不忽略其他源码变化。
+验证脚本检查对照源文件的 SHA-256、全部模块导入、整库编译，以及所有 `Allium` 声明的传递公理依赖。覆盖表中的辅助定理必须是证明 Prop 的 theorem，不能是恰好同名的普通定义；完成证书还必须精确符合 `ProofContracts` 中独立陈述的命题类型。`component` 证书不能支持 `proved` 状态。Windows 的 CRLF 与 Linux 的 LF 仅作换行归一化，不忽略其他源码变化。
 
 公理允许列表只有 `propext`、`Classical.choice`、`Quot.sound`。负向测试实际注入四类错误并要求检查失败：`sorry`、通过外部辅助声明引入的自定义公理、尚未使用的本地公理、`native_decide` 的求值公理。普通 `decide` 产生可由内核检查的证明，与 `native_decide` 的信任路径不同。
 
 要检查是否达到第一档全量完成，执行：
 
 ```sh
-python verify.py --require-complete
+python verify.py --self-test --require-complete
 ```
 
-**当前这条命令应当失败并列出未完成义务。** 普通 CI 通过只表示“声明范围内的证明与审计通过”，不表示全部生产搜索已验证。验证脚本还会拒绝从第 26 节清单中删去剪枝机制，或将第一档数学义务改成 `out_of_scope`；这两种情况也有负向测试。
+**当前完整门禁应当失败并列出未完成义务。** CI 强制执行 `--self-test --require-complete`；不能仅凭声明范围内的证明通过而获得绿色完整门禁。验证脚本另有负向测试，拒绝遗漏剪枝机制、将第一档数学义务改成 `out_of_scope`、缺少类型证书、用组件证书冒充完成，以及非 theorem、错误 Prop 和非 Prop 目标。
 
 ## 修改与信任范围
 
