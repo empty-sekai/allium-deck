@@ -57,6 +57,7 @@ pub struct DeckOut {
     pub event_point: Option<i32>,
     pub multi_live_score_up: Option<f64>,
     pub event_bonus_total: Option<f64>,
+    pub shuffle_bonus_rate: Option<u32>,
     /// Final Chapter only: the owned honor assumed as the deck's main honor.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub main_honor_id: Option<i32>,
@@ -391,6 +392,7 @@ fn deck_out(rank: usize, pool: &CardPool, ctx: &SearchContext, result: &DeckResu
         event_point: summary.and_then(|summary| summary.event_point),
         multi_live_score_up: summary.map(|summary| summary.multi_live_score_up),
         event_bonus_total: summary.and_then(|summary| summary.event_bonus_total),
+        shuffle_bonus_rate: summary.map(|summary| summary.shuffle_bonus_rate),
         main_honor_id: summary.and_then(|summary| summary.main_honor_id),
     }
 }
@@ -507,7 +509,19 @@ mod tests {
             event_point: None,
             multi_live_score_up: None,
             event_bonus_total: None,
+            shuffle_bonus_rate: None,
             main_honor_id,
+        }
+    }
+
+    #[test]
+    fn shuffle_bonus_is_serialized_in_percentage_units() {
+        for rate in [None, Some(0), Some(10), Some(30), Some(50)] {
+            let mut output = deck(None);
+            output.shuffle_bonus_rate = rate;
+            let value = serde_json::to_value(output).expect("deck serializes");
+            assert_eq!(value["shuffleBonusRate"], serde_json::json!(rate));
+            assert!(value.get("shuffle_bonus_rate").is_none());
         }
     }
 

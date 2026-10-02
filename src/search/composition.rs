@@ -1,11 +1,11 @@
 //! Area-item composition regimes.
 //!
-//! A card's resolved power depends on two deck-wide facts: whether all five
-//! cards contain some unit, and whether all five share one attribute. The pool
-//! stores, per card and per unit profile, the four resolved powers for the
-//! member keys {neither, shared attribute, shared unit, both}. Their per-card
-//! maximum assumes both deck-wide bonuses at once, which overstates the power
-//! of every deck that shares neither.
+//! Legacy card power depends on shared original-or-support membership and
+//! shared attribute. An owned multi-unit effect adds a separate activation
+//! dimension and an optional eight-state original/support/attribute table.
+//! Each membership/attribute regime is paired with every enabled activation.
+//! Per-card ceilings cover the reachable keys, without assuming all-match or
+//! multi-unit effects increase power.
 //!
 //! Instead the feasible decks are covered by regimes. For a deck `D` let
 //! `A(D)` be the attribute shared by all five cards (if any) and `U(D)` the set
@@ -108,6 +108,33 @@ impl Regime {
 /// (bit `k` = member key `k`, i.e. `shared_unit * 2 + shared_attr`) and over
 /// every unit profile of the card.
 pub(super) fn power_over_keys(pool: &CardPool, card: CardIdx, keys: u8) -> u32 {
+    let legacy = legacy_power_over_keys(pool, card, keys);
+    let multi = multi_power_over_keys(pool, card, keys);
+    match pool.multi_unit_bonus_mode() {
+        crate::power::MultiUnitBonusMode::ForceOff => legacy,
+        crate::power::MultiUnitBonusMode::ForceOn if pool.has_multi_power() => multi,
+        _ => legacy.max(multi),
+    }
+}
+
+fn multi_power_over_keys(pool: &CardPool, card: CardIdx, keys: u8) -> u32 {
+    let Some(values) = pool.multi_power_values(card) else {
+        return 0;
+    };
+    values
+        .iter()
+        .enumerate()
+        .filter(|(state, _)| {
+            let attr = state & 1;
+            let unit = usize::from(state & 6 != 0) * 2;
+            keys & (1 << (unit + attr)) != 0
+        })
+        .map(|(_, &value)| value)
+        .max()
+        .unwrap_or(0)
+}
+
+fn legacy_power_over_keys(pool: &CardPool, card: CardIdx, keys: u8) -> u32 {
     let values = pool.power_values(card);
     let lut = pool.power_lut(card);
     let units = pool.unit_mask_raw(card);
@@ -148,6 +175,17 @@ impl RegimePlan {
         regime: Regime,
         order: usize,
     ) -> Option<Self> {
+        Self::new_for_activation(pool, ctx, objective, regime, order, None)
+    }
+
+    fn new_for_activation(
+        pool: &CardPool,
+        ctx: &SearchContext,
+        objective: &ObjectiveBound,
+        regime: Regime,
+        order: usize,
+        multi: Option<bool>,
+    ) -> Option<Self> {
         let keys = regime.member_keys();
         let mut keep = vec![false; pool.count()];
         let mut power_bound = vec![0u32; pool.count()];
@@ -166,7 +204,11 @@ impl RegimePlan {
                 continue;
             }
             let character = usize::from(pool.char_id(card));
-            let power = power_over_keys(pool, card, keys);
+            let power = match multi {
+                Some(true) => multi_power_over_keys(pool, card, keys),
+                Some(false) => legacy_power_over_keys(pool, card, keys),
+                None => power_over_keys(pool, card, keys),
+            };
             keep[card.raw()] = true;
             power_bound[card.raw()] = power;
             best_power[character] = best_power[character].max(power);
@@ -232,7 +274,10 @@ impl RegimePlan {
                 .map(|count| u32::from(ctx.diff_attr_bonus[count]))
                 .max()
                 .unwrap_or(0);
-            (diversity, support_bonus_ceiling(ctx))
+            (
+                diversity + ctx.shuffle_bonus_upper(),
+                support_bonus_ceiling(ctx),
+            )
         } else {
             (ctx.extra_bonus_ub, 0)
         };
@@ -408,10 +453,31 @@ pub(super) fn search_regimes(
     ) -> (Vec<DeckResult>, SearchStats),
 ) -> (Vec<DeckResult>, SearchStats) {
     let objective = ObjectiveBound::from_context(ctx);
-    let mut plans = Regime::all()
-        .enumerate()
-        .filter_map(|(order, regime)| RegimePlan::new(pool, ctx, &objective, regime, order))
-        .collect::<Vec<_>>();
+    let mut plans = Vec::new();
+    for (order, regime) in Regime::all().enumerate() {
+        if pool.has_multi_power() {
+            for multi in [false, true] {
+                use crate::power::MultiUnitBonusMode;
+                if (multi && pool.multi_unit_bonus_mode() == MultiUnitBonusMode::ForceOff)
+                    || (!multi && pool.multi_unit_bonus_mode() == MultiUnitBonusMode::ForceOn)
+                {
+                    continue;
+                }
+                if let Some(plan) = RegimePlan::new_for_activation(
+                    pool,
+                    ctx,
+                    &objective,
+                    regime,
+                    order * 2 + usize::from(multi),
+                    Some(multi),
+                ) {
+                    plans.push(plan);
+                }
+            }
+        } else if let Some(plan) = RegimePlan::new(pool, ctx, &objective, regime, order) {
+            plans.push(plan);
+        }
+    }
     plans.sort_unstable_by(|left, right| {
         right
             .ceiling

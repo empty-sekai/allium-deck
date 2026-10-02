@@ -745,7 +745,7 @@ fn synthesize_wb_legacy_rows(game: &types::GameData<'_>) -> SynthWbRows {
 /// （WL3 终章尚未有真实 masterdata 数据）。
 ///
 /// 规则：全角色 5% deck bonus；WL3 各组章节的限定卡按 25%（队长额外 20%）
-/// 挂到终章；WL1/2 限定卡按 20% 进入支援 limited 加成；
+/// 挂到终章；支援 limited 行从 WL3 来源活动复制并保留倍率；
 /// `wl_3rd` 排行称号（top-1000）按 50% 合成队长荣誉加成。
 fn synthesize_wb_finale_rows(game: &types::GameData<'_>) -> SynthWbRows {
     let mut rows = SynthWbRows::default();
@@ -791,14 +791,29 @@ fn synthesize_wb_finale_rows(game: &types::GameData<'_>) -> SynthWbRows {
         });
     }
 
-    // 支援 limited：WL1/2 全部限定卡按 20%。
-    let all_characters: Vec<i32> = game
+    // Source support rows retain their rates; duplicate (character, card) rows
+    // use the first eligible source row in master order.
+    let support_characters: std::collections::BTreeSet<_> = game
         .game_character_units
         .iter()
-        .map(|entry| entry.game_character_id)
+        .map(|row| row.game_character_id)
         .filter(|id| (1..=26).contains(id))
         .collect();
-    rows.support_limited_bonuses = synth_support_limited(game, 3, event_id, &all_characters);
+    let mut seen_support = std::collections::BTreeSet::new();
+    rows.support_limited_bonuses = game
+        .world_bloom_support_deck_unit_event_limited_bonuses
+        .iter()
+        .filter(|row| {
+            source_event_ids.contains(&row.event_id)
+                && support_characters.contains(&row.game_character_id)
+                && row.bonus_rate > 0.0
+                && seen_support.insert((row.game_character_id, row.card_id))
+        })
+        .map(|row| types::WBSupportDeckUnitEventLimitedBonus {
+            event_id,
+            ..row.clone()
+        })
+        .collect();
 
     // WL3 排行称号 → 50% 队长荣誉加成（每枚称号命中一个 leader 角色）。
     for honor in game.honors {
@@ -1270,7 +1285,20 @@ mod tests {
 
     #[test]
     fn finale_synthesis_follows_upstream_rules() {
-        let fixture = jp_like_fixture();
+        let mut fixture = jp_like_fixture();
+        assert!(
+            synthesize_wb_rows(&fixture.game(), WL3_FAKE_FINALE_EVENT_ID)
+                .support_limited_bonuses
+                .is_empty()
+        );
+        fixture.limited.extend([
+            limited(202, 1, 1, 0.0),
+            limited(202, 2, 2, -5.0),
+            limited(202, 27, 3, 12.0),
+            limited(202, 1, 1, 37.0),
+            limited(205, 1, 1, 13.0),
+            limited(207, 2, 2, 9.0),
+        ]);
         let rows = synthesize_wb_rows(&fixture.game(), WL3_FAKE_FINALE_EVENT_ID);
 
         // 源活动 = 202/205/207（170/179 是 WL2、118 是 WL1）。
@@ -1289,13 +1317,13 @@ mod tests {
                 .all(|bonus| bonus.bonus_rate_x10 == 50 && bonus.attr.is_none())
         );
 
-        // 支援 limited：WL1/2 的 card2（WL2）20%；card1 属 WL1 也应 20%。
-        // fixture 中 WL1 的 card1 在 eventCards 里 bonus=20>0，故 1/2 两张。
-        assert_eq!(rows.support_limited_bonuses.len(), 2);
-        assert!(
-            rows.support_limited_bonuses
-                .iter()
-                .all(|bonus| bonus.bonus_rate == 20.0)
+        // The first eligible (character, card) row wins; rejected rows do not reserve the key.
+        assert_eq!(
+            rows.support_limited_bonuses,
+            vec![
+                limited(WL3_FAKE_FINALE_EVENT_ID, 1, 1, 37.0),
+                limited(WL3_FAKE_FINALE_EVENT_ID, 2, 2, 9.0),
+            ]
         );
 
         // 荣誉：9001 → (part1, cp1) → 角色 1；9002 → (part2, cp2) → 角色 4（part2 成员）；

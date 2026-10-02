@@ -119,6 +119,7 @@ struct LeaderConst {
     limited_count: u8,
     extra_bonus_ub: u32,
     support_bonus_ub: u32,
+    shuffle_bonus_ub: u32,
     leader_attr_set: u8,
     use_group_attr_dp: bool,
 }
@@ -258,7 +259,7 @@ impl LeaderRange {
                 skill_max: leader.skill,
                 bonus: leader.base_bonus_const + leader.limited_bonus,
                 extra: if leader.use_group_attr_dp {
-                    u32::from(diversity) + leader.support_bonus_ub
+                    u32::from(diversity) + leader.support_bonus_ub + leader.shuffle_bonus_ub
                 } else {
                     leader.extra_bonus_ub
                 },
@@ -1244,6 +1245,7 @@ fn build_leader_const(pool: &CardPool, ctx: &SearchContext, leader: CardIdx) -> 
         limited_count,
         extra_bonus_ub: final_chapter_extra_bonus_bound(pool, ctx, leader, &[], MEMBER_COUNT),
         support_bonus_ub: final_chapter_support_bonus_bound_for_leader(pool, ctx, leader),
+        shuffle_bonus_ub: ctx.shuffle_bonus_upper(),
         leader_attr_set: 1u8 << pool.attr(leader),
         use_group_attr_dp: ctx.is_world_bloom
             && crate::search::tuning::SearchTuning::load().final_attr_dp,
@@ -1912,7 +1914,7 @@ impl CharacterSearchState<'_> {
         };
         let bound = &weights.bound;
         let extra = if self.ctx.is_world_bloom {
-            plan.diversity_bonus + partial.support_bonus_ceil
+            plan.diversity_bonus + partial.support_bonus_ceil + self.ctx.shuffle_bonus_upper()
         } else {
             self.ctx.extra_bonus_ub
         };
@@ -2085,6 +2087,7 @@ fn last_group_inputs(
     let extra = if leader.use_group_attr_dp {
         u32::from(diversity[usize::from(prefix.attr_set | (1u8 << terms.attr))])
             + leader.support_bonus_ub
+            + leader.shuffle_bonus_ub
     } else {
         leader.extra_bonus_ub
     };
@@ -2113,6 +2116,7 @@ fn extra_bonus_ceiling(
     if leader.use_group_attr_dp {
         u32::from(tail.attr_bonus[remaining][usize::from(prefix.attr_set)])
             + leader.support_bonus_ub
+            + leader.shuffle_bonus_ub
     } else {
         leader.extra_bonus_ub
     }
@@ -2175,7 +2179,7 @@ fn selected_card_inputs(
     let bonus_sum = partial.base_bonus + base_bonus + plan.rem_base_bonus[chosen];
     let limited_sum = plan.limited_sum(partial, chosen, ctx.card_bonus_count_limit, limited_bonus);
     let extra_bonus_ub = if ctx.is_world_bloom {
-        plan.diversity_bonus + partial.support_bonus_ceil
+        plan.diversity_bonus + partial.support_bonus_ceil + ctx.shuffle_bonus_upper()
     } else {
         ctx.extra_bonus_ub
     };
@@ -2257,7 +2261,9 @@ fn final_chapter_extra_bonus_bound(
     }
 
     let support = ctx.support_deck_for_leader(pool.char_id(leader));
-    diff_ub + remaining_support(support, &selected, selected_len).0.ceil() as u32
+    diff_ub
+        + remaining_support(support, &selected, selected_len).0.ceil() as u32
+        + ctx.shuffle_bonus_upper()
 }
 
 /// Sum of the first `count` support entries whose game ids are not selected,
@@ -2496,6 +2502,7 @@ mod skill_ceiling_tests {
             support_decks_by_character: vec![SupportDeck::default(); 27],
             is_world_bloom: true,
             is_final_chapter: true,
+            is_wl3_finale: false,
             enforce_char_uniqueness: true,
             minimize: false,
             live_type: LiveType::Solo,
@@ -2689,6 +2696,7 @@ mod attribute_bound_tests {
                     limited_count: 0,
                     extra_bonus_ub: 0,
                     support_bonus_ub: 0,
+                    shuffle_bonus_ub: 0,
                     leader_attr_set: 1u8 << leader_attr,
                     use_group_attr_dp: true,
                 };
@@ -2836,6 +2844,7 @@ mod attribute_bound_tests {
                         limited_count: 1,
                         extra_bonus_ub: 0,
                         support_bonus_ub: 9,
+                        shuffle_bonus_ub: 0,
                         leader_attr_set: 1u8 << leader_attr,
                         use_group_attr_dp: true,
                     };

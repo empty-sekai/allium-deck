@@ -17,6 +17,8 @@ pub(crate) struct PowerResult {
     pub gate_bonus: i32,
     /// 按 real unit × member_key 保存唯一变化的 area item 分量。
     pub area_item_bonus: [[i32; 4]; 6],
+    /// Optional eight-state multi-unit area component.
+    pub multi_area_item_bonus: Option<[i32; 8]>,
     /// 精确最小综合力。
     pub power_min: i32,
     /// 精确最大综合力。
@@ -44,6 +46,23 @@ impl PowerResult {
         }
     }
 
+    pub(crate) fn multi_details(&self) -> Option<[PowerDetail; 8]> {
+        self.multi_area_item_bonus.map(|areas| {
+            areas.map(|area_item_bonus| PowerDetail {
+                base: self.base,
+                area_item_bonus,
+                character_bonus: self.character_bonus,
+                fixture_bonus: self.fixture_bonus,
+                gate_bonus: self.gate_bonus,
+                total: self.base
+                    + area_item_bonus
+                    + self.character_bonus
+                    + self.fixture_bonus
+                    + self.gate_bonus,
+            })
+        })
+    }
+
     pub(crate) fn resolved(&self) -> [[PowerDetail; 4]; 6] {
         std::array::from_fn(|unit| std::array::from_fn(|member_key| self.detail(unit, member_key)))
     }
@@ -63,6 +82,7 @@ pub(crate) struct PreparedPowerContext {
     fixture_rate: [i32; 27],
     canvas_cards: Vec<u64>,
     area_items: Vec<PowerAreaItem>,
+    has_multi_effects: bool,
     gate_rate_by_unit: [f64; 6],
     gate_rate_universal: f64,
     gate_rate_all: f64,
@@ -107,17 +127,31 @@ impl PreparedPowerContext {
         }
 
         let mut gate_rate_by_unit = [0.0_f64; 6];
+        let mut gate_seen = [false; 6];
         let mut gate_rate_universal = 0.0_f64;
         let mut gate_rate_all = 0.0_f64;
+        let mut selected_level = None;
         for entry in &user.user_mysekai_gate_bonuses {
-            let Some((unit_code, rate)) = resolve_user_gate_bonus(entry, game) else {
+            let resolved = resolve_user_gate_bonus(entry, game);
+            if let Some(level) = entry.mysekai_gate_level {
+                if selected_level.is_none_or(|previous| level > previous) {
+                    selected_level = Some(level);
+                    gate_rate_all = resolved.map_or(0.0, |(_, rate)| rate);
+                }
+            } else if selected_level.is_none() {
+                // Rate-only input has no level ordering; retain its maximum-rate contract.
+                gate_rate_all = gate_rate_all.max(resolved.map_or(0.0, |(_, rate)| rate));
+            }
+            let Some((unit_code, rate)) = resolved else {
                 continue;
             };
-            gate_rate_all = gate_rate_all.max(rate);
-            if unit_code.trim().is_empty() {
+            if unit_code.trim().is_empty() && entry.mysekai_gate_id.is_none() {
                 gate_rate_universal = gate_rate_universal.max(rate);
-            } else if let Some(unit) = parse_unit_code(unit_code).and_then(unit_to_pool_index) {
-                gate_rate_by_unit[unit as usize] = gate_rate_by_unit[unit as usize].max(rate);
+            } else if let Some(unit) = parse_unit_code(unit_code).and_then(unit_to_pool_index)
+                && !gate_seen[unit as usize]
+            {
+                gate_rate_by_unit[unit as usize] = rate;
+                gate_seen[unit as usize] = true;
             }
         }
 
@@ -134,6 +168,9 @@ impl PreparedPowerContext {
             character_bonus_rate,
             fixture_rate,
             canvas_cards,
+            has_multi_effects: area_items
+                .iter()
+                .any(|row| row.unit == PowerAreaItem::MULTI),
             area_items,
             gate_rate_by_unit,
             gate_rate_universal,
@@ -178,21 +215,20 @@ impl PreparedPowerContext {
 
     #[inline(always)]
     fn gate_rate(&self, unit_mask: u8) -> f64 {
-        let piapro_mask = 1u8 << unit_to_pool_index(Unit::Piapro).unwrap_or(5);
-        let mut rate = if unit_mask == piapro_mask {
-            self.gate_rate_all
-        } else {
-            self.gate_rate_universal
-        };
-        if unit_mask != piapro_mask {
-            let mut units = unit_mask;
-            while units != 0 {
-                let unit = units.trailing_zeros() as usize;
-                units &= units - 1;
-                rate = rate.max(self.gate_rate_by_unit[unit]);
-            }
+        let piapro_mask = 1u8 << 5;
+        if unit_mask == piapro_mask {
+            return self.gate_rate_all;
         }
-        rate
+        let preferred = if unit_mask & piapro_mask != 0 {
+            unit_mask & !piapro_mask
+        } else {
+            unit_mask
+        };
+        self.gate_rate_by_unit
+            .get(preferred.trailing_zeros() as usize)
+            .copied()
+            .unwrap_or(0.0)
+            .max(self.gate_rate_universal)
     }
 
     #[inline(always)]
@@ -296,16 +332,10 @@ fn area_item_bonus_dims(
 
         let all_match = (item.unit != PowerAreaItem::ANY && same_unit)
             || (item.attr != PowerAreaItem::ANY && same_attr);
-        // 适配层约定：三维 area item 倍率已验证相等并折叠为单一倍率；
-        // 若 masterdata 出现三维不等，需扩展 AreaItemLevel 类型而不是继续复用该字段。
-        let power_rate = if all_match {
-            item.power_all_match_rate
-        } else {
-            item.power_rate
-        };
-        acc[0] += power_rate * 0.01_f64 * base[0] as f64;
-        acc[1] += power_rate * 0.01_f64 * base[1] as f64;
-        acc[2] += power_rate * 0.01_f64 * base[2] as f64;
+        let rates = item.rates(all_match);
+        for dim in 0..3 {
+            acc[dim] += rates[dim] * 0.01_f64 * base[dim] as f64;
+        }
     }
 
     [
@@ -315,17 +345,150 @@ fn area_item_bonus_dims(
     ]
 }
 
+/// Selects mutually exclusive unit buckets using f32 rates, then accumulates
+/// the retained rows in their original order using independent f64 dimensions.
+fn multi_area_bonus(
+    items: &[PowerAreaItem],
+    base: [i32; 3],
+    character: i32,
+    membership: u8,
+    attr: u8,
+    key: usize,
+) -> i32 {
+    const NONE: usize = 0;
+    const CHARACTER: usize = 1;
+    const MULTI: usize = 2;
+    const ORIGINAL: usize = 3;
+    const SUPPORT: usize = 4;
+    const ATTRIBUTE: usize = 5;
+    const ANY: usize = 6;
+    let original_bit = crate::power::original_unit(membership);
+    let original = original_bit.trailing_zeros() as u8;
+    let support = (membership & !original_bit).trailing_zeros() as u8;
+    let pick = |item: &PowerAreaItem| -> (usize, bool) {
+        if item.character_id != PowerAreaItem::ANY_CHARACTER {
+            (
+                if item.character_id == character {
+                    CHARACTER
+                } else {
+                    NONE
+                },
+                false,
+            )
+        } else if item.unit == PowerAreaItem::MULTI {
+            (MULTI, false)
+        } else if item.unit != PowerAreaItem::ANY {
+            if item.unit == original {
+                (ORIGINAL, key & 4 != 0)
+            } else if item.unit == support {
+                (SUPPORT, key & 2 != 0)
+            } else {
+                (NONE, false)
+            }
+        } else if item.attr != PowerAreaItem::ANY {
+            (
+                if item.attr == attr { ATTRIBUTE } else { NONE },
+                key & 1 != 0,
+            )
+        } else {
+            (ANY, false)
+        }
+    };
+    let mut buff = [[0f32; 3]; 7];
+    let mut normal = [[0f32; 3]; 7];
+    let mut present = [false; 7];
+    for item in items {
+        let (bucket, all_match) = pick(item);
+        if bucket == NONE {
+            continue;
+        }
+        present[bucket] = true;
+        let rates = item.rates(all_match);
+        for dim in 0..3 {
+            buff[bucket][dim] += rates[dim] as f32;
+            normal[bucket][dim] += item.power_rate[dim] as f32;
+        }
+    }
+    let sum3 = |values: [f32; 3]| (values[0] + values[1]) + values[2];
+    let mut dropped = [false; 7];
+    let mut use_normal = [false; 7];
+    if present[ORIGINAL] && present[SUPPORT] {
+        dropped[if sum3(buff[ORIGINAL]) < sum3(buff[SUPPORT]) {
+            ORIGINAL
+        } else {
+            SUPPORT
+        }] = true;
+    }
+    if present[MULTI] {
+        let retained = [ORIGINAL, SUPPORT]
+            .into_iter()
+            .find(|&bucket| present[bucket] && !dropped[bucket]);
+        if let Some(bucket) = retained {
+            let extra = sum3(std::array::from_fn(|dim| {
+                buff[bucket][dim] - normal[bucket][dim]
+            }));
+            if extra >= sum3(buff[MULTI]) {
+                dropped[MULTI] = true;
+            } else {
+                use_normal[bucket] = true;
+            }
+        }
+    }
+    let mut acc = [0f64; 3];
+    for item in items {
+        let (bucket, all_match) = pick(item);
+        if bucket == NONE || dropped[bucket] {
+            continue;
+        }
+        let rates = item.rates(all_match && !use_normal[bucket]);
+        for dim in 0..3 {
+            acc[dim] += rates[dim] * 0.01_f64 * f64::from(base[dim]);
+        }
+    }
+    acc.into_iter().map(|value| value.floor() as i32).sum()
+}
+
+fn add_multi_power(
+    result: &mut PowerResult,
+    ctx: &PreparedPowerContext,
+    base: [i32; 3],
+    character: i32,
+    attr: u8,
+) {
+    if !ctx.has_multi_effects {
+        return;
+    }
+    let areas = std::array::from_fn(|key| {
+        multi_area_bonus(
+            &ctx.area_items,
+            base,
+            character,
+            result.unit_mask,
+            attr,
+            key,
+        )
+    });
+    for area in areas {
+        let total =
+            result.base + result.character_bonus + result.fixture_bonus + result.gate_bonus + area;
+        result.power_min = result.power_min.min(total);
+        result.power_max = result.power_max.max(total);
+    }
+    result.multi_area_item_bonus = Some(areas);
+}
+
 fn resolve_user_gate_bonus<'a>(
     entry: &'a super::types::UserGateBonus,
     game: &'a GameData<'_>,
 ) -> Option<(&'a str, f64)> {
     if let (Some(gate_id), Some(level)) = (entry.mysekai_gate_id, entry.mysekai_gate_level) {
         let gate = game.mysekai_gates.iter().find(|gate| gate.id == gate_id)?;
-        let level = game
+        let rate = game
             .mysekai_gate_levels
             .iter()
-            .find(|row| row.mysekai_gate_id == gate_id && row.level == level)?;
-        return Some((gate.unit.as_str(), level.power_bonus_rate));
+            .find(|row| row.mysekai_gate_id == gate_id && row.level == level)
+            .map_or(0.0, |row| row.power_bonus_rate);
+        return Some((gate.unit.as_str(), rate));
     }
     if entry.bonus_rate > 0.0 {
         Some((entry.unit.as_str(), entry.bonus_rate))
@@ -542,6 +705,13 @@ pub(crate) fn build_power_batch_from_fn<'a>(
             }
             result.power_min = min_value;
             result.power_max = max_value;
+            add_multi_power(
+                &mut result,
+                ctx,
+                [base_dims[0][lane], base_dims[1][lane], base_dims[2][lane]],
+                input.master.character_id,
+                input.attr,
+            );
             results.push(result);
             lane += 1;
         }
@@ -608,8 +778,12 @@ pub(crate) fn build_power_scalar_reference(
     }
     result.power_min = min_value;
     result.power_max = max_value;
+    add_multi_power(&mut result, ctx, base, master.character_id, card_attr);
     result
 }
+
+#[cfg(test)]
+mod multi_tests;
 
 /// 解析卡的 unit bitmask。
 pub(crate) fn resolve_unit_mask(master: &MasterCard, game: &GameData<'_>) -> u8 {

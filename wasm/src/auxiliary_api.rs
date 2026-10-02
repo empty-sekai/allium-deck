@@ -36,9 +36,12 @@ pub fn recommend_area_items(options_json: &str) -> Result<String, wasm_bindgen::
         })
         .ok_or_else(|| wasm_bindgen::JsValue::from_str("card_ids is required."))?;
 
+    let evaluation = allium_deck::engine::parse_build_params_json(options_json)
+        .map_err(to_js)?
+        .multi_unit_bonus_mode;
     let result = data
         .auxiliary
-        .recommend_area_items(&user, &game, &card_ids)
+        .recommend_area_items_with_evaluation(&user, &game, &card_ids, evaluation)
         .map_err(to_js)?;
     serde_json::to_string(&result).map_err(to_js)
 }

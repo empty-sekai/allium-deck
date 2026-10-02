@@ -15,6 +15,8 @@ pub struct CardPool {
     layout: PoolLayout,
     count: u16,
     special: SpecialTables,
+    pub(super) multi_power: Option<Vec<[u32; 8]>>,
+    pub(super) multi_mode: crate::power::MultiUnitBonusMode,
 }
 
 impl CardPool {
@@ -29,6 +31,8 @@ impl CardPool {
             layout,
             count,
             special,
+            multi_power: None,
+            multi_mode: crate::power::MultiUnitBonusMode::default(),
         }
     }
 
@@ -108,6 +112,51 @@ impl CardPool {
             *self
                 .column::<u32>(self.layout.off_power_lut)
                 .get_unchecked(idx.raw())
+        }
+    }
+
+    /// Activation policy for the optional multi-unit table.
+    pub fn multi_unit_bonus_mode(&self) -> crate::power::MultiUnitBonusMode {
+        self.multi_mode
+    }
+
+    /// Updates the policy without reallocating the sidecar.
+    pub fn set_multi_unit_bonus_mode(&mut self, mode: crate::power::MultiUnitBonusMode) {
+        self.multi_mode = mode;
+    }
+
+    /// Whether this pool owns effective multi-unit rows.
+    pub fn has_multi_power(&self) -> bool {
+        self.multi_power.is_some()
+    }
+
+    /// Eight exact powers indexed by original/support/attribute ALL_MATCH bits.
+    pub fn multi_power_values(&self, idx: CardIdx) -> Option<&[u32; 8]> {
+        self.multi_power.as_ref().map(|values| &values[idx.raw()])
+    }
+
+    /// Minimum over every legacy and enabled multi-unit state.
+    pub fn power_min(&self, idx: CardIdx) -> u32 {
+        let legacy = if self.unit_mask_raw(idx) & 0x3f == 0 {
+            0
+        } else {
+            (0..8)
+                .map(|key| {
+                    crate::search::evaluate::decode_u18(
+                        self.power_values(idx),
+                        self.power_lut(idx),
+                        key,
+                    )
+                })
+                .min()
+                .unwrap_or(0)
+        };
+        if self.multi_mode != crate::power::MultiUnitBonusMode::ForceOff {
+            self.multi_power_values(idx).map_or(legacy, |values| {
+                legacy.min(*values.iter().min().unwrap_or(&0))
+            })
+        } else {
+            legacy
         }
     }
 
@@ -352,6 +401,7 @@ impl CardPool {
         assert!(retained <= u16::MAX as usize, "compacted pool is too large");
 
         let mut builder = PoolBuilder::new(retained as u16);
+        builder.set_multi_unit_bonus_mode(self.multi_mode);
         for skill in self.special().unit_count().iter().copied() {
             builder.add_unit_count_skill(skill);
         }
@@ -373,6 +423,9 @@ impl CardPool {
 
             let src = CardIdx::new(dense_idx as u16);
             builder.set_power_values(next_idx, *self.power_values(src));
+            if let Some(values) = self.multi_power_values(src) {
+                builder.set_multi_power_values(next_idx, *values);
+            }
             builder.set_power_lut(next_idx, self.power_lut(src));
             builder.set_skill(next_idx, self.skill(src));
             builder.set_event_bonus_packed(next_idx, *self.event_bonus(src));

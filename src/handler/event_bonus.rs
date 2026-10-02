@@ -91,13 +91,10 @@ fn load_card_bonus_limit(table: &[EventCardBonusLimit], event_id: i32) -> usize 
         .iter()
         .find(|entry| entry.event_id == event_id)
         .map(|entry| entry.member_count_limit.max(0) as usize)
-        // 终章（legacy 180 与模拟 WL3 终章）最多 4 张享受 limited bonus。
-        .unwrap_or_else(|| {
-            if crate::types::is_world_bloom_finale_event(event_id) {
-                4
-            } else {
-                5
-            }
+        .unwrap_or(if event_id == crate::types::FINAL_CHAPTER_EVENT_ID {
+            4
+        } else {
+            5
         })
 }
 
@@ -105,8 +102,7 @@ fn load_skill_limit(table: &[EventSkillScoreUpLimit], event_id: i32) -> Option<u
     table
         .iter()
         .find(|entry| entry.event_id == event_id)
-        // 表内存的是百分比（如 230 = 230%），实际加分上限是扣除基数 100% 后的点数。
-        .map(|entry| (entry.score_up_limit - 100).max(0) as u32)
+        .map(|entry| entry.score_up_limit.max(0) as u32)
 }
 
 fn resolve_skill_limit(game: &GameData<'_>, params: &BuildParams, event_id: i32) -> Option<u32> {

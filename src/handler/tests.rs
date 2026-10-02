@@ -1,6 +1,7 @@
 //! handler 管线测试。
 mod capacity;
 mod fractional_leader;
+mod jp7;
 mod leader_honor;
 mod skill_unit_count;
 
@@ -317,8 +318,8 @@ fn handler_build_power_uses_f32_item_accumulation() {
             unit: None,
             attr: None,
             character_id: None,
-            power_rate: 1.0,
-            power_all_match_rate: 1.0,
+            power_rate: [1.0; 3],
+            power_all_match_rate: Some([1.0; 3]),
         },
         types::AreaItemLevel {
             area_item_id: 2,
@@ -326,8 +327,8 @@ fn handler_build_power_uses_f32_item_accumulation() {
             unit: None,
             attr: None,
             character_id: None,
-            power_rate: 1.0,
-            power_all_match_rate: 1.0,
+            power_rate: [1.0; 3],
+            power_all_match_rate: Some([1.0; 3]),
         },
     ];
     let game_units = [types::GameCharacterUnit {
@@ -382,7 +383,7 @@ fn handler_build_power_uses_f32_item_accumulation() {
     assert_eq!(result.detail(1, 0).area_item_bonus, 6);
     assert_eq!(result.detail(1, 0).total, 309);
     assert_eq!(result.detail(0, 0), crate::types::PowerDetail::default());
-    assert!(std::mem::size_of::<power::PowerResult>() <= 128);
+    assert!(std::mem::size_of::<power::PowerResult>() <= 168);
 }
 
 #[test]

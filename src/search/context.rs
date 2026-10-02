@@ -63,6 +63,8 @@ pub struct SearchContext {
     pub is_world_bloom: bool,
     /// 当前是否适用终章规则（队长限定加成、独立的支援卡组与综合力上限）。
     pub is_final_chapter: bool,
+    /// Enable the third World Bloom finale original-unit shuffle bonus.
+    pub is_wl3_finale: bool,
     /// challenge 模式下不要求角色唯一（pool 已过滤为同角色卡）
     pub enforce_char_uniqueness: bool,
     /// 反向搜索：求最弱（最小化 power）而非最强。仅 Power 目标生效，其它目标忽略。
@@ -94,7 +96,7 @@ pub struct SearchContext {
     pub w_bonus: f64,
     /// 池内技能值前五之和，即整副队伍技能加成的上界。
     pub skill_ub_global: u32,
-    /// 享受 limited bonus 的最大张数；终章为 4，其余通常为 [`DECK_SIZE`]。
+    /// 享受 limited bonus 的最大张数；WL2 终章缺省为 4，WL3 为 5，主表行优先。
     pub card_bonus_count_limit: usize,
     /// 称号带来的综合力加成，作为固定项计入每副队伍。
     pub honor_bonus: u32,
@@ -114,6 +116,11 @@ pub struct SearchContext {
 }
 
 impl SearchContext {
+    /// Admissible original-unit shuffle ceiling, independent of attribute diversity.
+    pub fn shuffle_bonus_upper(&self) -> u32 {
+        if self.is_wl3_finale { 50 } else { 0 }
+    }
+
     /// 返回按 `keep` 位图压缩后的搜索上下文。
     pub fn remap(&self, keep: &[bool]) -> Self {
         assert_eq!(

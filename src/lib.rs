@@ -56,6 +56,7 @@ pub mod auxiliary;
 pub mod engine;
 pub mod handler;
 pub mod pool;
+pub mod power;
 pub mod search;
 pub(crate) mod simd;
 pub mod types;

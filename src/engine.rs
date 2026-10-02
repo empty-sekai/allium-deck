@@ -340,6 +340,13 @@ pub fn parse_build_params_json(
         crate::handler::types::MAX_TARGET_BONUS_BUCKETS,
     )?;
     params.minimize = bool_field(&value, "minimize").unwrap_or(false);
+    if let Some(mode) = field_alias_checked(
+        &value,
+        "multiUnitBonusEvaluation",
+        "multi_unit_bonus_evaluation",
+    )? {
+        params.multi_unit_bonus_mode = serde_json::from_value(mode.clone())?;
+    }
     params.music_id =
         i32_field_checked(&value, "musicId")?.or(i32_field_checked(&value, "music_id")?);
     params.music_diff =
@@ -1325,24 +1332,6 @@ fn flatten_card_parameters(card: &RawCard) -> Vec<CardParameter> {
 }
 
 fn flatten_area_item_levels(raw: Vec<RawAreaItemLevel>) -> Vec<crate::handler::AreaItemLevel> {
-    let mut raw = raw;
-    raw.sort_by(|left, right| {
-        (
-            left.area_item_id,
-            normalize_target_token(left.target_unit.as_deref()),
-            normalize_target_token(left.target_card_attr.as_deref()),
-            left.target_game_character_id,
-            left.level,
-        )
-            .cmp(&(
-                right.area_item_id,
-                normalize_target_token(right.target_unit.as_deref()),
-                normalize_target_token(right.target_card_attr.as_deref()),
-                right.target_game_character_id,
-                right.level,
-            ))
-    });
-
     let mut result = Vec::with_capacity(raw.len());
     for item in raw {
         let unit = normalize_target_token(item.target_unit.as_deref());
@@ -1353,9 +1342,17 @@ fn flatten_area_item_levels(raw: Vec<RawAreaItemLevel>) -> Vec<crate::handler::A
             level: item.level,
             unit,
             attr,
-            character_id: item.target_game_character_id,
-            power_rate: item.power1_bonus_rate,
-            power_all_match_rate: item.power1_all_match_bonus_rate,
+            character_id: item.target_game_character_id.filter(|id| *id != 0),
+            power_rate: [
+                item.power1_bonus_rate,
+                item.power2_bonus_rate,
+                item.power3_bonus_rate,
+            ],
+            power_all_match_rate: item
+                .power1_all_match_bonus_rate
+                .zip(item.power2_all_match_bonus_rate)
+                .zip(item.power3_all_match_bonus_rate)
+                .map(|((a, b), c)| [a, b, c]),
         });
     }
     result
@@ -1838,7 +1835,14 @@ struct RawAreaItemLevel {
     #[serde(default)]
     target_game_character_id: Option<i32>,
     power1_bonus_rate: f64,
-    power1_all_match_bonus_rate: f64,
+    power2_bonus_rate: f64,
+    power3_bonus_rate: f64,
+    #[serde(default)]
+    power1_all_match_bonus_rate: Option<f64>,
+    #[serde(default)]
+    power2_all_match_bonus_rate: Option<f64>,
+    #[serde(default)]
+    power3_all_match_bonus_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2092,6 +2096,9 @@ struct RawHonorLevel {
     #[serde(default)]
     bonus: i32,
 }
+
+#[cfg(test)]
+mod jp7_tests;
 
 #[cfg(test)]
 mod tests {

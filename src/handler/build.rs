@@ -728,6 +728,10 @@ pub(super) fn build_search_context(
         support_decks_by_character,
         is_world_bloom: event_ctx
             .is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom)),
+        is_wl3_finale: event_ctx.is_some_and(|ctx| {
+            crate::types::is_world_bloom_finale_event(ctx.event_id)
+                && ctx.world_bloom_event_turn == Some(3)
+        }),
         is_final_chapter: event_ctx
             .is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id)),
         enforce_char_uniqueness: !matches!(
@@ -746,7 +750,15 @@ pub(super) fn build_search_context(
         multi_live_score_up_lower_bound: params.multi_live_score_up_lower_bound,
         extra_bonus_ub: diff_attr_bonus.into_iter().max().unwrap_or(0) as u32
             + support_bonus_top_sum.ceil() as u32
-            + support_bonus_top_sum_by_character,
+            + support_bonus_top_sum_by_character
+            + if event_ctx.is_some_and(|ctx| {
+                crate::types::is_world_bloom_finale_event(ctx.event_id)
+                    && ctx.world_bloom_event_turn == Some(3)
+            }) {
+                50
+            } else {
+                0
+            },
         w_power: 1.0,
         w_bonus: 1.0,
         skill_ub_global,
@@ -784,8 +796,15 @@ pub(super) fn resolve_fixture_bonus_limit(
         .iter()
         .find(|entry| entry.event_id == event_id)
         .map(|entry| entry.bonus_rate_limit)
-        // 终章（legacy 180 与模拟 WL3 终章）固定 20。
-        .or_else(|| crate::types::is_world_bloom_finale_event(event_id).then_some(20))
+        .or_else(|| {
+            crate::types::is_world_bloom_finale_event(event_id).then_some(
+                if event_id == crate::types::FINAL_CHAPTER_EVENT_ID {
+                    20
+                } else {
+                    60
+                },
+            )
+        })
 }
 pub(super) fn build_card_pool_fully_prepared_internal(
     prepared: &PreparedGameData<'_>,
@@ -909,7 +928,7 @@ pub(super) fn build_card_pool_fully_prepared_internal(
     } else {
         params.live_type
     };
-    let (pool, full, gathered) = sort_and_gather(
+    let (mut pool, full, gathered) = sort_and_gather(
         cards,
         params.target,
         event_ctx.is_some(),
@@ -918,6 +937,7 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         &fixed_character_ids,
         include_details,
     )?;
+    pool.set_multi_unit_bonus_mode(params.multi_unit_bonus_mode);
     let mut search_ctx = build_search_context(
         gathered,
         &support_seeds,

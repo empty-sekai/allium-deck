@@ -1,16 +1,14 @@
 //! Exact Top-K of the unconstrained maximizing Power target.
 //!
-//! A card's resolved power depends on the rest of the deck only through two
-//! deck-wide facts: the set of units carried by all five members and whether
-//! all five share one attribute. A scenario fixes both facts; inside it every
-//! card has one additive power ceiling, and a branch and bound over
+//! A card's resolved power depends on shared original-or-support membership,
+//! shared attribute, and optional multi-unit activation. A scenario fixes the
+//! shared facts and bounds both enabled activation values; every card then
+//! has one additive power ceiling, and a branch and bound over
 //! character-distinct decks runs against the one canonical tracker.
 use crate::pool::{CardIdx, CardPool};
 use crate::search::budget::SearchBudget;
 use crate::search::small_ids::SmallestIds;
-use crate::search::{
-    DeckResult, SearchContext, SearchParams, SearchStats, TopKTracker, evaluate, placement,
-};
+use crate::search::{DeckResult, SearchContext, SearchParams, SearchStats, TopKTracker, placement};
 use crate::types::DECK_SIZE;
 
 /// Unit bits the power evaluator reads from a unit mask.
@@ -106,14 +104,22 @@ fn unit_sets(pool: &CardPool) -> Vec<u8> {
 /// carry exactly the units of `units` in common and share an attribute iff
 /// `attr_all`; exact when `units` has at most one unit.
 fn scenario_power(pool: &CardPool, card: CardIdx, units: u8, attr_all: bool) -> u32 {
-    if units == 0 {
-        return evaluate::resolve_card_power_scenario(pool, card, None, attr_all);
-    }
-    (0..usize::from(UNIT_BITS))
-        .filter(|&unit| units & (1 << unit) != 0)
-        .map(|unit| evaluate::resolve_card_power_scenario(pool, card, Some(unit), attr_all))
-        .max()
-        .unwrap_or(0)
+    let composition = crate::power::DeckComposition {
+        shared_units: units,
+        shared_attribute: attr_all,
+        is_multi_unit: false,
+        original_unit_mask: 0,
+    };
+    let legacy = crate::power::effective_power(pool, card, composition);
+    let multi = crate::power::effective_power(
+        pool,
+        card,
+        crate::power::DeckComposition {
+            is_multi_unit: true,
+            ..composition
+        },
+    );
+    legacy.max(multi)
 }
 
 /// Every scenario that admits at least five characters. A scenario with unit
