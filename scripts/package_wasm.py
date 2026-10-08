@@ -45,6 +45,27 @@ def copy_if_exists(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
+def prepare_npm_metadata(pkg_dir: Path, version: str, repository: str) -> None:
+    """Finalize metadata before either browser or npm artifacts are packaged."""
+    path = pkg_dir / "package.json"
+    package = json.loads(path.read_text(encoding="utf-8"))
+    if package.get("name") != "@empty-sekai/allium-deck-wasm":
+        raise ValueError("unexpected WASM npm package name")
+    if package.get("version") != version:
+        raise ValueError("WASM npm package version does not match the release")
+    if repository:
+        package["repository"] = {
+            "type": "git",
+            "url": f"git+https://github.com/{repository}.git",
+        }
+    package["publishConfig"] = {**package.get("publishConfig", {}), "access": "public"}
+    path.write_text(
+        json.dumps(package, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pkg-dir", default="pkg")
@@ -56,6 +77,7 @@ def main() -> int:
 
     pkg_dir = Path(args.pkg_dir)
     out_dir = Path(args.out_dir)
+    prepare_npm_metadata(pkg_dir, args.version, args.source_repository)
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
