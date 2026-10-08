@@ -13,7 +13,7 @@ Project Sekai 组卡推荐引擎的 Rust 实现，专攻 **DFS / 分支限界（
 - https://github.com/Team-Haruki/sekai-deck-recommend-cpp
 - https://github.com/StarMoe-org/sekai-deck-recommend-cpp
 
-具体移植与修正内容见各 commit 说明。
+本次 JP7 业务规则移植的直接来源是 **[Team-Haruki/sekai-deck-recommend-cpp](https://github.com/Team-Haruki/sekai-deck-recommend-cpp)**，对照提交为 [`496caed78a07ffe1f2d1f1553047dbf6b2ed0314`](https://github.com/Team-Haruki/sekai-deck-recommend-cpp/commit/496caed78a07ffe1f2d1f1553047dbf6b2ed0314)。区域道具、MySEKAI 大门、World Link 终章与活动上限等业务规则在现有 Rust 引擎中重新实现。来源文件、上游作者与行为差异见[业务规则来源](docs/game-rule-sources.md)。
 
 在此基础上，本实现并非逐行翻译，而是对**底层热路径与搜索剪枝做了彻底的 Rust 重构**，核心数据结构全部按 cache line 对齐：
 

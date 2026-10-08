@@ -1,6 +1,6 @@
 [package]
 name = "allium-deck"
-version = "0.0.15"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Project Sekai deck recommendation engine: DFS / branch-and-bound exact search"
@@ -13,6 +13,7 @@ include = [
     "/README.en.md",
     "/LICENSE-MIT",
     "/LICENSE-APACHE",
+    "/docs/game-rule-sources.md",
     "/src/**",
     "/data/**",
 ]

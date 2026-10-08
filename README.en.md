@@ -13,7 +13,7 @@ Some in-game values and logic (power, skill bonuses, event points, support decks
 - https://github.com/Team-Haruki/sekai-deck-recommend-cpp
 - https://github.com/StarMoe-org/sekai-deck-recommend-cpp
 
-See the individual commit messages for exactly what was ported and corrected.
+The direct source of the JP7 business-rule port is **[Team-Haruki/sekai-deck-recommend-cpp](https://github.com/Team-Haruki/sekai-deck-recommend-cpp)** at [`496caed78a07ffe1f2d1f1553047dbf6b2ed0314`](https://github.com/Team-Haruki/sekai-deck-recommend-cpp/commit/496caed78a07ffe1f2d1f1553047dbf6b2ed0314). Area-item, MySEKAI gate, World Link finale, and event-limit rules are reimplemented in the existing Rust engine. See [Business-rule sources](docs/game-rule-sources.md) for source files, upstream attribution, and behavior differences.
 
 On top of that, this implementation is not a line-by-line translation: the **low-level hot paths and search pruning have been thoroughly reworked in Rust**, with all core data structures aligned to cache lines:
 
