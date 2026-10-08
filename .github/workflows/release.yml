@@ -5,6 +5,17 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      recovery_run_id:
+        description: "Optional: recover npm publication from a completed tag release run"
+        required: false
+        type: string
+        default: ""
+      recovery_tag:
+        description: "Existing release tag whose verified assets should be published"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -17,7 +28,7 @@ jobs:
   verify-registry-token:
     name: verify crates.io token configuration
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.recovery_run_id == ''
     steps:
       - name: Validate crates.io token configuration
         env:
@@ -34,6 +45,7 @@ jobs:
 
   test:
     name: test (linux)
+    if: github.event_name != 'workflow_dispatch' || inputs.recovery_run_id == ''
     runs-on: ubuntu-latest
     outputs:
       release-version: ${{ steps.version.outputs.release-version }}
@@ -82,7 +94,9 @@ jobs:
           cargo test --manifest-path wasm/Cargo.toml --all-targets --release --locked
 
       - name: release packaging tests
-        run: python3 tests/test_release_packaging.py
+        run: |
+          python3 tests/test_release_packaging.py
+          python3 tests/test_release_recovery.py
 
       - name: cargo build (bin)
         run: cargo build --release --bin recommend_cli
@@ -354,14 +368,15 @@ jobs:
           esac
           # Trusted publishing requires npm >= 11.5.1 and Node >= 22.14.
           npm install -g npm@latest
+          NPM_PACKAGE=$(realpath "release/allium-deck-wasm-v${VERSION}.tgz")
           set +e
-          npm publish --provenance --access public "release/allium-deck-wasm-v${VERSION}.tgz"
+          npm publish --provenance --access public "$NPM_PACKAGE"
           PUBLISH_STATUS=$?
           set -e
           if node scripts/verify_npm_package.mjs \
             --package @empty-sekai/allium-deck-wasm --version "$VERSION" \
             --tarball "release/allium-deck-wasm-v${VERSION}.tgz" \
-            --attempts 6 --delay-ms 3000 --timeout-ms 5000; then
+            --attempts 36 --delay-ms 5000 --timeout-ms 5000; then
             if [ "$PUBLISH_STATUS" -ne 0 ]; then
               echo "npm publish returned ${PUBLISH_STATUS}, but the registry has the tested tarball"
             fi
@@ -495,3 +510,94 @@ jobs:
             artifacts/allium-deck-wasm-*.tgz
             artifacts/SHA256SUMS
           fail_on_unmatched_files: true
+
+  recover-npm:
+    name: recover npm from verified tag assets
+    if: github.event_name == 'workflow_dispatch' && inputs.recovery_run_id != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ inputs.recovery_tag }}
+      SOURCE_RUN_ID: ${{ inputs.recovery_run_id }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the immutable source tag and release run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          assert re.fullmatch(r"[0-9]+", os.environ["SOURCE_RUN_ID"]), "invalid run ID"
+          assert re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", os.environ["RELEASE_TAG"]), "invalid tag"
+          PY
+          SOURCE_SHA=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > "$RUNNER_TEMP/source-run.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/artifacts?per_page=100" > "$RUNNER_TEMP/source-artifacts.json"
+          # Publication recovery must not substitute different package sources.
+          git diff --exit-code "$SOURCE_SHA" HEAD -- Cargo.toml Cargo.lock src wasm/Cargo.toml wasm/Cargo.lock wasm/src wasm/README.md README.md README.en.md LICENSE-MIT LICENSE-APACHE
+
+      - name: Download the original release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets
+          run-id: ${{ inputs.recovery_run_id }}
+          github-token: ${{ github.token }}
+          path: release
+
+      - name: Validate the complete source and artifact chain
+        run: |
+          python3 scripts/validate_release_recovery.py \
+            --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            --source-sha "$SOURCE_SHA" --run-json "$RUNNER_TEMP/source-run.json" \
+            --artifacts-json "$RUNNER_TEMP/source-artifacts.json" --asset-dir release \
+            | tee recovery-evidence.json
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish only the original tested tarball
+        run: |
+          NPM_PACKAGE=$(realpath "release/allium-deck-wasm-v${VERSION}.tgz")
+          set +e
+          node scripts/verify_npm_package.mjs \
+            --package @empty-sekai/allium-deck-wasm --version "$VERSION" \
+            --tarball "$NPM_PACKAGE" --attempts 3 --delay-ms 2000
+          LOOKUP_STATUS=$?
+          set -e
+          case "$LOOKUP_STATUS" in
+            0) exit 0 ;;
+            3) ;;
+            *) exit "$LOOKUP_STATUS" ;;
+          esac
+          npm install -g npm@latest
+          set +e
+          npm publish --provenance --access public "$NPM_PACKAGE"
+          PUBLISH_STATUS=$?
+          set -e
+          if node scripts/verify_npm_package.mjs \
+            --package @empty-sekai/allium-deck-wasm --version "$VERSION" \
+            --tarball "$NPM_PACKAGE" --attempts 36 --delay-ms 5000; then
+            if [ "$PUBLISH_STATUS" -ne 0 ]; then
+              echo "npm publish returned ${PUBLISH_STATUS}, but the tested tarball is present"
+            fi
+            exit 0
+          fi
+          exit 1
+
+      - name: Save recovery verification
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-recovery-evidence
+          path: recovery-evidence.json
+          if-no-files-found: ignore
