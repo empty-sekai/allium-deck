@@ -376,7 +376,7 @@ jobs:
           if node scripts/verify_npm_package.mjs \
             --package @empty-sekai/allium-deck-wasm --version "$VERSION" \
             --tarball "release/allium-deck-wasm-v${VERSION}.tgz" \
-            --attempts 6 --delay-ms 3000 --timeout-ms 5000; then
+            --attempts 36 --delay-ms 5000 --timeout-ms 5000; then
             if [ "$PUBLISH_STATUS" -ne 0 ]; then
               echo "npm publish returned ${PUBLISH_STATUS}, but the registry has the tested tarball"
             fi
@@ -586,7 +586,7 @@ jobs:
           set -e
           if node scripts/verify_npm_package.mjs \
             --package @empty-sekai/allium-deck-wasm --version "$VERSION" \
-            --tarball "$NPM_PACKAGE" --attempts 6 --delay-ms 3000; then
+            --tarball "$NPM_PACKAGE" --attempts 36 --delay-ms 5000; then
             if [ "$PUBLISH_STATUS" -ne 0 ]; then
               echo "npm publish returned ${PUBLISH_STATUS}, but the tested tarball is present"
             fi
