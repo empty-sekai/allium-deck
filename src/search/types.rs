@@ -66,6 +66,8 @@ pub struct DeckResultSummary {
     pub multi_live_score_up: f64,
     /// 活动加成合计百分比；无活动上下文时为 `None`。
     pub event_bonus_total: Option<f64>,
+    /// Third World Bloom finale bonus from original-unit diversity, in percent.
+    pub shuffle_bonus_rate: u32,
     /// 终章假设佩戴的主称号 ID：队长角色对应的已持有称号中队长加成最高者，
     /// 同加成取 ID 最小者；该加成已计入 `event_bonus_total`。非终章或队长角色
     /// 没有可用称号时为 `None`。

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "allium-deck",
-    "version": "0.0.15",
+    "version": "0.1.0",
     "summary": "Deck recommendation for Project Sekai: exact DFS with branch and bound.",
     "description": "Build parameters are the engine's own contract; every key documented in docs/parameters.md is accepted here, in camelCase or snake_case. The service adds only the request envelope and its own ceilings on `limit` and `timeoutMs`.",
     "license": { "name": "MIT OR Apache-2.0" }
@@ -155,7 +155,8 @@
                 "properties": {
                   "region": { "$ref": "#/components/schemas/Region" },
                   "user": { "$ref": "#/components/schemas/User" },
-                  "cardIds": { "type": "array", "items": { "type": "integer" } }
+                  "cardIds": { "type": "array", "items": { "type": "integer" } },
+                  "multiUnitBonusEvaluation": { "$ref": "#/components/schemas/MultiUnitBonusEvaluation" }
                 },
                 "required": ["user", "cardIds"]
               }
@@ -273,9 +274,24 @@
         "description": "The player's card collection, either as an object or as its JSON text.",
         "oneOf": [{ "type": "object" }, { "type": "string" }]
       },
+      "MultiUnitBonusEvaluation": {
+        "type": "string",
+        "enum": ["by_deck", "force_on", "force_off"],
+        "default": "by_deck",
+        "description": "Activation policy for owned multi-unit area effects. force_off retains the item's other effects. The snake_case request alias is also accepted."
+      },
       "Params": {
         "type": "object",
         "description": "Build parameters. Every key in docs/parameters.md is accepted, in camelCase or snake_case; unknown keys are ignored. `limit` and `timeoutMs` are lowered to this service's ceilings, reported by GET /v1/regions.",
+        "properties": {
+          "multiUnitBonusEvaluation": { "$ref": "#/components/schemas/MultiUnitBonusEvaluation" },
+          "fixedConstraintMode": {
+            "type": "string",
+            "enum": ["slots", "members"],
+            "default": "slots",
+            "description": "Ordered input slots by default. In finale recommendations, members requires participation without fixing the leader; forcedLeaderCharacterId remains independent. Mandatory members with exact targetBonusList tiers are not supported. The snake_case alias is fixed_constraint_mode."
+          }
+        },
         "additionalProperties": true
       },
       "RecommendRequest": {
@@ -396,6 +412,11 @@
           "eventPoint": { "type": ["integer", "null"] },
           "multiLiveScoreUp": { "type": ["number", "null"] },
           "eventBonusTotal": { "type": ["number", "null"] },
+          "shuffleBonusRate": {
+            "type": ["integer", "null"],
+            "enum": [0, 10, 30, 50, null],
+            "description": "WL3 finale original-unit diversity bonus, already included in eventBonusTotal. Zero in other events; null when no summary is available."
+          },
           "mainHonorId": {
             "type": "integer",
             "description": "World Bloom final chapter only: the owned honor assumed as the deck's main honor, chosen for the leader character (largest leader bonus, then smallest ID). Its bonus is included in eventBonusTotal. Omitted otherwise."

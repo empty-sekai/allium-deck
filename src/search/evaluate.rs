@@ -79,7 +79,9 @@ pub(crate) fn leaf_evaluate_checked(
     ctx: &SearchContext,
     deck: &[CardIdx; 5],
 ) -> Option<u64> {
-    if !ctx.deck_matches_forced_leader(pool, deck) {
+    if !ctx.deck_matches_forced_leader(pool, deck)
+        || (ctx.uses_member_constraints() && !ctx.deck_matches_slots(pool, deck))
+    {
         return None;
     }
     let power_total = || ctx.clamp_power_total(resolve_power_target(pool, deck) + ctx.honor_bonus);
@@ -203,6 +205,7 @@ fn build_summary(
         event_point,
         multi_live_score_up: permutation.multi_live_score_up,
         event_bonus_total: (ctx.has_event() || total_bonus > 0.0).then_some(total_bonus),
+        shuffle_bonus_rate: ctx.shuffle_bonus_for(pool, deck),
         main_honor_id: ctx
             .leader_honor_for_character(pool.char_id(ordered_cards[0]))
             .map(|honor| honor.honor_id),
@@ -210,40 +213,10 @@ fn build_summary(
 }
 
 fn resolve_card_power_totals(pool: &CardPool, deck: &[CardIdx; 5]) -> [i32; 5] {
-    let mut attr_counts = [0u8; 6];
-    let mut unit_counts = [0u8; 6];
-    let mut pos = 0usize;
-    while pos < DECK_SIZE {
-        let card = unsafe { *deck.get_unchecked(pos) };
-        let attr = pool.attr(card) as usize;
-        debug_assert!(attr < attr_counts.len());
-        unsafe {
-            *attr_counts.get_unchecked_mut(attr) += 1;
-        }
-        let unit_mask = pool.unit_mask_raw(card);
-        let mut unit = 0usize;
-        while unit < 6 {
-            if unit_mask & (1u8 << unit) != 0 {
-                unsafe {
-                    *unit_counts.get_unchecked_mut(unit) += 1;
-                }
-            }
-            unit += 1;
-        }
-        pos += 1;
-    }
-
-    let mut totals = [0; DECK_SIZE];
-    pos = 0;
-    while pos < DECK_SIZE {
-        let card = unsafe { *deck.get_unchecked(pos) };
-        let attr = pool.attr(card) as usize;
-        let attr_member = unsafe { *attr_counts.get_unchecked(attr) };
-        totals[pos] =
-            resolve_card_power(pool, card, &unit_counts, attr_member).min(i32::MAX as u32) as i32;
-        pos += 1;
-    }
-    totals
+    let composition = crate::power::DeckComposition::from_cards(pool, deck);
+    std::array::from_fn(|pos| {
+        crate::power::effective_power(pool, deck[pos], composition).min(i32::MAX as u32) as i32
+    })
 }
 
 #[inline(always)]
@@ -263,39 +236,10 @@ fn card_event_bonus_for_display(
 
 #[inline(always)]
 pub(crate) fn resolve_power_target(pool: &CardPool, deck: &[CardIdx; 5]) -> u32 {
-    let mut attr_counts = [0u8; 6];
-    let mut unit_counts = [0u8; 6];
-    let mut pos = 0usize;
-    while pos < DECK_SIZE {
-        let card = unsafe { *deck.get_unchecked(pos) };
-        let attr = pool.attr(card) as usize;
-        debug_assert!(attr < attr_counts.len());
-        unsafe {
-            *attr_counts.get_unchecked_mut(attr) += 1;
-        }
-        let unit_mask = pool.unit_mask_raw(card);
-        let mut unit = 0usize;
-        while unit < 6 {
-            if unit_mask & (1u8 << unit) != 0 {
-                unsafe {
-                    *unit_counts.get_unchecked_mut(unit) += 1;
-                }
-            }
-            unit += 1;
-        }
-        pos += 1;
-    }
-
-    let mut total = 0u32;
-    pos = 0;
-    while pos < DECK_SIZE {
-        let card = unsafe { *deck.get_unchecked(pos) };
-        let attr = pool.attr(card) as usize;
-        let attr_member = unsafe { *attr_counts.get_unchecked(attr) };
-        total += resolve_card_power(pool, card, &unit_counts, attr_member);
-        pos += 1;
-    }
-    total
+    let composition = crate::power::DeckComposition::from_cards(pool, deck);
+    deck.iter()
+        .map(|&card| crate::power::effective_power(pool, card, composition))
+        .sum()
 }
 
 /// Resolve total card power for a partial or complete fixed deck.
@@ -303,28 +247,9 @@ pub(crate) fn resolve_power_target(pool: &CardPool, deck: &[CardIdx; 5]) -> u32 
 /// This helper is used by auxiliary calculations only. The fixed-size DFS
 /// evaluator above remains unchanged.
 pub fn resolve_power_for_cards(pool: &CardPool, deck: &[CardIdx]) -> u32 {
-    let mut attr_counts = [0u8; 6];
-    let mut unit_counts = [0u8; 6];
-    for &card in deck {
-        let attr = pool.attr(card) as usize;
-        if attr < attr_counts.len() {
-            attr_counts[attr] = attr_counts[attr].saturating_add(1);
-        }
-        let unit_mask = pool.unit_mask_raw(card);
-        for (unit, count) in unit_counts.iter_mut().enumerate() {
-            if unit_mask & (1u8 << unit) != 0 {
-                *count = count.saturating_add(1);
-            }
-        }
-    }
+    let composition = crate::power::DeckComposition::from_cards(pool, deck);
     deck.iter().fold(0u32, |total, &card| {
-        let attr = pool.attr(card) as usize;
-        total.saturating_add(resolve_card_power(
-            pool,
-            card,
-            &unit_counts,
-            attr_counts.get(attr).copied().unwrap_or(0),
-        ))
+        total.saturating_add(crate::power::effective_power(pool, card, composition))
     })
 }
 
@@ -499,6 +424,7 @@ pub(crate) fn resolve_total_bonus(
 
     if ctx.is_world_bloom {
         total += ctx.diff_attr_bonus[attr_set.count_ones() as usize] as f64;
+        total += f64::from(ctx.shuffle_bonus_for(pool, deck));
         total += calc_support_bonus(pool, ctx, deck, &game_ids);
     }
     total
@@ -610,7 +536,7 @@ fn evaluate_permutation(
         }
         // A fully fixed lineup defines every skill slot, not just its leader.
         // Keep those positions when automatic leader selection is disabled.
-        if ctx.fixed_card_ids.len() != DECK_SIZE {
+        if ctx.uses_member_constraints() || ctx.fixed_card_ids.len() != DECK_SIZE {
             sort_tail_by_card_raw(pool, &mut order, deck);
         }
     }
@@ -897,62 +823,6 @@ fn different_unit_count(pool: &CardPool, deck: &[CardIdx; 5], index: usize) -> u
 }
 
 #[inline(always)]
-fn resolve_card_power(
-    pool: &CardPool,
-    card: CardIdx,
-    unit_counts: &[u8; 6],
-    attr_member: u8,
-) -> u32 {
-    let unit_mask = pool.unit_mask_raw(card);
-    let lut = pool.power_lut(card);
-    let values = pool.power_values(card);
-    let mut best = 0u32;
-    let mut unit = 0usize;
-    while unit < 6 {
-        if unit_mask & (1u8 << unit) != 0 {
-            let slot = ((lut >> (16 + unit)) & 1) as usize;
-            let unit_member = unsafe { *unit_counts.get_unchecked(unit) };
-            let key = member_key(unit_member, attr_member);
-            let idx = slot * 4 + key;
-            let value = decode_u18(values, lut, idx);
-            if value > best {
-                best = value;
-            }
-        }
-        unit += 1;
-    }
-    best
-}
-
-/// Resolve one card's additive power inside a fixed all-unit/all-attribute scenario.
-/// `unit_all` and `attr_all` describe deck-wide conditions, so callers can optimize
-/// power exactly without enumerating every five-card combination.
-pub(crate) fn resolve_card_power_scenario(
-    pool: &CardPool,
-    card: CardIdx,
-    unit_all: Option<usize>,
-    attr_all: bool,
-) -> u32 {
-    let mut unit_counts = [0u8; 6];
-    if let Some(unit) = unit_all.filter(|unit| *unit < unit_counts.len()) {
-        unit_counts[unit] = DECK_SIZE as u8;
-    }
-    resolve_card_power(
-        pool,
-        card,
-        &unit_counts,
-        if attr_all { DECK_SIZE as u8 } else { 0 },
-    )
-}
-
-#[inline(always)]
-fn member_key(unit_member: u8, attr_member: u8) -> usize {
-    let unit_all = (unit_member == DECK_SIZE as u8) as usize;
-    let attr_all = (attr_member == DECK_SIZE as u8) as usize;
-    unit_all * 2 + attr_all
-}
-
-#[inline(always)]
 fn resolve_unit_count_skill(
     table: &[UnitCountSkill],
     skill: SkillSlot,
@@ -1109,6 +979,7 @@ mod tests {
         SearchContext {
             target: ScoreTarget::Score,
             fixed_card_ids: Vec::new(),
+            fixed_constraint_mode: crate::handler::FixedConstraintMode::Slots,
             fixed_character_ids: Vec::new(),
             forced_leader_character_id: None,
             music_rate_pct: 100,
@@ -1124,6 +995,8 @@ mod tests {
             support_decks_by_character: Vec::new(),
             is_world_bloom: false,
             is_final_chapter: false,
+            is_wl3_finale: false,
+            shuffle_unit_bonus: [0; 6],
             enforce_char_uniqueness: true,
             minimize: false,
             live_type,

@@ -5,9 +5,7 @@ use crate::search::DeckResult;
 use crate::search::budget::SearchBudget;
 use crate::search::skill_ceiling::{Composition, SkillCeiling};
 use crate::search::small_ids::SmallestIds;
-use crate::search::{
-    SearchContext, SearchParams, SearchStats, TopKTracker, evaluate, placement, tuning,
-};
+use crate::search::{SearchContext, SearchParams, SearchStats, TopKTracker, placement, tuning};
 use crate::types::{DECK_SIZE, ScoreTarget};
 
 pub(crate) fn search_simple_target(
@@ -105,14 +103,7 @@ impl<'a> SimpleExactState<'a> {
         let mut cards = pool.indices().collect::<Vec<_>>();
         let card_power_min = if matches!(ctx.target, ScoreTarget::Power) {
             pool.indices()
-                .map(|card| {
-                    let values = pool.power_values(card);
-                    let lut = pool.power_lut(card);
-                    (0..8)
-                        .map(|idx| evaluate::decode_u18(values, lut, idx))
-                        .min()
-                        .unwrap_or(0)
-                })
+                .map(|card| pool.power_min(card))
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
@@ -153,7 +144,7 @@ impl<'a> SimpleExactState<'a> {
             cards,
             card_power_min,
             minimize,
-            fixed_prefix: (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len()).min(DECK_SIZE),
+            fixed_prefix: ctx.fixed_prefix_len(),
             skill_ceilings,
             suffix_small_ids,
             global_power_max,
@@ -433,6 +424,17 @@ impl SimpleExactState<'_> {
     ) {
         self.stats.visited_nodes = self.stats.visited_nodes.wrapping_add(1);
         if self.timed_out() {
+            return;
+        }
+        if self.ctx.uses_member_constraints()
+            && !crate::search::membership::prefix_can_complete(
+                self.pool,
+                self.ctx,
+                &deck[..depth],
+                self.cards[min_free_pos..].iter().copied(),
+            )
+        {
+            self.stats.feasibility_prunes += 1;
             return;
         }
         if depth == DECK_SIZE {

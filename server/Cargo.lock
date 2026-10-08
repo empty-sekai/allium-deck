@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "allium-deck"
-version = "0.0.15"
+version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -23,7 +23,7 @@ dependencies = [
 
 [[package]]
 name = "allium-deck-server"
-version = "0.0.15"
+version = "0.1.0"
 dependencies = [
  "allium-deck",
  "axum",

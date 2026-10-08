@@ -13,6 +13,20 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 | `member` | int | absent | Compatibility field; only 5 (or absent) is supported. |
 | `timeoutMs` / `timeout_ms` | int | 300000 | Public JSON search deadline in milliseconds; valid range `1..=300000`. On expiry the legal incumbents found so far are returned (anytime behavior); exactness is certified only when completion is `Complete`. The lower-level `SearchParams` API additionally reserves `0` for an unlimited internal search. |
 | `minimize` | bool | false | Weakest-deck search. Only meaningful with `target=power`; ignored otherwise. |
+| `multiUnitBonusEvaluation` / `multi_unit_bonus_evaluation` | string | `"by_deck"` | `by_deck`, `force_on`, `force_off`. Applies to owned multi-unit area effects; `force_off` retains other effects of the same item. The typed field is `BuildParams::multi_unit_bonus_mode`. |
+
+## Area items and MySekai gates
+
+Area-item rates preserve all three power dimensions and the original master-row order. All three ALL_MATCH rates must be present; otherwise that row uses its normal rates. A target character of zero is unrestricted. Owned levels above an item's master maximum are clamped to that maximum; missing rows below the maximum are not substituted.
+
+For multi-unit activation, first collect non-Virtual-Singer original units. Then visit Virtual Singers in deck order: add a new support unit, or mark `piapro` as needed when support is absent or already present. Add `piapro` once at the end. More than one resulting unit activates `by_deck`. This is separate from skill unit counting and finale shuffle. A same-unit human team plus a Virtual Singer supporting that unit can satisfy both multi-unit activation and unit ALL_MATCH.
+
+Multi-unit area rows use character, multi-unit, original-unit, support-unit, attribute, and unrestricted buckets, in that priority. Original and support buckets compete by their f32 sum of three rates, with ties retaining the original bucket. Its all-match increment then competes with the multi bucket, with ties retaining the increment. If multi wins, the retained unit bucket uses normal rates. Retained rows accumulate in f64 in original order; each power dimension is floored separately. Without owned multi rows, every evaluation mode uses the legacy table without allocating a multi sidecar.
+
+Gate selection prefers the card's support unit, otherwise its original unit. A bare Virtual Singer selects the highest owned gate level, preserving user order on ties. Selection happens before looking up the level rate: a selected gate without a master level row contributes zero rather than falling back to another gate. Gate IDs do not imply a linear level-to-rate formula.
+
+Area-upgrade recommendations use the same evaluation mode before and after the upgrade and replace every effect row of the item together. The CLI flag is `--multi-unit-bonus-evaluation`; HTTP and WASM auxiliary requests accept the JSON spellings above. Typed callers use `AuxiliaryData::recommend_area_items_with_evaluation`; `recommend_area_items` uses `by_deck`. Levels 16–20 and item 56 use their master shop numbering.
+
 
 ## Event context
 
@@ -41,11 +55,20 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 
 Final chapter leader honor: a deck equips one main honor, so the leader-only honor bonus is a single event-honor row matched by event, honor and leader character; owned honors do not stack. For each leader character the builder assumes the owned honor with the largest leader bonus, breaking ties by the smallest honor ID. Results report it as `main_honor_id` (`mainHonorId` in the HTTP service); the key is omitted outside the final chapter or when the leader character has no matching owned honor. The honor power bonus added to total power is computed separately and still covers every owned honor.
 
+Finales are identified by `worldBlooms.json` rows with `worldBloomChapterType: "finale"`, as well as the supported legacy and simulated finale IDs. Explicit master rows take priority over fallback limits. Finale fallbacks count four limited cards for WL2 and five for WL3; fixture caps are respectively 20 and 60 in 0.1% units. Skill caps are the raw master value, without subtracting 100. WL3 chapters and finale retain the 336,000 total-power cap.
+
+`eventShuffleUnitBonuses.json` is optional. Its rows contain `eventId`, `unitCount`, and integer `bonusRate` in percentage points. A WL3 finale with no matching rows defaults to 10/30/50% for 3/4/5 distinct **original** units; other events default to zero. Any matching rows replace the whole fallback table, with zero for counts without a row. This applies to both real and simulated finales. Every Virtual Singer contributes `piapro`, independently of support units. Search bounds use the largest supplied rate, including nonmonotone tables. Results expose this component as `shuffle_bonus_rate` (`shuffleBonusRate` over HTTP). The typed masterdata view exposes `event_shuffle_unit_bonuses`, and `SearchContext.shuffle_unit_bonus` carries its six count-indexed rates.
+
+A real finale must supply its `eventSkillScoreUpLimits` row; a missing row produces a build error. The legacy finale and simulated finales retain their 140% fallback, and an explicit row takes priority. Ordinary events may omit the skill-cap table.
+
+Simulated finale support rows copy positive rates for supported characters from the source events and deduplicate `(character, card)` among those eligible rows in master order; absent source rows are not synthesized from old event-card bonuses. A real finale with a zero `leaderBonusRate` keeps that zero; the 20% missing-leader-bonus fallback applies only to the supported legacy and simulated finales.
+
 ## Deck constraints
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `fixedCards` | int[] | `[]` | Card IDs locked into the deck. Combined with `fixedCharacters`, at most 5 slots; slot 0 carries leader semantics. |
+| `fixedConstraintMode` / `fixed_constraint_mode` | string | `"slots"` | `slots` preserves the ordered-slot contract. `members` is an opt-in for finale recommendations: fixed cards and characters must participate, and `forcedLeaderCharacterId` independently selects the leader. With no forced leader, every legal leader is considered. Membership mode with mandatory members and exact `targetBonusList` tiers is not supported. |
 | `fixedCharacters` | int[] | `[]` | Character IDs locked into slots after the fixed cards. |
 | `excludedCards` | int[] | `[]` | Card IDs removed from the candidate pool. |
 | `challengeLiveCharacterId` / `challenge_live_character_id` | int | absent | Character for `challenge` / `challenge_auto` (character uniqueness is disabled there). |
@@ -125,7 +148,7 @@ The end-to-end exactness argument and counterexample regressions are recorded in
 
 Exactness is conditional on `SearchCompletion::Complete`. On timeout, every returned incumbent is still legal and exactly evaluated, but canonical Top-K completeness is unproven; `SearchStats::deadline_hit` is set and completion is `TimedOut`. Pools above 512 retain their full candidate set in SoA columns; the fixed metadata-mask accessors explicitly return `None`. A pool larger than 65,535 cards returns `TooManyCards` rather than silently producing an approximate deck.
 
-Compact representation limits are checked before pool packing. The current model uses 16-bit dense indexes and public card IDs, 18-bit per-card power profiles, 8-bit skill values, 12-bit main-card bonus totals in tenths, 15 distinct nonzero limited-bonus values, and 255 distinct entries in each special-skill table. A real event skill cap is applied before the width check. Identical special-skill content is interned, so duplicate entries do not consume distinct capacity. Unrepresentable values return a typed `BuildError::CapacityExceeded`; they are not saturated, truncated, silently removed, or allowed to panic in the arena builder.
+Compact representation limits are checked before pool packing. The current model uses 16-bit dense indexes and public card IDs, 18-bit legacy per-card power profiles plus an optional pool-wide eight-state u32 multi-unit sidecar, 8-bit skill values, 12-bit main-card bonus totals in tenths, 15 distinct nonzero limited-bonus values, and 255 distinct entries in each special-skill table. A real event skill cap is applied before the width check. Identical special-skill content is interned, so duplicate entries do not consume distinct capacity. Unrepresentable values return a typed `BuildError::CapacityExceeded`; they are not saturated, truncated, silently removed, or allowed to panic in the arena builder.
 
 Result ordering uses one total order for every solver: objective descending (only minimizing `power` reverses this field), then actual resolved and capped total power descending for `mysekai`, then the ascending sorted public card-ID set, then the ascending concrete legal input-slot card IDs, and finally the prepared-pool variant ordinals. The last field selects a deterministic cultivation representative within the same immutable pool; rebuilding a different pool does not promise the same dense ordinals. Distinct means a public card-ID set, not a slot permutation or cultivation variant. A fixed or forced leader remains a role constraint; the display order materialized by the evaluator is not fed back as a new Specific input order. Exact bonus requests deduplicate separately in each tier.
 

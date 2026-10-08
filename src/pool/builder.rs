@@ -14,6 +14,8 @@ pub struct PoolBuilder {
     layout: PoolLayout,
     count: u16,
     special: SpecialTables,
+    multi_power: Option<Vec<[u32; 8]>>,
+    multi_mode: crate::power::MultiUnitBonusMode,
 }
 
 impl PoolBuilder {
@@ -25,6 +27,8 @@ impl PoolBuilder {
             layout,
             count: n,
             special: SpecialTables::default(),
+            multi_power: None,
+            multi_mode: crate::power::MultiUnitBonusMode::default(),
         }
     }
 
@@ -217,8 +221,23 @@ impl PoolBuilder {
         self.special.push_limited_bonus(value_x10);
     }
 
+    /// Sets the activation policy of the optional multi-unit table.
+    pub fn set_multi_unit_bonus_mode(&mut self, mode: crate::power::MultiUnitBonusMode) {
+        self.multi_mode = mode;
+    }
+
+    /// Sets the eight exact multi-unit powers, allocating a pool-wide sidecar on first use.
+    pub fn set_multi_power_values(&mut self, idx: u16, values: [u32; 8]) {
+        self.multi_power
+            .get_or_insert_with(|| vec![[0; 8]; usize::from(self.count)])[usize::from(idx)] =
+            values;
+    }
+
     /// 冻结为只读 `CardPool`。
     pub fn freeze(self) -> CardPool {
-        CardPool::from_parts(self.arena, self.layout, self.count, self.special)
+        let mut pool = CardPool::from_parts(self.arena, self.layout, self.count, self.special);
+        pool.multi_power = self.multi_power;
+        pool.multi_mode = self.multi_mode;
+        pool
     }
 }

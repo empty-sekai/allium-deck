@@ -281,6 +281,8 @@ pub struct AreaItemsRequest {
     pub user: UserInput,
     #[serde(alias = "card_ids")]
     pub card_ids: Vec<i32>,
+    #[serde(default, alias = "multi_unit_bonus_evaluation")]
+    pub multi_unit_bonus_evaluation: allium_deck::power::MultiUnitBonusMode,
 }
 
 /// `POST /v1/area-items/recommend`
@@ -307,7 +309,12 @@ async fn run_area_items(
             let game = snapshot.game();
             snapshot
                 .auxiliary()
-                .recommend_area_items(&user, &game, &card_ids)
+                .recommend_area_items_with_evaluation(
+                    &user,
+                    &game,
+                    &card_ids,
+                    request.multi_unit_bonus_evaluation,
+                )
                 .map_err(ApiError::BadRequest)
         })
         .await?;
@@ -384,6 +391,43 @@ fn record<T>(
         Err(error) => {
             state.metrics.record(endpoint, error.outcome(), seconds);
             Err(error)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AreaItemsRequest;
+    use allium_deck::power::MultiUnitBonusMode;
+    use serde_json::json;
+
+    #[test]
+    fn area_item_evaluation_defaults_to_by_deck_and_accepts_both_spellings() {
+        let body = json!({"user": {}, "cardIds": [1, 2, 3, 4, 5]});
+        let default: AreaItemsRequest =
+            serde_json::from_value(body.clone()).expect("default area item request parses");
+        assert_eq!(
+            default.multi_unit_bonus_evaluation,
+            MultiUnitBonusMode::ByDeck
+        );
+
+        for key in ["multiUnitBonusEvaluation", "multi_unit_bonus_evaluation"] {
+            for (value, expected) in [
+                ("by_deck", MultiUnitBonusMode::ByDeck),
+                ("force_on", MultiUnitBonusMode::ForceOn),
+                ("force_off", MultiUnitBonusMode::ForceOff),
+            ] {
+                let mut request = body.clone();
+                request[key] = json!(value);
+                let parsed: AreaItemsRequest =
+                    serde_json::from_value(request).expect("evaluation mode parses");
+                assert_eq!(parsed.multi_unit_bonus_evaluation, expected);
+            }
+            for value in [json!("invalid"), json!(true), json!(1), json!(null)] {
+                let mut request = body.clone();
+                request[key] = value;
+                assert!(serde_json::from_value::<AreaItemsRequest>(request).is_err());
+            }
         }
     }
 }

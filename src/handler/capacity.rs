@@ -209,7 +209,7 @@ pub(super) fn validate_cards(cards: &[CardIntermediate]) -> Result<(), BuildErro
     for card in cards {
         public_card_id(card.game_card_id)?;
         ensure("character id", u64::from(card.character_id), 26)?;
-        ensure("attribute id", u64::from(card.attr), 5)?;
+        ensure("attribute id", u64::from(card.attr), 4)?;
         ensure("unit mask", u64::from(card.unit_mask_raw), 63)?;
         ensure(
             "per-card power unit profiles",
@@ -301,6 +301,7 @@ mod tests {
         SearchContext {
             target,
             fixed_card_ids: Vec::new(),
+            fixed_constraint_mode: crate::handler::FixedConstraintMode::Slots,
             fixed_character_ids: Vec::new(),
             forced_leader_character_id: None,
             music_rate_pct: 130,
@@ -319,6 +320,8 @@ mod tests {
             support_decks_by_character: Vec::new(),
             is_world_bloom: true,
             is_final_chapter: false,
+            is_wl3_finale: false,
+            shuffle_unit_bonus: [0; 6],
             enforce_char_uniqueness: true,
             minimize: false,
             live_type: LiveType::Multi,

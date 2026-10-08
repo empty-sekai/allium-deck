@@ -740,18 +740,35 @@ Implementation: src/search/composition.rs (`search_regimes`, `RegimePlan`) and
 `CardPool::restrict`.
 
 For a deck $D$ let $A(D)$ be the attribute shared by all five cards, if any,
-and $U(D)$ the set of units contained in all five cards. The evaluator resolves
-card $c$ of $D$ to
+and $U(D)$ the set of original-or-support units contained in all five cards. The legacy
+power of card $c$ is
 
 $$
-p_D(c)=\max_{w\in\mathrm{units}(c)} v_c\bigl(\pi_c(w),\,[w\in U(D)],\,[A(D)=\mathrm{attr}(c)]\bigr),
+L_D(c)=\max_{w\in\mathrm{units}(c)} v_c\bigl(\pi_c(w),\,[w\in U(D)],\,[A(D)=\mathrm{attr}(c)]\bigr),
 $$
 
 where $v_c(\pi,u,a)$ is the stored power of profile $\pi$ under member key
 $2u+a$. Since $A(D)=\mathrm{attr}(c)$ holds for every card exactly when $A(D)$
 exists, the key of each unit depends only on $(w\in U(D),\ A(D)\text{ exists})$.
 
-**Regimes.** The feasible decks are covered by 49 regimes:
+The optional multi table stores $M_c[o,s,a]$ for the three independent
+ALL_MATCH bits: the card's original unit in $U(D)$, its support unit in
+$U(D)$, and shared attribute. `power::DeckComposition` computes $U(D)$ and
+multi activation separately; shared membership is not evidence against multi
+activation. `power::effective_power` returns $M$ exactly when the owned table
+exists and the requested mode activates it; otherwise it returns $L$. The
+legacy two-profile LUT and its 18-bit values are unchanged. The eight-state
+u32 sidecar is copied in lockstep by gather, compaction, and restriction.
+
+The multi values are prepared by f32 bucket comparisons, followed by ordered
+f64 per-row dimension sums and individual floors. Pruning uses the resulting
+integers, not a rearranged rate formula. No monotonicity between stored states
+is required. Dominance compares every enabled multi state as well as every
+legacy state, under identical memberships; it therefore preserves the other
+members' activation and ALL_MATCH states. Numeric admission bounds the maxima
+including the sidecar. Minimization takes the minimum over every enabled state.
+
+**Regimes.** The legacy membership/attribute cover has 49 regimes:
 
 | regime | condition on $D$ | admitted cards | member keys $K_R$ |
 | --- | --- | --- | --- |
@@ -772,7 +789,16 @@ $$
 p_D(c)\le b_R(c)=\max_{w\in\mathrm{units}(c)}\ \max_{k\in K_R} v_c(\pi_c(w),k).
 $$
 
-`RegimePlan::new` computes $b_R$ and `CardPool::restrict` builds the pool of
+With a multi table, `search_regimes` pairs this cover with legacy/multi
+activation, omitting the inactive side for force modes. For multi power the
+allowed state set contains exactly the attribute bit of $K_R$, with both unit
+bits false when $U(D)$ must be empty and either bit allowed otherwise. Every
+actual state belongs to that set, so its maximum is an admissible $b_R$.
+`power_over_keys` uses the union when a caller does not split activation.
+All valid decks belong to at least one paired regime, including a deck that
+has both shared membership and active multi furniture.
+
+`RegimePlan::new` and `new_for_activation` compute $b_R$; `CardPool::restrict` builds the pool of
 admitted cards with $b_R$ as their `power_max`; every other column, including
 the eight exact power contexts, is copied unchanged. Every bound of Sections
 4–12 and 14–18 uses `power_max` only as a per-card upper bound on resolved
@@ -791,7 +817,7 @@ apply verbatim to the feasible decks of $R$, with $b_R$ in place of
 $b_R$, skill maximum and card-bonus ceiling among admitted cards, and adds an
 admissible extra-bonus term: for World Bloom the best diversity bonus over the
 attribute counts the admitted cards can reach (one when the regime fixes the
-attribute) plus, over every support profile, the rounded-up sum of its first
+attribute), the WL3 finale shuffle ceiling, plus, over every support profile, the rounded-up sum of its first
 `count` entries, which is the largest sum any exclusion can leave; otherwise
 the context's extra-bonus bound; and for Final Chapter the largest leader
 bonus. A deck uses five distinct characters, so each sum of five per-character
@@ -955,6 +981,22 @@ matching for the layer, so the attribute counts it allows lie within the
 layer's and the bound is at most the layer's. The exclusion-aware ceiling with
 it is therefore at most the one with the layer's bound, and only the former is
 tested.
+
+### 16.1 Original-unit shuffle
+
+Only a third World Bloom finale adds original-unit diversity: 0/10/30/50
+for fewer than three / three / four / five original units. All Virtual Singers
+contribute piapro regardless of support. This predicate is independent of
+both skill counting and multi furniture. Its maximum 50 is added to every
+World Bloom extra-bonus bound, including the composition plan, dense suffix,
+Final Chapter attribute DP, selected-card bound, and log-linear feature box.
+The final evaluator and summary use the actual original-unit count.
+
+Exact bonus tiers enumerate each attribute-bonus class together with all
+four shuffle values. The support-refill certificate uses that same set of
+extra ticks. It may admit infeasible combinations of attribute and original
+unit counts, but never excludes a real one; exact leaves filter the requested
+tier. Hence the existing reachability and Top-K arguments remain valid.
 
 ## 17. Exact bonus tiers
 
@@ -1804,8 +1846,16 @@ $$
 This bound even permits reuse of the same global maximum card and ignores
 character/fixed-slot restrictions, so it is a relaxation.
 
-For minimizing Power, let power_min(c) be the minimum of card $c$'s eight
-precomputed power contexts and let
+For minimizing Power, define the legacy lower bound of card $c$ as zero when
+its six-bit unit membership is empty, otherwise as the minimum of its eight
+decoded legacy values. The empty membership case resolves to zero without
+selecting a table entry. For nonempty membership, each selected profile value
+is at least the table minimum, so their maximum is also at least this bound.
+
+Let power_min(c) be that legacy bound when the sidecar is absent or the mode is
+`force_off`; otherwise take its minimum with all eight sidecar values. This
+bounds both effective-power branches. Keeping the legacy bound in `force_on`
+can only weaken the lower bound, not exclude a feasible completion. Let
 
 $$
 m=\min_c power\_min(c).
@@ -2010,14 +2060,15 @@ Implementation: src/search/solver/power.rs.
 
 For a deck $D$ let $U(D)$ be the set of unit bits that every member's unit
 mask contains (over the six bits the evaluator reads) and $A(D)$ the
-attribute all five members share, if any. The evaluator resolves member $c$ to
+attribute all five members share, if any. The legacy branch resolves member $c$ to
 
 $$
 p(c,D)=\max_{w\in units(c)} V_c\bigl[prof_c(w)\bigr]\bigl[2\,[w\in U(D)]+[A(D)\text{ exists}]\bigr],
 $$
 
 where $V_c[\cdot][k]$ are the card's stored powers by profile and member key,
-and $v(D)=\operatorname{clamp}(\sum_{c\in D}p(c,D)+H)$ with honor power $H$.
+and the active multi branch is defined in Section 13. In both cases
+$v(D)=\operatorname{clamp}(\sum_{c\in D}p(c,D)+H)$ with honor power $H$.
 
 A scenario $S=(U,a)$ pairs a unit set $U$ with $a$, either "no shared
 attribute" or one attribute. It admits the cards whose mask contains $U$ and,
@@ -2033,32 +2084,22 @@ fewer than five characters holds no deck and is dropped.
 
 ### Lemma 3 — scenario power ceiling
 
-For a card $c$ admitted by $S=(U,a)$ let
-$single(c;u,a)$ = `resolve_card_power_scenario` with all-member unit $u$ (or
-none) and the attribute flag of $a$, and
+For a card $c$ admitted by $S=(U,a)$, `scenario_power` evaluates
+`effective_power` with the exact common-unit set $U$ and attribute bit $a$
+for both possible multi-activation values and takes their maximum $g_S(c)$.
+Force modes and the absence of a sidecar already collapse the irrelevant
+activation through the selector. Thus the actual state of every deck $D$
+with $S(D)=S$ is among those considered, and $p(c,D)\le g_S(c)$.
 
-$$
-g_S(c)=\begin{cases}
-single(c;\varnothing,a) & U=\varnothing,\
-\max_{u\in U} single(c;u,a) & \text{otherwise.}
-\end{cases}
-$$
+No order between member keys, profiles or activation states is assumed.
+Both original and support ALL_MATCH can hold at once. Since clamp is
+non-decreasing, $v(D)\le\operatorname{clamp}(\sum_{c\in D}g_{S(D)}(c)+H)$.
 
-Then $p(c,D)\le g_S(c)$ for every deck $D$ with $S(D)=S$ and every member
-$c$, with equality when $|U|\le1$.
-
-**Proof.** $single(c;u,a)$ is the maximum over $w\in units(c)$ of
-$V_c[prof_c(w)][2[w=u]+[a]]$. Take any term of the maximum defining
-$p(c,D)$. If $w\in U$, it is the $w$-term of $single(c;w,a)$. If $w\notin U$,
-it is the $w$-term of $single(c;u,a)$ for every $u\in U$, or of
-$single(c;\varnothing,a)$ when $U=\varnothing$. Every term is therefore
-bounded by $g_S(c)$. When $|U|\le1$ the single call uses exactly the member
-keys of $D$. ∎
-
-No order between member keys or between profiles is assumed. Two all-member
-units occur when every member carries both, for example five Virtual Singer
-cards with one support unit. Since clamp is non-decreasing,
-$v(D)\le\operatorname{clamp}(\sum_{c\in D}g_{S(D)}(c)+H)$.
+The no-event suffix bound has a different input: its `allowed` mask is only
+a superset of the eventual common units. `card_scenario_power` therefore
+includes normal and all-match legacy keys and every multi state whose true
+unit bits are still possible. Taking a maximum over that superset avoids any
+assumption that all-match or multi rates increase power.
 
 ### Lemma 4 — best completion in a scenario
 

@@ -70,6 +70,8 @@ pub struct GameData<'a> {
     pub event_mysekai_fixture_performance_bonus_limits: &'a [EventFixtureBonusLimit],
     /// 活动技能上限表。
     pub event_skill_score_up_limits: &'a [EventSkillScoreUpLimit],
+    /// Optional event bonus by the number of original character units.
+    pub event_shuffle_unit_bonuses: &'a [EventShuffleUnitBonus],
     /// 歌曲元数据表。
     pub music_metas: &'a [MusicMeta],
     /// 歌曲难度表。
@@ -80,6 +82,28 @@ pub struct GameData<'a> {
     pub honors: &'a [Honor],
     /// 羁绊称号主表。
     pub bonds_honors: &'a [BondsHonor],
+}
+
+impl GameData<'_> {
+    /// Finale identity comes from the chapter table, with legacy/simulated IDs supported.
+    pub fn is_world_bloom_finale(&self, event_id: i32) -> bool {
+        crate::types::is_world_bloom_finale_event(event_id)
+            || self.world_blooms.iter().any(|row| {
+                row.event_id == event_id
+                    && row.world_bloom_chapter_type.as_deref() == Some("finale")
+            })
+    }
+}
+
+/// An event bonus for a given number of original character units in the main deck.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventShuffleUnitBonus {
+    /// Event identifier.
+    pub event_id: i32,
+    /// Number of distinct original units; all Virtual Singers share one unit.
+    pub unit_count: i32,
+    /// Bonus in whole percentage points.
+    pub bonus_rate: i32,
 }
 
 /// Handler 使用的最小化用户数据。
@@ -105,6 +129,17 @@ pub struct UserProfile {
     pub user_mysekai_canvas_bonus_cards: Vec<i32>,
     /// 用户称号。
     pub user_honors: Vec<UserHonor>,
+}
+
+/// Whether fixed cards and characters name input slots or mandatory members.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FixedConstraintMode {
+    /// Preserve the public input-slot contract, including the leader in slot zero.
+    #[default]
+    Slots,
+    /// Require participation while leaving every role free except a chosen leader.
+    Members,
 }
 
 /// 构建卡池所需的 handler 参数。
@@ -143,6 +178,9 @@ pub struct BuildParams {
     pub fixed_cards: Vec<i32>,
     /// 固定角色。
     pub fixed_characters: Vec<i32>,
+    /// Final-chapter membership constraints; defaults to the existing slot contract.
+    #[serde(default)]
+    pub fixed_constraint_mode: FixedConstraintMode,
     /// 终章指定队长角色；非终章忽略。
     pub forced_leader_character_id: Option<i32>,
     /// WL 角色 ID。
@@ -201,6 +239,9 @@ pub struct BuildParams {
     pub attr_filter: Option<String>,
     /// 反向搜索：求最弱（最小化 power）而非最强。仅 Power 目标生效，其它目标忽略。
     pub minimize: bool,
+    /// Activation policy for owned multi-unit area items.
+    #[serde(default, rename = "multi_unit_bonus_evaluation")]
+    pub multi_unit_bonus_mode: crate::power::MultiUnitBonusMode,
 }
 
 impl Default for BuildParams {
@@ -221,6 +262,7 @@ impl Default for BuildParams {
             single_card_configs: Vec::new(),
             fixed_cards: Vec::new(),
             fixed_characters: Vec::new(),
+            fixed_constraint_mode: FixedConstraintMode::Slots,
             forced_leader_character_id: None,
             world_bloom_character_id: None,
             world_bloom_event_turn: None,
@@ -249,6 +291,7 @@ impl Default for BuildParams {
             unit_filter: None,
             attr_filter: None,
             minimize: false,
+            multi_unit_bonus_mode: crate::power::MultiUnitBonusMode::default(),
         }
     }
 }
@@ -442,10 +485,10 @@ pub struct AreaItemLevel {
     pub attr: Option<String>,
     /// 适用角色。
     pub character_id: Option<i32>,
-    /// 综合力倍率。
-    pub power_rate: f64,
-    /// 全匹配综合力倍率。
-    pub power_all_match_rate: f64,
+    /// Independent power rates for the three dimensions.
+    pub power_rate: [f64; 3],
+    /// All-match rates; missing any dimension makes the entire row use normal rates.
+    pub power_all_match_rate: Option<[f64; 3]>,
 }
 
 /// 角色所属团。

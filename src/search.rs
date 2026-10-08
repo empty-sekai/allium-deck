@@ -31,6 +31,7 @@ pub mod dominance;
 /// 叶子求值：把一副确定的队伍算成分数。
 pub mod evaluate;
 mod log_linear;
+mod membership;
 mod objective;
 pub mod solver;
 mod tracker;
@@ -129,6 +130,10 @@ fn search_with_budget(
 ) -> (Vec<DeckResult>, SearchStats) {
     if params.top_k == 0 || pool.count() < DECK_SIZE {
         return (Vec::new(), SearchStats::default());
+    }
+
+    if ctx.uses_member_constraints() {
+        return membership::search(pool, ctx, params, budget);
     }
 
     let problem = problem::DeckProblem::from_context(ctx);

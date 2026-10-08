@@ -173,6 +173,27 @@ impl<'a> PreparedPoolBuild<'a> {
             ));
         }
         let event_ctx = build_event_context(game, params)?;
+        if params.fixed_constraint_mode == types::FixedConstraintMode::Members {
+            if matches!(
+                params.live_type,
+                crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+            ) {
+                return Err(BuildError::InvalidConfig(
+                    "fixed_constraint_mode=members does not support challenge live".to_string(),
+                ));
+            }
+            if !event_ctx.as_ref().is_some_and(|ctx| ctx.is_finale) {
+                return Err(BuildError::InvalidConfig(
+                    "fixed_constraint_mode=members requires a World Bloom final chapter"
+                        .to_string(),
+                ));
+            }
+            if !params.target_bonus_list.is_empty() && requires_member_roles(params) {
+                return Err(BuildError::InvalidConfig(
+                    "fixed_constraint_mode=members does not support target_bonus_list".to_string(),
+                ));
+            }
+        }
         if !params.target_bonus_list.is_empty()
             && !matches!(params.target, crate::types::ScoreTarget::Bonus)
         {
@@ -283,9 +304,9 @@ impl<'a> PreparedPoolBuild<'a> {
                     .unwrap_or(0);
                 if from_table == 0
                     && limited_entry.is_some()
-                    && crate::types::is_world_bloom_finale_event(
-                        event_ctx.as_ref().map(|ctx| ctx.event_id).unwrap_or(0),
-                    )
+                    && event_ctx
+                        .as_ref()
+                        .is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id))
                 {
                     // legacy 终章：当期卡行缺 leaderBonusRate 时队长兜底 20%
                     // The compact context stores this exact 20% as 200 tenths.
@@ -322,9 +343,9 @@ impl<'a> PreparedPoolBuild<'a> {
             }
         }
 
-        let event_scoped = event_ctx.as_ref().is_some_and(|ctx| {
-            ctx.support_deck_count == 0 && !crate::types::is_world_bloom_finale_event(ctx.event_id)
-        });
+        let event_scoped = event_ctx
+            .as_ref()
+            .is_some_and(|ctx| ctx.support_deck_count == 0 && !ctx.is_finale);
         // 精确档位组卡（target=bonus + target_bonus_list）的候选语义：
         // 命中零头档位（如 25%~33%）依赖全盒的低加成尾部，任何按加成盲裁的
         // 预过滤都会把这些档位变成不可达。专属路径只保留硬约束，并在综合力
@@ -454,9 +475,7 @@ pub(super) fn select_leader_honors(
     event_ctx: Option<&EventContext>,
     user: &types::UserProfile,
 ) -> Result<Vec<Option<LeaderHonor>>, BuildError> {
-    let Some(ctx) = event_ctx.filter(|ctx| {
-        crate::types::is_world_bloom_finale_event(ctx.event_id) && !ctx.honor_bonuses.is_empty()
-    }) else {
+    let Some(ctx) = event_ctx.filter(|ctx| ctx.is_finale && !ctx.honor_bonuses.is_empty()) else {
         return Ok(Vec::new());
     };
     let owned_honors: std::collections::HashSet<i32> = user
@@ -596,6 +615,15 @@ pub(super) fn validate_fixed_constraints(
     Ok((fixed_card_ids, fixed_character_ids))
 }
 
+/// An empty pin list, or only the chosen leader, already has slot-mode semantics.
+fn requires_member_roles(params: &types::BuildParams) -> bool {
+    !params.fixed_cards.is_empty()
+        || params
+            .fixed_characters
+            .iter()
+            .any(|&id| Some(id) != params.forced_leader_character_id)
+}
+
 pub(super) fn skill_states_for_card(
     default_image_kind: DefaultImage,
     after_training: bool,
@@ -695,6 +723,14 @@ pub(super) fn build_search_context(
         target: params.target,
         fixed_card_ids,
         fixed_character_ids,
+        fixed_constraint_mode: if params.fixed_constraint_mode
+            == types::FixedConstraintMode::Members
+            && !requires_member_roles(params)
+        {
+            types::FixedConstraintMode::Slots
+        } else {
+            params.fixed_constraint_mode
+        },
         // 指定队长对所有活动/模式生效；挑战 live 五张同角色，队长约束无意义。
         forced_leader_character_id: if matches!(
             params.live_type,
@@ -728,8 +764,10 @@ pub(super) fn build_search_context(
         support_decks_by_character,
         is_world_bloom: event_ctx
             .is_some_and(|ctx| matches!(ctx.event_type, crate::types::EventType::WorldBloom)),
-        is_final_chapter: event_ctx
-            .is_some_and(|ctx| crate::types::is_world_bloom_finale_event(ctx.event_id)),
+        is_wl3_finale: event_ctx
+            .is_some_and(|ctx| ctx.is_finale && ctx.world_bloom_event_turn == Some(3)),
+        shuffle_unit_bonus: event_ctx.map_or([0; 6], |ctx| ctx.shuffle_unit_bonus),
+        is_final_chapter: event_ctx.is_some_and(|ctx| ctx.is_finale),
         enforce_char_uniqueness: !matches!(
             params.live_type,
             crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
@@ -746,7 +784,10 @@ pub(super) fn build_search_context(
         multi_live_score_up_lower_bound: params.multi_live_score_up_lower_bound,
         extra_bonus_ub: diff_attr_bonus.into_iter().max().unwrap_or(0) as u32
             + support_bonus_top_sum.ceil() as u32
-            + support_bonus_top_sum_by_character,
+            + support_bonus_top_sum_by_character
+            + event_ctx.map_or(0, |ctx| {
+                u32::from(ctx.shuffle_unit_bonus.iter().copied().max().unwrap_or(0))
+            }),
         w_power: 1.0,
         w_bonus: 1.0,
         skill_ub_global,
@@ -779,13 +820,21 @@ pub(super) fn resolve_fixture_bonus_limit(
     game: &types::GameData<'_>,
     event_ctx: Option<&EventContext>,
 ) -> Option<i32> {
-    let event_id = event_ctx?.event_id;
+    let event_ctx = event_ctx?;
+    let event_id = event_ctx.event_id;
     game.event_mysekai_fixture_performance_bonus_limits
         .iter()
         .find(|entry| entry.event_id == event_id)
         .map(|entry| entry.bonus_rate_limit)
-        // 终章（legacy 180 与模拟 WL3 终章）固定 20。
-        .or_else(|| crate::types::is_world_bloom_finale_event(event_id).then_some(20))
+        .or_else(|| {
+            event_ctx
+                .is_finale
+                .then_some(if event_ctx.world_bloom_event_turn == Some(2) {
+                    20
+                } else {
+                    60
+                })
+        })
 }
 pub(super) fn build_card_pool_fully_prepared_internal(
     prepared: &PreparedGameData<'_>,
@@ -799,9 +848,8 @@ pub(super) fn build_card_pool_fully_prepared_internal(
     let music = build.music.as_ref();
     let prepared_cards = &build.cards;
     let mut cards = Vec::with_capacity(prepared_cards.len());
-    let needs_support_cards = event_ctx.is_some_and(|ctx| {
-        ctx.support_deck_count > 0 || crate::types::is_world_bloom_finale_event(ctx.event_id)
-    });
+    let needs_support_cards =
+        event_ctx.is_some_and(|ctx| ctx.support_deck_count > 0 || ctx.is_finale);
     let mut support_seeds: Vec<SupportSeedSlim> = if needs_support_cards {
         Vec::with_capacity(prepared_cards.len())
     } else {
@@ -909,15 +957,24 @@ pub(super) fn build_card_pool_fully_prepared_internal(
     } else {
         params.live_type
     };
-    let (pool, full, gathered) = sort_and_gather(
+    let (mut pool, full, gathered) = sort_and_gather(
         cards,
         params.target,
         event_ctx.is_some(),
         effective_live_type,
-        &fixed_card_ids,
-        &fixed_character_ids,
+        if params.fixed_constraint_mode == types::FixedConstraintMode::Members {
+            &[]
+        } else {
+            &fixed_card_ids
+        },
+        if params.fixed_constraint_mode == types::FixedConstraintMode::Members {
+            &[]
+        } else {
+            &fixed_character_ids
+        },
         include_details,
     )?;
+    pool.set_multi_unit_bonus_mode(params.multi_unit_bonus_mode);
     let mut search_ctx = build_search_context(
         gathered,
         &support_seeds,

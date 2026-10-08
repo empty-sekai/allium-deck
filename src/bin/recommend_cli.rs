@@ -82,6 +82,7 @@ struct ParamOverrides {
     other_score: Option<Option<i32>>,
     life: Option<Option<i32>>,
     minimize: Option<bool>,
+    multi_unit_bonus_evaluation: Option<allium_deck::power::MultiUnitBonusMode>,
     rarity_1_config: Option<CardRarityConfig>,
     rarity_2_config: Option<CardRarityConfig>,
     rarity_3_config: Option<CardRarityConfig>,
@@ -147,7 +148,14 @@ fn run() -> Result<(), String> {
 
     match args.mode.as_deref() {
         Some("area-items") => {
-            return run_area_items(&args, &user, &game, masterdata, load_ms);
+            return run_area_items(
+                &args,
+                &user,
+                &game,
+                masterdata,
+                load_ms,
+                params.multi_unit_bonus_mode,
+            );
         }
         Some("music") => {
             return run_music(&args, &user, &game, params, load_ms);
@@ -537,6 +545,7 @@ fn run_area_items(
     game: &GameData<'_>,
     masterdata: &str,
     load_ms: f64,
+    evaluation: allium_deck::power::MultiUnitBonusMode,
 ) -> Result<(), String> {
     let auxiliary = load_auxiliary(masterdata)?;
     let card_ids = args
@@ -545,7 +554,7 @@ fn run_area_items(
         .ok_or_else(|| "--mode area-items 需要 --card-ids（1..5 张卡，逗号分隔）".to_string())?;
     let start = Instant::now();
     let result = auxiliary
-        .recommend_area_items(user, game, &card_ids)
+        .recommend_area_items_with_evaluation(user, game, &card_ids, evaluation)
         .map_err(|e| e.to_string())?;
     eprintln!("[area_items] {:.1}ms  rows={}", ms(start), result.len());
     eprintln!("[total] {:.1}ms", load_ms + ms(start));
@@ -786,6 +795,12 @@ fn parse_args() -> Result<CliArgs, String> {
                 parsed.overrides.other_score = Some(parse_optional_i32(&value()?, &flag)?)
             }
             "--life" => parsed.overrides.life = Some(parse_optional_i32(&value()?, &flag)?),
+            "--multi-unit-bonus-evaluation" => {
+                parsed.overrides.multi_unit_bonus_evaluation = Some(
+                    serde_json::from_value(serde_json::Value::String(value()?))
+                        .map_err(|e| format!("{flag}: {e}"))?,
+                );
+            }
             "--minimize" => parsed.overrides.minimize = Some(true),
             "--no-minimize" => parsed.overrides.minimize = Some(false),
             "--rarity1-config" => {
@@ -910,6 +925,9 @@ fn apply_overrides(params: &mut BuildParams, overrides: ParamOverrides) {
     if let Some(value) = overrides.life {
         params.life = value;
     }
+    if let Some(value) = overrides.multi_unit_bonus_evaluation {
+        params.multi_unit_bonus_mode = value;
+    }
     if let Some(value) = overrides.minimize {
         params.minimize = value;
     }
@@ -953,6 +971,7 @@ fn print_help() {
          --skill-reference-strategy average|max|min --live-skill-order best|worst|average|specific\n\
          --specific-skill-order 0,1,2,3,4 --best-skill-as-leader --keep-after-training-state\n\
          --multi-teammate-power N --multi-teammate-score-up N --multi-live-score-up-lower-bound N\n\
+         --multi-unit-bonus-evaluation by_deck|force_on|force_off\n\
          --other-score N --life N --minimize\n\
          --rarity4-config level_max,skill_max,master_max,episode_read,canvas\n\
          --single-card-config 123:level_max,skill_max,master_max"
@@ -1342,6 +1361,7 @@ struct DeckOut {
     event_point: Option<i32>,
     multi_live_score_up: Option<f64>,
     event_bonus_total: Option<f64>,
+    shuffle_bonus_rate: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     main_honor_id: Option<i32>,
 }
@@ -1408,6 +1428,7 @@ impl DeckOut {
             event_point: summary.and_then(|value| value.event_point),
             multi_live_score_up: summary.map(|value| value.multi_live_score_up),
             event_bonus_total: summary.and_then(|value| value.event_bonus_total),
+            shuffle_bonus_rate: summary.map(|value| value.shuffle_bonus_rate),
             main_honor_id: summary.and_then(|value| value.main_honor_id),
         }
     }

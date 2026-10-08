@@ -35,6 +35,8 @@ pub struct SearchContext {
     pub fixed_card_ids: Vec<u16>,
     /// 必须入队的角色 ID，占据 `fixed_card_ids` 之后的槽位。
     pub fixed_character_ids: Vec<u8>,
+    /// Fixed input slots by default; final-chapter members mode constrains participation.
+    pub fixed_constraint_mode: crate::handler::FixedConstraintMode,
     /// 必须占据队长位的角色。挑战 live 五张同角色，该约束无意义，建池时置 `None`。
     pub forced_leader_character_id: Option<u8>,
     /// 歌曲活动倍率，扩大 100 倍。
@@ -63,6 +65,10 @@ pub struct SearchContext {
     pub is_world_bloom: bool,
     /// 当前是否适用终章规则（队长限定加成、独立的支援卡组与综合力上限）。
     pub is_final_chapter: bool,
+    /// Whether the event is a third World Bloom finale; rates come from the table below.
+    pub is_wl3_finale: bool,
+    /// Original-unit bonus indexed by distinct original units in the main deck.
+    pub shuffle_unit_bonus: [u16; 6],
     /// challenge 模式下不要求角色唯一（pool 已过滤为同角色卡）
     pub enforce_char_uniqueness: bool,
     /// 反向搜索：求最弱（最小化 power）而非最强。仅 Power 目标生效，其它目标忽略。
@@ -94,7 +100,7 @@ pub struct SearchContext {
     pub w_bonus: f64,
     /// 池内技能值前五之和，即整副队伍技能加成的上界。
     pub skill_ub_global: u32,
-    /// 享受 limited bonus 的最大张数；终章为 4，其余通常为 [`DECK_SIZE`]。
+    /// 享受 limited bonus 的最大张数；WL2 终章缺省为 4，WL3 为 5，主表行优先。
     pub card_bonus_count_limit: usize,
     /// 称号带来的综合力加成，作为固定项计入每副队伍。
     pub honor_bonus: u32,
@@ -114,6 +120,50 @@ pub struct SearchContext {
 }
 
 impl SearchContext {
+    /// Whether fixed items constrain membership instead of input positions.
+    pub fn uses_member_constraints(&self) -> bool {
+        self.fixed_constraint_mode == crate::handler::FixedConstraintMode::Members
+    }
+
+    /// Number of leading input roles reserved by the public slot contract.
+    pub fn fixed_prefix_len(&self) -> usize {
+        if self.uses_member_constraints() {
+            0
+        } else {
+            (self.fixed_card_ids.len() + self.fixed_character_ids.len()).min(DECK_SIZE)
+        }
+    }
+
+    /// Mandatory members are checked before any candidate becomes an incumbent.
+    pub(crate) fn deck_matches_members(
+        &self,
+        pool: &crate::pool::CardPool,
+        deck: &[crate::pool::CardIdx; DECK_SIZE],
+    ) -> bool {
+        self.fixed_card_ids
+            .iter()
+            .all(|&id| deck.iter().any(|&card| pool.game_id(card) == id))
+            && self
+                .fixed_character_ids
+                .iter()
+                .all(|&id| deck.iter().any(|&card| pool.char_id(card) == id))
+    }
+
+    /// Admissible original-unit shuffle ceiling, independent of attribute diversity.
+    pub fn shuffle_bonus_upper(&self) -> u32 {
+        self.shuffle_unit_bonus.iter().copied().max().unwrap_or(0) as u32
+    }
+
+    /// Resolve the event's shuffle bonus; a supported Virtual Singer still counts as piapro.
+    pub fn shuffle_bonus_for(
+        &self,
+        pool: &crate::pool::CardPool,
+        deck: &[crate::pool::CardIdx; DECK_SIZE],
+    ) -> u32 {
+        crate::power::DeckComposition::from_cards(pool, deck)
+            .shuffle_bonus(&self.shuffle_unit_bonus)
+    }
+
     /// 返回按 `keep` 位图压缩后的搜索上下文。
     pub fn remap(&self, keep: &[bool]) -> Self {
         assert_eq!(
@@ -168,7 +218,7 @@ impl SearchContext {
         self.best_skill_as_leader
             && !self.is_final_chapter
             && self.forced_leader_character_id.is_none()
-            && self.fixed_character_ids.is_empty()
+            && (self.uses_member_constraints() || self.fixed_character_ids.is_empty())
     }
 
     /// 卡组是否满足指定队长约束（队里必须有该角色的卡）。
@@ -213,7 +263,8 @@ impl SearchContext {
     /// 当前是否存在固定 leader 约束。
     #[inline(always)]
     pub fn has_fixed_leader(&self) -> bool {
-        self.forced_leader_character_id.is_some() || !self.fixed_character_ids.is_empty()
+        self.forced_leader_character_id.is_some()
+            || (!self.uses_member_constraints() && !self.fixed_character_ids.is_empty())
     }
 
     /// 返回终章生效的固定队长角色。
@@ -226,12 +277,17 @@ impl SearchContext {
     /// 读取指定槽位固定卡 ID。
     #[inline(always)]
     pub fn fixed_card_at(&self, slot: usize) -> Option<u16> {
-        self.fixed_card_ids.get(slot).copied()
+        (!self.uses_member_constraints())
+            .then(|| self.fixed_card_ids.get(slot).copied())
+            .flatten()
     }
 
     /// 读取指定槽位固定角色 ID。
     #[inline(always)]
     pub fn fixed_character_at(&self, slot: usize) -> Option<u8> {
+        if self.uses_member_constraints() {
+            return None;
+        }
         let index = slot.checked_sub(self.fixed_card_ids.len())?;
         self.fixed_character_ids.get(index).copied()
     }
@@ -264,7 +320,11 @@ impl SearchContext {
         pool: &crate::pool::CardPool,
         deck: &[crate::pool::CardIdx; DECK_SIZE],
     ) -> bool {
-        let constrained_prefix = (self.fixed_card_ids.len() + self.fixed_character_ids.len())
+        if self.uses_member_constraints() && !self.deck_matches_members(pool, deck) {
+            return false;
+        }
+        let constrained_prefix = self
+            .fixed_prefix_len()
             .max(usize::from(
                 self.is_final_chapter && self.forced_leader_character_id.is_some(),
             ))

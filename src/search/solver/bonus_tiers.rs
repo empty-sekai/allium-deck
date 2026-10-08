@@ -1222,10 +1222,14 @@ impl<'a> Problem<'a> {
         let counts = if shares_attr { 1..=1 } else { 2..=DECK_SIZE };
         let mut classes: Vec<(i64, u8)> = Vec::new();
         for count in counts {
-            let value = i64::from(extras.diversity[count]) * 10 * self.scale;
-            match classes.iter_mut().find(|class| class.0 == value) {
-                Some(class) => class.1 |= 1 << count,
-                None => classes.push((value, 1 << count)),
+            let shuffle = &self.ctx.shuffle_unit_bonus;
+            for &shuffle in shuffle {
+                let value =
+                    (i64::from(extras.diversity[count]) + i64::from(shuffle)) * 10 * self.scale;
+                match classes.iter_mut().find(|class| class.0 == value) {
+                    Some(class) => class.1 |= 1 << count,
+                    None => classes.push((value, 1 << count)),
+                }
             }
         }
         classes
@@ -2325,8 +2329,11 @@ impl TierCertificate {
             most,
         );
         let scale = problem.scale;
-        let diversity = (1..=DECK_SIZE)
-            .map(|count| i64::from(extras.diversity[count]) * 10 * scale)
+        let diversity = problem
+            .diversity_classes(false)
+            .into_iter()
+            .chain(problem.diversity_classes(true))
+            .map(|(bonus, _)| bonus)
             .collect::<std::collections::BTreeSet<_>>();
         let mut reached = std::collections::BTreeSet::new();
         let mut subsets = vec![(Vec::new(), 0usize)];

@@ -13,7 +13,7 @@ Project Sekai 组卡推荐引擎的 Rust 实现，专攻 **DFS / 分支限界（
 - https://github.com/Team-Haruki/sekai-deck-recommend-cpp
 - https://github.com/StarMoe-org/sekai-deck-recommend-cpp
 
-具体移植与修正内容见各 commit 说明。
+本次 JP7 业务规则移植的直接来源是 **[Team-Haruki/sekai-deck-recommend-cpp](https://github.com/Team-Haruki/sekai-deck-recommend-cpp)**，对照提交为 [`496caed78a07ffe1f2d1f1553047dbf6b2ed0314`](https://github.com/Team-Haruki/sekai-deck-recommend-cpp/commit/496caed78a07ffe1f2d1f1553047dbf6b2ed0314)。区域道具、MySEKAI 大门、World Link 终章与活动上限等业务规则在现有 Rust 引擎中重新实现。来源文件、上游作者与行为差异见[业务规则来源](docs/game-rule-sources.md)。
 
 在此基础上，本实现并非逐行翻译，而是对**底层热路径与搜索剪枝做了彻底的 Rust 重构**，核心数据结构全部按 cache line 对齐：
 
@@ -189,6 +189,7 @@ recommend_cli \
 | `--mode area-items` / `--mode music` / `--mode exact-live` | 模式 | 辅助计算（不组卡）：`area-items` 需 `--card-ids`；`music` 需 `--deck`；`exact-live` 需 `--power/--skills/--music-score`。 |
 | `--skill-reference-strategy` / `--live-skill-order` / `--specific-skill-order` | 值 | 技能参考与发动顺序；指定顺序使用 `0,1,2,3,4`。 |
 | `--multi-teammate-power` / `--multi-teammate-score-up` / `--multi-live-score-up-lower-bound` | 值 | 协力和 Cheerful 队友综合力、技能实效、技能总下限。 |
+| `--multi-unit-bonus-evaluation` | 枚举 | 混编区域道具：`by_deck`（默认）/`force_on`/`force_off`；组卡与区域道具升级共用，规则见 [参数文档](docs/parameters.md#area-items-and-mysekai-gates)。 |
 | `--other-score` / `--life` | 值 | Cheerful 对手分数和体力。 |
 | `--rarity4-config` / `--single-card-config` | 值 | 养成配置，如 `level_max,skill_max,master_max,episode_read,canvas` 和 `123:level_max,skill_max`。 |
 

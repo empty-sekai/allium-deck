@@ -1,6 +1,6 @@
 [package]
 name = "allium-deck-server"
-version = "0.0.15"
+version = "0.1.0"
 edition = "2024"
 description = "HTTP service for the allium-deck recommendation engine"
 license = "MIT OR Apache-2.0"
@@ -19,7 +19,7 @@ name = "allium-deck-server"
 path = "src/main.rs"
 
 [dependencies]
-allium-deck = { path = "..", version = "=0.0.15" }
+allium-deck = { path = "..", version = "=0.1.0" }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 tokio = { version = "1.53", features = ["rt-multi-thread", "net", "signal", "time", "sync", "macros"] }
 tower-http = { version = "0.7.1", features = ["catch-panic", "trace"] }

@@ -316,7 +316,8 @@ pub(super) fn canonicalize_seed_result(
     let source = seed.cards;
     let mut used_source = [false; DECK_SIZE];
     let mut deck = [source[0]; DECK_SIZE];
-    let fixed_slots = (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len())
+    let fixed_slots = ctx
+        .fixed_prefix_len()
         .max(usize::from(ctx.is_final_chapter))
         .min(DECK_SIZE);
 
@@ -436,6 +437,17 @@ impl SearchState<'_> {
         bounded: bool,
     ) {
         if self.timed_out() {
+            return;
+        }
+        if self.ctx.uses_member_constraints()
+            && !super::membership::prefix_can_complete(
+                self.pool,
+                self.ctx,
+                &deck[..depth],
+                (start..self.pool.count()).map(|dense| CardIdx::new(dense as u16)),
+            )
+        {
+            self.stats.feasibility_prunes += 1;
             return;
         }
         if depth == DECK_SIZE {

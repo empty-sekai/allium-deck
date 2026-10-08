@@ -59,6 +59,7 @@ pub struct SuffixBound {
     is_final_chapter: bool,
     limited_bonus_cap: usize,
     extra_bonus_ub: u32,
+    shuffle_bonus_ub: u32,
     diff_attr_bonus: [u16; 6],
     support_cards: Vec<(u16, f64)>,
     support_count: usize,
@@ -180,7 +181,10 @@ fn world_bloom_extra_bonus_fallback(
         .sum::<f64>()
         .ceil()
         .clamp(0.0, u32::MAX as f64) as u32;
-    ctx.extra_bonus_ub.max(diff.saturating_add(support))
+    ctx.extra_bonus_ub.max(
+        diff.saturating_add(support)
+            .saturating_add(ctx.shuffle_bonus_upper()),
+    )
 }
 
 impl SuffixBound {
@@ -238,6 +242,7 @@ impl SuffixBound {
             limited_bonus_cap: ctx.card_bonus_count_limit,
             extra_bonus_ub,
             diff_attr_bonus: ctx.diff_attr_bonus,
+            shuffle_bonus_ub: ctx.shuffle_bonus_upper(),
             support_cards,
             support_count,
             power_order,
@@ -270,8 +275,8 @@ impl SuffixBound {
     ///
     /// 场景 = (allowed, attr_opt)：allowed 为仍可能全员同 unit 的 unit 集合
     /// （已选卡 unit_mask 的 AND），attr_opt 为仍可能全同的属性。对每个场景，
-    /// 已选卡取该场景下的精确综合力，剩余槽取每角色场景最大值 top-k。
-    /// 任意补全的真实 full-unit 集合是 allowed 的子集且场景值单调，故可采纳。
+    /// 已选卡与剩余槽都取可行状态的逐卡最大值。真实 full-unit 集合是
+    /// allowed 的子集；上界同时包含普通/全匹配与有效混编态，不假设倍率单调。
     #[inline(always)]
     pub(crate) fn upper_bound_score_noevent_numerator(
         &self,
@@ -900,7 +905,7 @@ impl SuffixBound {
             count += 1;
         }
         // Both bounds are admissible, hence so is the smaller one.
-        (diff_ub + support_ceiling).min(self.extra_bonus_ub)
+        (diff_ub + support_ceiling + self.shuffle_bonus_ub).min(self.extra_bonus_ub)
     }
 
     /// Maximum number of NEW attributes that any legal completion can add,
@@ -1411,19 +1416,40 @@ pub(crate) fn card_scenario_power(
     let mask = pool.unit_mask_raw(card);
     let lut = pool.power_lut(card);
     let values = pool.power_values(card);
-    let mut best = 0u32;
-    let mut unit = 0usize;
-    while unit < 6 {
-        if mask & (1u8 << unit) != 0 {
-            let slot = ((lut >> (16 + unit)) & 1) as usize;
-            let unit_all = (allowed & (1u8 << unit) != 0) as usize;
-            let key = unit_all * 2 + attr_full as usize;
-            let value = super::evaluate::decode_u18(values, lut, slot * 4 + key);
-            if value > best {
-                best = value;
+    let mut best = 0;
+    if !pool.has_multi_power()
+        || pool.multi_unit_bonus_mode() != crate::power::MultiUnitBonusMode::ForceOn
+    {
+        for unit in 0..6 {
+            if mask & (1 << unit) == 0 {
+                continue;
+            }
+            let profile = ((lut >> (16 + unit)) & 1) as usize;
+            let key = usize::from(attr_full);
+            best = best.max(super::evaluate::decode_u18(values, lut, profile * 4 + key));
+            if allowed & (1 << unit) != 0 {
+                best = best.max(super::evaluate::decode_u18(
+                    values,
+                    lut,
+                    profile * 4 + 2 + key,
+                ));
             }
         }
-        unit += 1;
+    }
+    if pool.multi_unit_bonus_mode() != crate::power::MultiUnitBonusMode::ForceOff
+        && let Some(multi) = pool.multi_power_values(card)
+    {
+        let original = crate::power::original_unit(mask);
+        let support = mask & !original;
+        for (key, &power) in multi.iter().enumerate() {
+            if (key & 1 != 0) != attr_full
+                || (key & 4 != 0 && allowed & original == 0)
+                || (key & 2 != 0 && allowed & support == 0)
+            {
+                continue;
+            }
+            best = best.max(power);
+        }
     }
     best
 }
@@ -1578,6 +1604,7 @@ mod support_envelope_tests {
         let ctx = SearchContext {
             target: ScoreTarget::Score,
             fixed_card_ids: Vec::new(),
+            fixed_constraint_mode: crate::handler::FixedConstraintMode::Slots,
             fixed_character_ids: Vec::new(),
             forced_leader_character_id: None,
             music_rate_pct: 100,
@@ -1596,6 +1623,8 @@ mod support_envelope_tests {
             support_decks_by_character: profiles,
             is_world_bloom: true,
             is_final_chapter: true,
+            is_wl3_finale: false,
+            shuffle_unit_bonus: [0; 6],
             enforce_char_uniqueness: true,
             minimize: false,
             live_type: LiveType::Multi,

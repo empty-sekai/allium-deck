@@ -29,9 +29,7 @@ pub const WL3_FAKE_FINALE_EVENT_ID: i32 = 3_200_000;
 
 /// 终章事件判定：legacy WL2 终章（180）与模拟 WL3 终章（3_200_000）。
 ///
-/// 真实 masterdata 出现
-/// 新终章活动前，模拟终章共享 180 的终章规则（队长限定 bonus、技能上限 140、
-/// 加成卡上限 4、mysekai fixture 上限 20、禁用 best_skill_as_leader）。
+/// 各轮终章的限制与加成由活动主数据及对应轮次的 fallback 决定。
 #[inline]
 pub const fn is_world_bloom_finale_event(event_id: i32) -> bool {
     event_id == FINAL_CHAPTER_EVENT_ID || event_id == WL3_FAKE_FINALE_EVENT_ID

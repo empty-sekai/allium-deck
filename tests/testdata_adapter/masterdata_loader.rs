@@ -5,10 +5,10 @@ use std::path::Path;
 use allium_deck::handler::{
     BondsHonor, CardEpisode, CardMysekaiCanvasBonus, CardParameter, CardRarity, CharacterRank,
     Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
-    EventRarityBonusRate, EventSkillScoreUpLimit, GameCharacterUnit, GameData, Honor, HonorLevel,
-    MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate, MysekaiGateLevel, Skill,
-    SkillEffect, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus, WorldBloom,
-    WorldBloomDiffAttrBonus,
+    EventRarityBonusRate, EventShuffleUnitBonus, EventSkillScoreUpLimit, GameCharacterUnit,
+    GameData, Honor, HonorLevel, MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate,
+    MysekaiGateLevel, Skill, SkillEffect, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus,
+    WorldBloom, WorldBloomDiffAttrBonus,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -43,6 +43,7 @@ pub struct OwnedGameData {
         Vec<WBSupportDeckUnitEventLimitedBonus>,
     pub event_mysekai_fixture_performance_bonus_limits: Vec<EventFixtureBonusLimit>,
     pub event_skill_score_up_limits: Vec<EventSkillScoreUpLimit>,
+    pub event_shuffle_unit_bonuses: Vec<EventShuffleUnitBonus>,
     pub music_metas: Vec<MusicMeta>,
     pub music_difficulties: Vec<MusicDifficulty>,
     pub event_rarity_bonus_rates: Vec<EventRarityBonusRate>,
@@ -280,6 +281,16 @@ impl OwnedGameData {
                 score_up_limit: entry.score_up_rate_limit,
             })
             .collect(),
+            event_shuffle_unit_bonuses: load_optional_json::<Vec<RawEventShuffleUnitBonus>>(
+                &masterdata_dir.join("eventShuffleUnitBonuses.json"),
+            )?
+            .into_iter()
+            .map(|row| EventShuffleUnitBonus {
+                event_id: row.event_id,
+                unit_count: row.unit_count,
+                bonus_rate: row.bonus_rate,
+            })
+            .collect(),
             music_metas: master_music_rows
                 .iter()
                 .map(|row| MusicMeta {
@@ -377,6 +388,7 @@ impl OwnedGameData {
             event_mysekai_fixture_performance_bonus_limits: &self
                 .event_mysekai_fixture_performance_bonus_limits,
             event_skill_score_up_limits: &self.event_skill_score_up_limits,
+            event_shuffle_unit_bonuses: &self.event_shuffle_unit_bonuses,
             music_metas: &self.music_metas,
             music_difficulties: &self.music_difficulties,
             event_rarity_bonus_rates: &self.event_rarity_bonus_rates,
@@ -407,24 +419,6 @@ fn flatten_card_parameters(card: &RawCard) -> Vec<CardParameter> {
 fn flatten_area_item_levels(
     raw: Vec<RawAreaItemLevel>,
 ) -> Vec<allium_deck::handler::AreaItemLevel> {
-    let mut raw = raw;
-    raw.sort_by(|left, right| {
-        (
-            left.area_item_id,
-            normalize_target_token(left.target_unit.as_deref()),
-            normalize_target_token(left.target_card_attr.as_deref()),
-            left.target_game_character_id,
-            left.level,
-        )
-            .cmp(&(
-                right.area_item_id,
-                normalize_target_token(right.target_unit.as_deref()),
-                normalize_target_token(right.target_card_attr.as_deref()),
-                right.target_game_character_id,
-                right.level,
-            ))
-    });
-
     let mut result = Vec::with_capacity(raw.len());
     for item in raw {
         let unit = normalize_target_token(item.target_unit.as_deref());
@@ -435,9 +429,17 @@ fn flatten_area_item_levels(
             level: item.level,
             unit,
             attr,
-            character_id: item.target_game_character_id,
-            power_rate: item.power1_bonus_rate,
-            power_all_match_rate: item.power1_all_match_bonus_rate,
+            character_id: item.target_game_character_id.filter(|id| *id != 0),
+            power_rate: [
+                item.power1_bonus_rate,
+                item.power2_bonus_rate,
+                item.power3_bonus_rate,
+            ],
+            power_all_match_rate: item
+                .power1_all_match_bonus_rate
+                .zip(item.power2_all_match_bonus_rate)
+                .zip(item.power3_all_match_bonus_rate)
+                .map(|((a, b), c)| [a, b, c]),
         });
     }
     result
@@ -795,7 +797,14 @@ struct RawAreaItemLevel {
     #[serde(default)]
     target_game_character_id: Option<i32>,
     power1_bonus_rate: f64,
-    power1_all_match_bonus_rate: f64,
+    power2_bonus_rate: f64,
+    power3_bonus_rate: f64,
+    #[serde(default)]
+    power1_all_match_bonus_rate: Option<f64>,
+    #[serde(default)]
+    power2_all_match_bonus_rate: Option<f64>,
+    #[serde(default)]
+    power3_all_match_bonus_rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -900,6 +909,14 @@ struct RawEventFixtureBonusLimit {
 struct RawEventSkillScoreUpLimit {
     event_id: i32,
     score_up_rate_limit: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawEventShuffleUnitBonus {
+    event_id: i32,
+    unit_count: i32,
+    bonus_rate: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]

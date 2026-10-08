@@ -35,6 +35,8 @@ jobs:
   test:
     name: test (linux)
     runs-on: ubuntu-latest
+    outputs:
+      release-version: ${{ steps.version.outputs.release-version }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -49,15 +51,17 @@ jobs:
           toolchain: 1.98.0
           components: rustfmt, clippy
 
-      - name: Verify release tag matches package versions
-        if: github.event_name == 'push'
+      - name: Verify release versions
+        id: version
         shell: bash
         run: |
-          EXPECTED="${GITHUB_REF_NAME#v}"
-          DECK_VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
-          WASM_VERSION=$(cargo metadata --manifest-path wasm/Cargo.toml --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
-          test "$DECK_VERSION" = "$EXPECTED"
-          test "$WASM_VERSION" = "$EXPECTED"
+          DECK_VERSION=$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "allium-deck"))')
+          WASM_VERSION=$(cargo metadata --manifest-path wasm/Cargo.toml --no-deps --format-version 1 | python3 -c 'import json,sys; print(next(item["version"] for item in json.load(sys.stdin)["packages"] if item["name"] == "allium-deck-wasm"))')
+          test "$DECK_VERSION" = "$WASM_VERSION"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            test "v$DECK_VERSION" = "$GITHUB_REF_NAME"
+          fi
+          echo "release-version=$DECK_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo registry and build
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
@@ -69,13 +73,13 @@ jobs:
 
       - name: cargo clippy
         run: |
-          cargo clippy --all-targets
-          cargo clippy --manifest-path wasm/Cargo.toml --all-targets
+          cargo clippy --locked --all-features --all-targets -- -D warnings
+          cargo clippy --manifest-path wasm/Cargo.toml --all-targets --locked -- -D warnings
 
       - name: cargo test
         run: |
-          cargo test --all-targets --release
-          cargo test --manifest-path wasm/Cargo.toml --all-targets --release
+          cargo test --locked --all-features --all-targets --release
+          cargo test --manifest-path wasm/Cargo.toml --all-targets --release --locked
 
       - name: release packaging tests
         run: python3 tests/test_release_packaging.py
@@ -110,7 +114,6 @@ jobs:
     name: build (${{ matrix.target }})
     needs: test
     runs-on: ${{ matrix.os }}
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -178,25 +181,19 @@ jobs:
         shell: bash
         run: |
           mkdir -p release
-          cp target/${{ matrix.target }}/release/${{ matrix.bin_name }} release/recommend_cli-${{ github.ref_name }}-${{ matrix.asset_name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.bin_name }} release/recommend_cli-v${{ needs.test.outputs.release-version }}-${{ matrix.asset_name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: recommend_cli-${{ matrix.target }}
+          name: release-build-${{ matrix.target }}
           path: release/*
+          if-no-files-found: error
 
   build-wasm-release:
     name: build WASM npm package
     needs: test
     runs-on: ubuntu-latest
-    outputs:
-      wasm-version: ${{ steps.inputs.outputs.wasm-version }}
-    # npm trusted publishing 需要 OIDC token，必须在能发出它的 job 层声明；
-    # 顶层 `permissions: contents: read` 会被这里的 job 级设置覆盖。
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -204,19 +201,18 @@ jobs:
         run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
 
       - name: Resolve WASM release version
-        id: inputs
+        env:
+          VERSION: ${{ needs.test.outputs.release-version }}
         run: |
           # wasm 与 masterdata 解耦，产物版本即 wasm crate 版本。
-          VERSION=$(cargo metadata --manifest-path wasm/Cargo.toml --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
-          WASM_ZIP="allium-deck-wasm-${GITHUB_REF_NAME}-cn.zip"
-          NPM_TGZ="allium-deck-wasm-${GITHUB_REF_NAME}.tgz"
+          WASM_ZIP="allium-deck-wasm-v${VERSION}-cn.zip"
+          NPM_TGZ="allium-deck-wasm-v${VERSION}.tgz"
           {
             echo "DIST_DIR=dist/deck-wasm"
             echo "WASM_VERSION=${VERSION}"
             echo "WASM_ZIP=${WASM_ZIP}"
             echo "NPM_TGZ=${NPM_TGZ}"
           } >> "$GITHUB_ENV"
-          echo "wasm-version=${VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
@@ -239,6 +235,11 @@ jobs:
           CARGO_PROFILE_RELEASE_OPT_LEVEL: "3"
           CARGO_PROFILE_RELEASE_PANIC: "abort"
         run: wasm-pack build wasm --target web --scope empty-sekai
+
+      - name: Set up Node for packaging and smoke tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
 
       - name: Package release files
         run: |
@@ -266,12 +267,6 @@ jobs:
           (cd wasm/pkg && npm pack --pack-destination ../../release)
           mv release/empty-sekai-allium-deck-wasm-*.tgz "release/$NPM_TGZ"
 
-      - name: Set up Node for npm trusted publishing
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
-
       - name: Smoke-test npm package
         run: |
           INSTALL_ROOT=$(mktemp -d)
@@ -280,29 +275,103 @@ jobs:
           cp scripts/smoke_wasm_package.mjs "$INSTALL_ROOT/smoke.mjs"
           node "$INSTALL_ROOT/smoke.mjs"
 
-      - name: Publish to npm (trusted publishing)
-        run: |
-          # trusted publishing 硬门槛：npm CLI >= 11.5.1 / Node >= 22.14。
-          # runner 自带版本未必满足，强制升到 latest。
-          npm install -g npm@latest
-          # trusted publishing 校验 package.json 的 repository.url 与 GitHub 仓库一致，
-          # 缺了会报 "Repository URL mismatch"。wasm-pack 生成的 package.json 不带该字段，
-          # 此处补上并显式设为 public（scoped 包默认 restricted）。
-          node -e "const fs=require('fs');const p='wasm/pkg/package.json';const j=JSON.parse(fs.readFileSync(p));j.repository={type:'git',url:'git+https://github.com/empty-sekai/allium-deck.git'};j.publishConfig={access:'public'};fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n')"
-          cd wasm/pkg
-          npm publish --provenance
-
       - name: Upload WASM release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: allium-deck-wasm-${{ github.ref_name }}-cn
+          name: release-build-wasm
           path: |
             release/*.zip
             release/*.tgz
+          if-no-files-found: error
+
+  release-assets:
+    name: verify complete release assets
+    needs: [test, build-binaries, build-wasm-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download artifacts from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-build-*
+          path: release
+          merge-multiple: true
+
+      - name: Create and verify SHA256SUMS
+        env:
+          VERSION: ${{ needs.test.outputs.release-version }}
+        run: |
+          python3 scripts/create_release_checksums.py --directory release --version "$VERSION"
+          (cd release && sha256sum --check SHA256SUMS)
+
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: release/*
+          if-no-files-found: error
+
+  publish-npm:
+    name: publish npm package
+    needs: [test, release-assets]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download verified release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets
+          path: release
+
+      - name: Set up Node for npm trusted publishing
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Publish the tested npm tarball (trusted publishing)
+        env:
+          VERSION: ${{ needs.test.outputs.release-version }}
+        run: |
+          (cd release && sha256sum --check SHA256SUMS)
+          set +e
+          node scripts/verify_npm_package.mjs \
+            --package @empty-sekai/allium-deck-wasm --version "$VERSION" \
+            --tarball "release/allium-deck-wasm-v${VERSION}.tgz" \
+            --attempts 3 --delay-ms 2000 --timeout-ms 5000
+          LOOKUP_STATUS=$?
+          set -e
+          case "$LOOKUP_STATUS" in
+            0) exit 0 ;;
+            3) ;;
+            *) exit "$LOOKUP_STATUS" ;;
+          esac
+          # Trusted publishing requires npm >= 11.5.1 and Node >= 22.14.
+          npm install -g npm@latest
+          set +e
+          npm publish --provenance --access public "release/allium-deck-wasm-v${VERSION}.tgz"
+          PUBLISH_STATUS=$?
+          set -e
+          if node scripts/verify_npm_package.mjs \
+            --package @empty-sekai/allium-deck-wasm --version "$VERSION" \
+            --tarball "release/allium-deck-wasm-v${VERSION}.tgz" \
+            --attempts 6 --delay-ms 3000 --timeout-ms 5000; then
+            if [ "$PUBLISH_STATUS" -ne 0 ]; then
+              echo "npm publish returned ${PUBLISH_STATUS}, but the registry has the tested tarball"
+            fi
+            exit 0
+          fi
+          exit 1
 
   publish-crate:
     name: publish crate
-    needs: [test, build-binaries, build-wasm-release]
+    needs: [test, release-assets]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     steps:
@@ -358,7 +427,7 @@ jobs:
 
   release:
     name: release
-    needs: [publish-crate, build-wasm-release]
+    needs: [publish-crate, publish-npm, release-assets]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
@@ -388,6 +457,10 @@ jobs:
             RANGE="${GITHUB_REF_NAME}"
           fi
           git-cliff --tag "${GITHUB_REF_NAME}" --output CHANGELOG.md "$RANGE"
+          if [ -f "docs/releases/${GITHUB_REF_NAME}.md" ]; then
+            printf '\n' >> CHANGELOG.md
+            cat "docs/releases/${GITHUB_REF_NAME}.md" >> CHANGELOG.md
+          fi
           {
             echo ""
             echo "### Assets"
@@ -396,12 +469,17 @@ jobs:
             echo "| \`recommend_cli-${GITHUB_REF_NAME}-*\` | Prebuilt CLI binaries (Linux x86_64 / musl / aarch64, Windows x86_64, macOS Apple Silicon) |"
             echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}.tgz\` | Installable npm package \`@empty-sekai/allium-deck-wasm\` |"
             echo "| \`allium-deck-wasm-${GITHUB_REF_NAME}-cn.zip\` | Browser WASM bundle (ZIP) |"
+            echo "| \`SHA256SUMS\` | SHA-256 checksums for all five native binaries and both WASM packages |"
           } >> CHANGELOG.md
 
-      - name: Download all artifacts
+      - name: Download verified release assets
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          name: release-assets
           path: artifacts
+
+      - name: Verify downloaded release assets
+        run: (cd artifacts && sha256sum --check SHA256SUMS)
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -412,6 +490,8 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
-            artifacts/**/recommend_cli-*
-            artifacts/**/allium-deck-wasm-*.zip
-            artifacts/**/allium-deck-wasm-*.tgz
+            artifacts/recommend_cli-*
+            artifacts/allium-deck-wasm-*.zip
+            artifacts/allium-deck-wasm-*.tgz
+            artifacts/SHA256SUMS
+          fail_on_unmatched_files: true

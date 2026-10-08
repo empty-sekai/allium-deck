@@ -13,7 +13,7 @@ Some in-game values and logic (power, skill bonuses, event points, support decks
 - https://github.com/Team-Haruki/sekai-deck-recommend-cpp
 - https://github.com/StarMoe-org/sekai-deck-recommend-cpp
 
-See the individual commit messages for exactly what was ported and corrected.
+The direct source of the JP7 business-rule port is **[Team-Haruki/sekai-deck-recommend-cpp](https://github.com/Team-Haruki/sekai-deck-recommend-cpp)** at [`496caed78a07ffe1f2d1f1553047dbf6b2ed0314`](https://github.com/Team-Haruki/sekai-deck-recommend-cpp/commit/496caed78a07ffe1f2d1f1553047dbf6b2ed0314). Area-item, MySEKAI gate, World Link finale, and event-limit rules are reimplemented in the existing Rust engine. See [Business-rule sources](docs/game-rule-sources.md) for source files, upstream attribution, and behavior differences.
 
 On top of that, this implementation is not a line-by-line translation: the **low-level hot paths and search pruning have been thoroughly reworked in Rust**, with all core data structures aligned to cache lines:
 
@@ -170,6 +170,7 @@ Flags:
 | `--world-bloom-character-id` / `--world-bloom-event-turn` / `--challenge-live-character-id` | value | World Bloom / Challenge Live special parameters. |
 | `--skill-reference-strategy` / `--live-skill-order` / `--specific-skill-order` | value | Skill reference and activation order; a specific order is given as `0,1,2,3,4`. |
 | `--multi-teammate-power` / `--multi-teammate-score-up` / `--multi-live-score-up-lower-bound` | value | Teammate power, effective skill score-up, and total skill lower bound for multi / Cheerful lives. |
+| `--multi-unit-bonus-evaluation` | enum | Owned multi-unit area effects: `by_deck` (default), `force_on`, `force_off`. Shared by deck and area-upgrade recommendations; see the [parameter reference](docs/parameters.md#area-items-and-mysekai-gates). |
 | `--other-score` / `--life` | value | Cheerful opponent score and life. |
 | `--rarity4-config` / `--single-card-config` | value | Card training configs, e.g. `level_max,skill_max,master_max,episode_read,canvas` and `123:level_max,skill_max`. |
 
