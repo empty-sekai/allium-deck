@@ -133,7 +133,8 @@ await assert.rejects(verifyPackage({ ...options, timeoutMs: 1,
     def test_manual_preflight_builds_all_assets_without_publication(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
         jobs = dict(re.findall(r"^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:\n|\Z)", workflow, re.M | re.S))
-        for name in ["test", "build-binaries", "build-wasm-release", "release-assets"]:
+        self.assertIn("if: github.event_name != 'workflow_dispatch' || inputs.recovery_run_id == ''", jobs["test"])
+        for name in ["build-binaries", "build-wasm-release", "release-assets"]:
             self.assertNotRegex(jobs[name], re.compile(r"^    if:", re.M), name)
         for name in ["publish-npm", "publish-crate", "release"]:
             self.assertIn("if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')", jobs[name])
@@ -142,7 +143,12 @@ await assert.rejects(verifyPackage({ ...options, timeoutMs: 1,
         self.assertNotIn("id-token: write", jobs["build-wasm-release"])
         self.assertIn("needs: [test, build-binaries, build-wasm-release]", jobs["release-assets"])
         self.assertIn("pattern: release-build-*", jobs["release-assets"])
-        self.assertIn('npm publish --provenance --access public "release/allium-deck-wasm-v${VERSION}.tgz"', jobs["publish-npm"])
+        self.assertIn('NPM_PACKAGE=$(realpath "release/allium-deck-wasm-v${VERSION}.tgz")', jobs["publish-npm"])
+        self.assertIn('npm publish --provenance --access public "$NPM_PACKAGE"', jobs["publish-npm"])
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.recovery_run_id != ''", jobs["recover-npm"])
+        self.assertIn("scripts/validate_release_recovery.py", jobs["recover-npm"])
+        self.assertIn("run-id: ${{ inputs.recovery_run_id }}", jobs["recover-npm"])
+        self.assertIn('npm publish --provenance --access public "$NPM_PACKAGE"', jobs["recover-npm"])
         self.assertIn("artifacts/SHA256SUMS", jobs["release"])
 
     def test_asset_names_use_version_instead_of_dispatch_branch(self) -> None:
