@@ -1,0 +1,774 @@
+{
+  "schema": 1,
+  "baseline_commit": "5c6dff7387e57384b9b2c989ab4f535cdd74f098",
+  "source_normalization": "UTF-8 source bytes with CRLF normalized to LF; SHA-256",
+  "inventory": "docs/pruning-proof.md section 26; P01..P41 preserve row order",
+  "stage_one_complete": false,
+  "status_meaning": {
+    "proved": "The stated mathematical mechanism is proved, not Rust refinement.",
+    "partial": "Some component lemmas are proved; explicit mathematical work remains.",
+    "open": "This mathematical obligation has not been proved.",
+    "out_of_scope": "Not part of first-tier mathematical verification."
+  },
+  "sources": {
+    "docs/exactness-proof.md": "3d029cbd293d82a1ab473eca01891148d1a96a5ab6212d0d1516c0a414221337",
+    "docs/pruning-proof.md": "654daec45043d02f8e744718c33bda1387229092a87f2806ecc3218c5d24bd56",
+    "src/handler/build.rs": "7ff56fc78e299b2eb31dd69481db6b2938d2ab1da0bce612181f8170cea002c8",
+    "src/handler/capacity.rs": "44572e898ee231d261444ade8960ca35d3842411cea1a5baf2565ee4f8105709",
+    "src/handler/filter.rs": "38e84afa3a02dd263c18ddab26ae2d81fa6c038d1b4887c81993a8d7755e9370",
+    "src/handler/validate.rs": "f83d60a734b3aa9752a9f230ce0ce13643c85231ba683871216e06d009de15a3",
+    "src/pool/card_pool.rs": "d1f9509ae010f8b6c7944cf20de6ebd133fa7ff87d8a9e128870264a0358773a",
+    "src/search/alternatives.rs": "ae3b614dd7316a7170cc58bba65359d7de8dc59efb17747d9a470e13f3d90bd9",
+    "src/search/budget.rs": "e8dbe903ea2d4524616d9ca5dfc35c16f599365f62b4f410344ae4af02b26d10",
+    "src/search/composition.rs": "29c1bf14dc8afa5b0bc8f163e274fc691a00892acac8676eecbaba72812515a3",
+    "src/search/context.rs": "c7f0f698618d0d1f7aa71eb90a8feee396a0a291aa1b83f40951e3589a072687",
+    "src/search/correlated.rs": "37807a4f783b3365df7d2c00ba03ceaf3aa04d4b95a4c3fc7fe8caeff39d9abe",
+    "src/search/dfs.rs": "5c68865d3e723dcdc03c092a2496ec93a1a8f5b927e1f8e4c157ac6e82ac3e55",
+    "src/search/dominance.rs": "70986e344848efcc296950ae4d6e31e685c8dd4d7e3c4f24dd1486658a2e5a17",
+    "src/search/evaluate.rs": "397c1a90507b1ba0a2fab16d28053d22debe16e51ee801f106c3fd567cb8216b",
+    "src/search/log_linear.rs": "f3f99d9994c8a1731feeefa6b1d695d1afadad1e6bd447b923b22ee9e1bd37d8",
+    "src/search/log_linear/interval.rs": "3ad99ebc2649f71b99936ae276a372836407cf3d48530b6617d3f46fddae1b45",
+    "src/search/objective.rs": "25cca846cfc78fd3459806a32b6b7b9e32f5578ea0157f294c55f073668edc73",
+    "src/search/placement.rs": "b9ca952ef4d0d5ad72d1c2a3e3e9b2158e6524f10c81d2b2edb4f3a3296ad33b",
+    "src/search/problem.rs": "4f566d0c353d32e532bf37888eaab4118deaebb0c0a66862762fd91914ebb5f7",
+    "src/search/skill_ceiling.rs": "7754510f4e6d8a5d22ec617dff2309c36a49b81b60fe366b813d89d3ad793823",
+    "src/search/solver/bonus_tiers.rs": "83d637779f7c15515ff68281cbcb2282311c30658da45f20689cd117153a9574",
+    "src/search/solver/challenge.rs": "752b98922553ec498684c2ad948af34d3fe463703aa2a007f3f9a3624aea7ae9",
+    "src/search/solver/final_chapter.rs": "8a9c6b7e649bdef0cc073671b90380d47cdbf3de484ea977700e5ad0ec4b8450",
+    "src/search/solver/mod.rs": "d37f90c2a5f82791debd9e1c4e1b7260cba5e2a18701bb986e6a631a8eca7a4c",
+    "src/search/solver/numeric.rs": "dea69d0a3cac8821637588d453f93daa0f79f97fd10f81319c608cc1bfc09eae",
+    "src/search/solver/power.rs": "8eb79c577f05cff2786eb438a4679855b72c5847dc1bd96136d7e2c114b9a116",
+    "src/search/suffix.rs": "aac6deb47d759cae202502e36ec8526cbafe450c4fc48c020ff16172bfd916f5",
+    "src/search/tracker.rs": "3cbdd775eeda8b01e6b1b48dc2e56161605e4027ffa4e3631d019ef8a35d1a28",
+    "src/search/types.rs": "6dd1c41b4961dfb01df730cf23d310bf8953fa1bc880094cb975a416fa5d81e8",
+    "src/simd.rs": "948e4b7be60c519bdecaba84b8625de64d376b022a1a38071d213effc2c87687"
+  },
+  "obligations": [
+    {
+      "id": "P01",
+      "description": "Hard request filters",
+      "status": "partial",
+      "sources": [
+        "src/handler/filter.rs",
+        "src/handler/build.rs"
+      ],
+      "theorems": [
+        "Allium.Enumeration.exhaustive_complete",
+        "Allium.Enumeration.valid_card_in_pool"
+      ],
+      "remaining": [
+        "槽位模型和合法枚举已证明；尚需逐项形式化 handler 的请求过滤、选项正规化与空结果/错误分支。"
+      ]
+    },
+    {
+      "id": "P02",
+      "description": "Exact-tier over-target filter",
+      "status": "partial",
+      "sources": [
+        "src/handler/build.rs"
+      ],
+      "theorems": [
+        "Allium.Arithmetic.unavoidable_bonus_exclusion"
+      ],
+      "remaining": [
+        "已证明非负不可避免加成的排除引理；尚需从普通/WL/Final 具体加成式导出对应不可避免量。"
+      ]
+    },
+    {
+      "id": "P03",
+      "description": "Capacity handling",
+      "status": "open",
+      "sources": [
+        "src/handler/capacity.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚未建立 validate/capacity 的接受域及每一种显式错误分支；未将固定容量视为可截断候选的理由。"
+      ]
+    },
+    {
+      "id": "P04",
+      "description": "Numeric domain",
+      "status": "partial",
+      "sources": [
+        "src/handler/capacity.rs",
+        "src/handler/validate.rs"
+      ],
+      "theorems": [
+        "Allium.Arithmetic.grid_floor_of_error",
+        "Allium.Arithmetic.safe_clip",
+        "Allium.Arithmetic.optional_bound"
+      ],
+      "remaining": [
+        "严格网格误差桥梁和安全饱和已证明；N1–N7 的逐表达式 binary64 误差预算、范围和构造器常数仍未证明。"
+      ]
+    },
+    {
+      "id": "P05",
+      "description": "Same-character dominance",
+      "status": "partial",
+      "sources": [
+        "src/search/dominance.rs"
+      ],
+      "theorems": [
+        "Allium.Support.replacement_loss",
+        "Allium.Support.rounded_sum_mono",
+        "Allium.Arithmetic.support_compensation"
+      ],
+      "remaining": [
+        "尚需证明完整支配守卫、q+5 截止名次、每个评分目标的替换单调性和两次舍入误差预算。"
+      ]
+    },
+    {
+      "id": "P06",
+      "description": "Dominance Top-K recovery",
+      "status": "open",
+      "sources": [
+        "src/search/alternatives.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需证明根映射、全部根养成实现的枚举及逆替换树覆盖；不能仅靠同分/同公共卡组替换引理宣称完成。"
+      ]
+    },
+    {
+      "id": "P07",
+      "description": "Alternative-tree threshold",
+      "status": "open",
+      "sources": [
+        "src/search/alternatives.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需证明每条逆替换边的完整比较键单调性和恢复树的子树阈值安全性。"
+      ]
+    },
+    {
+      "id": "P08",
+      "description": "Character suffix bound",
+      "status": "partial",
+      "sources": [
+        "src/search/suffix.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.character_bound_sound",
+        "Allium.FiniteBounds.insufficient_characters"
+      ],
+      "remaining": [
+        "逐角色最大值再取 Top-r 的数学松弛已证明；各场景实际池、被排除角色和特征上界的实例化仍需连接。"
+      ]
+    },
+    {
+      "id": "P09",
+      "description": "Exclusion delta",
+      "status": "open",
+      "sources": [
+        "src/search/suffix.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需形式化 Top-r 集合内移除/补入后的精确 delta 及预算使用方向。"
+      ]
+    },
+    {
+      "id": "P10",
+      "description": "Dense suffix break",
+      "status": "partial",
+      "sources": [
+        "src/search/dfs.rs",
+        "src/search/suffix.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.character_bound_mono",
+        "Allium.FiniteBounds.monotone_break"
+      ],
+      "remaining": [
+        "嵌套池和单调 break 引理已证明；尚需连接 DFS 的 start/child/fixed-prefix 索引及具体组合上界。"
+      ]
+    },
+    {
+      "id": "P11",
+      "description": "Candidate runs",
+      "status": "partial",
+      "sources": [
+        "src/search/dfs.rs",
+        "src/search/suffix.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.monotone_break",
+        "Allium.FiniteBounds.independent_components"
+      ],
+      "remaining": [
+        "尚需证明 run 划分保持相同 base/limited 项、尾部集合嵌套和 run-max 组合式。"
+      ]
+    },
+    {
+      "id": "P12",
+      "description": "Sorted Power / Skill break",
+      "status": "partial",
+      "sources": [
+        "src/search/dfs.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.repeated_max_bound",
+        "Allium.FiniteBounds.monotone_break"
+      ],
+      "remaining": [
+        "重复最大值松弛已证明；尚需绑定排序分量、fixed-slot 例外和分支尾部。"
+      ]
+    },
+    {
+      "id": "P13",
+      "description": "No-event numerator",
+      "status": "proved",
+      "sources": [
+        "src/search/dfs.rs",
+        "src/search/suffix.rs"
+      ],
+      "theorems": [
+        "Allium.Arithmetic.numerator_prune"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "P14",
+      "description": "Event Score cutoff",
+      "status": "open",
+      "sources": [
+        "src/search/objective.rs",
+        "src/search/dfs.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需证明活动点数的具体单调式、打包键阈值反解及 gallop/binary-search 不变量。"
+      ]
+    },
+    {
+      "id": "P15",
+      "description": "Complete-deck skill ceilings",
+      "status": "partial",
+      "sources": [
+        "src/search/dfs.rs",
+        "src/search/skill_ceiling.rs"
+      ],
+      "theorems": [
+        "Allium.Skill.unit_count_sound",
+        "Allium.Skill.different_unit_sound",
+        "Allium.Skill.reference_exact_bound",
+        "Allium.Skill.reference_relax_sound"
+      ],
+      "remaining": [
+        "技能类型的有限/有理数学上界已证明；尚需逐输入绑定 selected/candidate 构造、自动/固定队长和浮点桥梁。"
+      ]
+    },
+    {
+      "id": "P16",
+      "description": "Correlated Score bound",
+      "status": "partial",
+      "sources": [
+        "src/search/correlated.rs"
+      ],
+      "theorems": [
+        "Allium.Quadratic.correlated_bound_sound"
+      ],
+      "remaining": [
+        "二次包络的两个分支已证明；尚需证明 C/B/D 常数构造、线性平面来自合法技能槽及数值转换。"
+      ]
+    },
+    {
+      "id": "P17",
+      "description": "Event independent bound",
+      "status": "partial",
+      "sources": [
+        "src/search/suffix.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.independent_components",
+        "Allium.Arithmetic.upper_min",
+        "Allium.Arithmetic.clamp_mono"
+      ],
+      "remaining": [
+        "尚需形式化六技能槽的排序/截断分配、具体活动公式及它们对 P/S/L/B 的单调性。"
+      ]
+    },
+    {
+      "id": "P18",
+      "description": "Composition regimes",
+      "status": "partial",
+      "sources": [
+        "src/search/composition.rs",
+        "src/pool/card_pool.rs",
+        "src/search/evaluate.rs",
+        "src/search/context.rs"
+      ],
+      "theorems": [
+        "Allium.Composition.regime_count",
+        "Allium.Composition.regimes_cover",
+        "Allium.Composition.matches_admits",
+        "Allium.Composition.actual_unit_flag_mem",
+        "Allium.Composition.actual_attribute_flag",
+        "Allium.Composition.power_bound_sound",
+        "Allium.Composition.deck_classes_cover",
+        "Allium.ScenarioSearch.required_search_spec",
+        "Allium.ScenarioSearch.runScenes_exact",
+        "Allium.ConcretePower.planPower_sound",
+        "Allium.ConcretePower.power_search_exact"
+      ],
+      "remaining": [
+        "49 场景覆盖、任意非单调八槽 power 上界、允许额外合法叶子的跨场景共享阈值，以及具体 Power 数学实例已证明；仍需把普通/WL/Final 的完整 RegimePlan 特征和其他目标评分上界逐项接入，并完成实际场景 DFS 的叶子与启用剪枝构造（与 P17/P35/S05 相交）。"
+      ]
+    },
+    {
+      "id": "P19",
+      "description": "SIMD threshold mask",
+      "status": "open",
+      "sources": [
+        "src/simd.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需建立 lane/tail 位图的数学模型及 unsigned >= 阈值比较等价；不声称验证 Rust SIMD 指令。"
+      ]
+    },
+    {
+      "id": "P20",
+      "description": "WL attribute matching",
+      "status": "open",
+      "sources": [
+        "src/search/suffix.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需构造新属性到未使用角色的注入匹配，证明可达属性计数界并覆盖非单调属性奖励表。"
+      ]
+    },
+    {
+      "id": "P21",
+      "description": "WL support upper bound",
+      "status": "partial",
+      "sources": [
+        "src/search/suffix.rs",
+        "src/search/solver/final_chapter.rs"
+      ],
+      "theorems": [
+        "Allium.Support.prefix_exclusion",
+        "Allium.Support.leader_profile_envelope",
+        "Allium.Support.sorted_prefix_dominates"
+      ],
+      "remaining": [
+        "有限支援池的排除单调性和逐 ID profile 包络已证明；尚需把有序支援扫描及其舍入连接到该模型。"
+      ]
+    },
+    {
+      "id": "P22",
+      "description": "Exact bonus tiers",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/bonus_tiers.rs",
+        "src/search/skill_ceiling.rs"
+      ],
+      "theorems": [
+        "Allium.Arithmetic.tier_suffix_interval",
+        "Allium.DP.compressed_reachable_covers",
+        "Allium.DP.query_bound",
+        "Allium.DP.query_empty"
+      ],
+      "remaining": [
+        "键/特征 DP 的压缩和区间查询已证明；尚需具体 first-N 状态、GCD/offset、每卡 key/slack/excess 构造和每场景合法完成映射。"
+      ]
+    },
+    {
+      "id": "P23",
+      "description": "Root sums",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/bonus_tiers.rs"
+      ],
+      "theorems": [
+        "Allium.DP.mem_reachable",
+        "Allium.DP.unreachable_excludes_paths"
+      ],
+      "remaining": [
+        "有限选择的可达性已证明；尚需绑定位行 root 表、各计数维度和 regime 总根排除。"
+      ]
+    },
+    {
+      "id": "P24",
+      "description": "Selected-card refill",
+      "status": "open",
+      "sources": [
+        "src/search/solver/bonus_tiers.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需证明 whole-tick profile 下选中卡 refill 的序单调性、完整卡组时的等式和截断松弛方向。"
+      ]
+    },
+    {
+      "id": "P25",
+      "description": "Joint power-skill ceiling",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/bonus_tiers.rs",
+        "src/search/objective.rs"
+      ],
+      "theorems": [
+        "Allium.Quadratic.joint_plane",
+        "Allium.Quadratic.joint_peak_sound",
+        "Allium.Arithmetic.optional_bound"
+      ],
+      "remaining": [
+        "四分支 box/half-plane 乘积峰值已证明；尚需绑定 LiveProduct 构造、整数缩放、溢出守卫及向上/向下取整。"
+      ]
+    },
+    {
+      "id": "P26",
+      "description": "Tier certificate",
+      "status": "open",
+      "sources": [
+        "src/search/solver/bonus_tiers.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需证明 holding-position 子集枚举、排除/补位状态、whole-tick 近似与原浮点加成命中判据。"
+      ]
+    },
+    {
+      "id": "P27",
+      "description": "Final member dominance",
+      "status": "open",
+      "sources": [
+        "src/search/dominance.rs",
+        "src/search/alternatives.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需证明仅成员角色替换及所有合法队长旋转的覆盖，不能将成员支配应用于队长。"
+      ]
+    },
+    {
+      "id": "P28",
+      "description": "Final leader/job bound",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/final_chapter.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.character_bound_sound"
+      ],
+      "remaining": [
+        "尚需实例化每个 leader/job 的候选角色、合法槽位、支援 profile 和 leader 附加量。"
+      ]
+    },
+    {
+      "id": "P29",
+      "description": "Final attribute DP",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/final_chapter.rs"
+      ],
+      "theorems": [
+        "Allium.DP.mem_reachable",
+        "Allium.DP.compressed_reachable_covers"
+      ],
+      "remaining": [
+        "通用组选择 DP 已证明；尚需实例化 OR-union/角色组/属性奖励表及队长初态。"
+      ]
+    },
+    {
+      "id": "P30",
+      "description": "Final character-loop break",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/final_chapter.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.character_bound_mono",
+        "Allium.FiniteBounds.monotone_break"
+      ],
+      "remaining": [
+        "尚需证明实际角色组迭代的嵌套后缀和其 ceiling 构造。"
+      ]
+    },
+    {
+      "id": "P31",
+      "description": "Final last group",
+      "status": "open",
+      "sources": [
+        "src/search/solver/final_chapter.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需证明最后一组自身项与 plan ceiling 相等，以及持有属性 rest maxima 的组可界定后续组。"
+      ]
+    },
+    {
+      "id": "P32",
+      "description": "Final card-group bound",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/final_chapter.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.independent_components",
+        "Allium.Support.leader_profile_envelope"
+      ],
+      "remaining": [
+        "尚需连接 per-group maxima、limited top-cap、Final 附加量和当前 profile 支援上界。"
+      ]
+    },
+    {
+      "id": "P33",
+      "description": "Final group rest maxima",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/final_chapter.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.monotone_break"
+      ],
+      "remaining": [
+        "尚需连接同属性 rest maxima 及候选 ceiling 的单调式。"
+      ]
+    },
+    {
+      "id": "P34",
+      "description": "Final ranked-buffer break",
+      "status": "open",
+      "sources": [
+        "src/search/solver/final_chapter.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需证明按有效 UB 排序、缓冲区满时所有溢出候选仍遍历、break 仅覆盖已排序部分。"
+      ]
+    },
+    {
+      "id": "P35",
+      "description": "Final log-linear bound",
+      "status": "open",
+      "sources": [
+        "src/search/log_linear.rs",
+        "src/search/solver/final_chapter.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "尚需证明 log-sum-exp 弦界、对数切线、分段凹技能式超梯度、逐组权重、区间算术和 32 项 atanh 余项证书。"
+      ]
+    },
+    {
+      "id": "P36",
+      "description": "Numeric Power max/min",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/numeric.rs",
+        "src/search/evaluate.rs",
+        "src/search/context.rs",
+        "src/handler/capacity.rs"
+      ],
+      "theorems": [
+        "Allium.FiniteBounds.repeated_max_bound",
+        "Allium.FiniteBounds.repeated_min_bound",
+        "Allium.Arithmetic.clamp_mono",
+        "Allium.PowerModel.tableIndex_surjective",
+        "Allium.PowerModel.count_five_iff_common",
+        "Allium.PowerModel.attribute_count_five",
+        "Allium.PowerModel.resolved_upper",
+        "Allium.PowerModel.resolved_lower",
+        "Allium.PowerModel.prefix_free_upper",
+        "Allium.PowerModel.prefix_free_lower",
+        "Allium.PowerModel.maximizing_prune",
+        "Allium.PowerModel.minimizing_prune",
+        "Allium.ScenarioPower.empty_units_require_a_lower_bound_guard"
+      ],
+      "remaining": [
+        "已证明 decoded 八槽查表、五人成员计数、selected/free 组合及加称号后应用 cap 的双向严格剪枝；lower theorem 显式要求非空 unit 集合。尚需连接受理域（含空 unit 掩码与其压缩表构造）、具体 global/suffix 摘要和固定槽扫描状态，不能把这些连接归为 Rust refinement。"
+      ]
+    },
+    {
+      "id": "P37",
+      "description": "Numeric Skill",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/numeric.rs",
+        "src/search/skill_ceiling.rs"
+      ],
+      "theorems": [
+        "Allium.Skill.global_bound",
+        "Allium.Skill.unit_count_sound",
+        "Allium.Skill.different_unit_sound",
+        "Allium.Skill.merged_reference_rule_sound",
+        "Allium.Skill.encoded_key_upper"
+      ],
+      "remaining": [
+        "技能数学引理已证明；尚需绑定 frontier 扫描终止、角色排除、full-key 同分规则及浮点编码误差。"
+      ]
+    },
+    {
+      "id": "P38",
+      "description": "Power scenarios",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/power.rs",
+        "src/search/evaluate.rs"
+      ],
+      "theorems": [
+        "Allium.ScenarioPower.bound_sound",
+        "Allium.ScenarioPower.empty_exact",
+        "Allium.ScenarioPower.singleton_exact",
+        "Allium.ScenarioPower.bound_le_tableMax",
+        "Allium.ScenarioPower.actual_common_admitted",
+        "Allium.ScenarioPower.multi_unit_is_only_an_upper_bound",
+        "Allium.ScenarioPower.admission_is_not_bound_soundness"
+      ],
+      "remaining": [
+        "已证明实际 scenario_power 的非单调多单位 envelope、空/单单位精确性和真实公共 unit 集合的接纳性；并证明多单位只能作上界的反例。尚需证明生产 unit-mask 交集工作表的完整性、best_completion 扫描、实际叶子回算与带 least/cap 守卫的同分 public-set 剪枝。ConcretePower 的 49-regime 数学搜索不等于已证明此专用 fast path。"
+      ]
+    },
+    {
+      "id": "P39",
+      "description": "Challenge bound frontier",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/challenge.rs"
+      ],
+      "theorems": [
+        "Allium.DP.mem_reachable",
+        "Allium.DP.compressed_reachable_covers",
+        "Allium.FiniteBounds.frontier_bound"
+      ],
+      "remaining": [
+        "跳过/选入与特征压缩的数学模型已证明；尚需实例化一角色五个不同 public ID、排序技能松弛及禁用不安全上下文的守卫。"
+      ]
+    },
+    {
+      "id": "P40",
+      "description": "Challenge-all Top-K merge",
+      "status": "proved",
+      "sources": [
+        "src/search/solver/challenge.rs"
+      ],
+      "theorems": [
+        "Allium.group_topK_merge"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "P41",
+      "description": "Feasibility pruning",
+      "status": "partial",
+      "sources": [
+        "src/search/dfs.rs",
+        "src/search/solver/numeric.rs",
+        "src/search/solver/challenge.rs",
+        "src/search/placement.rs"
+      ],
+      "theorems": [
+        "Allium.Enumeration.exhaustive_complete",
+        "Allium.Enumeration.valid_length",
+        "Allium.Enumeration.valid_card_in_pool",
+        "Allium.FiniteBounds.insufficient_characters"
+      ],
+      "remaining": [
+        "槽位角色与合法枚举已证明；尚需覆盖全部 handler 参数正规化、搜索模式及实际 DFS feasibility 守卫。"
+      ]
+    },
+    {
+      "id": "S01",
+      "description": "Canonical five-field Top-K, public-set deduplication, cardinality and bounded insertion",
+      "status": "proved",
+      "sources": [
+        "src/search/tracker.rs"
+      ],
+      "theorems": [
+        "Allium.coverage_exactness",
+        "Allium.topK_card",
+        "Allium.collect_exact",
+        "Allium.collect_order_independent",
+        "Allium.Canonical.key_lt_iff",
+        "Allium.Canonical.deck_key_injective"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "S02",
+      "description": "Mathematical branch-and-bound kernel with explicitly sound node bounds",
+      "status": "proved",
+      "sources": [
+        "src/search/dfs.rs"
+      ],
+      "theorems": [
+        "Allium.strict_upper_prune",
+        "Allium.search_spec",
+        "Allium.search_exact"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "S03",
+      "description": "Interruptible mathematical search: legal partial results, sticky expiry and Complete exactness",
+      "status": "proved",
+      "sources": [
+        "src/search/budget.rs",
+        "src/search/types.rs"
+      ],
+      "theorems": [
+        "Allium.interruptible_valid",
+        "Allium.complete_agrees_search",
+        "Allium.complete_exact",
+        "Allium.timed_out_results_legal"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "S04",
+      "description": "Public-slot mathematical specification and complete ordered cultivation enumeration",
+      "status": "proved",
+      "sources": [
+        "src/search/context.rs",
+        "src/search/placement.rs"
+      ],
+      "theorems": [
+        "Allium.Enumeration.exhaustive_complete",
+        "Allium.Enumeration.exhaustive_keys_complete",
+        "Allium.Enumeration.same_public_role"
+      ],
+      "remaining": []
+    },
+    {
+      "id": "S05",
+      "description": "All-scene end-to-end instantiation of SearchTree.Sound and exhaustiveKeys",
+      "status": "partial",
+      "sources": [
+        "src/search/solver/mod.rs",
+        "src/search/problem.rs",
+        "src/search/evaluate.rs",
+        "src/search/composition.rs",
+        "src/search/context.rs"
+      ],
+      "theorems": [
+        "Allium.ConcretePower.member_admitted",
+        "Allium.ConcretePower.planPower_sound",
+        "Allium.ConcretePower.ceiling_sound",
+        "Allium.ConcretePower.scene_valid",
+        "Allium.ConcretePower.scenes_cover",
+        "Allium.ConcretePower.power_search_exact"
+      ],
+      "remaining": [
+        "首个具体 Power 数学实例已贯通公开五槽规格、49-regime、八槽查表、per-character/per-card top-five、honor/cap、共享阈值与 exhaustiveKeys，主定理不再接受抽象上界或场景覆盖前提。但该树显式枚举已接纳的合法卡组，不是全部生产 DFS 优化；其他目标、实际 solver 场景、受理域/固定角色语义及每条启用剪枝的数学构造仍需逐项接入，全部仍属第一档。"
+      ]
+    },
+    {
+      "id": "R01",
+      "description": "Rust memory safety, machine arithmetic refinement, extraction, compilation and executable equivalence",
+      "status": "out_of_scope",
+      "sources": [
+        "src/search/dfs.rs"
+      ],
+      "theorems": [],
+      "remaining": [
+        "属于第二/三档：本工程不声称证明 Rust 二进制与 Lean 模型等价。"
+      ]
+    }
+  ]
+}

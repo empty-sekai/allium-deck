@@ -1,0 +1,53 @@
+name: Lean proofs
+
+on:
+  pull_request:
+    paths:
+      - 'formal/lean/**'
+      - 'src/**'
+      - 'docs/pruning-proof.md'
+      - 'docs/exactness-proof.md'
+      - '.github/workflows/lean.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'formal/lean/**'
+      - 'src/**'
+      - 'docs/pruning-proof.md'
+      - 'docs/exactness-proof.md'
+      - '.github/workflows/lean.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lean-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check-proofs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LEAN_NUM_THREADS: 2
+      PYTHONUTF8: 1
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
+        with:
+          lake-package-directory: formal/lean
+          auto-config: 'false'
+          build: 'true'
+          test: 'false'
+          lint: 'false'
+          use-mathlib-cache: 'true'
+      - name: Check source snapshot, full imports and transitive axioms
+        run: python3 formal/lean/verify.py --self-test
+      - name: Report verification boundary
+        run: |
+          echo 'This job verifies the scope declared in formal/lean/coverage.json.'
+          echo 'A green job is not an all-scenes or Rust-refinement certificate.'
+          echo 'Use verify.py --require-complete to check stage-one completion.'

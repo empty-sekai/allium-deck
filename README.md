@@ -28,6 +28,8 @@ Project Sekai 组卡推荐引擎的 Rust 实现，专攻 **DFS / 分支限界（
 
 [验证指南](docs/search-validation.md) 提供独立小池穷举、完整结果对拍和可复现的性能测量方法。
 
+[Lean 数学证明](formal/lean/README.md) 提供机器检查的搜索核心与剪枝引理，当前仍为部分覆盖；尚未完成全场景、全部剪枝的形式化验证。覆盖范围和未完成义务见该目录的说明与清单。
+
 ## 对外 API
 
 主入口是 `engine::recommend_json`——纯 JSON 进、JSON 出：
