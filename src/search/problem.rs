@@ -48,7 +48,7 @@ impl DeckProblem {
         } else {
             SolverFamily::UniqueCombinations
         };
-        let fixed_prefix = (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len()).min(5);
+        let fixed_prefix = ctx.fixed_prefix_len();
         let solver_leader = ctx.is_final_chapter && family != SolverFamily::NumericObjective;
         let move_forced_leader = ctx.is_final_chapter
             && family == SolverFamily::NumericObjective

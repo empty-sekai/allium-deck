@@ -3,6 +3,7 @@ mod capacity;
 mod fractional_leader;
 mod jp7;
 mod leader_honor;
+mod membership;
 mod skill_unit_count;
 
 use crate::pool::EventBonusExact;
@@ -57,6 +58,7 @@ fn sample_game<'a>(
         world_bloom_support_deck_unit_event_limited_bonuses: &[],
         event_mysekai_fixture_performance_bonus_limits: &[],
         event_skill_score_up_limits: &[],
+        event_shuffle_unit_bonuses: &[],
         music_metas: &[],
         music_difficulties: &[],
         event_rarity_bonus_rates: &[],
@@ -466,6 +468,7 @@ fn handler_build_card_pool_only_clamps_fixture_bonus_for_matching_event() {
         world_bloom_support_deck_unit_event_limited_bonuses: &[],
         event_mysekai_fixture_performance_bonus_limits: &fixture_limits,
         event_skill_score_up_limits: &[],
+        event_shuffle_unit_bonuses: &[],
         music_metas: &[],
         music_difficulties: &[],
         event_rarity_bonus_rates: &[],
@@ -1664,6 +1667,7 @@ fn handler_build_card_pool_end_to_end_minimal() {
         world_bloom_support_deck_unit_event_limited_bonuses: &[],
         event_mysekai_fixture_performance_bonus_limits: &[],
         event_skill_score_up_limits: &[],
+        event_shuffle_unit_bonuses: &[],
         music_metas: &music,
         music_difficulties: &[],
         event_rarity_bonus_rates: &[],
@@ -2040,6 +2044,7 @@ fn handler_build_power_keeps_all_cards_beyond_mask_capacity() {
         world_bloom_support_deck_unit_event_limited_bonuses: &[],
         event_mysekai_fixture_performance_bonus_limits: &[],
         event_skill_score_up_limits: &[],
+        event_shuffle_unit_bonuses: &[],
         music_metas: &[],
         music_difficulties: &[],
         event_rarity_bonus_rates: &[],

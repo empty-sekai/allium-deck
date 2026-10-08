@@ -2,6 +2,83 @@ use super::*;
 use crate::power::MultiUnitBonusMode;
 
 #[test]
+fn optional_shuffle_table_and_finale_chapters_share_the_master_loader() {
+    let required = [
+        "cards.json",
+        "gameCharacterUnits.json",
+        "events.json",
+        "skills.json",
+        "cardRarities.json",
+        "cardEpisodes.json",
+        "masterLessons.json",
+        "areaItemLevels.json",
+        "characterRanks.json",
+        "cardMysekaiCanvasBonuses.json",
+        "eventCards.json",
+        "eventDeckBonuses.json",
+        "worldBloomDifferentAttributeBonuses.json",
+        "eventRarityBonusRates.json",
+    ];
+    let mut sources = MasterdataSources::from_strings(
+        required.into_iter().map(|name| (name.into(), "[]".into())),
+        "[]".into(),
+    );
+    let plain = OwnedGameData::from_sources(&sources).unwrap();
+    assert!(plain.event_shuffle_unit_bonuses.is_empty());
+    sources.tables.insert(
+        "worldBlooms.json".into(),
+        serde_json::json!([
+            {"eventId":931,"worldBloomChapterType":"finale","chapterNo":1}
+        ])
+        .to_string(),
+    );
+    sources.tables.insert(
+        "eventShuffleUnitBonuses.json".into(),
+        serde_json::json!([
+            {"eventId":931,"unitCount":3,"bonusRate":71},
+            {"eventId":931,"unitCount":5,"bonusRate":19}
+        ])
+        .to_string(),
+    );
+    let loaded = OwnedGameData::from_sources(&sources).unwrap();
+    let game = loaded.as_ref();
+    assert!(game.is_world_bloom_finale(931));
+    assert!(!game.is_world_bloom_finale(932));
+    assert_eq!(game.event_shuffle_unit_bonuses[0].bonus_rate, 71);
+    assert_eq!(game.event_shuffle_unit_bonuses[1].unit_count, 5);
+    let encoded = serde_json::to_value(&loaded).unwrap();
+    let roundtrip: OwnedGameData = serde_json::from_value(encoded).unwrap();
+    assert_eq!(
+        roundtrip.event_shuffle_unit_bonuses,
+        loaded.event_shuffle_unit_bonuses
+    );
+    sources
+        .tables
+        .insert("eventShuffleUnitBonuses.json".into(), "null".into());
+    assert!(
+        OwnedGameData::from_sources(&sources)
+            .unwrap_err()
+            .contains("eventShuffleUnitBonuses.json")
+    );
+    sources
+        .tables
+        .insert("eventShuffleUnitBonuses.json".into(), "[]".into());
+    sources.tables.insert(
+        "worldBlooms.json".into(),
+        serde_json::json!([
+            {"eventId":931,"worldBloomChapterType":null,"chapterNo":1}
+        ])
+        .to_string(),
+    );
+    assert!(
+        !OwnedGameData::from_sources(&sources)
+            .unwrap()
+            .as_ref()
+            .is_world_bloom_finale(931)
+    );
+}
+
+#[test]
 fn area_rows_keep_three_dimensions_nullability_and_master_order() {
     let input = serde_json::json!([
         {"areaItemId":56,"level":1,"targetUnit":"multi_unit","targetGameCharacterId":0,

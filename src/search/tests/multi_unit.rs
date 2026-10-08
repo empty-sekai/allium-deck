@@ -151,7 +151,11 @@ fn multi_composition_distinguishes_shared_membership_and_original_shuffle() {
         let pool = builder.freeze();
         let c = DeckComposition::from_cards(&pool, &collect_first_five(&pool));
         assert_eq!(
-            (c.is_multi_unit, c.shared_units, c.shuffle_bonus()),
+            (
+                c.is_multi_unit,
+                c.shared_units,
+                c.shuffle_bonus(&[0, 0, 0, 10, 30, 50])
+            ),
             (expected_multi, expected_common, expected_shuffle)
         );
     }
@@ -275,6 +279,7 @@ fn multi_wl3_final_and_exact_bonus_tiers_keep_shuffle_reachable() {
     context.is_world_bloom = true;
     context.is_final_chapter = true;
     context.is_wl3_finale = true;
+    context.shuffle_unit_bonus = [0, 0, 0, 10, 30, 50];
     context.event_type = Some(EventType::WorldBloom);
     context.live_type = LiveType::Multi;
     context.live_skill_order = LiveSkillOrder::Average;
@@ -309,5 +314,54 @@ fn multi_wl3_final_and_exact_bonus_tiers_keep_shuffle_reachable() {
             .copied()
             .collect::<Vec<_>>();
         assert_results_match_bruteforce(&pool, &actual, &expected);
+    }
+}
+
+#[test]
+fn custom_nonmonotone_shuffle_table_keeps_exact_search_bounds_admissible() {
+    let pool = pool_with_multi(MultiUnitBonusMode::ByDeck);
+    let params = SearchParams {
+        top_k: 5,
+        timeout_ms: 0,
+    };
+    let mut context = ready_ctx(&pool, ScoreTarget::Score);
+    context.is_world_bloom = true;
+    context.is_final_chapter = true;
+    // A table is authoritative independently of a hard-coded turn flag.
+    context.is_wl3_finale = false;
+    context.shuffle_unit_bonus = [0, 0, 61, 7, 83, 19];
+    context.event_type = Some(EventType::WorldBloom);
+    context.live_type = LiveType::Multi;
+    context.live_skill_order = LiveSkillOrder::Average;
+    context.best_skill_as_leader = false;
+    context.extra_bonus_ub = context.shuffle_bonus_upper();
+    assert_eq!(context.shuffle_bonus_upper(), 83);
+    let expected = final_chapter_auto_oracle(&pool, &context, params.top_k);
+    let actual = search(&pool, &context, &params);
+    assert_eq!(actual.completion(), SearchCompletion::Complete);
+    assert_results_match_bruteforce(&pool, &actual.results, &expected);
+    context.target = ScoreTarget::Bonus;
+    let tiers = [50, 111, 57, 133, 69];
+    let actual = search_targets(&pool, &context, &params, &tiers);
+    assert_eq!(actual.completion(), SearchCompletion::Complete);
+    let all = final_chapter_auto_oracle(&pool, &context, 512);
+    for tier in tiers {
+        let matches = |deck: &&DeckResult| {
+            (evaluate::resolve_total_bonus(&pool, &context, &deck.cards) - f64::from(tier)).abs()
+                < 1e-9
+        };
+        let expected = all
+            .iter()
+            .filter(matches)
+            .copied()
+            .take(params.top_k)
+            .collect::<Vec<_>>();
+        let found = actual
+            .results
+            .iter()
+            .filter(matches)
+            .copied()
+            .collect::<Vec<_>>();
+        assert_results_match_bruteforce(&pool, &found, &expected);
     }
 }

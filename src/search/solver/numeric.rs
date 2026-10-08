@@ -144,7 +144,7 @@ impl<'a> SimpleExactState<'a> {
             cards,
             card_power_min,
             minimize,
-            fixed_prefix: (ctx.fixed_card_ids.len() + ctx.fixed_character_ids.len()).min(DECK_SIZE),
+            fixed_prefix: ctx.fixed_prefix_len(),
             skill_ceilings,
             suffix_small_ids,
             global_power_max,
@@ -424,6 +424,17 @@ impl SimpleExactState<'_> {
     ) {
         self.stats.visited_nodes = self.stats.visited_nodes.wrapping_add(1);
         if self.timed_out() {
+            return;
+        }
+        if self.ctx.uses_member_constraints()
+            && !crate::search::membership::prefix_can_complete(
+                self.pool,
+                self.ctx,
+                &deck[..depth],
+                self.cards[min_free_pos..].iter().copied(),
+            )
+        {
+            self.stats.feasibility_prunes += 1;
             return;
         }
         if depth == DECK_SIZE {

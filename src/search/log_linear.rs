@@ -443,6 +443,7 @@ mod tests {
         SearchContext {
             target: ScoreTarget::Score,
             fixed_card_ids: Vec::new(),
+            fixed_constraint_mode: crate::handler::FixedConstraintMode::Slots,
             fixed_character_ids: Vec::new(),
             forced_leader_character_id: None,
             music_rate_pct: 120,
@@ -463,6 +464,7 @@ mod tests {
             is_world_bloom: true,
             is_final_chapter: true,
             is_wl3_finale: false,
+            shuffle_unit_bonus: [0; 6],
             enforce_char_uniqueness: true,
             minimize: false,
             live_type,

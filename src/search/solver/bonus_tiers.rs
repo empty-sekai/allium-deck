@@ -1222,11 +1222,7 @@ impl<'a> Problem<'a> {
         let counts = if shares_attr { 1..=1 } else { 2..=DECK_SIZE };
         let mut classes: Vec<(i64, u8)> = Vec::new();
         for count in counts {
-            let shuffle: &[u16] = if self.ctx.is_wl3_finale {
-                &[0, 10, 30, 50]
-            } else {
-                &[0]
-            };
+            let shuffle = &self.ctx.shuffle_unit_bonus;
             for &shuffle in shuffle {
                 let value =
                     (i64::from(extras.diversity[count]) + i64::from(shuffle)) * 10 * self.scale;

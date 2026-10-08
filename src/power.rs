@@ -98,14 +98,9 @@ impl DeckComposition {
             + usize::from(self.shared_attribute)
     }
 
-    /// Finale shuffle bonus for three, four, or five original character units.
-    pub fn shuffle_bonus(self) -> u32 {
-        match self.original_unit_mask.count_ones() {
-            3 => 10,
-            4 => 30,
-            5 => 50,
-            _ => 0,
-        }
+    /// Event-provided shuffle bonus for the distinct original character units.
+    pub fn shuffle_bonus(self, rates: &[u16; 6]) -> u32 {
+        u32::from(rates[self.original_unit_mask.count_ones() as usize])
     }
 }
 

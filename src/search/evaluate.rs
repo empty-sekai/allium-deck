@@ -79,7 +79,9 @@ pub(crate) fn leaf_evaluate_checked(
     ctx: &SearchContext,
     deck: &[CardIdx; 5],
 ) -> Option<u64> {
-    if !ctx.deck_matches_forced_leader(pool, deck) {
+    if !ctx.deck_matches_forced_leader(pool, deck)
+        || (ctx.uses_member_constraints() && !ctx.deck_matches_slots(pool, deck))
+    {
         return None;
     }
     let power_total = || ctx.clamp_power_total(resolve_power_target(pool, deck) + ctx.honor_bonus);
@@ -203,11 +205,7 @@ fn build_summary(
         event_point,
         multi_live_score_up: permutation.multi_live_score_up,
         event_bonus_total: (ctx.has_event() || total_bonus > 0.0).then_some(total_bonus),
-        shuffle_bonus_rate: if ctx.is_wl3_finale {
-            crate::power::DeckComposition::from_cards(pool, deck).shuffle_bonus()
-        } else {
-            0
-        },
+        shuffle_bonus_rate: ctx.shuffle_bonus_for(pool, deck),
         main_honor_id: ctx
             .leader_honor_for_character(pool.char_id(ordered_cards[0]))
             .map(|honor| honor.honor_id),
@@ -426,10 +424,7 @@ pub(crate) fn resolve_total_bonus(
 
     if ctx.is_world_bloom {
         total += ctx.diff_attr_bonus[attr_set.count_ones() as usize] as f64;
-        if ctx.is_wl3_finale {
-            total +=
-                f64::from(crate::power::DeckComposition::from_cards(pool, deck).shuffle_bonus());
-        }
+        total += f64::from(ctx.shuffle_bonus_for(pool, deck));
         total += calc_support_bonus(pool, ctx, deck, &game_ids);
     }
     total
@@ -541,7 +536,7 @@ fn evaluate_permutation(
         }
         // A fully fixed lineup defines every skill slot, not just its leader.
         // Keep those positions when automatic leader selection is disabled.
-        if ctx.fixed_card_ids.len() != DECK_SIZE {
+        if ctx.uses_member_constraints() || ctx.fixed_card_ids.len() != DECK_SIZE {
             sort_tail_by_card_raw(pool, &mut order, deck);
         }
     }
@@ -984,6 +979,7 @@ mod tests {
         SearchContext {
             target: ScoreTarget::Score,
             fixed_card_ids: Vec::new(),
+            fixed_constraint_mode: crate::handler::FixedConstraintMode::Slots,
             fixed_character_ids: Vec::new(),
             forced_leader_character_id: None,
             music_rate_pct: 100,
@@ -1000,6 +996,7 @@ mod tests {
             is_world_bloom: false,
             is_final_chapter: false,
             is_wl3_finale: false,
+            shuffle_unit_bonus: [0; 6],
             enforce_char_uniqueness: true,
             minimize: false,
             live_type,

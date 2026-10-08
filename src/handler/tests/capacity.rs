@@ -277,6 +277,7 @@ fn capacity_applies_a_real_event_cap_before_checking_skill_width() {
         }];
         let game = GameData {
             event_skill_score_up_limits: &limits,
+            event_shuffle_unit_bonuses: &[],
             ..bonus_tier_game(&fixture)
         };
         let params = BuildParams {

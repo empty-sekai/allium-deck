@@ -1,6 +1,145 @@
 use super::*;
 use crate::power::MultiUnitBonusMode;
 
+#[test]
+fn master_finale_identity_and_shuffle_rates_reach_search_and_results() {
+    let mut fixture = pool_constraint_fixture(&[
+        (1, 4, 100),
+        (5, 4, 100),
+        (9, 4, 100),
+        (21, 4, 100),
+        (22, 4, 100),
+    ]);
+    for row in &mut fixture.units {
+        row.unit = match row.game_character_id {
+            1 => "light_sound",
+            5 => "idol",
+            9 => "street",
+            _ => "piapro",
+        }
+        .into();
+    }
+    fixture.master_cards[3].support_unit = Some("theme_park".into());
+    fixture.master_cards[4].support_unit = Some("school_refusal".into());
+    fixture.effects[0].value = 200;
+    let user = pool_constraint_user(&fixture);
+    for event_id in [218, 931] {
+        let events = [types::Event {
+            id: event_id,
+            event_type: "world_bloom".into(),
+        }];
+        let chapters = [types::WorldBloom {
+            event_id,
+            game_character_id: None,
+            chapter_no: 1,
+            world_bloom_chapter_type: Some("finale".into()),
+        }];
+        let limits = [types::EventSkillScoreUpLimit {
+            event_id,
+            score_up_limit: 147,
+        }];
+        let shuffle = [
+            types::EventShuffleUnitBonus {
+                event_id,
+                unit_count: 4,
+                bonus_rate: 73,
+            },
+            types::EventShuffleUnitBonus {
+                event_id: event_id + 1,
+                unit_count: 4,
+                bonus_rate: 99,
+            },
+        ];
+        let event_cards = [types::EventCard {
+            event_id,
+            card_id: 1,
+            bonus_rate_x10: 250,
+            leader_bonus_rate_x10: 0,
+        }];
+        let game = GameData {
+            events: &events,
+            world_blooms: &chapters,
+            event_skill_score_up_limits: &limits,
+            event_shuffle_unit_bonuses: &shuffle,
+            event_cards: &event_cards,
+            ..bonus_tier_game(&fixture)
+        };
+        let params = BuildParams {
+            event_id: Some(event_id),
+            target: ScoreTarget::Bonus,
+            ..Default::default()
+        };
+        let (pool, ctx) = build_card_pool(&user, &game, &params).unwrap();
+        assert!(ctx.is_final_chapter);
+        assert!(ctx.is_wl3_finale);
+        assert_eq!(ctx.card_bonus_count_limit, 5);
+        assert_eq!(ctx.power_total_cap, Some(336_000));
+        assert_eq!(ctx.shuffle_unit_bonus, [0, 0, 0, 0, 73, 0]);
+        assert_eq!(ctx.shuffle_bonus_upper(), 73);
+        assert!(ctx.extra_bonus_ub >= 73);
+        assert!(
+            (0..pool.count())
+                .all(|dense| pool.skill_max(pool.card_idx(dense as u16).unwrap()) == 147)
+        );
+        assert!(ctx.leader_limit_bonus_x10.iter().all(|value| *value == 0));
+        let decks = pool_constraint_search(&pool, &ctx, &params);
+        let summary = crate::search::summarize_deck(&pool, &ctx, &decks[0].cards).unwrap();
+        assert_eq!(summary.shuffle_bonus_rate, 73);
+        assert_eq!(summary.event_bonus_total, Some(98.0));
+        let no_shuffle = GameData {
+            event_shuffle_unit_bonuses: &[],
+            ..game
+        };
+        let (_, plain) = build_card_pool(&user, &no_shuffle, &params).unwrap();
+        assert_eq!(plain.shuffle_unit_bonus, [0, 0, 0, 10, 30, 50]);
+        let other_shuffle = GameData {
+            event_shuffle_unit_bonuses: &shuffle[1..],
+            ..game
+        };
+        let (_, absent_event) = build_card_pool(&user, &other_shuffle, &params).unwrap();
+        assert_eq!(absent_event.shuffle_unit_bonus, plain.shuffle_unit_bonus);
+        let no_skill_cap = GameData {
+            event_skill_score_up_limits: &[],
+            ..game
+        };
+        assert!(matches!(build_card_pool(&user, &no_skill_cap, &params),
+            Err(BuildError::InvalidConfig(message)) if message.contains("eventSkillScoreUpLimits")));
+        let no_finale = GameData {
+            world_blooms: &[],
+            ..game
+        };
+        let (_, ordinary) = build_card_pool(&user, &no_finale, &params).unwrap();
+        assert!(!ordinary.is_final_chapter);
+    }
+}
+
+#[test]
+fn simulated_shuffle_fallback_and_explicit_partial_tables_are_distinct() {
+    let fixture = pool_constraint_fixture(&[(1, 4, 100)]);
+    let params = BuildParams {
+        world_bloom_finale_turn: Some(3),
+        ..Default::default()
+    };
+    let game = bonus_tier_game(&fixture);
+    let ctx = event_bonus::build_event_context(&game, &params)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ctx.shuffle_unit_bonus, [0, 0, 0, 10, 30, 50]);
+    let shuffle = [types::EventShuffleUnitBonus {
+        event_id: crate::types::WL3_FAKE_FINALE_EVENT_ID,
+        unit_count: 2,
+        bonus_rate: 61,
+    }];
+    let game = GameData {
+        event_shuffle_unit_bonuses: &shuffle,
+        ..game
+    };
+    let ctx = event_bonus::build_event_context(&game, &params)
+        .unwrap()
+        .unwrap();
+    assert_eq!(ctx.shuffle_unit_bonus, [0, 0, 61, 0, 0, 0]);
+}
+
 fn item(id: i32, unit: Option<&str>, rate: [f64; 3]) -> types::AreaItemLevel {
     types::AreaItemLevel {
         area_item_id: id,
@@ -162,6 +301,7 @@ fn raw_master_skill_caps_and_finale_fallbacks_are_distinct() {
         let game = GameData {
             skill_effects: &effects,
             event_skill_score_up_limits: &limits,
+            event_shuffle_unit_bonuses: &[],
             ..bonus_tier_game(&fixture)
         };
         let params = BuildParams {

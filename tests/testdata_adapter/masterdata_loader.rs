@@ -5,10 +5,10 @@ use std::path::Path;
 use allium_deck::handler::{
     BondsHonor, CardEpisode, CardMysekaiCanvasBonus, CardParameter, CardRarity, CharacterRank,
     Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
-    EventRarityBonusRate, EventSkillScoreUpLimit, GameCharacterUnit, GameData, Honor, HonorLevel,
-    MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate, MysekaiGateLevel, Skill,
-    SkillEffect, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus, WorldBloom,
-    WorldBloomDiffAttrBonus,
+    EventRarityBonusRate, EventShuffleUnitBonus, EventSkillScoreUpLimit, GameCharacterUnit,
+    GameData, Honor, HonorLevel, MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate,
+    MysekaiGateLevel, Skill, SkillEffect, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus,
+    WorldBloom, WorldBloomDiffAttrBonus,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -43,6 +43,7 @@ pub struct OwnedGameData {
         Vec<WBSupportDeckUnitEventLimitedBonus>,
     pub event_mysekai_fixture_performance_bonus_limits: Vec<EventFixtureBonusLimit>,
     pub event_skill_score_up_limits: Vec<EventSkillScoreUpLimit>,
+    pub event_shuffle_unit_bonuses: Vec<EventShuffleUnitBonus>,
     pub music_metas: Vec<MusicMeta>,
     pub music_difficulties: Vec<MusicDifficulty>,
     pub event_rarity_bonus_rates: Vec<EventRarityBonusRate>,
@@ -280,6 +281,16 @@ impl OwnedGameData {
                 score_up_limit: entry.score_up_rate_limit,
             })
             .collect(),
+            event_shuffle_unit_bonuses: load_optional_json::<Vec<RawEventShuffleUnitBonus>>(
+                &masterdata_dir.join("eventShuffleUnitBonuses.json"),
+            )?
+            .into_iter()
+            .map(|row| EventShuffleUnitBonus {
+                event_id: row.event_id,
+                unit_count: row.unit_count,
+                bonus_rate: row.bonus_rate,
+            })
+            .collect(),
             music_metas: master_music_rows
                 .iter()
                 .map(|row| MusicMeta {
@@ -377,6 +388,7 @@ impl OwnedGameData {
             event_mysekai_fixture_performance_bonus_limits: &self
                 .event_mysekai_fixture_performance_bonus_limits,
             event_skill_score_up_limits: &self.event_skill_score_up_limits,
+            event_shuffle_unit_bonuses: &self.event_shuffle_unit_bonuses,
             music_metas: &self.music_metas,
             music_difficulties: &self.music_difficulties,
             event_rarity_bonus_rates: &self.event_rarity_bonus_rates,
@@ -897,6 +909,14 @@ struct RawEventFixtureBonusLimit {
 struct RawEventSkillScoreUpLimit {
     event_id: i32,
     score_up_rate_limit: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawEventShuffleUnitBonus {
+    event_id: i32,
+    unit_count: i32,
+    bonus_rate: i32,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -11,10 +11,10 @@ use std::path::Path;
 use crate::handler::{
     BondsHonor, CardEpisode, CardMysekaiCanvasBonus, CardParameter, CardRarity, CharacterRank,
     Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
-    EventRarityBonusRate, EventSkillScoreUpLimit, GameCharacterUnit, GameData, Honor, HonorLevel,
-    MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate, MysekaiGateLevel, Skill,
-    SkillEffect, UserAreaItem, UserCard, UserChallengeDeck, UserDeck, UserFixtureBonus,
-    UserGateBonus, UserHonor, UserProfile, UserWBSupportDeck, WBSupportDeckBonus,
+    EventRarityBonusRate, EventShuffleUnitBonus, EventSkillScoreUpLimit, GameCharacterUnit,
+    GameData, Honor, HonorLevel, MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate,
+    MysekaiGateLevel, Skill, SkillEffect, UserAreaItem, UserCard, UserChallengeDeck, UserDeck,
+    UserFixtureBonus, UserGateBonus, UserHonor, UserProfile, UserWBSupportDeck, WBSupportDeckBonus,
     WBSupportDeckUnitEventLimitedBonus, WorldBloom, WorldBloomDiffAttrBonus,
 };
 use crate::search::{SearchCompletion, SearchOutcome, SearchParams, SearchStats};
@@ -353,6 +353,10 @@ pub fn parse_build_params_json(
         string_field(&value, "musicDiff").or_else(|| string_field(&value, "music_diff"));
     params.fixed_cards = int_array_alias(&value, "fixedCards", "fixed_cards");
     params.fixed_characters = int_array_alias(&value, "fixedCharacters", "fixed_characters");
+    if let Some(mode) = field_alias_checked(&value, "fixedConstraintMode", "fixed_constraint_mode")?
+    {
+        params.fixed_constraint_mode = serde_json::from_value(mode.clone())?;
+    }
     params.forced_leader_character_id = i32_field_checked(&value, "forcedLeaderCharacterId")?
         .or(i32_field_checked(&value, "forced_leader_character_id")?);
     params.excluded_cards = int_array_alias(&value, "excludedCards", "excluded_cards");
@@ -920,6 +924,9 @@ pub struct OwnedGameData {
     pub event_mysekai_fixture_performance_bonus_limits: Vec<EventFixtureBonusLimit>,
     /// 活动技能加成上限表。
     pub event_skill_score_up_limits: Vec<EventSkillScoreUpLimit>,
+    /// Optional per-event original-unit bonus table.
+    #[serde(default)]
+    pub event_shuffle_unit_bonuses: Vec<EventShuffleUnitBonus>,
     /// 歌曲元数据表：分难度的基础分与技能分系数。
     pub music_metas: Vec<MusicMeta>,
     /// 歌曲难度表。
@@ -1181,6 +1188,15 @@ impl OwnedGameData {
                     score_up_limit: entry.score_up_rate_limit,
                 })
                 .collect(),
+            event_shuffle_unit_bonuses: sources
+                .optional::<Vec<RawEventShuffleUnitBonus>>("eventShuffleUnitBonuses.json")?
+                .into_iter()
+                .map(|entry| EventShuffleUnitBonus {
+                    event_id: entry.event_id,
+                    unit_count: entry.unit_count,
+                    bonus_rate: entry.bonus_rate,
+                })
+                .collect(),
             music_metas: music_rows
                 .iter()
                 .map(|row| MusicMeta {
@@ -1277,6 +1293,7 @@ impl OwnedGameData {
             event_mysekai_fixture_performance_bonus_limits: &self
                 .event_mysekai_fixture_performance_bonus_limits,
             event_skill_score_up_limits: &self.event_skill_score_up_limits,
+            event_shuffle_unit_bonuses: &self.event_shuffle_unit_bonuses,
             music_metas: &self.music_metas,
             music_difficulties: &self.music_difficulties,
             event_rarity_bonus_rates: &self.event_rarity_bonus_rates,
@@ -1961,6 +1978,14 @@ struct RawEventSkillScoreUpLimit {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawEventShuffleUnitBonus {
+    event_id: i32,
+    unit_count: i32,
+    bonus_rate: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct RawMusicMetaRow {
     music_id: i32,
     difficulty: String,
@@ -2099,6 +2124,9 @@ struct RawHonorLevel {
 
 #[cfg(test)]
 mod jp7_tests;
+
+#[cfg(test)]
+mod membership_tests;
 
 #[cfg(test)]
 mod tests {

@@ -25,6 +25,8 @@ pub(crate) struct EventContext {
     pub event_id: i32,
     /// 活动类型。
     pub event_type: EventType,
+    /// Finale rules apply to master-data chapters and supported simulated finales.
+    pub is_finale: bool,
     /// 当期卡表。
     pub event_cards: Vec<EventCard>,
     /// deck bonus 规则。
@@ -41,6 +43,8 @@ pub(crate) struct EventContext {
     pub card_bonus_count_limit: usize,
     /// World Bloom 异色加成。
     pub diff_attr_bonus: [u16; 6],
+    /// Event-provided bonus indexed by original-unit count.
+    pub shuffle_unit_bonus: [u16; 6],
     /// 支援 deck 取用数量。
     pub support_deck_count: u8,
     /// World Bloom 章节角色 ID。
@@ -86,16 +90,45 @@ fn load_diff_attr_bonus(table: &[WorldBloomDiffAttrBonus]) -> [u16; 6] {
     result
 }
 
-fn load_card_bonus_limit(table: &[EventCardBonusLimit], event_id: i32) -> usize {
+fn load_card_bonus_limit(
+    table: &[EventCardBonusLimit],
+    event_id: i32,
+    finale_turn: Option<i32>,
+) -> usize {
     table
         .iter()
         .find(|entry| entry.event_id == event_id)
         .map(|entry| entry.member_count_limit.max(0) as usize)
-        .unwrap_or(if event_id == crate::types::FINAL_CHAPTER_EVENT_ID {
-            4
-        } else {
-            5
-        })
+        .unwrap_or(if finale_turn == Some(2) { 4 } else { 5 })
+}
+
+fn load_shuffle_unit_bonus(
+    game: &GameData<'_>,
+    event_id: i32,
+    finale_turn: Option<i32>,
+) -> Result<[u16; 6], BuildError> {
+    // Keep the WL3 finale rule when optional master rows have not been supplied.
+    let mut result = if finale_turn == Some(3) {
+        [0, 0, 0, 10, 30, 50]
+    } else {
+        [0; 6]
+    };
+    let rows: Vec<_> = game
+        .event_shuffle_unit_bonuses
+        .iter()
+        .filter(|row| row.event_id == event_id)
+        .collect();
+    if !rows.is_empty() {
+        result = [0; 6];
+    }
+    for row in rows {
+        if (1..=5).contains(&row.unit_count) {
+            let rate = row.bonus_rate.max(0) as u64;
+            capacity::ensure("shuffle unit bonus", rate, u64::from(u16::MAX))?;
+            result[row.unit_count as usize] = rate as u16;
+        }
+    }
+    Ok(result)
 }
 
 fn load_skill_limit(table: &[EventSkillScoreUpLimit], event_id: i32) -> Option<u32> {
@@ -105,23 +138,32 @@ fn load_skill_limit(table: &[EventSkillScoreUpLimit], event_id: i32) -> Option<u
         .map(|entry| entry.score_up_limit.max(0) as u32)
 }
 
-fn resolve_skill_limit(game: &GameData<'_>, params: &BuildParams, event_id: i32) -> Option<u32> {
+fn resolve_skill_limit(
+    game: &GameData<'_>,
+    params: &BuildParams,
+    event_id: i32,
+) -> Result<Option<u32>, BuildError> {
     if matches!(
         params.live_type,
         crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
     ) {
-        return None;
+        return Ok(None);
     }
     // 游戏真实数据优先：真实终章一旦在表中给出上限，以数据为准，不走兜底常量。
     if let Some(limit) = load_skill_limit(game.event_skill_score_up_limits, event_id) {
-        return Some(limit);
+        return Ok(Some(limit));
     }
     // 数据缺行时的终章兜底：legacy 终章 180 与模拟 WL3 终章均沿用上一届
     // 真实终章的 140 点规则。
     if crate::types::is_world_bloom_finale_event(event_id) {
-        return Some(140);
+        return Ok(Some(140));
     }
-    None
+    if game.is_world_bloom_finale(event_id) {
+        return Err(BuildError::InvalidConfig(format!(
+            "eventSkillScoreUpLimits is missing a row for finale event {event_id}"
+        )));
+    }
+    Ok(None)
 }
 
 fn load_support_deck_count(turn: Option<i32>, event_type: EventType) -> u8 {
@@ -326,8 +368,26 @@ pub(crate) fn build_event_context(
             }
             bonuses
         },
-        skill_score_up_limit: resolve_skill_limit(game, params, event_id),
-        card_bonus_count_limit: load_card_bonus_limit(game.event_card_bonus_limits, event_id),
+        skill_score_up_limit: resolve_skill_limit(game, params, event_id)?,
+        is_finale: game.is_world_bloom_finale(event_id),
+        card_bonus_count_limit: load_card_bonus_limit(
+            game.event_card_bonus_limits,
+            event_id,
+            game.is_world_bloom_finale(event_id)
+                .then_some(world_bloom_event_turn)
+                .flatten(),
+        ),
+        shuffle_unit_bonus: if matches!(event_type, EventType::WorldBloom) {
+            load_shuffle_unit_bonus(
+                game,
+                event_id,
+                game.is_world_bloom_finale(event_id)
+                    .then_some(world_bloom_event_turn)
+                    .flatten(),
+            )?
+        } else {
+            [0; 6]
+        },
         diff_attr_bonus: if matches!(event_type, EventType::WorldBloom) {
             load_diff_attr_bonus(game.world_bloom_different_attribute_bonuses)
         } else {
@@ -531,6 +591,7 @@ mod tests {
         EventContext {
             event_id: 0,
             event_type: EventType::Marathon,
+            is_finale: false,
             event_cards: Vec::new(),
             deck_bonuses: Vec::new(),
             rarity_bonuses: Vec::new(),
@@ -539,6 +600,7 @@ mod tests {
             skill_score_up_limit: None,
             card_bonus_count_limit: 5,
             diff_attr_bonus: [0; 6],
+            shuffle_unit_bonus: [0; 6],
             support_deck_count: 0,
             world_bloom_character_id: None,
             world_bloom_event_turn: None,
@@ -689,6 +751,7 @@ mod tests {
             world_bloom_support_deck_unit_event_limited_bonuses: &[],
             event_mysekai_fixture_performance_bonus_limits: &[],
             event_skill_score_up_limits: &[],
+            event_shuffle_unit_bonuses: &[],
             music_metas: &[],
             music_difficulties: &[],
             honors: &[],

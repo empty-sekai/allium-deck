@@ -55,13 +55,20 @@ Area-upgrade recommendations use the same evaluation mode before and after the u
 
 Final chapter leader honor: a deck equips one main honor, so the leader-only honor bonus is a single event-honor row matched by event, honor and leader character; owned honors do not stack. For each leader character the builder assumes the owned honor with the largest leader bonus, breaking ties by the smallest honor ID. Results report it as `main_honor_id` (`mainHonorId` in the HTTP service); the key is omitted outside the final chapter or when the leader character has no matching owned honor. The honor power bonus added to total power is computed separately and still covers every owned honor.
 
-Explicit master rows take priority over fallback limits. Finale fallbacks count four limited cards for WL2 and five for WL3; fixture caps are respectively 20 and 60 in 0.1% units. Skill caps are the raw master value, without subtracting 100. WL3 chapters and finale retain the 336,000 total-power cap. WL3 finale additionally gives 10/30/50% for 3/4/5 distinct **original** units, with every Virtual Singer contributing `piapro`, independently of support units. Results expose this component as `shuffle_bonus_rate` (`shuffleBonusRate` over HTTP). Simulated finale support rows copy positive rates for supported characters from the source events and deduplicate `(character, card)` among those eligible rows in master order; absent source rows are not synthesized from old event-card bonuses.
+Finales are identified by `worldBlooms.json` rows with `worldBloomChapterType: "finale"`, as well as the supported legacy and simulated finale IDs. Explicit master rows take priority over fallback limits. Finale fallbacks count four limited cards for WL2 and five for WL3; fixture caps are respectively 20 and 60 in 0.1% units. Skill caps are the raw master value, without subtracting 100. WL3 chapters and finale retain the 336,000 total-power cap.
+
+`eventShuffleUnitBonuses.json` is optional. Its rows contain `eventId`, `unitCount`, and integer `bonusRate` in percentage points. A WL3 finale with no matching rows defaults to 10/30/50% for 3/4/5 distinct **original** units; other events default to zero. Any matching rows replace the whole fallback table, with zero for counts without a row. This applies to both real and simulated finales. Every Virtual Singer contributes `piapro`, independently of support units. Search bounds use the largest supplied rate, including nonmonotone tables. Results expose this component as `shuffle_bonus_rate` (`shuffleBonusRate` over HTTP). The typed masterdata view exposes `event_shuffle_unit_bonuses`, and `SearchContext.shuffle_unit_bonus` carries its six count-indexed rates.
+
+A real finale must supply its `eventSkillScoreUpLimits` row; a missing row produces a build error. The legacy finale and simulated finales retain their 140% fallback, and an explicit row takes priority. Ordinary events may omit the skill-cap table.
+
+Simulated finale support rows copy positive rates for supported characters from the source events and deduplicate `(character, card)` among those eligible rows in master order; absent source rows are not synthesized from old event-card bonuses. A real finale with a zero `leaderBonusRate` keeps that zero; the 20% missing-leader-bonus fallback applies only to the supported legacy and simulated finales.
 
 ## Deck constraints
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `fixedCards` | int[] | `[]` | Card IDs locked into the deck. Combined with `fixedCharacters`, at most 5 slots; slot 0 carries leader semantics. |
+| `fixedConstraintMode` / `fixed_constraint_mode` | string | `"slots"` | `slots` preserves the ordered-slot contract. `members` is an opt-in for finale recommendations: fixed cards and characters must participate, and `forcedLeaderCharacterId` independently selects the leader. With no forced leader, every legal leader is considered. Membership mode with mandatory members and exact `targetBonusList` tiers is not supported. |
 | `fixedCharacters` | int[] | `[]` | Character IDs locked into slots after the fixed cards. |
 | `excludedCards` | int[] | `[]` | Card IDs removed from the candidate pool. |
 | `challengeLiveCharacterId` / `challenge_live_character_id` | int | absent | Character for `challenge` / `challenge_auto` (character uniqueness is disabled there). |
