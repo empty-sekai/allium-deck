@@ -128,7 +128,12 @@ await assert.rejects(verifyPackage({ ...options, timeoutMs: 1,
         self.assertIn("3) ;;", publish)
         self.assertIn('*) exit "$LOOKUP_STATUS"', publish)
         self.assertIn("PUBLISH_STATUS=$?", publish)
-        self.assertIn("--attempts 6 --delay-ms 3000 --timeout-ms 5000", publish)
+        post_publish = publish.split("PUBLISH_STATUS=$?", 1)[1]
+        retry = re.search(r"--attempts (\d+) --delay-ms (\d+) --timeout-ms (\d+)", post_publish)
+        self.assertIsNotNone(retry)
+        attempts, delay_ms, timeout_ms = map(int, retry.groups())
+        self.assertGreaterEqual((attempts - 1) * delay_ms, 120_000)
+        self.assertLessEqual(attempts * timeout_ms + (attempts - 1) * delay_ms, 600_000)
 
     def test_manual_preflight_builds_all_assets_without_publication(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
