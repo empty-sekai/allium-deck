@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "allium-deck",
-    "version": "0.0.15",
+    "version": "0.1.0",
     "summary": "Deck recommendation for Project Sekai: exact DFS with branch and bound.",
     "description": "Build parameters are the engine's own contract; every key documented in docs/parameters.md is accepted here, in camelCase or snake_case. The service adds only the request envelope and its own ceilings on `limit` and `timeoutMs`.",
     "license": { "name": "MIT OR Apache-2.0" }
@@ -284,7 +284,13 @@
         "type": "object",
         "description": "Build parameters. Every key in docs/parameters.md is accepted, in camelCase or snake_case; unknown keys are ignored. `limit` and `timeoutMs` are lowered to this service's ceilings, reported by GET /v1/regions.",
         "properties": {
-          "multiUnitBonusEvaluation": { "$ref": "#/components/schemas/MultiUnitBonusEvaluation" }
+          "multiUnitBonusEvaluation": { "$ref": "#/components/schemas/MultiUnitBonusEvaluation" },
+          "fixedConstraintMode": {
+            "type": "string",
+            "enum": ["slots", "members"],
+            "default": "slots",
+            "description": "Ordered input slots by default. In finale recommendations, members requires participation without fixing the leader; forcedLeaderCharacterId remains independent. Mandatory members with exact targetBonusList tiers are not supported. The snake_case alias is fixed_constraint_mode."
+          }
         },
         "additionalProperties": true
       },
