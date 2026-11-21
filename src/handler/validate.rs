@@ -204,6 +204,42 @@ pub(crate) fn validate_build_params(params: &types::BuildParams) -> Result<(), B
             "target_bonus_list 仅支持 bonus target".to_string(),
         ));
     }
+    if let Some(unit) = params.event_me_unit.as_deref() {
+        let valid_unit = super::types::parse_unit_code(unit)
+            .and_then(crate::types::memory_event_fake_id)
+            .is_some();
+        if !valid_unit {
+            return Err(BuildError::InvalidConfig(format!(
+                "Invalid memory event unit: {unit}"
+            )));
+        }
+        let is_challenge = matches!(
+            params.live_type,
+            crate::types::LiveType::Challenge | crate::types::LiveType::ChallengeAuto
+        );
+        let is_cheerful = matches!(params.live_type, crate::types::LiveType::Cheerful);
+        let non_marathon_event_type = params
+            .event_type
+            .as_deref()
+            .is_some_and(|value| !value.trim().eq_ignore_ascii_case("marathon"));
+        if is_challenge
+            || is_cheerful
+            || params.event_id.is_some()
+            || params.event_attr.is_some()
+            || params.event_unit.is_some()
+            || params.world_bloom_event_turn.is_some()
+            || params.world_bloom_finale_turn.is_some()
+            || params.world_bloom_character_id.is_some()
+            || params.custom_bonus_attr.is_some()
+            || !params.custom_bonus_character_ids.is_empty()
+            || !params.custom_bonus_character_support_units.is_empty()
+            || non_marathon_event_type
+        {
+            return Err(BuildError::InvalidConfig(
+                "event_me_unit requires a marathon simulation without other event or custom bonus selectors.".to_string(),
+            ));
+        }
+    }
     if matches!(
         params.live_skill_order,
         crate::types::LiveSkillOrder::Specific

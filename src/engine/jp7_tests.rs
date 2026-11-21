@@ -403,3 +403,281 @@ fn regional_basis_point_bonus_rounding_applies_to_tw_kr_and_cn() {
         );
     }
 }
+
+#[test]
+fn memory_event_all_units_preserve_master_rank_and_exclude_associated_singers() {
+    let (mut game, mut user, _) = super::tests::minimal_game_and_user();
+    // Characters: 1 (light_sound), 5 (idol), 9 (street), 13 (theme_park), 17 (school_refusal),
+    // plus two cards for character 21 (piapro): 506 (bare VS) and 507 (VS associated with street).
+    let char_by_card = [
+        (501, 1, "light_sound", "cool", None),
+        (502, 5, "idol", "cute", None),
+        (503, 9, "street", "happy", None),
+        (504, 13, "theme_park", "pure", None),
+        (505, 17, "school_refusal", "mysterious", None),
+        (506, 21, "piapro", "cool", None),
+        (507, 22, "piapro", "cute", Some("street")),
+    ];
+    game.cards = char_by_card
+        .iter()
+        .map(
+            |&(id, character_id, _, attr, support)| crate::handler::MasterCard {
+                id,
+                character_id,
+                attr: attr.to_string(),
+                card_rarity_type: 4,
+                rarity: String::new(),
+                asset_bundle_name: format!("card_{id:06}"),
+                skill_id: 10,
+                special_training_skill_id: None,
+                special_training_power1_bonus_fixed: 0,
+                special_training_power2_bonus_fixed: 0,
+                special_training_power3_bonus_fixed: 0,
+                support_unit: support.map(str::to_string),
+                max_level: Some(60),
+                max_skill_level: Some(4),
+                max_master_rank: Some(5),
+            },
+        )
+        .collect();
+    game.card_parameters = char_by_card
+        .iter()
+        .map(|&(card_id, ..)| crate::handler::CardParameter {
+            card_id,
+            level: 1,
+            param1: 10_000,
+            param2: 10_000,
+            param3: 10_000,
+        })
+        .collect();
+    game.game_character_units = vec![
+        crate::handler::GameCharacterUnit {
+            game_character_id: 1,
+            unit: "light_sound".to_string(),
+        },
+        crate::handler::GameCharacterUnit {
+            game_character_id: 5,
+            unit: "idol".to_string(),
+        },
+        crate::handler::GameCharacterUnit {
+            game_character_id: 9,
+            unit: "street".to_string(),
+        },
+        crate::handler::GameCharacterUnit {
+            game_character_id: 13,
+            unit: "theme_park".to_string(),
+        },
+        crate::handler::GameCharacterUnit {
+            game_character_id: 17,
+            unit: "school_refusal".to_string(),
+        },
+        crate::handler::GameCharacterUnit {
+            game_character_id: 21,
+            unit: "piapro".to_string(),
+        },
+        crate::handler::GameCharacterUnit {
+            game_character_id: 22,
+            unit: "piapro".to_string(),
+        },
+        crate::handler::GameCharacterUnit {
+            game_character_id: 22,
+            unit: "street".to_string(),
+        },
+    ];
+    game.event_rarity_bonus_rates = vec![crate::handler::EventRarityBonusRate {
+        event_id: 1,
+        card_rarity_type: 4,
+        master_rank: 5,
+        bonus_rate_x10: 100,
+    }];
+    game.music_metas.push(crate::handler::MusicMeta {
+        music_id: 1,
+        difficulty: "expert".to_string(),
+        event_rate_solo: 100,
+        event_rate_multi: 100,
+        event_rate_auto: 100,
+        base_score: 1.0,
+        base_score_auto: 1.0,
+        fever_score: 0.0,
+        solo_skill_scores: [0.0; 6],
+        multi_skill_scores: [0.0; 6],
+        auto_skill_scores: [0.0; 6],
+        music_time: 100.0,
+        tap_count: 100,
+    });
+    user.user_cards = char_by_card
+        .iter()
+        .map(|&(card_id, ..)| crate::handler::UserCard {
+            card_id,
+            level: 1,
+            skill_level: 1,
+            master_rank: 5,
+            special_training_status: "none".to_string(),
+            default_image: "original".to_string(),
+            episodes_read: Vec::new(),
+            is_virtual: false,
+            has_canvas_bonus_override: None,
+        })
+        .collect();
+
+    let game_ref = game.as_ref();
+    let unit_of = |card_id: i32| -> &str {
+        char_by_card
+            .iter()
+            .find(|&&(id, ..)| id == card_id)
+            .unwrap()
+            .2
+    };
+
+    for unit in [
+        "light_sound",
+        "idol",
+        "street",
+        "theme_park",
+        "school_refusal",
+        "piapro",
+    ] {
+        for cards in [
+            [501, 502, 503, 504, 505],
+            [501, 502, 503, 504, 507],
+            [503, 505, 506, 507, 501],
+        ] {
+            let params_json = serde_json::json!({
+                "region": "jp",
+                "live_type": "multi",
+                "music_id": 1,
+                "music_diff": "expert",
+                "event_me_unit": unit,
+                "target": "power",
+                "limit": 1,
+                "fixed_cards": cards,
+            })
+            .to_string();
+            let params = parse_build_params_json(&params_json).unwrap();
+            assert_eq!(params.event_me_unit.as_deref(), Some(unit));
+            let (pool, ctx) = crate::handler::build_card_pool(&user, &game_ref, &params).unwrap();
+            let outcome = recommend(&user, &game_ref, &params).unwrap();
+            let dense: [crate::pool::CardIdx; 5] = outcome.results[0]
+                .cards
+                .map(|id| pool.indices().find(|&c| pool.game_id(c) == id).unwrap());
+            let summary = crate::search::summarize_deck(&pool, &ctx, &dense).unwrap();
+            let mut actual_total = 0.0;
+            for (pos, card_idx) in summary.ordered_cards.iter().enumerate() {
+                let id = i32::from(pool.game_id(*card_idx));
+                let expected = if unit_of(id) == unit { 85.0 } else { 35.0 };
+                assert_eq!(
+                    summary.card_event_bonus_rates[pos], expected,
+                    "unit={unit} card={id}"
+                );
+                actual_total += expected;
+            }
+            assert_eq!(summary.event_bonus_total, Some(actual_total));
+        }
+
+        // MySekai simulation with event_me_unit also preserves unit bonuses.
+        let mysekai_params = crate::handler::BuildParams {
+            region: "jp".to_string(),
+            live_type: crate::types::LiveType::Mysekai,
+            target: crate::types::ScoreTarget::Score,
+            event_me_unit: Some(unit.to_string()),
+            fixed_cards: vec![501, 502, 503, 504, 507],
+            limit: 1,
+            ..Default::default()
+        };
+        let (pool, ctx) =
+            crate::handler::build_card_pool(&user, &game_ref, &mysekai_params).unwrap();
+        let outcome = recommend(&user, &game_ref, &mysekai_params).unwrap();
+        let dense: [crate::pool::CardIdx; 5] = outcome.results[0]
+            .cards
+            .map(|id| pool.indices().find(|&c| pool.game_id(c) == id).unwrap());
+        let summary = crate::search::summarize_deck(&pool, &ctx, &dense).unwrap();
+        let expected_bonus: f64 = [501, 502, 503, 504, 507]
+            .into_iter()
+            .map(|id| if unit_of(id) == unit { 85.0 } else { 35.0 })
+            .sum();
+        assert_eq!(summary.event_bonus_total, Some(expected_bonus));
+        let power_bonus_x10 = 10 + (summary.total_power as u64 * 10) / 450_000;
+        let expected_mysekai =
+            ((power_bonus_x10 as f64 * (100.0 + expected_bonus) * 500.0) / 1000.0) as u64;
+        assert_eq!(outcome.results[0].score, expected_mysekai);
+    }
+
+    // Memory event bonus changes selection and event points for target=score.
+    let score_params = crate::handler::BuildParams {
+        region: "jp".to_string(),
+        live_type: crate::types::LiveType::Multi,
+        music_id: Some(1),
+        music_diff: Some("expert".to_string()),
+        event_me_unit: Some("street".to_string()),
+        target: crate::types::ScoreTarget::Score,
+        limit: 1,
+        ..Default::default()
+    };
+    let (pool, ctx) = crate::handler::build_card_pool(&user, &game_ref, &score_params).unwrap();
+    let outcome = recommend(&user, &game_ref, &score_params).unwrap();
+    assert!(outcome.results[0].cards.contains(&503));
+    let dense: [crate::pool::CardIdx; 5] = outcome.results[0]
+        .cards
+        .map(|id| pool.indices().find(|&c| pool.game_id(c) == id).unwrap());
+    let summary = crate::search::summarize_deck(&pool, &ctx, &dense).unwrap();
+    assert_eq!(summary.event_bonus_total, Some(225.0));
+    let base = 110 + summary.live_score / 17_000 + ((4 * summary.live_score) / 340_000).min(16);
+    assert_eq!(summary.event_point, Some((base as f64 * 3.25) as i32));
+
+    // Reject conflicting selectors and invalid memory event unit.
+    let conflicts = [
+        serde_json::json!({"event_id": 1}),
+        serde_json::json!({"event_attr": "cute"}),
+        serde_json::json!({"event_unit": "idol"}),
+        serde_json::json!({"world_bloom_event_turn": 1}),
+        serde_json::json!({"world_bloom_finale_turn": 3}),
+        serde_json::json!({"world_bloom_character_id": 9}),
+        serde_json::json!({"event_type": "cheerful_carnival"}),
+        serde_json::json!({"custom_bonus_attr": "cool"}),
+        serde_json::json!({"custom_bonus_character_ids": [9]}),
+        serde_json::json!({"live_type": "challenge"}),
+        serde_json::json!({"live_type": "cheerful"}),
+    ];
+    for extra in conflicts {
+        let mut base_obj = serde_json::json!({
+            "region": "jp",
+            "live_type": "multi",
+            "music_id": 1,
+            "music_diff": "expert",
+            "event_me_unit": "street",
+            "target": "power",
+            "limit": 1,
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            base_obj
+                .as_object_mut()
+                .unwrap()
+                .insert(k.clone(), v.clone());
+        }
+        let err = match parse_build_params_json(&base_obj.to_string()) {
+            Ok(params) => recommend(&user, &game_ref, &params)
+                .unwrap_err()
+                .to_string(),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("event_me_unit requires"),
+            "extra={extra} err={err}"
+        );
+    }
+
+    assert!(
+        parse_build_params_json(r#"{"event_me_unit":"invalid"}"#)
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid memory event unit")
+    );
+    let mut invalid_typed = score_params;
+    invalid_typed.event_me_unit = Some("invalid".to_string());
+    assert!(
+        recommend(&user, &game_ref, &invalid_typed)
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid memory event unit")
+    );
+}

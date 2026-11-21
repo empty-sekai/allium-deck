@@ -35,6 +35,7 @@ Area-upgrade recommendations use the same evaluation mode before and after the u
 | `eventId` / `event_id` | int | absent | Real event ID from masterdata. Enables event-point scoring for `target=score`. |
 | `eventType` / `event_type` | string | absent | Simulated event type when no `eventId` is given: `marathon`, `cheerful`/`cheerful_carnival`, `world_bloom`/`wl`. |
 | `eventUnit` / `event_unit` | string | absent | Simulated event unit: `light_sound`, `idol`, `street`, `theme_park`, `school_refusal`, `piapro`. |
+| `eventMeUnit` / `event_me_unit` | string | absent | Memory-event simulation (`light_sound`, `idol`, `street`, `theme_park`, `school_refusal`, `piapro`): all attributes +25%, native unit characters +75% total (associated Virtual Singers do not receive the human-unit bonus). Marathon and `mysekai` only; mutually exclusive with other event and custom-bonus selectors. |
 | `eventAttr` / `event_attr` | string | absent | Simulated event attribute: `mysterious`, `cute`, `cool`, `pure`, `happy`. |
 | `customBonusCharacterIds` / `custom_bonus_character_ids` | int[] | `[]` | Mixed-event character set; overrides the unit expansion of `eventUnit`. IDs 1–26, max 26 entries. |
 | `customBonusAttr` / `custom_bonus_attr` | string | absent | Mixed-event attribute. |

@@ -369,6 +369,8 @@ pub fn parse_build_params_json(
         .or(i32_field_checked(&value, "world_bloom_finale_turn")?);
     params.challenge_live_character_id = i32_field_checked(&value, "challengeLiveCharacterId")?
         .or(i32_field_checked(&value, "challenge_live_character_id")?);
+    params.event_me_unit =
+        string_field(&value, "eventMeUnit").or_else(|| string_field(&value, "event_me_unit"));
     params.event_unit =
         string_field(&value, "eventUnit").or_else(|| string_field(&value, "event_unit"));
     params.event_attr =
@@ -398,6 +400,15 @@ pub fn parse_build_params_json(
     {
         return Err(serde_json::Error::custom(format!(
             "event_unit 非法: {unit}"
+        )));
+    }
+    if let Some(unit) = params.event_me_unit.as_deref()
+        && crate::handler::types::parse_unit_code(unit)
+            .and_then(crate::types::memory_event_fake_id)
+            .is_none()
+    {
+        return Err(serde_json::Error::custom(format!(
+            "Invalid memory event unit: {unit}"
         )));
     }
     params.custom_bonus_character_ids = bounded_int_array_alias(

@@ -195,6 +195,8 @@ pub struct BuildParams {
     pub world_bloom_finale_turn: Option<i32>,
     /// Challenge 角色 ID。
     pub challenge_live_character_id: Option<i32>,
+    /// Memory-event simulation unit (`+25%` all cards, `+75%` native unit characters).
+    pub event_me_unit: Option<String>,
     /// 模拟活动团。
     pub event_unit: Option<String>,
     /// 模拟活动属性。
@@ -270,6 +272,7 @@ impl Default for BuildParams {
             world_bloom_event_turn: None,
             world_bloom_finale_turn: None,
             challenge_live_character_id: None,
+            event_me_unit: None,
             event_unit: None,
             event_attr: None,
             custom_bonus_character_ids: Vec::new(),

@@ -31,6 +31,23 @@ pub const FINAL_CHAPTER_EVENT_ID: i32 = 180;
 /// （= `getWorldBloomFakeEventId(3, 0)` = `3000000 + 2 * 100000`）。
 pub const WL3_FAKE_FINALE_EVENT_ID: i32 = 3_200_000;
 
+/// Base fake event ID for Memory Event simulations (`4_000_000 + unit`).
+pub const MEMORY_EVENT_ID_BASE: i32 = 4_000_000;
+
+/// Fake event ID for a Memory Event unit simulation, or `None` for pseudo-units.
+#[inline]
+pub const fn memory_event_fake_id(unit: Unit) -> Option<i32> {
+    match unit {
+        Unit::LightSound
+        | Unit::Idol
+        | Unit::Street
+        | Unit::Themepark
+        | Unit::SchoolRefusal
+        | Unit::Piapro => Some(MEMORY_EVENT_ID_BASE + unit as i32),
+        _ => None,
+    }
+}
+
 /// 终章事件判定：legacy WL2 终章（180）与模拟 WL3 终章（3_200_000）。
 ///
 /// 各轮终章的限制与加成由活动主数据及对应轮次的 fallback 决定。

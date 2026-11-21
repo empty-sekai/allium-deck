@@ -65,6 +65,7 @@ struct ParamOverrides {
     world_bloom_event_turn: Option<Option<i32>>,
     world_bloom_finale_turn: Option<Option<i32>>,
     challenge_live_character_id: Option<Option<i32>>,
+    event_me_unit: Option<Option<String>>,
     event_unit: Option<Option<String>>,
     event_attr: Option<Option<String>>,
     unit_filter: Option<Option<String>>,
@@ -763,6 +764,9 @@ fn parse_args() -> Result<CliArgs, String> {
                 parsed.overrides.challenge_live_character_id =
                     Some(parse_optional_i32(&value()?, &flag)?)
             }
+            "--event-me-unit" => {
+                parsed.overrides.event_me_unit = Some(parse_optional_string(value()?))
+            }
             "--event-unit" => parsed.overrides.event_unit = Some(parse_optional_string(value()?)),
             "--event-attr" => parsed.overrides.event_attr = Some(parse_optional_string(value()?)),
             "--unit-filter" => parsed.overrides.unit_filter = Some(parse_optional_string(value()?)),
@@ -886,6 +890,9 @@ fn apply_overrides(params: &mut BuildParams, overrides: ParamOverrides) {
     if let Some(value) = overrides.challenge_live_character_id {
         params.challenge_live_character_id = value;
     }
+    if let Some(value) = overrides.event_me_unit {
+        params.event_me_unit = value;
+    }
     if let Some(value) = overrides.event_unit {
         params.event_unit = value;
     }
@@ -974,7 +981,7 @@ fn print_help() {
 \n           exact-live: --power N --skills 100,200 --music-score score.json --multi-sum-power N
 \n         --challenge-all 逐角色搜索 challenge 最优卡组，并按分数全局排序输出 JSON\n\
          --fixed-cards 1,2 --fixed-characters 1,2 --excluded-cards 3,4\n\
-         --event-unit ln --event-attr cool --filter-other-unit --unit-filter ln --attr-filter cool\n\
+         --event-unit ln --event-me-unit ln --event-attr cool --filter-other-unit --unit-filter ln --attr-filter cool\n\
          --world-bloom-character-id N --world-bloom-event-turn N --world-bloom-finale-turn 2|3
          --challenge-live-character-id N\n\
          --skill-reference-strategy average|max|min --live-skill-order best|worst|average|specific\n\
