@@ -259,9 +259,11 @@ fn long_exact_all_scene_property_matrix() {
         final_fixed.diff_attr_bonus = [0, 0, 11, 31, 61, 107];
         final_fixed.fixed_character_ids = vec![1];
         final_fixed.support_decks_by_character = vec![SupportDeck::default(); 27];
-        for character in 1usize..=7 {
-            final_fixed.support_decks_by_character[character] =
-                support_deck_for_property(&pool, character + case as usize);
+        for (idx, slot) in final_fixed.support_decks_by_character[1..=7]
+            .iter_mut()
+            .enumerate()
+        {
+            *slot = support_deck_for_property(&pool, idx + 1 + case as usize);
         }
         check(
             &pool,

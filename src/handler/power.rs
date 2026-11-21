@@ -749,7 +749,10 @@ pub(crate) fn build_power_scalar_reference(
             continue;
         }
 
-        for member_key in 0..4usize {
+        for (member_key, slot) in result.area_item_bonus[pool_index as usize]
+            .iter_mut()
+            .enumerate()
+        {
             let same_unit = member_key >= 2;
             let same_attr = member_key % 2 == 1;
             let area_bonus = area_item_bonus_dims(
@@ -766,7 +769,7 @@ pub(crate) fn build_power_scalar_reference(
                 gate_bonus: gate,
                 total,
             };
-            result.area_item_bonus[pool_index as usize][member_key] = detail.area_item_bonus;
+            *slot = detail.area_item_bonus;
             min_value = min_value.min(total);
             max_value = max_value.max(total);
         }

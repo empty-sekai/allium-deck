@@ -2090,8 +2090,7 @@ impl SuffixTable {
             for class in &group.classes {
                 let fixed = ((i64::from(class.key_ticks) + problem.offset_ticks) / unit) as usize;
                 let limited = (i64::from(class.limited_ticks) / unit) as usize;
-                for count in 1..COUNTS {
-                    let width = self.widths[count];
+                for (count, &width) in self.widths.iter().enumerate().skip(1) {
                     for counted in 0..capacities {
                         for uncounted in 0..modes {
                             let target = row(count, counted, uncounted);

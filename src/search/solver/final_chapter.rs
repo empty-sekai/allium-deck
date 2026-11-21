@@ -2782,11 +2782,11 @@ mod attribute_bound_tests {
             // Nonmonotone tables must maximize the bonus itself, not the count.
             for bonuses in [[0, 0, 10, 20, 30, 50], [99, 70, 200, 3, 150, 0], [0; 6]] {
                 let suffix = build_group_ceiling_suffix(&groups, &bonuses);
-                for start in 0..=attrs.len() {
-                    for chosen in 0..=MEMBER_COUNT {
-                        for set in 0..32 {
+                for (start, state) in suffix[..=attrs.len()].iter().enumerate() {
+                    for (chosen, attr_row) in state.attr_bonus.iter().enumerate() {
+                        for (set, &got) in attr_row.iter().enumerate() {
                             assert_eq!(
-                                suffix[start].attr_bonus[chosen][set],
+                                got,
                                 enumerate(&attrs[start..], chosen, set, &bonuses),
                                 "attrs={attrs:?} bonuses={bonuses:?} start={start} chosen={chosen} set={set}"
                             );
