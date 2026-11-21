@@ -22,7 +22,10 @@ use std::collections::{BTreeMap, HashMap};
 use wasm_bindgen::prelude::*;
 
 use allium_deck::auxiliary::AuxiliaryData;
-use allium_deck::engine::{OwnedGameData, parse_build_params_json, parse_user_profile_json};
+use allium_deck::engine::{
+    OwnedGameData, parse_build_params_json, parse_build_params_json_with_default_region,
+    parse_user_profile_json,
+};
 use allium_deck::handler::{
     GameData, MasterCard, UserCard, UserProfile, build_card_pool, cultivated_user_cards,
 };
@@ -160,21 +163,11 @@ fn recommend_with_user(
     params_json: &str,
     fallback_region: Option<&str>,
 ) -> Result<String, JsValue> {
-    let mut params = parse_build_params_json(params_json).map_err(to_js)?;
-    if let Some(region) = fallback_region {
-        let has_explicit_region = serde_json::from_str::<serde_json::Value>(params_json)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("region")
-                    .and_then(|entry| entry.as_str())
-                    .map(|_| ())
-            })
-            .is_some();
-        if !has_explicit_region {
-            params.region = region.to_string();
-        }
+    let params = match fallback_region {
+        Some(region) => parse_build_params_json_with_default_region(params_json, region),
+        None => parse_build_params_json(params_json),
     }
+    .map_err(to_js)?;
     // OwnedGameData::as_ref 返回借用视图（非拷贝本体），生命周期跟随 data。
     let game: &GameData<'_> = &data.game.as_ref();
 

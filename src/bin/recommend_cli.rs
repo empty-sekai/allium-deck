@@ -529,14 +529,20 @@ fn resolve_aux_event_type(game: &GameData<'_>, params: &BuildParams) -> allium_d
             _ => allium_deck::EventType::Marathon,
         };
     }
-    if let Some(event_id) = params.event_id
-        && let Some(event) = game.events.iter().find(|event| event.id == event_id)
-    {
-        return match event.event_type.to_ascii_lowercase().as_str() {
-            "cheerful_carnival" => allium_deck::EventType::CheerfulCarnival,
-            "world_bloom" => allium_deck::EventType::WorldBloom,
-            _ => allium_deck::EventType::Marathon,
-        };
+    if params.event_me_unit.is_some() {
+        return allium_deck::EventType::Marathon;
+    }
+    if let Some(event_id) = params.event_id {
+        if allium_deck::is_memory_event_id(event_id) {
+            return allium_deck::EventType::Marathon;
+        }
+        if let Some(event) = game.events.iter().find(|event| event.id == event_id) {
+            return match event.event_type.to_ascii_lowercase().as_str() {
+                "cheerful_carnival" => allium_deck::EventType::CheerfulCarnival,
+                "world_bloom" => allium_deck::EventType::WorldBloom,
+                _ => allium_deck::EventType::Marathon,
+            };
+        }
     }
     allium_deck::EventType::Marathon
 }

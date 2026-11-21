@@ -288,12 +288,45 @@ fn user_wb_support_deck_from_value(value: &Value) -> Option<UserWBSupportDeck> {
 pub fn parse_build_params_json(
     input: &str,
 ) -> Result<crate::handler::BuildParams, serde_json::Error> {
+    parse_build_params_from_json(input, None)
+}
+
+/// 将 params JSON 解析为 `BuildParams`；当 `region` 缺省、`null` 或为空白串时回退到 `default_region`。
+pub fn parse_build_params_json_with_default_region(
+    input: &str,
+    default_region: &str,
+) -> Result<crate::handler::BuildParams, serde_json::Error> {
+    parse_build_params_from_json(input, Some(default_region))
+}
+
+fn parse_region_override(value: &Value) -> Result<Option<String>, serde_json::Error> {
+    match value.get("region") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        Some(_) => Err(serde_json::Error::custom("region 必须是字符串")),
+    }
+}
+
+fn parse_build_params_from_json(
+    input: &str,
+    default_region: Option<&str>,
+) -> Result<crate::handler::BuildParams, serde_json::Error> {
     let value = serde_json::from_str::<Value>(input)?;
     if !value.is_object() {
         return Err(serde_json::Error::custom("参数必须是 JSON 对象"));
     }
     let mut params = crate::handler::BuildParams::default();
-    if let Some(region) = string_field(&value, "region") {
+    if let Some(region) = default_region {
+        params.region = region.to_string();
+    }
+    if let Some(region) = parse_region_override(&value)? {
         params.region = region;
     }
     params.event_id =

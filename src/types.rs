@@ -48,6 +48,12 @@ pub const fn memory_event_fake_id(unit: Unit) -> Option<i32> {
     }
 }
 
+/// Whether `event_id` is a synthetic Memory Event ID (`4_000_001..=4_000_006`).
+#[inline]
+pub const fn is_memory_event_id(event_id: i32) -> bool {
+    event_id > MEMORY_EVENT_ID_BASE && event_id <= MEMORY_EVENT_ID_BASE + 6
+}
+
 /// 终章事件判定：legacy WL2 终章（180）与模拟 WL3 终章（3_200_000）。
 ///
 /// 各轮终章的限制与加成由活动主数据及对应轮次的 fallback 决定。

@@ -553,3 +553,92 @@ async fn every_documented_path_is_served() {
 
     state.pool.shutdown();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn region_inheritance_and_memory_event_music_endpoints() {
+    let (router, state) = app(config());
+
+    for extra in [
+        r#"{}"#,
+        r#"{"eventMeUnit":"light_sound"}"#,
+        r#"{"eventId":4000001}"#,
+    ] {
+        let mut music_body = serde_json::json!({
+            "deck": {
+                "totalPower": 250000,
+                "eventBonusRate": 100.0,
+                "supportDeckBonusRate": 0.0,
+                "cards": [
+                    {"skillScoreUp": 100.0, "skillLifeRecovery": 0.0},
+                    {"skillScoreUp": 100.0, "skillLifeRecovery": 0.0},
+                    {"skillScoreUp": 100.0, "skillLifeRecovery": 0.0},
+                    {"skillScoreUp": 100.0, "skillLifeRecovery": 0.0},
+                    {"skillScoreUp": 100.0, "skillLifeRecovery": 0.0}
+                ]
+            },
+            "liveType": "multi",
+        });
+        let extra_obj: serde_json::Value = serde_json::from_str(extra).expect("extra json parses");
+        for (k, v) in extra_obj.as_object().expect("extra is object") {
+            music_body
+                .as_object_mut()
+                .expect("music body is object")
+                .insert(k.clone(), v.clone());
+        }
+        let (music_status, music_value) =
+            post(&router, "/v1/music/recommend", music_body.to_string()).await;
+        assert_eq!(
+            music_status,
+            StatusCode::OK,
+            "extra={extra} body={music_value}"
+        );
+        assert!(
+            !music_value
+                .as_array()
+                .expect("music response array")
+                .is_empty()
+        );
+    }
+
+    let (bad_region_status, bad_region_value) = post(
+        &router,
+        "/v1/recommend",
+        format!("{{\"user\":{},\"params\":{{\"region\":123}}}}", user_json()),
+    )
+    .await;
+    assert_eq!(
+        bad_region_status,
+        StatusCode::BAD_REQUEST,
+        "{bad_region_value}"
+    );
+    assert_eq!(bad_region_value["error"]["code"], "invalid_request");
+
+    let (blank_region_status, blank_region_value) = post(
+        &router,
+        "/v1/recommend",
+        format!(
+            "{{\"user\":{},\"params\":{{\"region\":\"   \",\"liveType\":\"multi\",\"target\":\"power\",\"limit\":5}}}}",
+            user_json()
+        ),
+    )
+    .await;
+    assert_eq!(blank_region_status, StatusCode::OK, "{blank_region_value}");
+    assert_eq!(
+        http_decks(&blank_region_value),
+        engine_decks(r#"{"liveType":"multi","target":"power","limit":5}"#)
+    );
+
+    let (support_bad_region, support_bad_val) = post(
+        &router,
+        "/v1/world-bloom/support-cards",
+        format!("{{\"user\":{},\"params\":{{\"region\":123}}}}", user_json()),
+    )
+    .await;
+    assert_eq!(
+        support_bad_region,
+        StatusCode::BAD_REQUEST,
+        "{support_bad_val}"
+    );
+
+    state.pool.shutdown();
+}

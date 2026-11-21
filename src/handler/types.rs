@@ -148,6 +148,9 @@ pub enum FixedConstraintMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BuildParams {
     /// 区服。
+    ///
+    /// 默认值为 `"cn"`，对应 `tw` / `kr` / `cn` 的万分比整数加成舍入口径；
+    /// 若 Rust 库调用方需要日服/国际服逐维度浮点向下取整，请显式传入 `"jp"` 或 `"en"`。
     pub region: String,
     /// 活动 ID。
     pub event_id: Option<i32>,
@@ -906,7 +909,7 @@ pub struct UserHonor {
 }
 
 /// 将单位代码转换为 allium `Unit`。
-pub(crate) fn parse_unit_code(code: &str) -> Option<Unit> {
+pub fn parse_unit_code(code: &str) -> Option<Unit> {
     let code = code.trim();
     let matches = |value: &str| code.eq_ignore_ascii_case(value);
     if matches("light_sound")

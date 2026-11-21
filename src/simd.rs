@@ -76,6 +76,8 @@ impl SimdBackend {
         uses_basis_point_bonus: bool,
     ) -> PowerCommon16 {
         unsafe {
+            // Basis-point bonus rounding runs on the scalar path; AVX-512 covers only
+            // the non-basis-point per-dimension float-accumulation path.
             let mut result = if uses_basis_point_bonus {
                 power_common_16_scalar(
                     base_dims,
@@ -130,6 +132,8 @@ impl SimdBackend {
         uses_basis_point_bonus: bool,
     ) -> [i32; 16] {
         unsafe {
+            // Basis-point bonus rounding runs on the scalar path; AVX-512 covers only
+            // the non-basis-point per-dimension float-accumulation path.
             if uses_basis_point_bonus {
                 return power_area_single_unit_16_scalar(
                     base_dims,

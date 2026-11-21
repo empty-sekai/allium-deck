@@ -17,11 +17,14 @@ use allium_deck::auxiliary::{
     MusicRecommendation, recommend_music_with_ceiling,
 };
 use allium_deck::handler::{
-    BuildParams, resolve_event_score_ceiling, world_bloom_support_cards as support_cards_core,
+    BuildParams, parse_unit_code, resolve_event_score_ceiling,
+    world_bloom_support_cards as support_cards_core,
 };
-use allium_deck::types::{EventType, LiveSkillOrder, LiveType};
+use allium_deck::types::{
+    EventType, LiveSkillOrder, LiveType, is_memory_event_id, memory_event_fake_id,
+};
 
-use super::{ApiError, ApiJson, AppState, UserInput, json_text, parse_params};
+use super::{ApiError, ApiJson, AppState, UserInput, json_text, parse_params_for_region};
 use crate::metrics::Outcome;
 
 #[derive(Debug, Serialize)]
@@ -62,7 +65,7 @@ async fn run_support_cards(
 ) -> Result<Vec<SupportCardOut>, ApiError> {
     let snapshot = state.snapshot(request.region.as_deref())?;
     let user = request.user.parse()?;
-    let params: BuildParams = parse_params(request.params.as_deref())?;
+    let params: BuildParams = parse_params_for_region(request.params.as_deref(), &snapshot.name)?;
     let (master_max, skill_max, other_unit) = (
         request.support_master_max,
         request.support_skill_max,
@@ -128,6 +131,8 @@ pub struct MusicRecommendRequest {
     pub event_type: Option<String>,
     #[serde(default, alias = "event_id")]
     pub event_id: Option<i32>,
+    #[serde(default, alias = "event_me_unit")]
+    pub event_me_unit: Option<String>,
     #[serde(
         default,
         alias = "skill_order_choose_strategy",
@@ -177,6 +182,7 @@ async fn run_music_recommend(
 
     let event_type_text = request.event_type.clone();
     let event_id = request.event_id;
+    let event_me_unit = request.event_me_unit.clone();
     let specific_skill_order = request.specific_skill_order.clone();
     let teammate_score_up = request.multi_live_teammate_score_up;
     let teammate_power = request.multi_live_teammate_power;
@@ -185,7 +191,12 @@ async fn run_music_recommend(
         .pool
         .execute(move || {
             let game = snapshot.game();
-            let event_type = resolve_event_type(event_type_text.as_deref(), event_id, game.events)?;
+            let event_type = resolve_event_type(
+                event_type_text.as_deref(),
+                event_id,
+                event_me_unit.as_deref(),
+                game.events,
+            )?;
             let options = MusicRecommendOptions {
                 live_type,
                 event_type,
@@ -353,16 +364,41 @@ fn parse_skill_order(value: Option<&str>) -> Result<LiveSkillOrder, ApiError> {
     }
 }
 
-/// Explicit `eventType` wins; otherwise `eventId` is looked up in the event table.
+/// Explicit `eventType` / `eventMeUnit` wins; synthetic Memory Event IDs resolve to
+/// marathon; otherwise `eventId` is looked up in the event table.
 fn resolve_event_type(
     event_type: Option<&str>,
     event_id: Option<i32>,
+    event_me_unit: Option<&str>,
     events: &[allium_deck::handler::Event],
 ) -> Result<EventType, ApiError> {
+    if let Some(unit_raw) = event_me_unit {
+        if parse_unit_code(unit_raw)
+            .and_then(memory_event_fake_id)
+            .is_none()
+        {
+            return Err(ApiError::BadRequest(format!(
+                "invalid memory event unit: {unit_raw}"
+            )));
+        }
+        if event_id.is_some()
+            || event_type
+                .is_some_and(|text| !matches!(parse_event_type(text), Ok(EventType::Marathon)))
+        {
+            return Err(ApiError::BadRequest(
+                "event_me_unit requires a marathon simulation without other event selectors"
+                    .to_string(),
+            ));
+        }
+        return Ok(EventType::Marathon);
+    }
     if let Some(text) = event_type {
         return parse_event_type(text);
     }
     if let Some(event_id) = event_id {
+        if is_memory_event_id(event_id) {
+            return Ok(EventType::Marathon);
+        }
         let event = events
             .iter()
             .find(|event| event.id == event_id)
@@ -403,8 +439,9 @@ fn record<T>(
 
 #[cfg(test)]
 mod tests {
-    use super::AreaItemsRequest;
+    use super::{AreaItemsRequest, MusicRecommendRequest, resolve_event_type};
     use allium_deck::power::MultiUnitBonusMode;
+    use allium_deck::types::EventType;
     use serde_json::json;
 
     #[test]
@@ -435,5 +472,38 @@ mod tests {
                 assert!(serde_json::from_value::<AreaItemsRequest>(request).is_err());
             }
         }
+    }
+
+    #[test]
+    fn music_recommend_event_type_handles_memory_event_unit_and_synthetic_ids() {
+        assert_eq!(
+            resolve_event_type(None, None, Some("light_sound"), &[])
+                .expect("light_sound resolves to marathon"),
+            EventType::Marathon
+        );
+        assert_eq!(
+            resolve_event_type(Some("marathon"), None, Some("piapro"), &[])
+                .expect("marathon + piapro resolves to marathon"),
+            EventType::Marathon
+        );
+        for id in 4_000_001..=4_000_006 {
+            assert_eq!(
+                resolve_event_type(None, Some(id), None, &[])
+                    .expect("synthetic memory event id resolves to marathon"),
+                EventType::Marathon
+            );
+        }
+        assert!(resolve_event_type(None, None, Some("invalid"), &[]).is_err());
+        assert!(resolve_event_type(Some("cheerful_carnival"), None, Some("street"), &[]).is_err());
+        assert!(resolve_event_type(None, Some(1), Some("street"), &[]).is_err());
+        assert!(resolve_event_type(None, Some(4_000_007), None, &[]).is_err());
+
+        let parsed: MusicRecommendRequest = serde_json::from_value(json!({
+            "deck": { "totalPower": 100000, "cards": [] },
+            "liveType": "solo",
+            "eventMeUnit": "idol"
+        }))
+        .expect("music recommend request with eventMeUnit parses");
+        assert_eq!(parsed.event_me_unit.as_deref(), Some("idol"));
     }
 }

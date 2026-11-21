@@ -6,7 +6,7 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `region` | string | `"cn"` | Region selector (`"jp"`, `"en"`, `"tw"`, `"kr"`, `"cn"`). `"tw"`, `"kr"`, and `"cn"` round character-rank and area-item bonuses in integer basis points (`round_ties_even(f32(rate) * 100) * stat` summed across three dimensions then divided by `10000`); `"jp"`, `"en"`, and other region tags floor each dimension in float before summing. |
+| `region` | string | `"cn"` | Region selector (`"jp"`, `"en"`, `"tw"`, `"kr"`, `"cn"`). `"tw"`, `"kr"`, and `"cn"` round character-rank and area-item bonuses in integer basis points (`round_ties_even(f32(rate) * 100) * stat` summed across three dimensions then divided by `10000`); `"jp"`, `"en"`, and other region tags floor each dimension in float before summing. `BuildParams::default()` and direct `parse_build_params_json` calls default to `"cn"` (so typed Rust callers wanting JP/EN float flooring must set `"jp"` / `"en"` explicitly); HTTP requests and WASM `recommendWithUserData` inherit the loaded snapshot / handle region when `region` is omitted or blank. |
 | `target` | string | `"score"` | `score`, `power`, `skill`, `bonus`, `mysekai`. Event point optimization is `score` plus an event context. `score` is normalized to `mysekai` when `liveType` is `mysekai`, because a MySekai live has no live score; `bonus` and `power` results under that live type report live score 0 and break ties by the canonical order below. |
 | `liveType` / `live_type` | string | `"solo"` | `solo`, `auto`, `multi`, `cheerful`, `challenge`, `challenge_auto`, `mysekai`. |
 | `limit` | int | 10 | Number of decks returned (Top-K). Distinct card sets. Max 100. |

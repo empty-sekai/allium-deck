@@ -681,3 +681,49 @@ fn memory_event_all_units_preserve_master_rank_and_exclude_associated_singers() 
             .contains("Invalid memory event unit")
     );
 }
+
+#[test]
+fn region_parsing_inherits_default_when_blank_and_rejects_non_string() {
+    assert_eq!(parse_build_params_json("{}").unwrap().region, "cn");
+    assert_eq!(
+        parse_build_params_json_with_default_region("{}", "jp")
+            .unwrap()
+            .region,
+        "jp"
+    );
+    for raw in [
+        r#"{"region":null}"#,
+        r#"{"region":""}"#,
+        r#"{"region":"   "}"#,
+    ] {
+        assert_eq!(parse_build_params_json(raw).unwrap().region, "cn");
+        assert_eq!(
+            parse_build_params_json_with_default_region(raw, "jp")
+                .unwrap()
+                .region,
+            "jp"
+        );
+    }
+    assert_eq!(
+        parse_build_params_json_with_default_region(r#"{"region":" tw "}"#, "jp")
+            .unwrap()
+            .region,
+        "tw"
+    );
+    for bad in [
+        r#"{"region":123}"#,
+        r#"{"region":true}"#,
+        r#"{"region":["jp"]}"#,
+        r#"{"region":{}}"#,
+    ] {
+        assert!(parse_build_params_json(bad).is_err(), "bad={bad}");
+        assert!(
+            parse_build_params_json_with_default_region(bad, "jp").is_err(),
+            "bad={bad}"
+        );
+    }
+    assert!(crate::types::is_memory_event_id(4_000_001));
+    assert!(crate::types::is_memory_event_id(4_000_006));
+    assert!(!crate::types::is_memory_event_id(4_000_000));
+    assert!(!crate::types::is_memory_event_id(4_000_007));
+}
