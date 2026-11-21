@@ -14,9 +14,11 @@ use serde_json::value::RawValue;
 
 use allium_deck::auxiliary::{
     AreaItemRecommendation, ExactLiveDetail, MusicDeck, MusicDeckCard, MusicRecommendOptions,
-    MusicRecommendation, recommend_music as recommend_music_core,
+    MusicRecommendation, recommend_music_with_ceiling,
 };
-use allium_deck::handler::{BuildParams, world_bloom_support_cards as support_cards_core};
+use allium_deck::handler::{
+    BuildParams, resolve_event_score_ceiling, world_bloom_support_cards as support_cards_core,
+};
 use allium_deck::types::{EventType, LiveSkillOrder, LiveType};
 
 use super::{ApiError, ApiJson, AppState, UserInput, json_text, parse_params};
@@ -192,7 +194,10 @@ async fn run_music_recommend(
                 multi_teammate_score_up: teammate_score_up,
                 multi_teammate_power: teammate_power,
             };
-            recommend_music_core(game.music_metas, &deck, &options).map_err(ApiError::BadRequest)
+            let ceiling =
+                resolve_event_score_ceiling(&game).map_err(|err| ApiError::BadRequest(err.to_string()))?;
+            recommend_music_with_ceiling(game.music_metas, &deck, &options, ceiling)
+                .map_err(ApiError::BadRequest)
         })
         .await?;
     job.value

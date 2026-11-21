@@ -151,6 +151,7 @@ fn ctx(target: ScoreTarget) -> SearchContext {
         leader_honors: Vec::new(),
         leader_limit_bonus_x10: Vec::new(),
         final_chapter_member_keep: Vec::new(),
+        event_score_ceiling: crate::types::DEFAULT_EVENT_SCORE_CEILING,
     }
 }
 

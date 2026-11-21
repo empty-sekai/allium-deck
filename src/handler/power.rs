@@ -860,6 +860,7 @@ mod tests {
             event_rarity_bonus_rates: &[],
             honors: &[],
             bonds_honors: &[],
+            configs: &[],
         };
         let idx = PoolIndexes::build(&game);
         assert_eq!(
@@ -916,6 +917,7 @@ mod tests {
             event_rarity_bonus_rates: &[],
             honors: &[],
             bonds_honors: &[],
+            configs: &[],
         };
         let user = UserProfile {
             user_mysekai_gate_bonuses: vec![UserGateBonus {

@@ -18,6 +18,10 @@ pub const DECK_SIZE: usize = 5;
 /// Upper clamp applied to a computed live score.
 pub const SCORE_MAX: f64 = 10_000_000.0;
 
+/// Default teammate score-sum ceiling for multi/cheerful event points when
+/// `configs.event_score_ceiling` is absent (JP 5,500,000 -> term cap 16).
+pub const DEFAULT_EVENT_SCORE_CEILING: i32 = 5_500_000;
+
 /// Event id of the World Bloom chapter 2 finale, the first live with finale rules.
 pub const FINAL_CHAPTER_EVENT_ID: i32 = 180;
 

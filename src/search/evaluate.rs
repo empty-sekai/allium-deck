@@ -274,22 +274,24 @@ pub fn calc_event_point(live_score: i32, total_bonus: f64, ctx: &SearchContext) 
         }
         LiveType::Multi => {
             let other_score = if ctx.other_score == 0 {
-                live_score.saturating_mul(4)
+                i64::from(live_score) * 4
             } else {
-                ctx.other_score
+                i64::from(ctx.other_score)
             };
-            let base_score =
-                110 + (live_score as f64 / 17_000.0) as i32 + (other_score / 340_000).min(13);
+            let teammate_term =
+                (other_score.min(i64::from(ctx.event_score_ceiling.max(0))) / 340_000) as i32;
+            let base_score = 110 + (live_score as f64 / 17_000.0) as i32 + teammate_term;
             ((base_score as f64 * music_rate * deck_rate) as i32 as f64 * boost_rate) as i32
         }
         LiveType::Cheerful => {
             let other_score = if ctx.other_score == 0 {
-                live_score.saturating_mul(4)
+                i64::from(live_score) * 4
             } else {
-                ctx.other_score
+                i64::from(ctx.other_score)
             };
-            let base_score =
-                110 + (live_score as f64 / 17_000.0) as i32 + (other_score / 340_000).min(13);
+            let teammate_term =
+                (other_score.min(i64::from(ctx.event_score_ceiling.max(0))) / 340_000) as i32;
+            let base_score = 110 + (live_score as f64 / 17_000.0) as i32 + teammate_term;
             let life_rate = 1.15 + (ctx.life as f64 / 5000.0).clamp(0.1, 0.2);
             let inner = (base_score as f64 * music_rate * deck_rate) as i32;
             ((inner as f64 * life_rate) as i32 as f64 * boost_rate) as i32
@@ -1019,6 +1021,7 @@ mod tests {
             leader_honors: Vec::new(),
             leader_limit_bonus_x10: Vec::new(),
             final_chapter_member_keep: Vec::new(),
+            event_score_ceiling: crate::types::DEFAULT_EVENT_SCORE_CEILING,
         }
     }
 

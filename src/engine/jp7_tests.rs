@@ -126,3 +126,128 @@ fn evaluation_public_spellings_and_invalid_values() {
         MultiUnitBonusMode::ByDeck
     );
 }
+
+#[test]
+fn multi_teammate_cap_follows_configs_event_score_ceiling() {
+    let (mut game, user, _) = super::tests::minimal_game_and_user();
+    game.cards.iter_mut().for_each(|card| {
+        card.attr = "cool".to_string();
+    });
+    for param in &mut game.card_parameters {
+        param.param1 = 50_000;
+        param.param2 = 50_000;
+        param.param3 = 50_000;
+    }
+    game.events.push(crate::handler::Event {
+        id: 1,
+        event_type: "marathon".to_string(),
+    });
+    game.music_metas.push(crate::handler::MusicMeta {
+        music_id: 1,
+        difficulty: "expert".to_string(),
+        event_rate_solo: 100,
+        event_rate_multi: 100,
+        event_rate_auto: 100,
+        base_score: 1.0,
+        base_score_auto: 1.0,
+        fever_score: 0.0,
+        solo_skill_scores: [0.0; 6],
+        multi_skill_scores: [0.0; 6],
+        auto_skill_scores: [0.0; 6],
+        music_time: 100.0,
+        tap_count: 100,
+    });
+    let params = crate::handler::BuildParams {
+        live_type: crate::types::LiveType::Multi,
+        target: crate::types::ScoreTarget::Score,
+        event_id: Some(1),
+        music_id: Some(1),
+        music_diff: Some("expert".to_string()),
+        limit: 1,
+        ..Default::default()
+    };
+
+    for (ceiling, expected_cap) in [(None, 16), (Some("5500000"), 16), (Some("4500000"), 13)] {
+        game.configs = ceiling
+            .map(|value| {
+                vec![
+                    crate::handler::Config {
+                        config_key: "date_change_hour".to_string(),
+                        value: "4".to_string(),
+                    },
+                    crate::handler::Config {
+                        config_key: "event_score_ceiling".to_string(),
+                        value: value.to_string(),
+                    },
+                ]
+            })
+            .unwrap_or_default();
+        let game_ref = game.as_ref();
+        let (pool, ctx) = crate::handler::build_card_pool(&user, &game_ref, &params).unwrap();
+        let outcome = recommend(&user, &game_ref, &params).unwrap();
+        let deck = outcome.results[0];
+        let dense: [crate::pool::CardIdx; 5] = deck
+            .cards
+            .map(|id| pool.indices().find(|&c| pool.game_id(c) == id).unwrap());
+        let summary = crate::search::summarize_deck(&pool, &ctx, &dense).unwrap();
+        assert!(4 * summary.live_score / 340_000 > 16);
+        let expected_ep = 110 + summary.live_score / 17_000 + expected_cap;
+        assert_eq!(summary.event_point, Some(expected_ep));
+        assert_eq!((deck.score >> 32) as i32, expected_ep);
+    }
+
+    game.configs = vec![crate::handler::Config {
+        config_key: "event_score_ceiling".to_string(),
+        value: "not-a-number".to_string(),
+    }];
+    let err = recommend(&user, &game.as_ref(), &params).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("Invalid configs.event_score_ceiling value: not-a-number"),
+        "{err}"
+    );
+}
+
+#[test]
+fn configs_table_is_optional_in_master_loader() {
+    let required = [
+        "cards.json",
+        "gameCharacterUnits.json",
+        "events.json",
+        "skills.json",
+        "cardRarities.json",
+        "cardEpisodes.json",
+        "masterLessons.json",
+        "areaItemLevels.json",
+        "characterRanks.json",
+        "cardMysekaiCanvasBonuses.json",
+        "eventCards.json",
+        "eventDeckBonuses.json",
+        "worldBloomDifferentAttributeBonuses.json",
+        "eventRarityBonusRates.json",
+    ];
+    let mut sources = MasterdataSources::from_strings(
+        required.into_iter().map(|name| (name.into(), "[]".into())),
+        "[]".into(),
+    );
+    let absent = OwnedGameData::from_sources(&sources).unwrap();
+    assert!(absent.configs.is_empty());
+    assert_eq!(
+        crate::handler::resolve_event_score_ceiling(&absent.as_ref()).unwrap(),
+        crate::types::DEFAULT_EVENT_SCORE_CEILING
+    );
+
+    sources.tables.insert(
+        "configs.json".into(),
+        serde_json::json!([
+            {"configKey": "event_score_ceiling", "value": "4500000"}
+        ])
+        .to_string(),
+    );
+    let present = OwnedGameData::from_sources(&sources).unwrap();
+    assert_eq!(present.configs.len(), 1);
+    assert_eq!(
+        crate::handler::resolve_event_score_ceiling(&present.as_ref()).unwrap(),
+        4_500_000
+    );
+}

@@ -137,6 +137,7 @@ pub(super) struct PreparedCardBuild<'a> {
 pub struct PreparedPoolBuild<'a> {
     params: types::BuildParams,
     event_ctx: Option<EventContext>,
+    event_score_ceiling: i32,
     music: Option<music::MusicParams>,
     powers: Vec<PowerResult>,
     cards: Vec<PreparedCardBuild<'a>>,
@@ -173,6 +174,7 @@ impl<'a> PreparedPoolBuild<'a> {
             ));
         }
         let event_ctx = build_event_context(game, params)?;
+        let event_score_ceiling = super::event_bonus::resolve_event_score_ceiling(game)?;
         if params.fixed_constraint_mode == types::FixedConstraintMode::Members {
             if matches!(
                 params.live_type,
@@ -454,6 +456,7 @@ impl<'a> PreparedPoolBuild<'a> {
         Ok(Self {
             params: params.clone(),
             event_ctx,
+            event_score_ceiling,
             music,
             powers,
             cards,
@@ -806,6 +809,7 @@ pub(super) fn build_search_context(
         leader_honors: Vec::new(),
         leader_limit_bonus_x10: gathered.leader_limit_bonus_x10,
         final_chapter_member_keep: vec![true; card_count],
+        event_score_ceiling: crate::types::DEFAULT_EVENT_SCORE_CEILING,
     }
 }
 
@@ -986,6 +990,7 @@ pub(super) fn build_card_pool_fully_prepared_internal(
         fixed_character_ids,
     );
     search_ctx.honor_bonus = build.honor_bonus;
+    search_ctx.event_score_ceiling = build.event_score_ceiling;
     // The per-card leader honor column above was expanded from this table.
     search_ctx.leader_honors = build.leader_honors.clone();
     super::capacity::numeric_domain(&pool, &search_ctx)?;

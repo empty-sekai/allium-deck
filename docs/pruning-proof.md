@@ -1638,9 +1638,11 @@ event point of the deck by Section 18.5 and Section 29.
 **Lemma LL1 (product form).** Let $h$ be the honor bonus, $m$ and $\beta$ the
 music and boost rates in percent, $\kappa\ge m\beta/10^6$ the upward-prepared
 coefficient, and
-$(c,D)=(100,20000)$ for Solo and Auto, $(110+o,17000)$ for Multi, where $o=13$
-when the opponent score is zero and $\min(\lfloor\text{other}/340000\rfloor,13)$
-otherwise. Then
+$(c,D)=(100,20000)$ for Solo and Auto, $(110+o,17000)$ for Multi, where
+$o=\lfloor C/340000\rfloor$ when the opponent score is zero and
+$\lfloor\min(\text{other},C)/340000\rfloor$ otherwise, for the nonnegative
+masterdata `configs.event_score_ceiling` $C$ (default $5{,}500{,}000$, cap $16$).
+Then
 
 $$
 E\le\kappa\,\bigl(c'+u\bigr)(100+B),\qquad u=\frac{(P+h)\,q(S,L)}{D},
@@ -2584,7 +2586,7 @@ and $T$ for the integer bonus handed to the ceiling, with $t\le T$ (Lemma N5).
    by 17000 has either an integer result or distance at least $1/17000$ from
    an integer; its floating rounding cannot cross that distance. The wide
    opponent-score product is at least the evaluator's saturating product, and
-   both apply the same cap of 13. Thus oversized probes remain conservative.
+   both apply the same `configs.event_score_ceiling` cap. Thus oversized probes remain conservative.
 2. *First stage.* Write $V_B=b_Bm(T+100)/10^4$ and $I_B=\lfloor V_B\rfloor$.
    The evaluator's pre-floor value is at most $V_B(1+5.1u)$, but D4 bounds
    only its legal value, not an oversized $V_B$. If $V_B\ge2^{28}$, then

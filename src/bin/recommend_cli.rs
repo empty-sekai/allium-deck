@@ -621,9 +621,16 @@ fn run_music(
             .collect(),
     };
     let _ = user;
+    let ceiling =
+        allium_deck::handler::resolve_event_score_ceiling(game).map_err(|e| e.to_string())?;
     let start = Instant::now();
-    let result = allium_deck::auxiliary::recommend_music(game.music_metas, &deck, &options)
-        .map_err(|e| e.to_string())?;
+    let result = allium_deck::auxiliary::recommend_music_with_ceiling(
+        game.music_metas,
+        &deck,
+        &options,
+        ceiling,
+    )
+    .map_err(|e| e.to_string())?;
     eprintln!("[music] {:.1}ms  rows={}", ms(start), result.len());
     eprintln!("[total] {:.1}ms", load_ms + ms(start));
     println!(

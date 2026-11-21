@@ -6,8 +6,10 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::wasm_bindgen;
 
-use allium_deck::auxiliary::{MusicDeck, MusicDeckCard, MusicRecommendOptions, recommend_music};
-use allium_deck::handler::{BuildParams, world_bloom_support_cards};
+use allium_deck::auxiliary::{
+    MusicDeck, MusicDeckCard, MusicRecommendOptions, recommend_music_with_ceiling,
+};
+use allium_deck::handler::{BuildParams, resolve_event_score_ceiling, world_bloom_support_cards};
 
 use crate::options::{
     DeckIn, event_type_from_options, field, opt_bool, opt_i32, opt_str, parse_options,
@@ -97,7 +99,8 @@ pub fn recommend_music_api(options_json: &str) -> Result<String, wasm_bindgen::J
         multi_teammate_power: opt_i32(&opts, "multi_live_teammate_power", "multiLiveTeammatePower"),
     };
 
-    let result = recommend_music(game.music_metas, &deck, &options).map_err(to_js)?;
+    let ceiling = resolve_event_score_ceiling(&game).map_err(to_js)?;
+    let result = recommend_music_with_ceiling(game.music_metas, &deck, &options, ceiling).map_err(to_js)?;
     serde_json::to_string(&result).map_err(to_js)
 }
 

@@ -117,6 +117,8 @@ pub struct SearchContext {
     pub leader_limit_bonus_x10: Vec<u16>,
     /// 终章 member 支配裁剪后仍保留的卡，按稠密卡索引。
     pub final_chapter_member_keep: Vec<bool>,
+    /// Teammate score-sum ceiling for multi/cheerful event points (`configs.event_score_ceiling`).
+    pub event_score_ceiling: i32,
 }
 
 impl SearchContext {

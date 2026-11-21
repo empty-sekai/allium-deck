@@ -845,7 +845,8 @@ fn event_ceiling_survives_exact_integer_and_near_integer_stages() {
                     } else {
                         i64::from(context.other_score)
                     };
-                    110 + i64::from(live) / 17_000 + (other / 340_000).min(13)
+                    110 + i64::from(live) / 17_000
+                        + other.min(i64::from(context.event_score_ceiling.max(0))) / 340_000
                 }
             };
             let first = event_base * i64::from(context.music_rate_pct) * (i64::from(bonus) + 100);

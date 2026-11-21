@@ -32,6 +32,7 @@ use std::sync::Arc;
 use crate::search::SearchContext;
 
 pub use build::{PreparedPoolBuild, cultivated_user_cards};
+pub use event_bonus::resolve_event_score_ceiling;
 pub use gather::FullPrecisionCard;
 pub use types::*;
 pub use world_bloom::{WorldBloomSupportCard, world_bloom_support_cards};

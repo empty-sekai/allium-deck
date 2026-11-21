@@ -82,6 +82,8 @@ pub struct GameData<'a> {
     pub honors: &'a [Honor],
     /// 羁绊称号主表。
     pub bonds_honors: &'a [BondsHonor],
+    /// Optional `configs` masterdata rows (e.g. `event_score_ceiling`).
+    pub configs: &'a [Config],
 }
 
 impl GameData<'_> {
@@ -788,6 +790,15 @@ pub struct Honor {
 pub struct BondsHonor {
     /// 羁绊称号 ID。
     pub id: i32,
+}
+
+/// One row of the `configs` masterdata table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Config {
+    /// Configuration key name.
+    pub config_key: String,
+    /// Configuration value as raw text.
+    pub value: String,
 }
 
 /// 用户卡。

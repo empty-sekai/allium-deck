@@ -108,6 +108,8 @@ Skills that depend on the deck are resolved for each evaluated deck, the same wa
 | `otherScore` / `other_score` | int | absent | Opponent score (cheerful). |
 | `life` | int | absent | Life value (cheerful). |
 
+The teammate score-sum cap for multi/cheerful event points reads `event_score_ceiling` from optional `configs.json` (falling back to the JP default `5500000`, cap 16, when absent; EN ships `4500000`, cap 13). Non-integer or negative values fail with a config error.
+
 ## Card cultivation configs
 
 Per-rarity defaults (`rarity1Config` … `rarity4Config`, `rarityBirthdayConfig`, snake_case accepted) and per-card overrides (`singleCardConfigs`, each `{cardId, config}` or flat). Priority: single-card override > rarity default. Each config object:

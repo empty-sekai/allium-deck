@@ -10,12 +10,13 @@ use std::path::Path;
 
 use crate::handler::{
     BondsHonor, CardEpisode, CardMysekaiCanvasBonus, CardParameter, CardRarity, CharacterRank,
-    Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
-    EventRarityBonusRate, EventShuffleUnitBonus, EventSkillScoreUpLimit, GameCharacterUnit,
-    GameData, Honor, HonorLevel, MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate,
-    MysekaiGateLevel, Skill, SkillEffect, UserAreaItem, UserCard, UserChallengeDeck, UserDeck,
-    UserFixtureBonus, UserGateBonus, UserHonor, UserProfile, UserWBSupportDeck, WBSupportDeckBonus,
-    WBSupportDeckUnitEventLimitedBonus, WorldBloom, WorldBloomDiffAttrBonus,
+    Config, Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit,
+    EventHonorBonus, EventRarityBonusRate, EventShuffleUnitBonus, EventSkillScoreUpLimit,
+    GameCharacterUnit, GameData, Honor, HonorLevel, MasterCard, MasterLesson, MusicDifficulty,
+    MusicMeta, MysekaiGate, MysekaiGateLevel, Skill, SkillEffect, UserAreaItem, UserCard,
+    UserChallengeDeck, UserDeck, UserFixtureBonus, UserGateBonus, UserHonor, UserProfile,
+    UserWBSupportDeck, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus, WorldBloom,
+    WorldBloomDiffAttrBonus,
 };
 use crate::search::{SearchCompletion, SearchOutcome, SearchParams, SearchStats};
 use crate::{CardId, DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
@@ -937,6 +938,9 @@ pub struct OwnedGameData {
     pub honors: Vec<Honor>,
     /// 羁绊称号表。
     pub bonds_honors: Vec<BondsHonor>,
+    /// Optional `configs` masterdata rows (e.g. `event_score_ceiling`).
+    #[serde(default)]
+    pub configs: Vec<Config>,
 }
 
 impl OwnedGameData {
@@ -1259,6 +1263,14 @@ impl OwnedGameData {
                 .into_iter()
                 .map(|entry| BondsHonor { id: entry.id })
                 .collect(),
+            configs: sources
+                .optional::<Vec<RawConfig>>("configs.json")?
+                .into_iter()
+                .map(|entry| Config {
+                    config_key: entry.config_key,
+                    value: entry.value,
+                })
+                .collect(),
         })
     }
 
@@ -1299,6 +1311,7 @@ impl OwnedGameData {
             event_rarity_bonus_rates: &self.event_rarity_bonus_rates,
             honors: &self.honors,
             bonds_honors: &self.bonds_honors,
+            configs: &self.configs,
         }
     }
 }
@@ -1983,6 +1996,15 @@ struct RawEventShuffleUnitBonus {
     event_id: i32,
     unit_count: i32,
     bonus_rate: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawConfig {
+    #[serde(default)]
+    config_key: String,
+    #[serde(default)]
+    value: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2721,7 +2743,7 @@ mod tests {
 
     /// 六张卡、六个角色的最小 masterdata。卡 ID 从 501 起，与候选池的
     /// 稠密索引（0..N）不重叠，因此两者在断言里不会混淆。
-    fn minimal_game_and_user() -> (OwnedGameData, UserProfile, Vec<CardId>) {
+    pub(super) fn minimal_game_and_user() -> (OwnedGameData, UserProfile, Vec<CardId>) {
         let card_ids: Vec<i32> = (501..=506).collect();
         let cards = card_ids
             .iter()

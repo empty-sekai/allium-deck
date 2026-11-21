@@ -131,6 +131,29 @@ fn load_shuffle_unit_bonus(
     Ok(result)
 }
 
+/// Resolve `configs.event_score_ceiling` from masterdata, falling back to the
+/// JP default when `configs` or the key is absent.
+pub fn resolve_event_score_ceiling(game: &GameData<'_>) -> Result<i32, BuildError> {
+    for config in game.configs {
+        if config.config_key == "event_score_ceiling" {
+            let parsed = config.value.trim().parse::<i32>().map_err(|_| {
+                BuildError::InvalidConfig(format!(
+                    "Invalid configs.event_score_ceiling value: {}",
+                    config.value
+                ))
+            })?;
+            if parsed < 0 {
+                return Err(BuildError::InvalidConfig(format!(
+                    "Invalid configs.event_score_ceiling value: {}",
+                    config.value
+                )));
+            }
+            return Ok(parsed);
+        }
+    }
+    Ok(crate::types::DEFAULT_EVENT_SCORE_CEILING)
+}
+
 fn load_skill_limit(table: &[EventSkillScoreUpLimit], event_id: i32) -> Option<u32> {
     table
         .iter()
@@ -756,6 +779,7 @@ mod tests {
             music_difficulties: &[],
             honors: &[],
             bonds_honors: &[],
+            configs: &[],
         };
 
         let (bonus, _, _) = build_card_event_bonus(

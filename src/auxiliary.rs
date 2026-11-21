@@ -354,11 +354,28 @@ pub struct MusicRecommendation {
     pub event_point: Option<i32>,
 }
 
-/// Score every loaded music row for an already materialized deck.
+/// Score every loaded music row for an already materialized deck using the
+/// default JP `event_score_ceiling` (`5_500_000`).
 pub fn recommend_music(
     music_metas: &[MusicMeta],
     deck: &MusicDeck,
     options: &MusicRecommendOptions,
+) -> Result<Vec<MusicRecommendation>, String> {
+    recommend_music_with_ceiling(
+        music_metas,
+        deck,
+        options,
+        crate::types::DEFAULT_EVENT_SCORE_CEILING,
+    )
+}
+
+/// Score every loaded music row for an already materialized deck with an
+/// explicit `configs.event_score_ceiling`.
+pub fn recommend_music_with_ceiling(
+    music_metas: &[MusicMeta],
+    deck: &MusicDeck,
+    options: &MusicRecommendOptions,
+    event_score_ceiling: i32,
 ) -> Result<Vec<MusicRecommendation>, String> {
     if music_metas.is_empty() {
         return Err("music metas are not loaded".to_string());
@@ -403,6 +420,7 @@ pub fn recommend_music(
                 live_score,
                 music_event_rate(music, options.live_type),
                 deck.event_bonus_rate + deck.support_deck_bonus_rate,
+                event_score_ceiling,
             )?);
             Ok(MusicRecommendation {
                 music_id: music.music_id,
@@ -581,6 +599,7 @@ fn event_point(
     live_score: i32,
     music_rate: i32,
     deck_bonus: f64,
+    event_score_ceiling: i32,
 ) -> Result<i32, String> {
     if matches!(live_type, LiveType::Challenge | LiveType::ChallengeAuto) {
         return Ok((100 + live_score / 20_000) * 120);
@@ -590,7 +609,8 @@ fn event_point(
     if !is_multi(live_type) {
         return Ok(((100 + live_score / 20_000) as f64 * music_rate * deck_rate) as i32);
     }
-    let base = 110 + (live_score as f64 / 17_000.0) as i32 + (live_score * 4 / 340_000).min(13);
+    let teammate_sum = (i64::from(live_score) * 4).min(i64::from(event_score_ceiling.max(0)));
+    let base = 110 + (live_score as f64 / 17_000.0) as i32 + (teammate_sum / 340_000) as i32;
     if matches!(live_type, LiveType::Multi) {
         if matches!(event_type, EventType::CheerfulCarnival) {
             return Err("multi live is not playable in cheerful event".to_string());
@@ -933,7 +953,7 @@ mod tests {
         let live_score = 2_806_976;
         let music_rate = 110;
         let deck_bonus = 320.75;
-        let base = 110 + (live_score as f64 / 17_000.0) as i32 + (live_score * 4 / 340_000).min(13);
+        let base = 110 + (live_score as f64 / 17_000.0) as i32 + (live_score * 4 / 340_000).min(16);
         let before_life = (base as f64 * 1.10 * (deck_bonus / 100.0 + 1.0)) as i32;
         let life_rate = 1.15 + (1_000.0_f64 / 5_000.0).clamp(0.1, 0.2);
         let expected = (before_life as f64 * life_rate) as i32;
@@ -945,9 +965,26 @@ mod tests {
                 live_score,
                 music_rate,
                 deck_bonus,
+                crate::types::DEFAULT_EVENT_SCORE_CEILING,
             )
             .unwrap(),
             expected,
+        );
+        let base_en =
+            110 + (live_score as f64 / 17_000.0) as i32 + (live_score * 4 / 340_000).min(13);
+        let expected_en = (((base_en as f64 * 1.10 * (deck_bonus / 100.0 + 1.0)) as i32) as f64
+            * life_rate) as i32;
+        assert_eq!(
+            event_point(
+                LiveType::Cheerful,
+                EventType::CheerfulCarnival,
+                live_score,
+                music_rate,
+                deck_bonus,
+                4_500_000,
+            )
+            .unwrap(),
+            expected_en,
         );
     }
 
