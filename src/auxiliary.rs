@@ -57,6 +57,18 @@ impl AuxiliaryData {
         card_ids: &[i32],
         evaluation: crate::power::MultiUnitBonusMode,
     ) -> Result<Vec<AreaItemRecommendation>, String> {
+        self.recommend_area_items_for_region(user, game, card_ids, evaluation, "cn")
+    }
+
+    /// Recommend upgrades under the given evaluation policy and region rounding rules.
+    pub fn recommend_area_items_for_region(
+        &self,
+        user: &UserProfile,
+        game: &crate::handler::GameData<'_>,
+        card_ids: &[i32],
+        evaluation: crate::power::MultiUnitBonusMode,
+        region: &str,
+    ) -> Result<Vec<AreaItemRecommendation>, String> {
         if !(1..=DECK_SIZE).contains(&card_ids.len()) {
             return Err("card_ids must contain 1 to 5 cards".to_string());
         }
@@ -71,7 +83,7 @@ impl AuxiliaryData {
         }
 
         let prepared = PreparedGameData::new(*game);
-        let current_power = fixed_deck_power(user, &prepared, card_ids, evaluation)?;
+        let current_power = fixed_deck_power(user, &prepared, card_ids, evaluation, region)?;
         let current_levels = user
             .user_area_items
             .iter()
@@ -141,8 +153,8 @@ impl AuxiliaryData {
                     level: next_level,
                 }))
                 .collect();
-            let power =
-                fixed_deck_power(&upgraded, &prepared, card_ids, evaluation)? - current_power;
+            let power = fixed_deck_power(&upgraded, &prepared, card_ids, evaluation, region)?
+                - current_power;
             if power <= 0 {
                 continue;
             }
@@ -449,8 +461,10 @@ fn fixed_deck_power(
     prepared: &PreparedGameData<'_>,
     card_ids: &[i32],
     evaluation: crate::power::MultiUnitBonusMode,
+    region: &str,
 ) -> Result<i32, String> {
     let mut params = BuildParams {
+        region: region.to_string(),
         target: ScoreTarget::Power,
         multi_unit_bonus_mode: evaluation,
         ..BuildParams::default()

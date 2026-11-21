@@ -251,3 +251,155 @@ fn configs_table_is_optional_in_master_loader() {
         4_500_000
     );
 }
+
+#[test]
+fn regional_basis_point_bonus_rounding_applies_to_tw_kr_and_cn() {
+    // 1) Character rank: float32(1.15) * 0.01f * 30000 = 344.99997 -> JP/EN floors to 344/dim (1032),
+    //    while TW/KR/CN uses round_ties_even(1.15 * 100) = 115 bps -> (3 * 115 * 30000) / 10000 = 1035.
+    // 2) Area items: rate=1.5 with param=10050/dim -> JP/EN floors 150.75 to 150/dim (450),
+    //    while TW/KR/CN sums across all 3 dims before dividing by 10000 -> (150 * 30150) / 10000 = 452.
+    let (mut game, mut user, _) = super::tests::minimal_game_and_user();
+    for param in &mut game.card_parameters {
+        if param.card_id == 501 {
+            param.param1 = 30_000;
+            param.param2 = 30_000;
+            param.param3 = 30_000;
+        } else {
+            param.param1 = 10_050;
+            param.param2 = 10_050;
+            param.param3 = 10_050;
+        }
+    }
+    game.character_ranks.push(crate::handler::CharacterRank {
+        character_rank: 5,
+        power_bonus_rate: 1.15,
+    });
+    game.area_item_levels.push(crate::handler::AreaItemLevel {
+        area_item_id: 1,
+        level: 1,
+        unit: Some("idol".to_string()),
+        attr: None,
+        character_id: None,
+        power_rate: [1.5; 3],
+        power_all_match_rate: None,
+    });
+    game.area_item_levels.push(crate::handler::AreaItemLevel {
+        area_item_id: 56,
+        level: 1,
+        unit: Some("multi_unit".to_string()),
+        attr: None,
+        character_id: None,
+        power_rate: [1.5; 3],
+        power_all_match_rate: None,
+    });
+    user.user_characters.push(crate::handler::UserCharacter {
+        character_id: 1,
+        character_rank: 5,
+    });
+    user.user_characters.push(crate::handler::UserCharacter {
+        character_id: 2,
+        character_rank: 5,
+    });
+    user.user_area_items = vec![
+        crate::handler::UserAreaItem {
+            area_item_id: 1,
+            level: 1,
+        },
+        crate::handler::UserAreaItem {
+            area_item_id: 56,
+            level: 1,
+        },
+    ];
+
+    let game_ref = game.as_ref();
+    let expected_jp_char = ((((1.15_f64 as f32) * 0.01_f32) * 30_000.0_f32).floor() as i32) * 3;
+    let expected_bp_char = ((115_i64 * 90_000) / 10_000) as i32;
+    assert_eq!(expected_jp_char, 1032);
+    assert_eq!(expected_bp_char, 1035);
+
+    let expected_jp_area_single = ((1.5_f64 * 0.01_f64 * 10_050.0_f64).floor() as i32) * 3;
+    let expected_bp_area_single = ((150_i64 * 30_150) / 10_000) as i32;
+    assert_eq!(expected_jp_area_single, 450);
+    assert_eq!(expected_bp_area_single, 452);
+
+    let expected_jp_area_multi = ((3.0_f64 * 0.01_f64 * 10_050.0_f64).floor() as i32) * 3;
+    let expected_bp_area_multi = ((300_i64 * 30_150) / 10_000) as i32;
+    assert_eq!(expected_jp_area_multi, 903);
+    assert_eq!(expected_bp_area_multi, 904);
+
+    for (region, exp_char, exp_single, exp_multi) in [
+        (
+            "jp",
+            expected_jp_char,
+            expected_jp_area_single,
+            expected_jp_area_multi,
+        ),
+        (
+            "en",
+            expected_jp_char,
+            expected_jp_area_single,
+            expected_jp_area_multi,
+        ),
+        (
+            "tw",
+            expected_bp_char,
+            expected_bp_area_single,
+            expected_bp_area_multi,
+        ),
+        (
+            "kr",
+            expected_bp_char,
+            expected_bp_area_single,
+            expected_bp_area_multi,
+        ),
+        (
+            "cn",
+            expected_bp_char,
+            expected_bp_area_single,
+            expected_bp_area_multi,
+        ),
+    ] {
+        let params_off = crate::handler::BuildParams {
+            region: region.to_string(),
+            target: crate::types::ScoreTarget::Power,
+            multi_unit_bonus_mode: crate::power::MultiUnitBonusMode::ForceOff,
+            ..Default::default()
+        };
+        let (_, _, details_off) =
+            crate::handler::build_card_pool_with_details(&user, &game_ref, &params_off).unwrap();
+        let card1 = details_off
+            .iter()
+            .find(|card| card.character_id == 1)
+            .unwrap();
+        assert_eq!(
+            card1.power[1][0].character_bonus, exp_char,
+            "region={region}"
+        );
+        let card2_off = details_off
+            .iter()
+            .find(|card| card.character_id == 2)
+            .unwrap();
+        assert_eq!(
+            card2_off.power[1][0].area_item_bonus, exp_single,
+            "region={region}"
+        );
+
+        let params_on = crate::handler::BuildParams {
+            region: region.to_string(),
+            target: crate::types::ScoreTarget::Power,
+            multi_unit_bonus_mode: crate::power::MultiUnitBonusMode::ForceOn,
+            ..Default::default()
+        };
+        let (_, _, details_on) =
+            crate::handler::build_card_pool_with_details(&user, &game_ref, &params_on).unwrap();
+        let card2_on = details_on
+            .iter()
+            .find(|card| card.character_id == 2)
+            .unwrap();
+        assert_eq!(
+            card2_on.multi_power.unwrap()[0].area_item_bonus,
+            exp_multi,
+            "region={region}"
+        );
+    }
+}

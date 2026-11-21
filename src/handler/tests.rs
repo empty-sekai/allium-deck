@@ -365,7 +365,7 @@ fn handler_build_power_uses_f32_item_accumulation() {
     };
 
     let idx = index::PoolIndexes::build(&game);
-    let power_ctx = PreparedPowerContext::new(&user, &game, &idx, None);
+    let power_ctx = PreparedPowerContext::new(&user, &game, &idx, None, "jp");
     let result = power::build_power(
         &sample_user_card(1),
         &cards[0],

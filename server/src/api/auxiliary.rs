@@ -194,8 +194,8 @@ async fn run_music_recommend(
                 multi_teammate_score_up: teammate_score_up,
                 multi_teammate_power: teammate_power,
             };
-            let ceiling =
-                resolve_event_score_ceiling(&game).map_err(|err| ApiError::BadRequest(err.to_string()))?;
+            let ceiling = resolve_event_score_ceiling(&game)
+                .map_err(|err| ApiError::BadRequest(err.to_string()))?;
             recommend_music_with_ceiling(game.music_metas, &deck, &options, ceiling)
                 .map_err(ApiError::BadRequest)
         })
@@ -314,11 +314,12 @@ async fn run_area_items(
             let game = snapshot.game();
             snapshot
                 .auxiliary()
-                .recommend_area_items_with_evaluation(
+                .recommend_area_items_for_region(
                     &user,
                     &game,
                     &card_ids,
                     request.multi_unit_bonus_evaluation,
+                    &snapshot.name,
                 )
                 .map_err(ApiError::BadRequest)
         })

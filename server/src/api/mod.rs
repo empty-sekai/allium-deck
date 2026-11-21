@@ -191,6 +191,28 @@ pub fn parse_params(raw: Option<&RawValue>) -> Result<BuildParams, ApiError> {
     parse_build_params_json(text).map_err(|error| ApiError::BadRequest(format!("params: {error}")))
 }
 
+/// Parses build parameters and fills `region` from the resolved snapshot when omitted.
+pub fn parse_params_for_region(
+    raw: Option<&RawValue>,
+    region: &str,
+) -> Result<BuildParams, ApiError> {
+    let text = raw.map_or("{}", RawValue::get);
+    let mut params = parse_params(raw)?;
+    let has_explicit_region = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("region")
+                .and_then(|entry| entry.as_str())
+                .map(|_| ())
+        })
+        .is_some();
+    if !has_explicit_region {
+        params.region = region.to_string();
+    }
+    Ok(params)
+}
+
 /// Builds the router with every endpoint and the shared middleware stack.
 pub fn router(state: Arc<AppState>) -> axum::Router {
     let body_limit = state.config.max_body_bytes;

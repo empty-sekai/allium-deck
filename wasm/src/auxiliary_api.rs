@@ -41,9 +41,16 @@ pub fn recommend_area_items(options_json: &str) -> Result<String, wasm_bindgen::
     let evaluation = allium_deck::engine::parse_build_params_json(options_json)
         .map_err(to_js)?
         .multi_unit_bonus_mode;
+    let region = opt_str(&opts, "region", "region");
     let result = data
         .auxiliary
-        .recommend_area_items_with_evaluation(&user, &game, &card_ids, evaluation)
+        .recommend_area_items_for_region(
+            &user,
+            &game,
+            &card_ids,
+            evaluation,
+            region.as_deref().unwrap_or("cn"),
+        )
         .map_err(to_js)?;
     serde_json::to_string(&result).map_err(to_js)
 }
@@ -100,7 +107,8 @@ pub fn recommend_music_api(options_json: &str) -> Result<String, wasm_bindgen::J
     };
 
     let ceiling = resolve_event_score_ceiling(&game).map_err(to_js)?;
-    let result = recommend_music_with_ceiling(game.music_metas, &deck, &options, ceiling).map_err(to_js)?;
+    let result =
+        recommend_music_with_ceiling(game.music_metas, &deck, &options, ceiling).map_err(to_js)?;
     serde_json::to_string(&result).map_err(to_js)
 }
 

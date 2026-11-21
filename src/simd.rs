@@ -44,6 +44,13 @@ impl PowerCommon16 {
     };
 }
 
+/// Convert a percentage rate to integer basis points (`round_ties_even(f32(rate) * 100f32)`),
+/// matching TW/KR/CN client `Math.Round` rounding.
+#[inline(always)]
+pub(crate) fn bonus_basis_points(rate: f64) -> i64 {
+    f64::from((rate as f32) * 100.0_f32).round_ties_even() as i64
+}
+
 impl SimdBackend {
     #[inline]
     pub(crate) fn detect() -> Self {
@@ -66,24 +73,38 @@ impl SimdBackend {
         fixture_rates: &[f64; 16],
         gate_rates: &[f64; 16],
         valid_lanes: usize,
+        uses_basis_point_bonus: bool,
     ) -> PowerCommon16 {
         unsafe {
-            let mut result = match self {
-                Self::Scalar => power_common_16_scalar(
+            let mut result = if uses_basis_point_bonus {
+                power_common_16_scalar(
                     base_dims,
                     base_sum,
                     character_rates,
                     fixture_rates,
                     gate_rates,
                     valid_lanes,
-                ),
-                Self::Avx512 => power_common_16_avx512_unchecked(
-                    base_dims,
-                    base_sum,
-                    character_rates,
-                    fixture_rates,
-                    gate_rates,
-                ),
+                    true,
+                )
+            } else {
+                match self {
+                    Self::Scalar => power_common_16_scalar(
+                        base_dims,
+                        base_sum,
+                        character_rates,
+                        fixture_rates,
+                        gate_rates,
+                        valid_lanes,
+                        false,
+                    ),
+                    Self::Avx512 => power_common_16_avx512_unchecked(
+                        base_dims,
+                        base_sum,
+                        character_rates,
+                        fixture_rates,
+                        gate_rates,
+                    ),
+                }
             };
             let mut lane = valid_lanes;
             while lane < 16 {
@@ -106,8 +127,21 @@ impl SimdBackend {
         items: &[PowerAreaItem],
         member_key: usize,
         active_lanes: u16,
+        uses_basis_point_bonus: bool,
     ) -> [i32; 16] {
         unsafe {
+            if uses_basis_point_bonus {
+                return power_area_single_unit_16_scalar(
+                    base_dims,
+                    target_units,
+                    attrs,
+                    character_ids,
+                    items,
+                    member_key,
+                    active_lanes,
+                    true,
+                );
+            }
             match self {
                 Self::Scalar => power_area_single_unit_16_scalar(
                     base_dims,
@@ -117,6 +151,7 @@ impl SimdBackend {
                     items,
                     member_key,
                     active_lanes,
+                    false,
                 ),
                 Self::Avx512 => power_area_single_unit_16_avx512_unchecked(
                     base_dims,
@@ -220,18 +255,24 @@ fn power_common_16_scalar(
     fixture_rates: &[f64; 16],
     gate_rates: &[f64; 16],
     valid_lanes: usize,
+    uses_basis_point_bonus: bool,
 ) -> PowerCommon16 {
     let mut result = PowerCommon16::EMPTY;
     let mut lane = 0usize;
     while lane < valid_lanes {
-        let rate = character_rates[lane] * 0.01_f32;
-        let mut character_bonus = 0i32;
-        let mut dim = 0usize;
-        while dim < 3 {
-            character_bonus += (rate * base_dims[dim][lane] as f32).floor() as i32;
-            dim += 1;
-        }
-        result.character_bonus[lane] = character_bonus;
+        result.character_bonus[lane] = if uses_basis_point_bonus {
+            let bp = bonus_basis_points(f64::from(character_rates[lane]));
+            ((bp * i64::from(base_sum[lane])) / 10_000) as i32
+        } else {
+            let rate = character_rates[lane] * 0.01_f32;
+            let mut character_bonus = 0i32;
+            let mut dim = 0usize;
+            while dim < 3 {
+                character_bonus += (rate * base_dims[dim][lane] as f32).floor() as i32;
+                dim += 1;
+            }
+            character_bonus
+        };
         result.fixture_bonus[lane] =
             ((base_sum[lane] as f64 * fixture_rates[lane]) * 0.001_f64).floor() as i32;
         result.gate_bonus[lane] =
@@ -250,6 +291,7 @@ fn power_area_single_unit_16_scalar(
     items: &[PowerAreaItem],
     member_key: usize,
     active_lanes: u16,
+    uses_basis_point_bonus: bool,
 ) -> [i32; 16] {
     let mut result = [0i32; 16];
     let mut lanes = active_lanes;
@@ -257,6 +299,7 @@ fn power_area_single_unit_16_scalar(
         let lane = lanes.trailing_zeros() as usize;
         lanes &= lanes - 1;
         let mut acc = [0.0_f64; 3];
+        let mut basis_points = 0i64;
         for item in items {
             if item.unit != PowerAreaItem::ANY && item.unit != target_units[lane] {
                 continue;
@@ -274,11 +317,20 @@ fn power_area_single_unit_16_scalar(
             let rates = item.rates(all_match);
             let mut dim = 0usize;
             while dim < 3 {
-                acc[dim] += (rates[dim] * 0.01_f64) * base_dims[dim][lane] as f64;
+                if uses_basis_point_bonus {
+                    basis_points +=
+                        bonus_basis_points(rates[dim]) * i64::from(base_dims[dim][lane]);
+                } else {
+                    acc[dim] += (rates[dim] * 0.01_f64) * base_dims[dim][lane] as f64;
+                }
                 dim += 1;
             }
         }
-        result[lane] = acc[0].floor() as i32 + acc[1].floor() as i32 + acc[2].floor() as i32;
+        result[lane] = if uses_basis_point_bonus {
+            (basis_points / 10_000) as i32
+        } else {
+            acc[0].floor() as i32 + acc[1].floor() as i32 + acc[2].floor() as i32
+        };
     }
     result
 }
@@ -383,6 +435,7 @@ unsafe fn power_area_single_unit_16_avx512_unchecked(
         items,
         member_key,
         active_lanes,
+        false,
     )
 }
 
@@ -466,6 +519,7 @@ unsafe fn power_common_16_avx512_unchecked(
         fixture_rates,
         gate_rates,
         16,
+        false,
     )
 }
 
@@ -587,27 +641,31 @@ mod tests {
             fixture_rates[lane] = (lane * 7) as f64;
             gate_rates[lane] = lane as f64 * 0.125;
         }
-        let scalar = unsafe {
-            SimdBackend::Scalar.power_common_16(
-                &base_dims,
-                &base_sum,
-                &character_rates,
-                &fixture_rates,
-                &gate_rates,
-                13,
-            )
-        };
-        let dispatched = unsafe {
-            SimdBackend::detect().power_common_16(
-                &base_dims,
-                &base_sum,
-                &character_rates,
-                &fixture_rates,
-                &gate_rates,
-                13,
-            )
-        };
-        assert_eq!(dispatched, scalar);
+        for uses_basis_point in [false, true] {
+            let scalar = unsafe {
+                SimdBackend::Scalar.power_common_16(
+                    &base_dims,
+                    &base_sum,
+                    &character_rates,
+                    &fixture_rates,
+                    &gate_rates,
+                    13,
+                    uses_basis_point,
+                )
+            };
+            let dispatched = unsafe {
+                SimdBackend::detect().power_common_16(
+                    &base_dims,
+                    &base_sum,
+                    &character_rates,
+                    &fixture_rates,
+                    &gate_rates,
+                    13,
+                    uses_basis_point,
+                )
+            };
+            assert_eq!(dispatched, scalar);
+        }
     }
 
     #[test]
@@ -648,30 +706,34 @@ mod tests {
             },
         ];
         let active_lanes = 0b0111_1111_1111_1101;
-        for member_key in 0..4 {
-            let scalar = unsafe {
-                SimdBackend::Scalar.power_area_single_unit_16(
-                    &base_dims,
-                    &target_units,
-                    &attrs,
-                    &character_ids,
-                    &items,
-                    member_key,
-                    active_lanes,
-                )
-            };
-            let dispatched = unsafe {
-                SimdBackend::detect().power_area_single_unit_16(
-                    &base_dims,
-                    &target_units,
-                    &attrs,
-                    &character_ids,
-                    &items,
-                    member_key,
-                    active_lanes,
-                )
-            };
-            assert_eq!(dispatched, scalar);
+        for uses_basis_point in [false, true] {
+            for member_key in 0..4 {
+                let scalar = unsafe {
+                    SimdBackend::Scalar.power_area_single_unit_16(
+                        &base_dims,
+                        &target_units,
+                        &attrs,
+                        &character_ids,
+                        &items,
+                        member_key,
+                        active_lanes,
+                        uses_basis_point,
+                    )
+                };
+                let dispatched = unsafe {
+                    SimdBackend::detect().power_area_single_unit_16(
+                        &base_dims,
+                        &target_units,
+                        &attrs,
+                        &character_ids,
+                        &items,
+                        member_key,
+                        active_lanes,
+                        uses_basis_point,
+                    )
+                };
+                assert_eq!(dispatched, scalar);
+            }
         }
     }
 }

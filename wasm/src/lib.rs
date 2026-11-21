@@ -104,7 +104,7 @@ pub fn load_masterdata(masterdata_json: &str, music_metas_json: &str) -> Result<
 pub fn recommend(user_json: &str, params_json: &str) -> Result<String, JsValue> {
     let data = engine_data()?;
     let user = parse_user_profile_json(user_json).map_err(to_js)?;
-    recommend_with_user(&data, &user, params_json)
+    recommend_with_user(&data, &user, params_json, None)
 }
 
 /// 解析一次用户数据、多次复用的句柄。
@@ -146,15 +146,35 @@ pub fn recommend_with_user_data(
     handle: &UserDataHandle,
 ) -> Result<String, JsValue> {
     let data = engine_data()?;
-    recommend_with_user(&data, &handle.user, options_json)
+    recommend_with_user(
+        &data,
+        &handle.user,
+        options_json,
+        Some(handle.region.as_str()),
+    )
 }
 
 fn recommend_with_user(
     data: &std::rc::Rc<EngineData>,
     user: &UserProfile,
     params_json: &str,
+    fallback_region: Option<&str>,
 ) -> Result<String, JsValue> {
-    let params = parse_build_params_json(params_json).map_err(to_js)?;
+    let mut params = parse_build_params_json(params_json).map_err(to_js)?;
+    if let Some(region) = fallback_region {
+        let has_explicit_region = serde_json::from_str::<serde_json::Value>(params_json)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("region")
+                    .and_then(|entry| entry.as_str())
+                    .map(|_| ())
+            })
+            .is_some();
+        if !has_explicit_region {
+            params.region = region.to_string();
+        }
+    }
     // OwnedGameData::as_ref 返回借用视图（非拷贝本体），生命周期跟随 data。
     let game: &GameData<'_> = &data.game.as_ref();
 

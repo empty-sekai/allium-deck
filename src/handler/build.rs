@@ -215,7 +215,8 @@ impl<'a> PreparedPoolBuild<'a> {
         let normalized_cards =
             (!params.fixed_cards.is_empty()).then(|| normalize_user_cards(user, params, game));
         let configs_are_noop = configs == types::CardConfigSet::default();
-        let power_ctx = PreparedPowerContext::new(user, game, indexes, fixture_bonus_limit);
+        let power_ctx =
+            PreparedPowerContext::new(user, game, indexes, fixture_bonus_limit, &params.region);
         let card_count = normalized_cards
             .as_ref()
             .map_or(user.user_cards.len(), Vec::len);

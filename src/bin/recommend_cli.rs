@@ -155,6 +155,7 @@ fn run() -> Result<(), String> {
                 masterdata,
                 load_ms,
                 params.multi_unit_bonus_mode,
+                &params.region,
             );
         }
         Some("music") => {
@@ -546,6 +547,7 @@ fn run_area_items(
     masterdata: &str,
     load_ms: f64,
     evaluation: allium_deck::power::MultiUnitBonusMode,
+    region: &str,
 ) -> Result<(), String> {
     let auxiliary = load_auxiliary(masterdata)?;
     let card_ids = args
@@ -554,7 +556,7 @@ fn run_area_items(
         .ok_or_else(|| "--mode area-items 需要 --card-ids（1..5 张卡，逗号分隔）".to_string())?;
     let start = Instant::now();
     let result = auxiliary
-        .recommend_area_items_with_evaluation(user, game, &card_ids, evaluation)
+        .recommend_area_items_for_region(user, game, &card_ids, evaluation, region)
         .map_err(|e| e.to_string())?;
     eprintln!("[area_items] {:.1}ms  rows={}", ms(start), result.len());
     eprintln!("[total] {:.1}ms", load_ms + ms(start));

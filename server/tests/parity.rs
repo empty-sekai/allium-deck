@@ -150,7 +150,8 @@ fn engine_decks(params_json: &str) -> Vec<Vec<u16>> {
     let owned = OwnedGameData::load(&root.join("masterdata"), &root.join("music_metas.json"))
         .expect("masterdata loads");
     let user = parse_user_profile_json(&user_json()).expect("user parses");
-    let params = parse_build_params_json(params_json).expect("params parse");
+    let mut params = parse_build_params_json(params_json).expect("params parse");
+    params.region = "synth".to_string();
     let outcome =
         allium_deck::engine::recommend(&user, &owned.as_ref(), &params).expect("engine recommends");
     assert_eq!(
@@ -305,7 +306,8 @@ async fn large_pool_http_result_matches_complete_engine_result() {
     let owned = OwnedGameData::load(&root.join("masterdata"), &root.join("music_metas.json"))
         .expect("masterdata loads");
     let user = parse_user_profile_json(&user_json).expect("user parses");
-    let params = parse_build_params_json(params_json).expect("params parse");
+    let mut params = parse_build_params_json(params_json).expect("params parse");
+    params.region = "synth".to_string();
     let engine = allium_deck::engine::recommend(&user, &owned.as_ref(), &params)
         .expect("engine handles every owned card");
     assert_eq!(
