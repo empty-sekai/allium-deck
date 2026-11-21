@@ -492,13 +492,6 @@ fn card_meta(master_cards: &HashMap<i32, &MasterCard>, card_id: i32, trained: bo
     }
 }
 
-fn default_image_is_trained(card: &UserCard) -> bool {
-    matches!(
-        card.default_image.trim().to_ascii_lowercase().as_str(),
-        "special_training" | "trained" | "after_training"
-    )
-}
-
 fn target_value(result: &DeckResult) -> i64 {
     result.score.min(i64::MAX as u64) as i64
 }

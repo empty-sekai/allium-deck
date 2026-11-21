@@ -601,7 +601,9 @@ fn sorted_live_skills(
             buffer[slot] = other_skill;
             slot += 1;
         }
-        buffer[DECK_SIZE] = self_skill;
+        buffer[DECK_SIZE] = LiveSkillValue {
+            score_up: self_score_up.max(other_skill.score_up),
+        };
         return buffer;
     }
 
@@ -1053,6 +1055,30 @@ mod tests {
             calc_live_score(1_000, &permutation, &cheerful_event_ctx),
             4_375
         );
+    }
+
+    #[test]
+    fn multi_live_encore_uses_max_of_self_and_teammate_score_up() {
+        let permutation = EvaluatedPermutation {
+            order: [0, 1, 2, 3, 4],
+            skills: [LiveSkillValue { score_up: 100.0 }; DECK_SIZE],
+            multi_live_score_up: 180.0,
+        };
+        let mut multi_ctx = ctx(LiveType::Multi);
+        multi_ctx.base_score = 1.0;
+        multi_ctx.fever_score = 0.0;
+        multi_ctx.skill_scores[1] = [0.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+
+        // Self effective skill is 100 + 4 * (100 / 5) = 180.
+        // When teammate score-up (250) exceeds self (180), encore uses 250:
+        // rate = 1.0 + 250 * 1.0 / 100 = 3.5 -> 3.5 * 1000 * 4 + 375 = 14_375.
+        multi_ctx.multi_teammate_score_up = Some(250);
+        assert_eq!(calc_live_score(1_000, &permutation, &multi_ctx), 14_375);
+
+        // When self (180) exceeds teammate score-up (120), encore keeps 180:
+        // rate = 1.0 + 180 * 1.0 / 100 = 2.8 -> 2.8 * 1000 * 4 + 375 = 11_575.
+        multi_ctx.multi_teammate_score_up = Some(120);
+        assert_eq!(calc_live_score(1_000, &permutation, &multi_ctx), 11_575);
     }
 }
 

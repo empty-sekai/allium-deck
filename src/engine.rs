@@ -115,6 +115,7 @@ pub fn recommend(
                 let ordered = summary.map_or(result.cards, |summary| summary.ordered_cards);
                 Recommendation {
                     cards: ordered.map(|card| pool.game_id(card)),
+                    trained: ordered.map(|card| pool.default_image_is_trained(card)),
                     score: result.score,
                     main_honor_id: summary.and_then(|summary| summary.main_honor_id),
                 }
@@ -130,6 +131,12 @@ pub fn recommend(
 pub struct Recommendation {
     /// 五张卡的游戏卡 ID，按站位顺序，队长在前。
     pub cards: [CardId; DECK_SIZE],
+    /// 五张卡是否处于特训后卡面（`special_training`），与 `cards` 同序。
+    ///
+    /// 双技能 BFes 卡在允许切花前/花后技能时，同一张 `cards[i]` 对应两种候选态：
+    /// `false` 为花前卡面（`original`），`true` 为花后卡面（`special_training`）。
+    #[serde(default)]
+    pub trained: [bool; DECK_SIZE],
     /// 排序值。
     ///
     /// 单位随搜索目标而定，且只在同一次搜索内可比——用来排序，不要当成

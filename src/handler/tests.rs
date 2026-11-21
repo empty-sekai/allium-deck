@@ -2973,3 +2973,242 @@ fn exact_tier_pool_keeps_omittable_limited_bonus() {
         Some(0.0)
     );
 }
+
+#[test]
+fn bfes_dual_skill_trained_flag_tracks_selected_skill_state_not_user_default() {
+    let cards = [
+        MasterCard {
+            id: 1,
+            character_id: 1,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: "chara_000001".to_string(),
+            skill_id: 10,
+            special_training_skill_id: Some(11),
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        },
+        MasterCard {
+            id: 2,
+            character_id: 2,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: "chara_000002".to_string(),
+            skill_id: 20,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        },
+        MasterCard {
+            id: 3,
+            character_id: 3,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: "chara_000003".to_string(),
+            skill_id: 20,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        },
+        MasterCard {
+            id: 4,
+            character_id: 4,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: "chara_000004".to_string(),
+            skill_id: 20,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        },
+        MasterCard {
+            id: 5,
+            character_id: 5,
+            attr: "cool".to_string(),
+            card_rarity_type: 4,
+            rarity: "rarity_4".to_string(),
+            asset_bundle_name: "chara_000005".to_string(),
+            skill_id: 20,
+            special_training_skill_id: None,
+            special_training_power1_bonus_fixed: 0,
+            special_training_power2_bonus_fixed: 0,
+            special_training_power3_bonus_fixed: 0,
+            support_unit: None,
+            max_level: Some(60),
+            max_skill_level: Some(4),
+            max_master_rank: Some(5),
+        },
+    ];
+    let skills = [
+        types::Skill {
+            id: 10,
+            level: 1,
+            is_after_training: false,
+        },
+        types::Skill {
+            id: 11,
+            level: 1,
+            is_after_training: true,
+        },
+        types::Skill {
+            id: 20,
+            level: 1,
+            is_after_training: false,
+        },
+    ];
+    let effects = [
+        types::SkillEffect {
+            skill_id: 10,
+            skill_level: 1,
+            effect_type: "score_up".to_string(),
+            value: 90,
+            additional_value: None,
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        },
+        types::SkillEffect {
+            skill_id: 10,
+            skill_level: 1,
+            effect_type: "score_up_reference".to_string(),
+            value: 100,
+            additional_value: Some(60),
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        },
+        types::SkillEffect {
+            skill_id: 11,
+            skill_level: 1,
+            effect_type: "score_up".to_string(),
+            value: 130,
+            additional_value: None,
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        },
+        types::SkillEffect {
+            skill_id: 20,
+            skill_level: 1,
+            effect_type: "score_up".to_string(),
+            value: 100,
+            additional_value: None,
+            unit_member_count: None,
+            unit: None,
+            activate_character_rank: None,
+        },
+    ];
+    let units = (1..=5)
+        .map(|id| types::GameCharacterUnit {
+            game_character_id: id,
+            unit: "idol".to_string(),
+        })
+        .collect::<Vec<_>>();
+    let game = sample_game(&cards, &[], &[], &[], &[], &skills, &effects, &[], &units);
+
+    // Card 1 has `default_image = "special_training"`, yet its pre-training
+    // reference skill (90 + 60 = 150) beats its post-training skill (130).
+    let mut bfes_user = sample_user_card(1);
+    bfes_user.special_training_status = "done".to_string();
+    bfes_user.default_image = "special_training".to_string();
+    let user = UserProfile {
+        user_cards: vec![
+            bfes_user,
+            sample_user_card(2),
+            sample_user_card(3),
+            sample_user_card(4),
+            sample_user_card(5),
+        ],
+        ..UserProfile::default()
+    };
+    let params = BuildParams {
+        target: ScoreTarget::Skill,
+        limit: 1,
+        keep_after_training_state: false,
+        ..BuildParams::default()
+    };
+
+    let (pool, _, full) = build_card_pool_with_details(&user, &game, &params).unwrap();
+    for (idx, detail) in pool.indices().zip(full.iter()) {
+        assert_eq!(
+            pool.default_image_is_trained(idx),
+            matches!(detail.default_image, DefaultImage::SpecialTraining)
+        );
+    }
+
+    let outcome = crate::engine::recommend(&user, &game, &params).unwrap();
+    assert_eq!(outcome.results.len(), 1);
+    let winning = &outcome.results[0];
+    assert_eq!(winning.cards[0], 1);
+    assert!(
+        !winning.trained[0],
+        "pre-training BFes variant won (150 > 130), so trained must be false despite user defaultImage=special_training"
+    );
+
+    // Conversely, when members have 0 skill so pre-training only reaches 90 < 130,
+    // the post-training BFes variant wins even if the user card had defaultImage=original.
+    let low_effects = [
+        effects[0].clone(),
+        effects[1].clone(),
+        effects[2].clone(),
+        types::SkillEffect {
+            value: 0,
+            ..effects[3].clone()
+        },
+    ];
+    let low_game = sample_game(
+        &cards,
+        &[],
+        &[],
+        &[],
+        &[],
+        &skills,
+        &low_effects,
+        &[],
+        &units,
+    );
+    let mut bfes_original = sample_user_card(1);
+    bfes_original.special_training_status = "done".to_string();
+    bfes_original.default_image = "original".to_string();
+    let low_user = UserProfile {
+        user_cards: vec![
+            bfes_original,
+            sample_user_card(2),
+            sample_user_card(3),
+            sample_user_card(4),
+            sample_user_card(5),
+        ],
+        ..UserProfile::default()
+    };
+    let low_outcome = crate::engine::recommend(&low_user, &low_game, &params).unwrap();
+    assert_eq!(low_outcome.results.len(), 1);
+    assert_eq!(low_outcome.results[0].cards[0], 1);
+    assert!(
+        low_outcome.results[0].trained[0],
+        "post-training BFes variant won (130 > 90), so trained must be true despite user defaultImage=original"
+    );
+}

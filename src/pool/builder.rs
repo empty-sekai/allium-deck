@@ -161,6 +161,15 @@ impl PoolBuilder {
         self.column_mut::<u16>(self.layout.off_skill_reference)[idx as usize] = val;
     }
 
+    /// Records whether this candidate uses its trained card illustration
+    /// (`special_training`), distinguishing dual-skill BFes variants that share
+    /// the same public card ID.
+    #[inline(always)]
+    pub(crate) fn set_default_image_trained(&mut self, idx: u16, trained: bool) {
+        self.column_mut::<u8>(self.layout.off_default_image_trained)[idx as usize] =
+            u8::from(trained);
+    }
+
     #[inline(always)]
     pub(crate) fn mark_char(&mut self, char_id: u8, card_idx: u16) {
         // `Mask` deliberately remains one 512-bit cache line for the ZMM
