@@ -51,9 +51,8 @@ mod deadline_tests {
             panic!("disabled deadline read the clock")
         })
         .unwrap();
-        for position in 0..=pool.count() {
-            for slots in 0..=DECK_SIZE {
-                let frontier = &bounds.frontiers[position][slots];
+        for (position, row) in bounds.frontiers[..=pool.count()].iter().enumerate() {
+            for (slots, frontier) in row[..=DECK_SIZE].iter().enumerate() {
                 if slots > pool.count() - position {
                     assert!(frontier.is_empty());
                 } else {

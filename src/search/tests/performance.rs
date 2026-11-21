@@ -69,8 +69,11 @@ fn benchmark_wl_and_final_exact_bounds() {
     final_ctx.skill_scores[1] = [0.21, 0.17, 0.13, 0.11, 0.07, 0.23];
     final_ctx.diff_attr_bonus = [0, 0, 4, 24, 120, 800];
     final_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
-    for char_id in 1usize..=22 {
-        final_ctx.support_decks_by_character[char_id] = longtail_support(&pool, char_id);
+    for (idx, slot) in final_ctx.support_decks_by_character[1..=22]
+        .iter_mut()
+        .enumerate()
+    {
+        *slot = longtail_support(&pool, idx + 1);
     }
 
     fn bench(

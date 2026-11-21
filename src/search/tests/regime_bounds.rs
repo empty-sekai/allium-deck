@@ -105,9 +105,8 @@ fn regime_ctx(pool: &CardPool, case: u64) -> SearchContext {
             ctx.best_skill_as_leader = false;
             ctx.diff_attr_bonus = [0, 5, 15, 30, 45, 60];
             ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
-            for character in 1usize..=6 {
-                ctx.support_decks_by_character[character] =
-                    support_deck_for_property(pool, character + case as usize);
+            for (idx, slot) in ctx.support_decks_by_character[1..=6].iter_mut().enumerate() {
+                *slot = support_deck_for_property(pool, idx + 1 + case as usize);
             }
             for dense in 0..pool.count() {
                 ctx.leader_honor_bonus_x10[dense] = (((dense * 3 + case as usize) % 9) as u16) * 10;
