@@ -389,11 +389,16 @@
         "type": "object",
         "properties": {
           "cardId": { "type": "integer" },
+          "defaultImage": {
+            "type": "string",
+            "enum": ["original", "special_training"],
+            "description": "Card illustration active for this deck entry (`original` for pre-training skill state, `special_training` for trained skill state)."
+          },
           "powerTotal": { "type": ["integer", "null"] },
           "eventBonus": { "type": ["number", "null"] },
           "skillScoreUp": { "type": ["number", "null"] }
         },
-        "required": ["cardId"]
+        "required": ["cardId", "defaultImage"]
       },
       "Deck": {
         "type": "object",

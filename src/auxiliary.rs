@@ -510,7 +510,11 @@ fn music_live_score(
             .unwrap_or(self_score);
         let mut values = vec![(self_score, self_life)];
         values.extend(std::iter::repeat_n((teammate_score, 0.0), DECK_SIZE - 1));
-        values.push((self_score, self_life));
+        values.push(if teammate_score > self_score {
+            (teammate_score, 0.0)
+        } else {
+            (self_score, self_life)
+        });
         values
     } else {
         let mut values = deck
@@ -960,6 +964,50 @@ mod tests {
         assert_eq!(result[0].music_id, 1);
         assert!(result[0].live_score > result[1].live_score);
         assert!(result.iter().all(|item| item.event_point.is_some()));
+    }
+
+    #[test]
+    fn music_recommendation_multi_encore_uses_stronger_teammate_skill() {
+        let deck = MusicDeck {
+            total_power: 1_000,
+            event_bonus_rate: 0.0,
+            cards: vec![
+                MusicDeckCard {
+                    skill_score_up: 100.0,
+                    skill_life_recovery: 0.0
+                };
+                5
+            ],
+            ..MusicDeck::default()
+        };
+        let music = vec![MusicMeta {
+            music_id: 1,
+            difficulty: "master".to_string(),
+            multi_skill_scores: [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            ..music_meta_default()
+        }];
+
+        // Self effective skill is 180; teammate is 250 -> encore uses 250:
+        // (1.0 + 2.5) * 1000 * 4 + 375 = 14_375.
+        let stronger_teammate = MusicRecommendOptions {
+            live_type: LiveType::Multi,
+            event_type: EventType::Marathon,
+            skill_order: LiveSkillOrder::Average,
+            specific_skill_order: None,
+            multi_teammate_score_up: Some(250),
+            multi_teammate_power: None,
+        };
+        let res = recommend_music(&music, &deck, &stronger_teammate).unwrap();
+        assert_eq!(res[0].live_score, 14_375);
+
+        // Teammate is 120 < self 180 -> encore keeps 180:
+        // (1.0 + 1.8) * 1000 * 4 + 375 = 11_575.
+        let weaker_teammate = MusicRecommendOptions {
+            multi_teammate_score_up: Some(120),
+            ..stronger_teammate
+        };
+        let res_weaker = recommend_music(&music, &deck, &weaker_teammate).unwrap();
+        assert_eq!(res_weaker[0].live_score, 11_575);
     }
 
     #[test]

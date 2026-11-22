@@ -697,8 +697,9 @@ total event bonus, total skill, and leader skill.
 
 The live-score and event-point formulas are monotone in these non-negative
 inputs over the supported domains. This includes the capped teammate-score term
-in Multi/Cheerful: replacing a quantity by a larger value cannot lower the cap
-result.
+in Multi/Cheerful (four teammate slots at teammate score-up and the sixth
+encore slot at $\max(\text{self score-up},\,\text{teammate score-up})$):
+replacing a quantity by a larger value cannot lower any slot or the cap result.
 
 Therefore evaluating the event formula at independently relaxed component
 maxima cannot underestimate a legal completion.

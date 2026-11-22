@@ -295,6 +295,24 @@ impl CardPool {
         }
     }
 
+    /// Whether this candidate displays its trained illustration
+    /// (`special_training`).
+    ///
+    /// Dual-skill BFes cards emit two candidates under the same public card ID
+    /// when `keep_after_training_state` is `false`: the pre-training skill
+    /// state uses `original` (`false`) and the post-training skill state uses
+    /// `special_training` (`true`).
+    #[inline(always)]
+    pub fn default_image_is_trained(&self, idx: CardIdx) -> bool {
+        debug_assert!(idx.raw() < self.count());
+        unsafe {
+            *self
+                .column::<u8>(self.layout.off_default_image_trained)
+                .get_unchecked(idx.raw())
+                != 0
+        }
+    }
+
     /// 安全读取角色掩码。
     ///
     /// Available only when the full pool fits the 512-bit mask. For larger
@@ -437,6 +455,7 @@ impl CardPool {
             builder.set_skill_min(next_idx, self.skill_min(src));
             builder.set_skill_max(next_idx, self.skill_max(src));
             builder.set_skill_reference(next_idx, self.skill_reference(src));
+            builder.set_default_image_trained(next_idx, self.default_image_is_trained(src));
 
             builder.mark_char(self.char_id(src), next_idx);
             let unit_mask = self.unit_mask_raw(src);

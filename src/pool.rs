@@ -71,6 +71,7 @@ mod tests {
         builder.set_power_max(0, 2000);
         builder.set_skill_min(0, 12);
         builder.set_skill_max(0, 34);
+        builder.set_default_image_trained(0, true);
         builder.mark_char(1, 0);
         builder.mark_unit(0, 0);
         builder.mark_unit(1, 0);
@@ -313,6 +314,7 @@ mod tests {
                 builder.set_unit_mask(idx, 1 << unit);
                 builder.set_game_id(idx, idx + 1);
                 builder.set_power_max(idx, dense as u32);
+                builder.set_default_image_trained(idx, !dense.is_multiple_of(2));
                 builder.mark_char(character, idx);
                 builder.mark_unit(unit, idx);
                 builder.mark_attr(attr, idx);
@@ -353,6 +355,10 @@ mod tests {
                 assert_eq!(compacted.attr(new), pool.attr(source));
                 assert_eq!(compacted.unit_mask_raw(new), pool.unit_mask_raw(source));
                 assert_eq!(compacted.game_id(new), pool.game_id(source));
+                assert_eq!(
+                    compacted.default_image_is_trained(new),
+                    pool.default_image_is_trained(source)
+                );
                 assert!(
                     compacted
                         .char_mask(pool.char_id(source))

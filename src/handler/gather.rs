@@ -373,6 +373,10 @@ pub(crate) fn sort_and_gather(
         builder.set_attr(dense, card.attr);
         builder.set_unit_mask(dense, card.unit_mask_raw);
         builder.set_game_id(dense, card.game_card_id as u16);
+        builder.set_default_image_trained(
+            dense,
+            matches!(card.default_image, DefaultImage::SpecialTraining),
+        );
         builder.mark_char(card.character_id, dense);
         builder.mark_attr(card.attr, dense);
         for bit in 0..6u8 {

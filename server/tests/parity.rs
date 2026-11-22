@@ -145,7 +145,7 @@ async fn post(router: &axum::Router, path: &str, body: String) -> (StatusCode, s
 }
 
 /// The deck sequence the library itself produces for these parameters.
-fn engine_decks(params_json: &str) -> Vec<Vec<u16>> {
+fn engine_decks(params_json: &str) -> Vec<Vec<(u16, String)>> {
     let root = fixture();
     let owned = OwnedGameData::load(&root.join("masterdata"), &root.join("music_metas.json"))
         .expect("masterdata loads");
@@ -161,7 +161,22 @@ fn engine_decks(params_json: &str) -> Vec<Vec<u16>> {
     outcome
         .results
         .iter()
-        .map(|deck| deck.cards.to_vec())
+        .map(|deck| {
+            deck.cards
+                .iter()
+                .zip(deck.trained.iter())
+                .map(|(&card_id, &trained)| {
+                    (
+                        card_id,
+                        if trained {
+                            "special_training".to_string()
+                        } else {
+                            "original".to_string()
+                        },
+                    )
+                })
+                .collect()
+        })
         .collect()
 }
 
@@ -169,7 +184,7 @@ fn request_body(params_json: &str) -> String {
     format!("{{\"user\":{},\"params\":{}}}", user_json(), params_json)
 }
 
-fn http_decks(value: &serde_json::Value) -> Vec<Vec<u16>> {
+fn http_decks(value: &serde_json::Value) -> Vec<Vec<(u16, String)>> {
     value["decks"]
         .as_array()
         .expect("decks array")
@@ -179,7 +194,15 @@ fn http_decks(value: &serde_json::Value) -> Vec<Vec<u16>> {
                 .as_array()
                 .expect("cards array")
                 .iter()
-                .map(|card| card["cardId"].as_u64().expect("card id") as u16)
+                .map(|card| {
+                    (
+                        card["cardId"].as_u64().expect("card id") as u16,
+                        card["defaultImage"]
+                            .as_str()
+                            .expect("defaultImage")
+                            .to_string(),
+                    )
+                })
                 .collect()
         })
         .collect()
@@ -317,7 +340,22 @@ async fn large_pool_http_result_matches_complete_engine_result() {
     let expected = engine
         .results
         .iter()
-        .map(|deck| deck.cards.to_vec())
+        .map(|deck| {
+            deck.cards
+                .iter()
+                .zip(deck.trained.iter())
+                .map(|(&card_id, &trained)| {
+                    (
+                        card_id,
+                        if trained {
+                            "special_training".to_string()
+                        } else {
+                            "original".to_string()
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
         .collect::<Vec<_>>();
     assert_eq!(http_decks(&value), expected);
 

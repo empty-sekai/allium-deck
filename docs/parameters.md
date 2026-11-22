@@ -104,7 +104,7 @@ Skills that depend on the deck are resolved for each evaluated deck, the same wa
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `multiLiveTeammatePower` / `multi_teammate_power` | int | absent | Teammate total power for multi/cheerful score math. |
-| `multiLiveTeammateScoreUp` / `multi_teammate_score_up` | int | absent | Teammate effective skill value. |
+| `multiLiveTeammateScoreUp` / `multi_teammate_score_up` | int | absent | Teammate effective skill value (used for the four teammate slots and, when greater than self effective skill, for the encore slot). |
 | `multiLiveScoreUpLowerBound` / `multi_live_score_up_lower_bound` | float | absent | Lower bound on total effective skill across the deck. |
 | `otherScore` / `other_score` | int | absent | Opponent score (cheerful). |
 | `life` | int | absent | Life value (cheerful). |

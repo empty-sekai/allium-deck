@@ -24,6 +24,7 @@ pub(crate) struct PoolLayout {
     pub(crate) off_skill_min: usize,
     pub(crate) off_skill_max: usize,
     pub(crate) off_skill_reference: usize,
+    pub(crate) off_default_image_trained: usize,
     pub(crate) off_masks: usize,
 }
 
@@ -67,6 +68,9 @@ impl PoolLayout {
         let off_skill_reference = offset;
         offset += align_up(n * size_of::<u16>(), 64);
 
+        let off_default_image_trained = offset;
+        offset += align_up(n * size_of::<u8>(), 64);
+
         let off_masks = offset;
         offset += (CHAR_MASK_COUNT + UNIT_MASK_COUNT + ATTR_MASK_COUNT) * size_of::<Mask>();
 
@@ -84,6 +88,7 @@ impl PoolLayout {
             off_skill_min,
             off_skill_max,
             off_skill_reference,
+            off_default_image_trained,
             off_masks,
         }
     }

@@ -1468,7 +1468,7 @@ impl CardOut {
     ) -> Self {
         let card_id = pool.game_id(card_idx) as i32;
         let user_card = user_cards.get(&card_id).copied();
-        let trained = user_card.is_some_and(default_image_is_trained);
+        let trained = pool.default_image_is_trained(card_idx);
         let meta = card_meta(game, card_id, trained);
         let event_bonus = summary
             .map(|value| value.card_event_bonus_rates[pos])
@@ -1561,11 +1561,4 @@ fn card_meta(game: &GameData<'_>, card_id: i32, trained: bool) -> CardMeta {
             attr: "cool".to_string(),
         },
     }
-}
-
-fn default_image_is_trained(card: &UserCard) -> bool {
-    matches!(
-        card.default_image.trim().to_ascii_lowercase().as_str(),
-        "special_training" | "trained" | "after_training"
-    )
 }

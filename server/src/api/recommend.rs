@@ -40,6 +40,7 @@ pub struct RecommendRequest {
 #[serde(rename_all = "camelCase")]
 pub struct CardOut {
     pub card_id: u16,
+    pub default_image: &'static str,
     pub power_total: Option<i32>,
     pub event_bonus: Option<f64>,
     pub skill_score_up: Option<f64>,
@@ -376,6 +377,11 @@ fn deck_out(rank: usize, pool: &CardPool, ctx: &SearchContext, result: &DeckResu
             let card = ordered[position];
             CardOut {
                 card_id: pool.game_id(card),
+                default_image: if pool.default_image_is_trained(card) {
+                    "special_training"
+                } else {
+                    "original"
+                },
                 power_total: summary.map(|summary| summary.card_power_total[position]),
                 event_bonus: summary.map(|summary| summary.card_event_bonus_rates[position]),
                 skill_score_up: summary.map(|summary| summary.card_skill_score_up[position]),
