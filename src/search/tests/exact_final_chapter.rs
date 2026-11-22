@@ -301,9 +301,7 @@ fn final_chapter_auto_leader_must_not_truncate_support_safe_variant_set() {
             .collect(),
         count: top_three_ids.len() as u8,
     };
-    for character in 1usize..=5 {
-        search_ctx.support_decks_by_character[character] = support.clone();
-    }
+    search_ctx.support_decks_by_character[1..=5].fill(support);
     let params = SearchParams {
         top_k: 1,
         timeout_ms: 0,
@@ -334,9 +332,11 @@ fn exact_final_chapter_auto_matches_exhaustive_leader_oracle_randomized() {
         final_ctx.skill_scores[1] = [0.19, 0.17, 0.13, 0.11, 0.07, 0.23];
         final_ctx.diff_attr_bonus = [0, 0, 11, 29, 59, 101];
         final_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
-        for character in 1usize..=6 {
-            final_ctx.support_decks_by_character[character] =
-                support_deck_for_property(&pool, character + case as usize);
+        for (idx, slot) in final_ctx.support_decks_by_character[1..=6]
+            .iter_mut()
+            .enumerate()
+        {
+            *slot = support_deck_for_property(&pool, idx + 1 + case as usize);
         }
         for dense in 0..pool.count() {
             final_ctx.leader_honor_bonus_x10[dense] =
@@ -364,9 +364,11 @@ fn final_seed_traversal_never_changes_unlimited_canonical_results() {
         final_ctx.event_type = Some(EventType::WorldBloom);
         final_ctx.diff_attr_bonus = [0, 0, 11, 29, 59, 101];
         final_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
-        for character in 1usize..=6 {
-            final_ctx.support_decks_by_character[character] =
-                support_deck_for_property(&pool, character + case as usize);
+        for (idx, slot) in final_ctx.support_decks_by_character[1..=6]
+            .iter_mut()
+            .enumerate()
+        {
+            *slot = support_deck_for_property(&pool, idx + 1 + case as usize);
         }
         let params = SearchParams {
             top_k: 4,
@@ -405,9 +407,8 @@ fn randomized_final_ctx(pool: &CardPool, case: u64, target: ScoreTarget) -> Sear
     ctx.is_world_bloom = true;
     ctx.event_type = Some(EventType::WorldBloom);
     ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
-    for character in 1usize..=6 {
-        ctx.support_decks_by_character[character] =
-            support_deck_for_property(pool, character + case as usize);
+    for (idx, slot) in ctx.support_decks_by_character[1..=6].iter_mut().enumerate() {
+        *slot = support_deck_for_property(pool, idx + 1 + case as usize);
     }
     for dense in 0..pool.count() {
         ctx.leader_honor_bonus_x10[dense] = (((dense * 3 + case as usize) % 9) as u16) * 10;
@@ -601,9 +602,11 @@ fn final_chapter_all_skill_orders_match_explicit_oracle() {
             ];
             search_ctx.diff_attr_bonus = [0, 0, 11, 29, 59, 101];
             search_ctx.support_decks_by_character = vec![SupportDeck::default(); 27];
-            for character in 1usize..=6 {
-                search_ctx.support_decks_by_character[character] =
-                    support_deck_for_property(&pool, character + case as usize);
+            for (idx, slot) in search_ctx.support_decks_by_character[1..=6]
+                .iter_mut()
+                .enumerate()
+            {
+                *slot = support_deck_for_property(&pool, idx + 1 + case as usize);
             }
 
             let params = SearchParams {

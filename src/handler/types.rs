@@ -82,6 +82,8 @@ pub struct GameData<'a> {
     pub honors: &'a [Honor],
     /// 羁绊称号主表。
     pub bonds_honors: &'a [BondsHonor],
+    /// Optional `configs` masterdata rows (e.g. `event_score_ceiling`).
+    pub configs: &'a [Config],
 }
 
 impl GameData<'_> {
@@ -146,6 +148,9 @@ pub enum FixedConstraintMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BuildParams {
     /// 区服。
+    ///
+    /// 默认值为 `"cn"`，对应 `tw` / `kr` / `cn` 的万分比整数加成舍入口径；
+    /// 若 Rust 库调用方需要日服/国际服逐维度浮点向下取整，请显式传入 `"jp"` 或 `"en"`。
     pub region: String,
     /// 活动 ID。
     pub event_id: Option<i32>,
@@ -193,6 +198,8 @@ pub struct BuildParams {
     pub world_bloom_finale_turn: Option<i32>,
     /// Challenge 角色 ID。
     pub challenge_live_character_id: Option<i32>,
+    /// Memory-event simulation unit (`+25%` all cards, `+75%` native unit characters).
+    pub event_me_unit: Option<String>,
     /// 模拟活动团。
     pub event_unit: Option<String>,
     /// 模拟活动属性。
@@ -268,6 +275,7 @@ impl Default for BuildParams {
             world_bloom_event_turn: None,
             world_bloom_finale_turn: None,
             challenge_live_character_id: None,
+            event_me_unit: None,
             event_unit: None,
             event_attr: None,
             custom_bonus_character_ids: Vec::new(),
@@ -790,6 +798,15 @@ pub struct BondsHonor {
     pub id: i32,
 }
 
+/// One row of the `configs` masterdata table.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Config {
+    /// Configuration key name.
+    pub config_key: String,
+    /// Configuration value as raw text.
+    pub value: String,
+}
+
 /// 用户卡。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserCard {
@@ -892,7 +909,7 @@ pub struct UserHonor {
 }
 
 /// 将单位代码转换为 allium `Unit`。
-pub(crate) fn parse_unit_code(code: &str) -> Option<Unit> {
+pub fn parse_unit_code(code: &str) -> Option<Unit> {
     let code = code.trim();
     let matches = |value: &str| code.eq_ignore_ascii_case(value);
     if matches("light_sound")

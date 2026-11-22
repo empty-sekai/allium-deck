@@ -5,7 +5,15 @@ use super::types::{
     GameData, MasterCard, UserCard, UserProfile, is_after_training, parse_unit_code,
     unit_to_pool_index,
 };
-use crate::simd::{PowerAreaItem, SimdBackend};
+use crate::simd::{PowerAreaItem, SimdBackend, bonus_basis_points};
+
+/// TW, KR and CN compute area-item and character-rank bonuses in integer basis points.
+pub(crate) fn region_uses_basis_point_bonus(region: &str) -> bool {
+    let region = region.trim();
+    region.eq_ignore_ascii_case("tw")
+        || region.eq_ignore_ascii_case("kr")
+        || region.eq_ignore_ascii_case("cn")
+}
 
 /// 卡牌综合力构建结果。
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -77,6 +85,7 @@ pub(crate) struct PowerInput<'a> {
 }
 
 pub(crate) struct PreparedPowerContext {
+    uses_basis_point_bonus: bool,
     character_rank: [i32; 27],
     character_bonus_rate: [f64; 27],
     fixture_rate: [i32; 27],
@@ -94,6 +103,7 @@ impl PreparedPowerContext {
         game: &GameData<'_>,
         idx: &PoolIndexes,
         fixture_bonus_limit: Option<i32>,
+        region: &str,
     ) -> Self {
         let mut character_rank = [0; 27];
         for entry in &user.user_characters {
@@ -164,6 +174,7 @@ impl PreparedPowerContext {
         }
 
         Self {
+            uses_basis_point_bonus: region_uses_basis_point_bonus(region),
             character_rank,
             character_bonus_rate,
             fixture_rate,
@@ -294,21 +305,21 @@ fn base_power_dims(
 }
 
 #[cfg(test)]
-fn character_bonus_dims(
-    master: &MasterCard,
-    ctx: &PreparedPowerContext,
-    base: [i32; 3],
-) -> [i32; 3] {
+fn character_bonus_total(master: &MasterCard, ctx: &PreparedPowerContext, base: [i32; 3]) -> i32 {
     let rate = ctx.character_rate(master.character_id);
-    [
-        floor_mul_rate(base[0], rate),
-        floor_mul_rate(base[1], rate),
-        floor_mul_rate(base[2], rate),
-    ]
+    if ctx.uses_basis_point_bonus {
+        let bp = bonus_basis_points(rate);
+        let base_sum = i64::from(base[0]) + i64::from(base[1]) + i64::from(base[2]);
+        ((bp * base_sum) / 10_000) as i32
+    } else {
+        floor_mul_rate(base[0], rate)
+            + floor_mul_rate(base[1], rate)
+            + floor_mul_rate(base[2], rate)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn area_item_bonus_dims(
+fn area_item_bonus_sum(
     master: &MasterCard,
     ctx: &PreparedPowerContext,
     unit_mask: u8,
@@ -317,8 +328,9 @@ fn area_item_bonus_dims(
     same_unit: bool,
     same_attr: bool,
     target_unit: u8,
-) -> [i32; 3] {
+) -> i32 {
     let mut acc = [0.0_f64; 3];
+    let mut basis_points = 0i64;
 
     for item in &ctx.area_items {
         let unit_ok = item.unit == PowerAreaItem::ANY
@@ -334,19 +346,24 @@ fn area_item_bonus_dims(
             || (item.attr != PowerAreaItem::ANY && same_attr);
         let rates = item.rates(all_match);
         for dim in 0..3 {
-            acc[dim] += rates[dim] * 0.01_f64 * base[dim] as f64;
+            if ctx.uses_basis_point_bonus {
+                basis_points += bonus_basis_points(rates[dim]) * i64::from(base[dim]);
+            } else {
+                acc[dim] += rates[dim] * 0.01_f64 * base[dim] as f64;
+            }
         }
     }
 
-    [
-        acc[0].floor() as i32,
-        acc[1].floor() as i32,
-        acc[2].floor() as i32,
-    ]
+    if ctx.uses_basis_point_bonus {
+        (basis_points / 10_000) as i32
+    } else {
+        acc[0].floor() as i32 + acc[1].floor() as i32 + acc[2].floor() as i32
+    }
 }
 
 /// Selects mutually exclusive unit buckets using f32 rates, then accumulates
-/// the retained rows in their original order using independent f64 dimensions.
+/// the retained rows in their original order using independent f64 dimensions
+/// (or integer basis points for TW/KR/CN).
 fn multi_area_bonus(
     items: &[PowerAreaItem],
     base: [i32; 3],
@@ -354,6 +371,7 @@ fn multi_area_bonus(
     membership: u8,
     attr: u8,
     key: usize,
+    uses_basis_point_bonus: bool,
 ) -> i32 {
     const NONE: usize = 0;
     const CHARACTER: usize = 1;
@@ -435,6 +453,7 @@ fn multi_area_bonus(
         }
     }
     let mut acc = [0f64; 3];
+    let mut basis_points = 0i64;
     for item in items {
         let (bucket, all_match) = pick(item);
         if bucket == NONE || dropped[bucket] {
@@ -442,10 +461,18 @@ fn multi_area_bonus(
         }
         let rates = item.rates(all_match && !use_normal[bucket]);
         for dim in 0..3 {
-            acc[dim] += rates[dim] * 0.01_f64 * f64::from(base[dim]);
+            if uses_basis_point_bonus {
+                basis_points += bonus_basis_points(rates[dim]) * i64::from(base[dim]);
+            } else {
+                acc[dim] += rates[dim] * 0.01_f64 * f64::from(base[dim]);
+            }
         }
     }
-    acc.into_iter().map(|value| value.floor() as i32).sum()
+    if uses_basis_point_bonus {
+        (basis_points / 10_000) as i32
+    } else {
+        acc.into_iter().map(|value| value.floor() as i32).sum()
+    }
 }
 
 fn add_multi_power(
@@ -466,6 +493,7 @@ fn add_multi_power(
             result.unit_mask,
             attr,
             key,
+            ctx.uses_basis_point_bonus,
         )
     });
     for area in areas {
@@ -600,6 +628,7 @@ pub(crate) fn build_power_batch_from_fn<'a>(
                 &fixture_rates,
                 &gate_rates,
                 block_len,
+                ctx.uses_basis_point_bonus,
             )
         };
         let mut primary_area_sums = [[0i32; 16]; 4];
@@ -615,6 +644,7 @@ pub(crate) fn build_power_batch_from_fn<'a>(
                     &ctx.area_items,
                     member_key,
                     primary_unit_lanes,
+                    ctx.uses_basis_point_bonus,
                 )
             };
             if secondary_unit_lanes != 0 {
@@ -627,6 +657,7 @@ pub(crate) fn build_power_batch_from_fn<'a>(
                         &ctx.area_items,
                         member_key,
                         secondary_unit_lanes,
+                        ctx.uses_basis_point_bonus,
                     )
                 };
             }
@@ -679,7 +710,7 @@ pub(crate) fn build_power_batch_from_fn<'a>(
                     let base = [base_dims[0][lane], base_dims[1][lane], base_dims[2][lane]];
                     let mut member_key = 0usize;
                     while member_key < 4 {
-                        let area_bonus = area_item_bonus_dims(
+                        let area_sum = area_item_bonus_sum(
                             input.master,
                             ctx,
                             input.unit_mask,
@@ -689,7 +720,6 @@ pub(crate) fn build_power_batch_from_fn<'a>(
                             member_key % 2 == 1,
                             pool_index,
                         );
-                        let area_sum = area_bonus[0] + area_bonus[1] + area_bonus[2];
                         let total = base_sum[lane] + character_sum + area_sum + fixture + gate;
                         result.area_item_bonus[pool_index as usize][member_key] = area_sum;
                         min_value = min_value.min(total);
@@ -728,9 +758,8 @@ pub(crate) fn build_power_scalar_reference(
     card_attr: u8,
 ) -> PowerResult {
     let base = base_power_dims(user_card, master, ctx, idx);
-    let character_bonus = character_bonus_dims(master, ctx, base);
     let base_sum = base[0] + base[1] + base[2];
-    let character_sum = character_bonus[0] + character_bonus[1] + character_bonus[2];
+    let character_sum = character_bonus_total(master, ctx, base);
     let fixture = ctx.fixture_bonus(base_sum, master.character_id);
     let gate = ctx.gate_bonus(base_sum, unit_mask);
     let mut result = PowerResult {
@@ -749,13 +778,15 @@ pub(crate) fn build_power_scalar_reference(
             continue;
         }
 
-        for member_key in 0..4usize {
+        for (member_key, slot) in result.area_item_bonus[pool_index as usize]
+            .iter_mut()
+            .enumerate()
+        {
             let same_unit = member_key >= 2;
             let same_attr = member_key % 2 == 1;
-            let area_bonus = area_item_bonus_dims(
+            let area_sum = area_item_bonus_sum(
                 master, ctx, unit_mask, card_attr, base, same_unit, same_attr, pool_index,
             );
-            let area_sum = area_bonus[0] + area_bonus[1] + area_bonus[2];
             let total = base_sum + character_sum + area_sum + fixture + gate;
 
             let detail = PowerDetail {
@@ -766,7 +797,7 @@ pub(crate) fn build_power_scalar_reference(
                 gate_bonus: gate,
                 total,
             };
-            result.area_item_bonus[pool_index as usize][member_key] = detail.area_item_bonus;
+            *slot = detail.area_item_bonus;
             min_value = min_value.min(total);
             max_value = max_value.max(total);
         }
@@ -860,14 +891,15 @@ mod tests {
             event_rarity_bonus_rates: &[],
             honors: &[],
             bonds_honors: &[],
+            configs: &[],
         };
         let idx = PoolIndexes::build(&game);
         assert_eq!(
-            PreparedPowerContext::new(&user, &game, &idx, None).fixture_bonus(38_792, 20),
+            PreparedPowerContext::new(&user, &game, &idx, None, "jp").fixture_bonus(38_792, 20),
             1_163
         );
         assert_eq!(
-            PreparedPowerContext::new(&user, &game, &idx, Some(20)).fixture_bonus(38_792, 20),
+            PreparedPowerContext::new(&user, &game, &idx, Some(20), "jp").fixture_bonus(38_792, 20),
             775
         );
     }
@@ -916,6 +948,7 @@ mod tests {
             event_rarity_bonus_rates: &[],
             honors: &[],
             bonds_honors: &[],
+            configs: &[],
         };
         let user = UserProfile {
             user_mysekai_gate_bonuses: vec![UserGateBonus {
@@ -928,7 +961,7 @@ mod tests {
         };
 
         let idx = PoolIndexes::build(&game);
-        let ctx = PreparedPowerContext::new(&user, &game, &idx, None);
+        let ctx = PreparedPowerContext::new(&user, &game, &idx, None, "jp");
         assert_eq!(ctx.gate_bonus(10_000, 1 << 0), 150);
         assert_eq!(ctx.gate_bonus(10_000, 1 << 1), 0);
     }

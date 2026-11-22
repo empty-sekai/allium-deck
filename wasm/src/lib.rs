@@ -22,7 +22,10 @@ use std::collections::{BTreeMap, HashMap};
 use wasm_bindgen::prelude::*;
 
 use allium_deck::auxiliary::AuxiliaryData;
-use allium_deck::engine::{OwnedGameData, parse_build_params_json, parse_user_profile_json};
+use allium_deck::engine::{
+    OwnedGameData, parse_build_params_json, parse_build_params_json_with_default_region,
+    parse_user_profile_json,
+};
 use allium_deck::handler::{
     GameData, MasterCard, UserCard, UserProfile, build_card_pool, cultivated_user_cards,
 };
@@ -104,7 +107,7 @@ pub fn load_masterdata(masterdata_json: &str, music_metas_json: &str) -> Result<
 pub fn recommend(user_json: &str, params_json: &str) -> Result<String, JsValue> {
     let data = engine_data()?;
     let user = parse_user_profile_json(user_json).map_err(to_js)?;
-    recommend_with_user(&data, &user, params_json)
+    recommend_with_user(&data, &user, params_json, None)
 }
 
 /// 解析一次用户数据、多次复用的句柄。
@@ -146,15 +149,25 @@ pub fn recommend_with_user_data(
     handle: &UserDataHandle,
 ) -> Result<String, JsValue> {
     let data = engine_data()?;
-    recommend_with_user(&data, &handle.user, options_json)
+    recommend_with_user(
+        &data,
+        &handle.user,
+        options_json,
+        Some(handle.region.as_str()),
+    )
 }
 
 fn recommend_with_user(
     data: &std::rc::Rc<EngineData>,
     user: &UserProfile,
     params_json: &str,
+    fallback_region: Option<&str>,
 ) -> Result<String, JsValue> {
-    let params = parse_build_params_json(params_json).map_err(to_js)?;
+    let params = match fallback_region {
+        Some(region) => parse_build_params_json_with_default_region(params_json, region),
+        None => parse_build_params_json(params_json),
+    }
+    .map_err(to_js)?;
     // OwnedGameData::as_ref 返回借用视图（非拷贝本体），生命周期跟随 data。
     let game: &GameData<'_> = &data.game.as_ref();
 

@@ -18,6 +18,10 @@ pub const DECK_SIZE: usize = 5;
 /// Upper clamp applied to a computed live score.
 pub const SCORE_MAX: f64 = 10_000_000.0;
 
+/// Default teammate score-sum ceiling for multi/cheerful event points when
+/// `configs.event_score_ceiling` is absent (JP 5,500,000 -> term cap 16).
+pub const DEFAULT_EVENT_SCORE_CEILING: i32 = 5_500_000;
+
 /// Event id of the World Bloom chapter 2 finale, the first live with finale rules.
 pub const FINAL_CHAPTER_EVENT_ID: i32 = 180;
 
@@ -26,6 +30,29 @@ pub const FINAL_CHAPTER_EVENT_ID: i32 = 180;
 /// WL3 模拟终章的假活动 ID
 /// （= `getWorldBloomFakeEventId(3, 0)` = `3000000 + 2 * 100000`）。
 pub const WL3_FAKE_FINALE_EVENT_ID: i32 = 3_200_000;
+
+/// Base fake event ID for Memory Event simulations (`4_000_000 + unit`).
+pub const MEMORY_EVENT_ID_BASE: i32 = 4_000_000;
+
+/// Fake event ID for a Memory Event unit simulation, or `None` for pseudo-units.
+#[inline]
+pub const fn memory_event_fake_id(unit: Unit) -> Option<i32> {
+    match unit {
+        Unit::LightSound
+        | Unit::Idol
+        | Unit::Street
+        | Unit::Themepark
+        | Unit::SchoolRefusal
+        | Unit::Piapro => Some(MEMORY_EVENT_ID_BASE + unit as i32),
+        _ => None,
+    }
+}
+
+/// Whether `event_id` is a synthetic Memory Event ID (`4_000_001..=4_000_006`).
+#[inline]
+pub const fn is_memory_event_id(event_id: i32) -> bool {
+    event_id > MEMORY_EVENT_ID_BASE && event_id <= MEMORY_EVENT_ID_BASE + 6
+}
 
 /// 终章事件判定：legacy WL2 终章（180）与模拟 WL3 终章（3_200_000）。
 ///

@@ -6,7 +6,7 @@ Build parameters are the fourth argument of `engine::recommend_json` (a JSON obj
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `region` | string | `"cn"` | Region tag carried through to the caller; does not change engine math. |
+| `region` | string | `"cn"` | Region selector (`"jp"`, `"en"`, `"tw"`, `"kr"`, `"cn"`). `"tw"`, `"kr"`, and `"cn"` round character-rank and area-item bonuses in integer basis points (`round_ties_even(f32(rate) * 100) * stat` summed across three dimensions then divided by `10000`); `"jp"`, `"en"`, and other region tags floor each dimension in float before summing. `BuildParams::default()` and direct `parse_build_params_json` calls default to `"cn"` (so typed Rust callers wanting JP/EN float flooring must set `"jp"` / `"en"` explicitly); HTTP requests and WASM `recommendWithUserData` inherit the loaded snapshot / handle region when `region` is omitted or blank. |
 | `target` | string | `"score"` | `score`, `power`, `skill`, `bonus`, `mysekai`. Event point optimization is `score` plus an event context. `score` is normalized to `mysekai` when `liveType` is `mysekai`, because a MySekai live has no live score; `bonus` and `power` results under that live type report live score 0 and break ties by the canonical order below. |
 | `liveType` / `live_type` | string | `"solo"` | `solo`, `auto`, `multi`, `cheerful`, `challenge`, `challenge_auto`, `mysekai`. |
 | `limit` | int | 10 | Number of decks returned (Top-K). Distinct card sets. Max 100. |
@@ -35,6 +35,7 @@ Area-upgrade recommendations use the same evaluation mode before and after the u
 | `eventId` / `event_id` | int | absent | Real event ID from masterdata. Enables event-point scoring for `target=score`. |
 | `eventType` / `event_type` | string | absent | Simulated event type when no `eventId` is given: `marathon`, `cheerful`/`cheerful_carnival`, `world_bloom`/`wl`. |
 | `eventUnit` / `event_unit` | string | absent | Simulated event unit: `light_sound`, `idol`, `street`, `theme_park`, `school_refusal`, `piapro`. |
+| `eventMeUnit` / `event_me_unit` | string | absent | Memory-event simulation (`light_sound`, `idol`, `street`, `theme_park`, `school_refusal`, `piapro`): all attributes +25%, native unit characters +75% total (associated Virtual Singers do not receive the human-unit bonus). Marathon and `mysekai` only; mutually exclusive with other event and custom-bonus selectors. |
 | `eventAttr` / `event_attr` | string | absent | Simulated event attribute: `mysterious`, `cute`, `cool`, `pure`, `happy`. |
 | `customBonusCharacterIds` / `custom_bonus_character_ids` | int[] | `[]` | Mixed-event character set; overrides the unit expansion of `eventUnit`. IDs 1–26, max 26 entries. |
 | `customBonusAttr` / `custom_bonus_attr` | string | absent | Mixed-event attribute. |
@@ -107,6 +108,8 @@ Skills that depend on the deck are resolved for each evaluated deck, the same wa
 | `multiLiveScoreUpLowerBound` / `multi_live_score_up_lower_bound` | float | absent | Lower bound on total effective skill across the deck. |
 | `otherScore` / `other_score` | int | absent | Opponent score (cheerful). |
 | `life` | int | absent | Life value (cheerful). |
+
+The teammate score-sum cap for multi/cheerful event points reads `event_score_ceiling` from optional `configs.json` (falling back to the JP default `5500000`, cap 16, when absent; EN ships `4500000`, cap 13). Non-integer or negative values fail with a config error.
 
 ## Card cultivation configs
 

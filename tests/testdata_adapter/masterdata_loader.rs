@@ -4,11 +4,11 @@ use std::path::Path;
 
 use allium_deck::handler::{
     BondsHonor, CardEpisode, CardMysekaiCanvasBonus, CardParameter, CardRarity, CharacterRank,
-    Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
-    EventRarityBonusRate, EventShuffleUnitBonus, EventSkillScoreUpLimit, GameCharacterUnit,
-    GameData, Honor, HonorLevel, MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate,
-    MysekaiGateLevel, Skill, SkillEffect, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus,
-    WorldBloom, WorldBloomDiffAttrBonus,
+    Config, Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit,
+    EventHonorBonus, EventRarityBonusRate, EventShuffleUnitBonus, EventSkillScoreUpLimit,
+    GameCharacterUnit, GameData, Honor, HonorLevel, MasterCard, MasterLesson, MusicDifficulty,
+    MusicMeta, MysekaiGate, MysekaiGateLevel, Skill, SkillEffect, WBSupportDeckBonus,
+    WBSupportDeckUnitEventLimitedBonus, WorldBloom, WorldBloomDiffAttrBonus,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -49,6 +49,7 @@ pub struct OwnedGameData {
     pub event_rarity_bonus_rates: Vec<EventRarityBonusRate>,
     pub honors: Vec<Honor>,
     pub bonds_honors: Vec<BondsHonor>,
+    pub configs: Vec<Config>,
 }
 
 impl OwnedGameData {
@@ -354,6 +355,13 @@ impl OwnedGameData {
             .into_iter()
             .map(|entry| BondsHonor { id: entry.id })
             .collect(),
+            configs: load_optional_json::<Vec<RawConfig>>(&masterdata_dir.join("configs.json"))?
+                .into_iter()
+                .map(|entry| Config {
+                    config_key: entry.config_key,
+                    value: entry.value,
+                })
+                .collect(),
         })
     }
 
@@ -394,6 +402,7 @@ impl OwnedGameData {
             event_rarity_bonus_rates: &self.event_rarity_bonus_rates,
             honors: &self.honors,
             bonds_honors: &self.bonds_honors,
+            configs: &self.configs,
         }
     }
 }
@@ -963,4 +972,13 @@ struct RawHonorLevel {
     level: i32,
     #[serde(default)]
     bonus: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawConfig {
+    #[serde(default)]
+    config_key: String,
+    #[serde(default)]
+    value: String,
 }

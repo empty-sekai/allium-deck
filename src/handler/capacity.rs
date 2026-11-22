@@ -147,7 +147,9 @@ pub(crate) fn numeric_domain(pool: &CardPool, ctx: &SearchContext) -> Result<(),
     }
     let event_base = match live_type {
         LiveType::Solo | LiveType::Auto => 100.0 + live / 20_000.0,
-        LiveType::Multi | LiveType::Cheerful => 123.0 + live / 17_000.0,
+        LiveType::Multi | LiveType::Cheerful => {
+            110.0 + f64::from(ctx.event_score_ceiling.max(0) / 340_000) + live / 17_000.0
+        }
         _ => return Ok(()),
     };
     let music = f64::from(ctx.music_rate_pct);
@@ -344,6 +346,7 @@ mod tests {
             leader_honor_bonus_x10: vec![0; 6],
             leader_limit_bonus_x10: vec![0; 6],
             final_chapter_member_keep: vec![true; 6],
+            event_score_ceiling: crate::types::DEFAULT_EVENT_SCORE_CEILING,
         }
     }
 

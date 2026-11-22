@@ -10,12 +10,13 @@ use std::path::Path;
 
 use crate::handler::{
     BondsHonor, CardEpisode, CardMysekaiCanvasBonus, CardParameter, CardRarity, CharacterRank,
-    Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit, EventHonorBonus,
-    EventRarityBonusRate, EventShuffleUnitBonus, EventSkillScoreUpLimit, GameCharacterUnit,
-    GameData, Honor, HonorLevel, MasterCard, MasterLesson, MusicDifficulty, MusicMeta, MysekaiGate,
-    MysekaiGateLevel, Skill, SkillEffect, UserAreaItem, UserCard, UserChallengeDeck, UserDeck,
-    UserFixtureBonus, UserGateBonus, UserHonor, UserProfile, UserWBSupportDeck, WBSupportDeckBonus,
-    WBSupportDeckUnitEventLimitedBonus, WorldBloom, WorldBloomDiffAttrBonus,
+    Config, Event, EventCard, EventCardBonusLimit, EventDeckBonus, EventFixtureBonusLimit,
+    EventHonorBonus, EventRarityBonusRate, EventShuffleUnitBonus, EventSkillScoreUpLimit,
+    GameCharacterUnit, GameData, Honor, HonorLevel, MasterCard, MasterLesson, MusicDifficulty,
+    MusicMeta, MysekaiGate, MysekaiGateLevel, Skill, SkillEffect, UserAreaItem, UserCard,
+    UserChallengeDeck, UserDeck, UserFixtureBonus, UserGateBonus, UserHonor, UserProfile,
+    UserWBSupportDeck, WBSupportDeckBonus, WBSupportDeckUnitEventLimitedBonus, WorldBloom,
+    WorldBloomDiffAttrBonus,
 };
 use crate::search::{SearchCompletion, SearchOutcome, SearchParams, SearchStats};
 use crate::{CardId, DECK_SIZE, LiveSkillOrder, LiveType, ScoreTarget, SkillReferenceStrategy};
@@ -287,12 +288,45 @@ fn user_wb_support_deck_from_value(value: &Value) -> Option<UserWBSupportDeck> {
 pub fn parse_build_params_json(
     input: &str,
 ) -> Result<crate::handler::BuildParams, serde_json::Error> {
+    parse_build_params_from_json(input, None)
+}
+
+/// 将 params JSON 解析为 `BuildParams`；当 `region` 缺省、`null` 或为空白串时回退到 `default_region`。
+pub fn parse_build_params_json_with_default_region(
+    input: &str,
+    default_region: &str,
+) -> Result<crate::handler::BuildParams, serde_json::Error> {
+    parse_build_params_from_json(input, Some(default_region))
+}
+
+fn parse_region_override(value: &Value) -> Result<Option<String>, serde_json::Error> {
+    match value.get("region") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(trimmed.to_string()))
+            }
+        }
+        Some(_) => Err(serde_json::Error::custom("region 必须是字符串")),
+    }
+}
+
+fn parse_build_params_from_json(
+    input: &str,
+    default_region: Option<&str>,
+) -> Result<crate::handler::BuildParams, serde_json::Error> {
     let value = serde_json::from_str::<Value>(input)?;
     if !value.is_object() {
         return Err(serde_json::Error::custom("参数必须是 JSON 对象"));
     }
     let mut params = crate::handler::BuildParams::default();
-    if let Some(region) = string_field(&value, "region") {
+    if let Some(region) = default_region {
+        params.region = region.to_string();
+    }
+    if let Some(region) = parse_region_override(&value)? {
         params.region = region;
     }
     params.event_id =
@@ -368,6 +402,8 @@ pub fn parse_build_params_json(
         .or(i32_field_checked(&value, "world_bloom_finale_turn")?);
     params.challenge_live_character_id = i32_field_checked(&value, "challengeLiveCharacterId")?
         .or(i32_field_checked(&value, "challenge_live_character_id")?);
+    params.event_me_unit =
+        string_field(&value, "eventMeUnit").or_else(|| string_field(&value, "event_me_unit"));
     params.event_unit =
         string_field(&value, "eventUnit").or_else(|| string_field(&value, "event_unit"));
     params.event_attr =
@@ -397,6 +433,15 @@ pub fn parse_build_params_json(
     {
         return Err(serde_json::Error::custom(format!(
             "event_unit 非法: {unit}"
+        )));
+    }
+    if let Some(unit) = params.event_me_unit.as_deref()
+        && crate::handler::types::parse_unit_code(unit)
+            .and_then(crate::types::memory_event_fake_id)
+            .is_none()
+    {
+        return Err(serde_json::Error::custom(format!(
+            "Invalid memory event unit: {unit}"
         )));
     }
     params.custom_bonus_character_ids = bounded_int_array_alias(
@@ -937,6 +982,9 @@ pub struct OwnedGameData {
     pub honors: Vec<Honor>,
     /// 羁绊称号表。
     pub bonds_honors: Vec<BondsHonor>,
+    /// Optional `configs` masterdata rows (e.g. `event_score_ceiling`).
+    #[serde(default)]
+    pub configs: Vec<Config>,
 }
 
 impl OwnedGameData {
@@ -1259,6 +1307,14 @@ impl OwnedGameData {
                 .into_iter()
                 .map(|entry| BondsHonor { id: entry.id })
                 .collect(),
+            configs: sources
+                .optional::<Vec<RawConfig>>("configs.json")?
+                .into_iter()
+                .map(|entry| Config {
+                    config_key: entry.config_key,
+                    value: entry.value,
+                })
+                .collect(),
         })
     }
 
@@ -1299,6 +1355,7 @@ impl OwnedGameData {
             event_rarity_bonus_rates: &self.event_rarity_bonus_rates,
             honors: &self.honors,
             bonds_honors: &self.bonds_honors,
+            configs: &self.configs,
         }
     }
 }
@@ -1983,6 +2040,15 @@ struct RawEventShuffleUnitBonus {
     event_id: i32,
     unit_count: i32,
     bonus_rate: i32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawConfig {
+    #[serde(default)]
+    config_key: String,
+    #[serde(default)]
+    value: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2721,7 +2787,7 @@ mod tests {
 
     /// 六张卡、六个角色的最小 masterdata。卡 ID 从 501 起，与候选池的
     /// 稠密索引（0..N）不重叠，因此两者在断言里不会混淆。
-    fn minimal_game_and_user() -> (OwnedGameData, UserProfile, Vec<CardId>) {
+    pub(super) fn minimal_game_and_user() -> (OwnedGameData, UserProfile, Vec<CardId>) {
         let card_ids: Vec<i32> = (501..=506).collect();
         let cards = card_ids
             .iter()

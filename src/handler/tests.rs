@@ -64,6 +64,7 @@ fn sample_game<'a>(
         event_rarity_bonus_rates: &[],
         honors: &[],
         bonds_honors: &[],
+        configs: &[],
     }
 }
 
@@ -364,7 +365,7 @@ fn handler_build_power_uses_f32_item_accumulation() {
     };
 
     let idx = index::PoolIndexes::build(&game);
-    let power_ctx = PreparedPowerContext::new(&user, &game, &idx, None);
+    let power_ctx = PreparedPowerContext::new(&user, &game, &idx, None, "jp");
     let result = power::build_power(
         &sample_user_card(1),
         &cards[0],
@@ -474,6 +475,7 @@ fn handler_build_card_pool_only_clamps_fixture_bonus_for_matching_event() {
         event_rarity_bonus_rates: &[],
         honors: &[],
         bonds_honors: &[],
+        configs: &[],
     };
     let user = UserProfile {
         user_cards: vec![sample_user_card(1)],
@@ -1673,6 +1675,7 @@ fn handler_build_card_pool_end_to_end_minimal() {
         event_rarity_bonus_rates: &[],
         honors: &[],
         bonds_honors: &[],
+        configs: &[],
     };
     let user = UserProfile {
         user_cards: vec![
@@ -2050,6 +2053,7 @@ fn handler_build_power_keeps_all_cards_beyond_mask_capacity() {
         event_rarity_bonus_rates: &[],
         honors: &[],
         bonds_honors: &[],
+        configs: &[],
     };
     let user = UserProfile {
         user_cards,

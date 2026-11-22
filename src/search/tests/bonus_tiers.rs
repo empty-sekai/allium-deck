@@ -313,9 +313,9 @@ fn scene_context(
                 ctx.best_skill_as_leader = false;
                 ctx.power_total_cap = (rng.range(0, 2) == 0).then(|| 7_000 + rng.range(0, 3_000));
                 ctx.support_decks_by_character = vec![SupportDeck::default(); 32];
-                for character in 1..=4usize {
+                for deck in &mut ctx.support_decks_by_character[1..=4] {
                     if rng.range(0, 2) == 0 {
-                        ctx.support_decks_by_character[character] = tier_support_deck(pool, rng);
+                        *deck = tier_support_deck(pool, rng);
                     }
                 }
                 for card in pool.indices() {

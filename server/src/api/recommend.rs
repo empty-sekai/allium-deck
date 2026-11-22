@@ -16,7 +16,7 @@ use allium_deck::search::{
     compare_deck_results, search_targets, summarize_deck,
 };
 
-use super::{ApiError, ApiJson, AppState, UserInput, parse_params};
+use super::{ApiError, ApiJson, AppState, UserInput, parse_params_for_region};
 use crate::metrics::Outcome;
 use crate::state::RegionSnapshot;
 
@@ -140,7 +140,7 @@ async fn run_recommend(
 ) -> Result<(RecommendResponse, f64, f64), ApiError> {
     let snapshot = state.snapshot(request.region.as_deref())?;
     let user = request.user.parse()?;
-    let mut params = parse_params(request.params.as_deref())?;
+    let mut params = parse_params_for_region(request.params.as_deref(), &snapshot.name)?;
     state.clamp(&mut params);
 
     let region = snapshot.name.clone();
@@ -243,7 +243,7 @@ async fn run_challenge_all(
 ) -> Result<(ChallengeAllResponse, f64, f64), ApiError> {
     let snapshot = state.snapshot(request.region.as_deref())?;
     let user = request.user.parse()?;
-    let mut params = parse_params(request.params.as_deref())?;
+    let mut params = parse_params_for_region(request.params.as_deref(), &snapshot.name)?;
     state.clamp(&mut params);
 
     // A challenge deck is five cards of one character, so the sweep is per character.
