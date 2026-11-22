@@ -1045,6 +1045,7 @@ mod tests {
                 music_difficulties: &[],
                 honors: &self.honors,
                 bonds_honors: &[],
+                configs: &[],
             }
         }
     }

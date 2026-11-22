@@ -2527,6 +2527,7 @@ mod skill_ceiling_tests {
             leader_honors: Vec::new(),
             leader_limit_bonus_x10: vec![0; 5],
             final_chapter_member_keep: vec![true; 5],
+            event_score_ceiling: crate::types::DEFAULT_EVENT_SCORE_CEILING,
         };
         (pool, ctx)
     }

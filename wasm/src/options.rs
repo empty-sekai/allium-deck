@@ -4,8 +4,10 @@
 
 use serde_json::Value;
 
-use allium_deck::handler::{Event, UserProfile};
-use allium_deck::types::{EventType, LiveSkillOrder, LiveType};
+use allium_deck::handler::{Event, UserProfile, parse_unit_code};
+use allium_deck::types::{
+    EventType, LiveSkillOrder, LiveType, is_memory_event_id, memory_event_fake_id,
+};
 
 use crate::to_js;
 
@@ -77,23 +79,52 @@ pub(crate) fn require_live_type(opts: &Value) -> Result<LiveType, wasm_bindgen::
 pub(crate) fn parse_event_type(value: &str) -> Result<EventType, wasm_bindgen::JsValue> {
     match value.trim().to_ascii_lowercase().as_str() {
         "marathon" => Ok(EventType::Marathon),
-        "cheerful_carnival" => Ok(EventType::CheerfulCarnival),
-        "world_bloom" => Ok(EventType::WorldBloom),
+        "cheerful_carnival" | "cheerful" => Ok(EventType::CheerfulCarnival),
+        "world_bloom" | "wl" => Ok(EventType::WorldBloom),
         _ => Err(wasm_bindgen::JsValue::from_str(&format!(
             "Invalid event type: {value}"
         ))),
     }
 }
 
-/// 解析活动类型：显式 `event_type` 优先，否则用 `event_id` 反查活动主表。
+/// 解析活动类型：显式 `event_me_unit` / `event_type` 优先，合成 ME ID 视为 marathon，
+/// 否则用 `event_id` 反查活动主表。
 pub(crate) fn event_type_from_options(
     opts: &Value,
     events: &[Event],
 ) -> Result<EventType, wasm_bindgen::JsValue> {
+    if let Some(unit_value) = field(opts, "event_me_unit", "eventMeUnit")
+        && !unit_value.is_null()
+    {
+        let unit_raw = unit_value
+            .as_str()
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("event_me_unit must be a string."))?;
+        if parse_unit_code(unit_raw)
+            .and_then(memory_event_fake_id)
+            .is_none()
+        {
+            return Err(wasm_bindgen::JsValue::from_str(&format!(
+                "Invalid memory event unit: {unit_raw}"
+            )));
+        }
+        if opt_i32(opts, "event_id", "eventId").is_some()
+            || opt_str(opts, "event_type", "eventType")
+                .as_deref()
+                .is_some_and(|text| !matches!(parse_event_type(text), Ok(EventType::Marathon)))
+        {
+            return Err(wasm_bindgen::JsValue::from_str(
+                "event_me_unit requires a marathon simulation without other event selectors.",
+            ));
+        }
+        return Ok(EventType::Marathon);
+    }
     if let Some(text) = opt_str(opts, "event_type", "eventType") {
         return parse_event_type(&text);
     }
     if let Some(event_id) = opt_i32(opts, "event_id", "eventId") {
+        if is_memory_event_id(event_id) {
+            return Ok(EventType::Marathon);
+        }
         let event = events
             .iter()
             .find(|event| event.id == event_id)

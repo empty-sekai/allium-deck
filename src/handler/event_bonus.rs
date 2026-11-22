@@ -131,6 +131,29 @@ fn load_shuffle_unit_bonus(
     Ok(result)
 }
 
+/// Resolve `configs.event_score_ceiling` from masterdata, falling back to the
+/// JP default when `configs` or the key is absent.
+pub fn resolve_event_score_ceiling(game: &GameData<'_>) -> Result<i32, BuildError> {
+    for config in game.configs {
+        if config.config_key == "event_score_ceiling" {
+            let parsed = config.value.trim().parse::<i32>().map_err(|_| {
+                BuildError::InvalidConfig(format!(
+                    "Invalid configs.event_score_ceiling value: {}",
+                    config.value
+                ))
+            })?;
+            if parsed < 0 {
+                return Err(BuildError::InvalidConfig(format!(
+                    "Invalid configs.event_score_ceiling value: {}",
+                    config.value
+                )));
+            }
+            return Ok(parsed);
+        }
+    }
+    Ok(crate::types::DEFAULT_EVENT_SCORE_CEILING)
+}
+
 fn load_skill_limit(table: &[EventSkillScoreUpLimit], event_id: i32) -> Option<u32> {
     table
         .iter()
@@ -230,13 +253,20 @@ pub(crate) fn build_event_context(
     // world_bloom_event_turn 解析假活动，并合成 event cards / deck bonuses /
     // 章节与荣誉加成行。
     let wb_event_id = super::world_bloom::resolve_wb_event_id(params)?;
+    let me_unit = params
+        .event_me_unit
+        .as_deref()
+        .and_then(parse_unit_code)
+        .filter(|unit| crate::types::memory_event_fake_id(*unit).is_some());
+    let me_event_id = me_unit.and_then(crate::types::memory_event_fake_id);
     let synth_rows =
         wb_event_id.map(|event_id| super::world_bloom::synthesize_wb_rows(game, event_id));
     let event_type = if wb_event_id.is_some() {
         EventType::WorldBloom // 假活动固定为 world_bloom
     } else {
         let Some(event_type) = resolve_event_type(game, params).or_else(|| {
-            if params.event_unit.is_some()
+            if me_unit.is_some()
+                || params.event_unit.is_some()
                 || params.event_attr.is_some()
                 || !params.custom_bonus_character_ids.is_empty()
                 || params.custom_bonus_attr.is_some()
@@ -260,7 +290,9 @@ pub(crate) fn build_event_context(
             "world_bloom 模拟需要 world_bloom_event_turn（或提供真实活动 event_id）".to_string(),
         ));
     }
-    let event_id = wb_event_id.unwrap_or_else(|| params.event_id.unwrap_or_default());
+    let event_id = wb_event_id
+        .or(me_event_id)
+        .unwrap_or_else(|| params.event_id.unwrap_or_default());
     let world_bloom_event_turn = if let Some(id) = wb_event_id {
         Some(super::world_bloom::world_bloom_event_turn(id))
     } else if matches!(event_type, EventType::WorldBloom) {
@@ -301,7 +333,46 @@ pub(crate) fn build_event_context(
         }));
     }
 
-    let has_simulated_bonus = params.event_attr.is_some()
+    if let Some(unit) = me_unit
+        && !game.events.iter().any(|event| event.id == event_id)
+    {
+        // Memory events: +25% for all attributes/cards, +75% total for native unit characters
+        // (excluding Virtual Singers whose supportUnit points to a human unit).
+        deck_bonuses.push(PreparedEventDeckBonus {
+            character_id: None,
+            attr: None,
+            unit: None,
+            bonus_rate_x10: 250,
+            has_attr_rule: false,
+        });
+        let mut native_characters: Vec<i32> = game
+            .game_character_units
+            .iter()
+            .filter(|entry| {
+                let entry_unit = parse_unit_code(&entry.unit);
+                if matches!(unit, Unit::Piapro) {
+                    entry_unit == Some(Unit::Piapro) && entry.game_character_id > 20
+                } else {
+                    entry_unit == Some(unit) && entry.game_character_id <= 20
+                }
+            })
+            .map(|entry| entry.game_character_id)
+            .collect();
+        native_characters.sort_unstable();
+        native_characters.dedup();
+        for character_id in native_characters {
+            deck_bonuses.push(PreparedEventDeckBonus {
+                character_id: Some(character_id),
+                attr: None,
+                unit: None,
+                bonus_rate_x10: 750,
+                has_attr_rule: false,
+            });
+        }
+    }
+
+    let has_simulated_bonus = me_unit.is_some()
+        || params.event_attr.is_some()
         || params.event_unit.is_some()
         || params.custom_bonus_attr.is_some()
         || !params.custom_bonus_character_ids.is_empty();
@@ -756,6 +827,7 @@ mod tests {
             music_difficulties: &[],
             honors: &[],
             bonds_honors: &[],
+            configs: &[],
         };
 
         let (bonus, _, _) = build_card_event_bonus(

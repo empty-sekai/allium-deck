@@ -65,6 +65,7 @@ struct ParamOverrides {
     world_bloom_event_turn: Option<Option<i32>>,
     world_bloom_finale_turn: Option<Option<i32>>,
     challenge_live_character_id: Option<Option<i32>>,
+    event_me_unit: Option<Option<String>>,
     event_unit: Option<Option<String>>,
     event_attr: Option<Option<String>>,
     unit_filter: Option<Option<String>>,
@@ -155,6 +156,7 @@ fn run() -> Result<(), String> {
                 masterdata,
                 load_ms,
                 params.multi_unit_bonus_mode,
+                &params.region,
             );
         }
         Some("music") => {
@@ -527,14 +529,20 @@ fn resolve_aux_event_type(game: &GameData<'_>, params: &BuildParams) -> allium_d
             _ => allium_deck::EventType::Marathon,
         };
     }
-    if let Some(event_id) = params.event_id
-        && let Some(event) = game.events.iter().find(|event| event.id == event_id)
-    {
-        return match event.event_type.to_ascii_lowercase().as_str() {
-            "cheerful_carnival" => allium_deck::EventType::CheerfulCarnival,
-            "world_bloom" => allium_deck::EventType::WorldBloom,
-            _ => allium_deck::EventType::Marathon,
-        };
+    if params.event_me_unit.is_some() {
+        return allium_deck::EventType::Marathon;
+    }
+    if let Some(event_id) = params.event_id {
+        if allium_deck::is_memory_event_id(event_id) {
+            return allium_deck::EventType::Marathon;
+        }
+        if let Some(event) = game.events.iter().find(|event| event.id == event_id) {
+            return match event.event_type.to_ascii_lowercase().as_str() {
+                "cheerful_carnival" => allium_deck::EventType::CheerfulCarnival,
+                "world_bloom" => allium_deck::EventType::WorldBloom,
+                _ => allium_deck::EventType::Marathon,
+            };
+        }
     }
     allium_deck::EventType::Marathon
 }
@@ -546,6 +554,7 @@ fn run_area_items(
     masterdata: &str,
     load_ms: f64,
     evaluation: allium_deck::power::MultiUnitBonusMode,
+    region: &str,
 ) -> Result<(), String> {
     let auxiliary = load_auxiliary(masterdata)?;
     let card_ids = args
@@ -554,7 +563,7 @@ fn run_area_items(
         .ok_or_else(|| "--mode area-items 需要 --card-ids（1..5 张卡，逗号分隔）".to_string())?;
     let start = Instant::now();
     let result = auxiliary
-        .recommend_area_items_with_evaluation(user, game, &card_ids, evaluation)
+        .recommend_area_items_for_region(user, game, &card_ids, evaluation, region)
         .map_err(|e| e.to_string())?;
     eprintln!("[area_items] {:.1}ms  rows={}", ms(start), result.len());
     eprintln!("[total] {:.1}ms", load_ms + ms(start));
@@ -621,9 +630,16 @@ fn run_music(
             .collect(),
     };
     let _ = user;
+    let ceiling =
+        allium_deck::handler::resolve_event_score_ceiling(game).map_err(|e| e.to_string())?;
     let start = Instant::now();
-    let result = allium_deck::auxiliary::recommend_music(game.music_metas, &deck, &options)
-        .map_err(|e| e.to_string())?;
+    let result = allium_deck::auxiliary::recommend_music_with_ceiling(
+        game.music_metas,
+        &deck,
+        &options,
+        ceiling,
+    )
+    .map_err(|e| e.to_string())?;
     eprintln!("[music] {:.1}ms  rows={}", ms(start), result.len());
     eprintln!("[total] {:.1}ms", load_ms + ms(start));
     println!(
@@ -754,6 +770,9 @@ fn parse_args() -> Result<CliArgs, String> {
                 parsed.overrides.challenge_live_character_id =
                     Some(parse_optional_i32(&value()?, &flag)?)
             }
+            "--event-me-unit" => {
+                parsed.overrides.event_me_unit = Some(parse_optional_string(value()?))
+            }
             "--event-unit" => parsed.overrides.event_unit = Some(parse_optional_string(value()?)),
             "--event-attr" => parsed.overrides.event_attr = Some(parse_optional_string(value()?)),
             "--unit-filter" => parsed.overrides.unit_filter = Some(parse_optional_string(value()?)),
@@ -877,6 +896,9 @@ fn apply_overrides(params: &mut BuildParams, overrides: ParamOverrides) {
     if let Some(value) = overrides.challenge_live_character_id {
         params.challenge_live_character_id = value;
     }
+    if let Some(value) = overrides.event_me_unit {
+        params.event_me_unit = value;
+    }
     if let Some(value) = overrides.event_unit {
         params.event_unit = value;
     }
@@ -965,7 +987,7 @@ fn print_help() {
 \n           exact-live: --power N --skills 100,200 --music-score score.json --multi-sum-power N
 \n         --challenge-all 逐角色搜索 challenge 最优卡组，并按分数全局排序输出 JSON\n\
          --fixed-cards 1,2 --fixed-characters 1,2 --excluded-cards 3,4\n\
-         --event-unit ln --event-attr cool --filter-other-unit --unit-filter ln --attr-filter cool\n\
+         --event-unit ln --event-me-unit ln --event-attr cool --filter-other-unit --unit-filter ln --attr-filter cool\n\
          --world-bloom-character-id N --world-bloom-event-turn N --world-bloom-finale-turn 2|3
          --challenge-live-character-id N\n\
          --skill-reference-strategy average|max|min --live-skill-order best|worst|average|specific\n\

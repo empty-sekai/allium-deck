@@ -6,8 +6,11 @@ The JP7 business rules were ported from
 **[Team-Haruki/sekai-deck-recommend-cpp](https://github.com/Team-Haruki/sekai-deck-recommend-cpp)**,
 using commit
 [`496caed78a07ffe1f2d1f1553047dbf6b2ed0314`](https://github.com/Team-Haruki/sekai-deck-recommend-cpp/commit/496caed78a07ffe1f2d1f1553047dbf6b2ed0314)
-as the reference. The rules are implemented in allium-deck's Rust data model and
-exact-search architecture.
+as the initial reference, and updated through
+[`181e757`](https://github.com/Team-Haruki/sekai-deck-recommend-cpp/commit/181e757)
+(`v0.5.2`: `event_me_unit` memory-event simulation, TW/KR/CN basis-point bonus rounding,
+and `configs.event_score_ceiling`). The rules are implemented in allium-deck's Rust data
+model and exact-search architecture.
 
 | Business rule | Reference implementation |
 | --- | --- |

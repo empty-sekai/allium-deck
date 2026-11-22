@@ -109,6 +109,7 @@ pub(crate) struct ObjectiveBound {
     pub(super) live_skill_order: LiveSkillOrder,
     pub(super) honor_bonus: u32,
     pub(super) power_total_cap: Option<u32>,
+    pub(super) event_score_ceiling: i32,
 }
 
 impl ObjectiveBound {
@@ -169,6 +170,7 @@ impl ObjectiveBound {
             live_skill_order: ctx.live_skill_order,
             honor_bonus: ctx.honor_bonus,
             power_total_cap: ctx.power_total_cap,
+            event_score_ceiling: ctx.event_score_ceiling,
         }
     }
 
@@ -490,7 +492,8 @@ impl ObjectiveBound {
                 } else {
                     i64::from(self.other_score)
                 };
-                i128::from(110 + i64::from(live_score) / 17_000 + (other / 340_000).min(13))
+                let teammate_term = other.min(i64::from(self.event_score_ceiling.max(0))) / 340_000;
+                i128::from(110 + i64::from(live_score) / 17_000 + teammate_term)
             }
         };
         // Three u32-sized factors and the bounded live-base fit i128,

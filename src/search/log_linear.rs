@@ -261,10 +261,11 @@ impl EventModel {
         let (offset, divisor) = match objective.effective_live_type {
             LiveType::Solo | LiveType::Auto => (100.0, 20_000.0),
             LiveType::Multi => {
+                let ceiling = i64::from(objective.event_score_ceiling.max(0));
                 let other = if objective.other_score == 0 {
-                    13
+                    ceiling / 340_000
                 } else {
-                    (i64::from(objective.other_score) / 340_000).min(13)
+                    i64::from(objective.other_score).min(ceiling) / 340_000
                 };
                 ((110 + other) as f64, 17_000.0)
             }
@@ -487,6 +488,7 @@ mod tests {
             leader_honors: Vec::new(),
             leader_limit_bonus_x10: Vec::new(),
             final_chapter_member_keep: Vec::new(),
+            event_score_ceiling: crate::types::DEFAULT_EVENT_SCORE_CEILING,
         }
     }
 

@@ -343,6 +343,7 @@
             "enum": ["marathon", "cheerful_carnival", "world_bloom"]
           },
           "eventId": { "type": "integer" },
+          "eventMeUnit": { "type": "string" },
           "skillOrderChooseStrategy": {
             "type": "string",
             "enum": ["average", "max", "min", "specific"],
